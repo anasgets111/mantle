@@ -48,7 +48,12 @@ pub(super) struct PlayerEntry {
     /// subscribe, so insertion always comes first.
     forwarder: Option<JoinHandle<()>>,
     collections_forwarder: Option<JoinHandle<()>>,
+    /// From the first command on: the player's queue and the task running it in order.
+    pub(super) commands: Option<(tokio::sync::mpsc::Sender<Command>, JoinHandle<()>)>,
 }
+
+/// One dispatched `mantle.mpris` action.
+pub(super) type Command = std::pin::Pin<Box<dyn Future<Output = ()> + Send>>;
 
 pub(super) type PlayerRegistry = Arc<Mutex<HashMap<String, PlayerEntry>>>;
 
@@ -339,6 +344,7 @@ pub(super) async fn register_player(
         playlist_request: 0,
         forwarder: None,
         collections_forwarder: None,
+        commands: None,
     };
     let previous = {
         let mut guard = registry.lock().expect("mutex poisoned");
@@ -359,6 +365,9 @@ pub(super) async fn register_player(
             handle.abort();
         }
         if let Some(handle) = previous.collections_forwarder {
+            handle.abort();
+        }
+        if let Some((_, handle)) = previous.commands {
             handle.abort();
         }
     }
@@ -598,6 +607,9 @@ pub(super) fn unregister_player(registry: &PlayerRegistry, bus_name: &str, event
             handle.abort();
         }
         if let Some(handle) = entry.collections_forwarder {
+            handle.abort();
+        }
+        if let Some((_, handle)) = entry.commands {
             handle.abort();
         }
         let _ = events.send(());
@@ -919,6 +931,7 @@ mod ordering_tests {
             playlist_request: 0,
             forwarder: None,
             collections_forwarder: None,
+            commands: None,
         }
     }
 

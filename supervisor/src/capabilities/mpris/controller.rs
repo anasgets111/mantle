@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use futures_util::StreamExt;
 use shared::debug;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -44,6 +45,23 @@ impl MprisController {
     pub fn inert() -> Self {
         let (events, _) = tokio::sync::mpsc::unbounded_channel();
         Self { registry: Arc::new(Mutex::new(HashMap::new())), events }
+    }
+
+    /// Queues `command` behind `id`'s earlier ones: they land in dispatch order, and a player that
+    /// never answers holds up only its own. ponytail: 32 queued, then the newest is refused, as an
+    /// mpsc queue cannot drop its oldest; a deque that does if a slider on a slow player loses its end.
+    pub(super) fn enqueue(&self, id: &str, command: super::player::Command) {
+        let mut guard = self.registry.lock().expect("mutex poisoned");
+        let Some(entry) = guard.get_mut(&service_name_for_id(id)) else {
+            return debug!("command for {id:?} failed: {UNKNOWN_PLAYER}");
+        };
+        let (queue, _) = entry.commands.get_or_insert_with(|| {
+            let (queue, mut commands) = tokio::sync::mpsc::channel::<super::player::Command>(32);
+            (queue, tokio::spawn(futures_util::stream::poll_fn(move |cx| commands.poll_recv(cx)).for_each(|c| c)))
+        });
+        if queue.try_send(command).is_err() && shared::log::first_failure(&format!("mpris-queue-{id}")) {
+            shared::warn!("{id:?} has 32 commands waiting on it; refusing more until it answers");
+        }
     }
 
     /// Re-derives `mpris.players` from the full registry. Synchronous because forwarders update
@@ -397,7 +415,7 @@ struct SeekContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capabilities::test_support::p2p_pair_serving;
+    use crate::capabilities::test_support::{p2p_pair_serving, poll_until};
     use std::sync::atomic::{AtomicBool, Ordering};
 
     /// A player with no `mpris:trackid`, so an absolute seek converts against `Position`, which
@@ -406,12 +424,20 @@ mod tests {
     struct Player {
         refusing: Arc<AtomicBool>,
         seeks: Arc<Mutex<Vec<i64>>>,
+        /// `Next` records `-1` in `seeks`, then never answers.
+        hung: Arc<AtomicBool>,
     }
 
     #[zbus::interface(name = "org.mpris.MediaPlayer2.Player")]
     impl Player {
         fn seek(&self, offset: i64) {
             self.seeks.lock().unwrap().push(offset);
+        }
+        async fn next(&self) {
+            self.seeks.lock().unwrap().push(-1);
+            if self.hung.load(Ordering::Relaxed) {
+                std::future::pending::<()>().await;
+            }
         }
         #[zbus(property)]
         fn position(&self) -> zbus::fdo::Result<i64> {
@@ -456,6 +482,84 @@ mod tests {
         controller.seek("fixture", 60_000_000).await;
 
         assert_eq!(*player.seeks.lock().unwrap(), [55_000_000], "only the seek with a live position goes out");
+    }
+
+    /// A player served on its own p2p pair and tracked as `org.mpris.MediaPlayer2.<id>`.
+    async fn tracked_player(controller: &MprisController, id: &str) -> (Player, zbus::Connection) {
+        let player = Player::default();
+        let served = player.clone();
+        let (connection, peer) = p2p_pair_serving(|builder| {
+            builder.serve_at("/org/mpris/MediaPlayer2", served)?.serve_at("/org/mpris/MediaPlayer2", Root)
+        })
+        .await;
+        let name = format!("org.mpris.MediaPlayer2.{id}");
+        super::super::player::register_player(&connection, &controller.registry, &controller.events, name).await;
+        (player, peer)
+    }
+
+    fn command(action: &str, arguments: serde_json::Value) -> shared::CommandEnvelope {
+        let serde_json::Value::Array(arguments) = arguments else { panic!("positional arguments") };
+        let (capability, action) = ("mpris".into(), action.into());
+        let params =
+            shared::CommandParams { generation_id: 1, capability, action, arguments, legacy_expected_revision: 0 };
+        shared::CommandEnvelope { params, id: 0 }
+    }
+
+    /// The seek reads `Position` first; spawned apart, the `Next` behind it overtook it and the seek
+    /// landed on the next track.
+    #[tokio::test]
+    async fn one_players_commands_land_in_dispatch_order() {
+        let controller = MprisController::inert();
+        let (player, _peer) = tracked_player(&controller, "fixture").await;
+        super::super::dispatch(&controller, &command("seek", serde_json::json!(["fixture", 60_000_000])));
+        super::super::dispatch(&controller, &command("control", serde_json::json!(["fixture", "next"])));
+        poll_until(|| (player.seeks.lock().unwrap().len() == 2).then_some(())).await;
+        assert_eq!(*player.seeks.lock().unwrap(), [55_000_000, -1], "the seek was dispatched first");
+    }
+
+    /// Each player has its own queue: one that never answers holds up only its own commands, and
+    /// leaving drops them, the one in flight included.
+    #[tokio::test]
+    async fn a_hung_player_holds_up_only_its_own_commands_until_it_leaves() {
+        let controller = MprisController::inert();
+        let (hung, _hung_peer) = tracked_player(&controller, "hung").await;
+        let (other, _other_peer) = tracked_player(&controller, "other").await;
+        hung.hung.store(true, Ordering::Relaxed);
+        let holders = Arc::strong_count(&controller.registry);
+        for id in ["hung", "hung", "other"] {
+            super::super::dispatch(&controller, &command("control", serde_json::json!([id, "next"])));
+        }
+        poll_until(|| (other.seeks.lock().unwrap().len() == 1).then_some(())).await;
+        assert_eq!(*hung.seeks.lock().unwrap(), [-1], "the second waits behind the first");
+
+        super::super::player::unregister_player(
+            &controller.registry,
+            "org.mpris.MediaPlayer2.hung",
+            &controller.events,
+        );
+        // Well inside the five-second call timeout that would otherwise end the hung call.
+        let ended = async {
+            while Arc::strong_count(&controller.registry) > holders {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(1), ended).await.expect("the hung player's queue ended");
+    }
+
+    /// One command in flight and 32 waiting fit without a warning; the next is refused, and warns.
+    #[tokio::test]
+    async fn a_full_queue_refuses_the_newest_command_and_warns_once() {
+        let controller = MprisController::inert();
+        for (id, sent, warned) in [("fits", 33, false), ("overflows", 34, true)] {
+            let (hung, _peer) = tracked_player(&controller, id).await;
+            hung.hung.store(true, Ordering::Relaxed);
+            let next = command("control", serde_json::json!([id, "next"]));
+            super::super::dispatch(&controller, &next);
+            poll_until(|| (hung.seeks.lock().unwrap().len() == 1).then_some(())).await;
+            (1..sent).for_each(|_| super::super::dispatch(&controller, &next));
+            // `first_failure` is true only for a key nothing has warned under yet.
+            assert_eq!(!shared::log::first_failure(&format!("mpris-queue-{id}")), warned, "{id}");
+        }
     }
 
     #[test]

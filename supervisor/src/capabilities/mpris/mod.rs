@@ -53,12 +53,14 @@ const MAX_PLAYERS: usize = 8;
 /// Playlist orderings kept. MPRIS defines five; the rest are a player's own.
 const MAX_ORDERINGS: usize = 16;
 
-/// `mantle.mpris` action dispatch (ADR-0037): `tokio::spawn`s each write action
+/// `mantle.mpris` action dispatch (ADR-0037): queues each write action on its player's own task
 /// (ADR-0036/ADR-0029). Seeks are unclamped here; each command clamps, or declines to, where it runs.
 pub fn dispatch(controller: &MprisController, envelope: &shared::CommandEnvelope) {
     let Some(action) = crate::parse_action::<MprisAction>(&envelope.params) else { return };
-    let controller = controller.clone();
-    tokio::spawn(async move {
+    // Every action's first argument is the player id.
+    let Some(id) = envelope.params.arguments.first().and_then(serde_json::Value::as_str) else { return };
+    let (queue, controller) = (controller, controller.clone());
+    let command = async move {
         match action {
             MprisAction::Control { id, cmd } => controller.control(&id, cmd).await,
             MprisAction::Seek { id, position_us } => controller.seek(&id, position_us).await,
@@ -84,7 +86,8 @@ pub fn dispatch(controller: &MprisController, envelope: &shared::CommandEnvelope
                 controller.playlists_activate(&id, &playlist_id).await
             }
         }
-    });
+    };
+    queue.enqueue(id, Box::pin(command));
 }
 
 #[cfg(test)]
