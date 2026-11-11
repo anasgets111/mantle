@@ -175,7 +175,7 @@ impl Prop for Num {
     type Out = f32;
     fn read(row: &Property, value: Option<&Value>) -> Result<f32, LayoutError> {
         let Some(value) = value else {
-            let Absent::Number(n) = row.absent else { panic!("`{}` has no default number", row.name) };
+            let Absent::Number(n) = row.absent else { return Err(invalid(row.name, "has no default number")) };
             return Ok(n);
         };
         let n = value_as_f32(row.name, value)?
@@ -231,7 +231,7 @@ impl Prop for Flag {
         match value {
             None => match row.absent {
                 Absent::Bool(b) => Ok(b),
-                _ => panic!("`{}` has no default boolean", row.name),
+                _ => Err(invalid(row.name, "has no default boolean")),
             },
             Some(Value::Boolean(b)) => Ok(*b),
             Some(other) => Err(invalid(row.name, format!("expected a boolean, got {}", preview_for_error(other)))),

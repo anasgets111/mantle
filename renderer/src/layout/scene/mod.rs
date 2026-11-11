@@ -1302,6 +1302,26 @@ pub(super) mod tests {
         }
     }
 
+    /// `hittable` has no parser to drop a bad value for its default; it once panicked here instead.
+    #[test]
+    fn a_non_boolean_hittable_fails_its_surface() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let lua = scene_lua();
+        let tables: Vec<mlua::Table> = lua
+            .load(r#"return { panel { id = "bar", child = rect { hittable = "yes" } }, panel { id = "dock" } }"#)
+            .eval()
+            .unwrap();
+        let surfaces: Vec<VirtualNode> = tables.iter().map(|table| deserialize_lua_table(table).unwrap()).collect();
+        let instances: Vec<_> = surfaces.iter().map(|surface| instance_at(surface, full())).collect();
+        let report = scene.apply_locked(&surfaces, &instances, &shaping, &lua, false, false).unwrap().unwrap();
+        assert!(report.to_string().contains("`hittable`: expected a boolean, got string \"yes\""), "{report}");
+        assert!(scene.surface("bar@TEST").is_none() && scene.surface("dock@TEST").is_some());
+        // A reload and `mantle check` refuse it the same way, where it once passed.
+        let strict = scene.apply_locked(&surfaces, &instances, &shaping, &lua, false, true).unwrap_err();
+        assert_eq!(strict.to_string(), report.to_string());
+    }
+
     #[test]
     fn a_self_referential_literal_tree_is_rejected_with_a_layout_error() {
         let mut scene = Scene::new();

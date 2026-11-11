@@ -851,6 +851,15 @@ mod tests {
         assert!(rows_named("no_such_property").is_empty());
     }
 
+    /// `drop_refused_values` probes each row's check with nothing to learn whether it has a default,
+    /// so no row may panic there: the release build aborts on a panic.
+    #[test]
+    fn every_rows_check_returns_for_an_absent_value() {
+        for row in properties() {
+            let _ = (row.check)(row, None);
+        }
+    }
+
     /// A choice default names a choice, so `OneOf` finds its index.
     #[test]
     fn every_choice_default_is_one_of_its_choices() {

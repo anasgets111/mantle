@@ -77,12 +77,14 @@ pub(crate) fn resolve_declared(
             }
         }
     }
-    // Callbacks and the two input flags have no parser: the input handlers read them where they
+    // Callbacks and the three input flags have no parser: the input handlers read them where they
     // fire, where a wrong type could only be ignored. Sorted like the loop above.
     let mut typed: Vec<&'static str> = properties
         .keys()
         .copied()
-        .filter(|property| property.starts_with("on_") || matches!(*property, "submits_secure" | "autofocus"))
+        .filter(|property| {
+            property.starts_with("on_") || matches!(*property, "submits_secure" | "autofocus" | "hittable")
+        })
         .collect();
     typed.sort_unstable();
     for property in typed {

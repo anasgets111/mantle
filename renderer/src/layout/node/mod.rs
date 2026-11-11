@@ -834,6 +834,7 @@ mod tests {
             (r#"{ kind = "row", on_click = "quit" }"#, "on_click", "expected a function, got string \"quit\""),
             (r#"{ kind = "icon", submits_secure = 1 }"#, "submits_secure", "expected a boolean, got integer 1"),
             (r#"{ kind = "textfield", autofocus = "yes" }"#, "autofocus", "expected a boolean, got string \"yes\""),
+            (r#"{ kind = "rect", hittable = 1 }"#, "hittable", "expected a boolean, got integer 1"),
         ] {
             let err =
                 resolve_declared(&props_from_src(&lua, format!("return {source}")), "rect", false, &lua).unwrap_err();
