@@ -297,6 +297,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
         }),
         "text" => {
             let (content, runs) = text::content.read(properties)?;
+            let wrap = text_flow::wrap.read(properties)?;
             PaintStyle::Text {
                 content: content.into(),
                 runs,
@@ -304,8 +305,9 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
                 color: typeface::foreground.read(properties)?.expect("`foreground` has a default"),
                 align: typeface::text_align.read(properties)?,
                 elide: text_flow::elide.read(properties)?,
-                wrap: text_flow::wrap.read(properties)?,
-                max_lines: text_flow::max_lines.read(properties)?,
+                wrap,
+                // Ignored without `wrap`, which paints every line.
+                max_lines: text_flow::max_lines.read(properties)?.filter(|_| wrap == Wrap::Word),
                 elided: false,
             }
         }

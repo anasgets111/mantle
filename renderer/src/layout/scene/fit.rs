@@ -611,6 +611,11 @@ mod tests {
         ));
         assert_eq!(drawn.lines().count(), 2, "got {drawn:?}");
         assert_eq!(height, 2.0 * 12.0 * 1.2, "a capped run reserves the lines it keeps, not the ones it dropped");
+
+        let (drawn, height) =
+            text_box(r#"panel { id = "bar", child = text { content = "one\ntwo\nthree", max_lines = 1 } }"#);
+        assert_eq!(drawn.lines().count(), 3, "`max_lines` is ignored without `wrap`: {drawn:?}");
+        assert_eq!(height, 3.0 * 12.0 * 1.2, "so the box holds every line it draws");
     }
 
     /// taffy hands the measure a border-box known width; paint wraps at the content box inside it.
