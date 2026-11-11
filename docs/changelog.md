@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Changed: `capture.live` takes at least 0.001 frames per second. A smaller positive rate, such as `live = 1e-20`, used to pass the check and then abort the shell on its first capture; it is now refused at load like `live = 0`.
 - Fixed: a content-sized `text` with `wrap = "word"` and left or right `padding` stays on the one line it was measured at, and with `max_lines` and `elide` keeps its last kept line whole. At some paddings its last word used to move to a second line, or the line lost a character to the ellipsis.
 - Fixed: an `image` with `async = true`, or `palette.quantize`, reads a file replaced within the same second as its cached thumbnail from the new file when its byte size changed. It used to keep showing the old picture's thumbnail. This applies to thumbnails written from this version on; one written earlier, or by another program without `Thumb::Size`, is still accepted on its timestamp alone.
 - Fixed: an `icon` or an SVG `image` drawn more than 8192 px on a side, such as `icon { size = 30000 }`, draws its SVG at 8192 px, scaled up, as a raster picture already was. It used to rasterize at full size, 3.6 GB for that icon, which could exhaust memory and crash the shell.

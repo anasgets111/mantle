@@ -5,7 +5,7 @@
 //! words and, in a `Book:` paragraph, the docs table's cell; a group's `///` block opens its kind's
 //! constructor stub.
 //!
-//! ponytail: the half-open ranges (a popup's `(0, 8192]`, `live`'s `(0, 1000]`) and
+//! ponytail: a popup's half-open `(0, 8192]`, `live`'s `[0.001, 1000]` beside a boolean, and
 //! `style::axis_default` keep their own literals, so those rows' `range`/`absent` are documentation
 //! only. Upgrade: a half-open `range` and an `Absent::Axes` when one of them next changes.
 
@@ -519,7 +519,7 @@ props! {
         ///
         /// Book: As on [`image`](image.md)
         fit: Bound<OneOf<Fit>> = absent(Choice("cover"));
-        /// `false`: capture on show and on each target change. `true`: every frame, one in flight. A number: at most that many fps, `(0, 1000]` (ADR-0263). Hiding the node or unmapping its surface drops the capture; showing starts a fresh one.
+        /// `false`: capture on show and on each target change. `true`: every frame, one in flight. A number: at most that many fps, `[0.001, 1000]` (ADR-0263). Hiding the node or unmapping its surface drops the capture; showing starts a fresh one.
         live: Bound<Live> = absent(Bool(false));
         /// Part of the output in its logical px, placed by `fit` as the whole frame. Every key is required and in that range; the size is non-zero.
         region: Bound<Region> = range(0.0, 8192.0).absent(Prose("the whole output"));

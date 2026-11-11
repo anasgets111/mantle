@@ -123,7 +123,7 @@ fn parse_runs(runs: &mlua::Table) -> Result<(String, Vec<StyleRun>), LayoutError
     Ok((content, styles))
 }
 
-/// `capture.live` (ADR-0248, ADR-0263): frames per second in (0, 1000], `true` uncapped
+/// `capture.live` (ADR-0248, ADR-0263): frames per second in [0.001, 1000], `true` uncapped
 /// (infinite), `false` or absent one-shot (`None`).
 pub(crate) struct Live;
 
@@ -136,10 +136,10 @@ impl Prop for Live {
             None | Some(Value::Boolean(false)) => Ok(None),
             Some(Value::Boolean(true)) => Ok(Some(f32::INFINITY)),
             Some(value) => match value_as_f32("live", value)? {
-                Some(fps) if fps > 0.0 && fps <= 1000.0 => Ok(Some(fps)),
+                Some(fps) if (0.001..=1000.0).contains(&fps) => Ok(Some(fps)),
                 _ => {
                     let got = preview_for_error(value);
-                    Err(invalid("live", format!("expected a boolean or frames per second in (0, 1000], got {got}")))
+                    Err(invalid("live", format!("expected a boolean or frames per second in [0.001, 1000], got {got}")))
                 }
             },
         }
@@ -633,7 +633,7 @@ mod tests {
         );
     }
 
-    /// ADR-0263: `live` is frames per second in (0, 1000]; `paint_cursor` a boolean.
+    /// ADR-0263: `live` is frames per second in [0.001, 1000]; `paint_cursor` a boolean.
     #[test]
     fn live_takes_frames_per_second_and_paint_cursor_a_boolean() {
         let lua = mlua::Lua::new();
@@ -651,7 +651,9 @@ mod tests {
         assert_eq!(live("false").unwrap(), None);
         assert_eq!(live("60").unwrap(), Some(60.0));
         assert_eq!(live("1000").unwrap(), Some(1000.0));
-        for refused in ["0", "-5", "1001", r#""yes""#] {
+        assert_eq!(live("0.001").unwrap(), Some(0.001));
+        // 1 / 1e-20 seconds overflows `Duration`, which panics the request scheduler.
+        for refused in ["0", "1e-20", "0.0009", "-5", "1001", r#""yes""#] {
             assert!(live(refused).is_err(), "{refused}");
         }
     }

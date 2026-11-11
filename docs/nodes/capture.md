@@ -63,7 +63,7 @@ confirm these are separate requirements. Non-Hyprland window capture remains on 
 | `output` | `string\|Bound` | `""` | Connector name, e.g. `"DP-1"`; `""` draws nothing. An unknown name draws nothing and warns once. Changing it starts a fresh capture |
 | `window` | `string\|Bound` | `""` | A `mantle.windows` entry's `id`; `""` draws nothing. Currently requires Hyprland's exact toplevel mapping and ext capture protocols. Cannot combine with a nonempty `output` or `region`. A closed window clears its preview |
 | `fit` | `"cover"\|"contain"\|"stretch"\|Bound` | `"cover"` | As on [`image`](image.md) |
-| `live` | `boolean\|number\|Bound` | `false` | `false`: capture on show and on each target change. `true`: every frame, one in flight. A number: at most that many fps, `(0, 1000]`. Hiding the node or unmapping its surface drops the capture; showing starts a fresh one |
+| `live` | `boolean\|number\|Bound` | `false` | `false`: capture on show and on each target change. `true`: every frame, one in flight. A number: at most that many fps, `[0.001, 1000]`. Hiding the node or unmapping its surface drops the capture; showing starts a fresh one |
 | `region` | `Rect\|Bound`, `[0, 8192]` | The whole output | Part of the output in its logical px, placed by `fit` as the whole frame. Every key is required and in that range; the size is non-zero |
 | `paint_cursor` | `boolean\|Bound` | `false` | Include the pointer in the frame |
 <!-- End of the generated table. -->
