@@ -7,7 +7,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use shared::{debug, warn};
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
 
@@ -15,6 +14,7 @@ use super::backend::Backend;
 use super::reboot::{REBOOT_MARKER, run_reboot_marker_task};
 use crate::capabilities::epoch_seconds;
 use crate::process;
+use crate::process::registry::BoundedLines;
 use shared::action::UpdatesConfigure;
 #[cfg(test)]
 use shared::state::updates::UpdateCandidate;
@@ -284,7 +284,7 @@ async fn run_install_with_child(
         let state = Arc::clone(&state);
         let events = events.clone();
         tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
+            let mut lines = BoundedLines::new(stderr, "install stderr".into());
             while let Ok(Some(line)) = lines.next_line().await {
                 debug!(2; "install stderr: {line}");
                 push_log_line(&mut state.lock().expect("mutex poisoned").install_log, line);
@@ -294,7 +294,7 @@ async fn run_install_with_child(
     });
 
     if let Some(stdout) = child.stdout.take() {
-        let mut lines = BufReader::new(stdout).lines();
+        let mut lines = BoundedLines::new(stdout, "install stdout".into());
         while let Ok(Some(line)) = lines.next_line().await {
             let step = backend.parse_install_step(&line);
             let mut guard = state.lock().expect("mutex poisoned");
@@ -687,6 +687,23 @@ exit {exit_code}"
             }
             assert_eq!(signals, transcript.lines().count() + 1);
         }
+    }
+
+    #[tokio::test]
+    async fn a_line_that_is_not_utf8_neither_ends_the_log_nor_breaks_the_install() {
+        // A Latin-1 scriptlet line. Stopping the read there closes the pipe, and the child's next
+        // write dies of SIGPIPE mid-transaction.
+        let state = Arc::new(Mutex::new(UpdatesState::default()));
+        let script = "printf 'caf\\351\\n'; printf 'err\\351\\n' >&2; echo after; echo after-err >&2";
+        let child = process::spawn_group_leader_piped("sh", &process::sh_args(script)).unwrap();
+        let (events_tx, _events_rx) = tokio::sync::mpsc::unbounded_channel();
+        run_install_with_child(Arc::new(StubBackend), Arc::clone(&state), events_tx, child).await;
+
+        let snapshot = state.lock().unwrap().clone();
+        let mut log = snapshot.install_log;
+        log.sort();
+        assert_eq!(log, ["after", "after-err", "caf\u{FFFD}", "err\u{FFFD}"]);
+        assert_eq!(snapshot.install_exit_code, Some(0), "the child must outlive its odd byte");
     }
 
     #[tokio::test]

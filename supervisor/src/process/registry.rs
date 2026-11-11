@@ -154,7 +154,7 @@ const MAX_LINE_BYTES: u64 = 64 * 1024;
 ///
 /// Unlike `Lines` this decodes lossily rather than failing the stream on invalid UTF-8, so one stray
 /// byte does not end a child's output reporting.
-struct BoundedLines<R> {
+pub(crate) struct BoundedLines<R> {
     reader: tokio::io::BufReader<R>,
     /// The line being accumulated, never longer than [`MAX_LINE_BYTES`]. See the type docs: this
     /// is here so a cancelled `next_line` loses nothing.
@@ -166,12 +166,12 @@ struct BoundedLines<R> {
 }
 
 impl<R: tokio::io::AsyncRead + Unpin> BoundedLines<R> {
-    fn new(inner: R, label: String) -> Self {
+    pub(crate) fn new(inner: R, label: String) -> Self {
         Self { reader: tokio::io::BufReader::new(inner), line: Vec::new(), label, warned: false }
     }
 
     /// The next line, truncated to [`MAX_LINE_BYTES`], or `Ok(None)` at EOF.
-    async fn next_line(&mut self) -> io::Result<Option<String>> {
+    pub(crate) async fn next_line(&mut self) -> io::Result<Option<String>> {
         loop {
             // A full `line` is the whole discard state: a cancelled discard leaves it at the cap
             // and the next call resumes here, with no yield point before `take_line` empties it,
