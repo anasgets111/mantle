@@ -343,10 +343,10 @@ pub(super) fn stored_size(width: u32, height: u32, box_px: (u32, u32)) -> (u32, 
 /// `into_rgba8` also handles grayscale+alpha and 16-bit variants femtovg refuses, while theme
 /// icons already decode to RGBA8. Every shrink goes through [`downscale`].
 ///
-/// If `thumbnails` has a covering size, decode a current thumbnail instead of the file. A full
-/// decode larger than that size leaves one behind; a 32px tray icon is never thumbnailed. Write
-/// failure logs once and still produces the texture. The last field is the source's own size,
-/// unknown on a thumbnail hit.
+/// If `thumbnails` has a current thumbnail covering the box, decode it instead of the file. A full
+/// decode larger than the size covering its stored raster leaves one behind; a 32px tray icon is
+/// never thumbnailed. Write failure logs once and still produces the texture. The last field is
+/// the source's own size, unknown on a thumbnail hit.
 fn decode_raster(
     path: &Path,
     box_px: (u32, u32),
@@ -354,10 +354,19 @@ fn decode_raster(
     charge: Charge<'_>,
     still_wanted: &dyn Fn() -> bool,
 ) -> Result<(Vec<u8>, u32, u32, Option<Natural>), String> {
-    let slot = thumbnails.and_then(|root| thumbnails::Slot::for_file(root, path, box_px));
-    if let Some(slot) = &slot
-        && let Some((pixels, width, height)) = slot.read_valid()
-    {
+    // The smallest current thumbnail covering the box on both axes: a 16:9 source's `normal`
+    // 128x72 does not cover a 100x100 box, and drawing it would upscale a wider crop than the
+    // first open's. Each slot is past the last one's edge, so at most four; all are stat'd before
+    // the decode, so a source changed during it leaves a thumbnail the next open finds stale.
+    let mut slots = Vec::new();
+    let mut edge = box_px.0.max(box_px.1);
+    while let Some(slot) = thumbnails.and_then(|root| thumbnails::Slot::for_file(root, path, (edge, edge))) {
+        edge = slot.px + 1;
+        let Some((pixels, width, height)) = slot.read_valid().filter(|(_, w, h)| *w >= box_px.0 && *h >= box_px.1)
+        else {
+            slots.push(slot);
+            continue;
+        };
         let (stored_width, stored_height) = stored_size(width, height, box_px);
         if (stored_width, stored_height) == (width, height) {
             return Ok((pixels, width, height, None));
@@ -371,6 +380,8 @@ fn decode_raster(
     let (decoded, _permit) = decode_within_limits(path, MAX_DECODE_EDGE, charge, still_wanted)?;
     let (width, height) = (decoded.width(), decoded.height());
     let (stored_width, stored_height) = stored_size(width, height, box_px);
+    // Sized to the stored raster rather than the box, so the next open finds one that covers.
+    let slot = slots.into_iter().find(|slot| slot.px >= stored_width.max(stored_height));
     // The thumbnail this pass writes is also the best source for the texture, whenever it still
     // covers the stored size: scaling it down beats scaling a 4096x4096 source (27 ms here), and
     // every later open already does.
@@ -741,9 +752,19 @@ mod tests {
 
         let (_, width, height, _) = decode_raster(&big, (100, 100), Some(&cache), Charge::Free, &|| true).unwrap();
         assert_eq!((width, height), (200, 100), "the texture is the box's, whatever the thumbnail is");
-        let slot = thumbnails::Slot::for_file(&cache, &big, (100, 100)).unwrap();
-        let (_, thumb_width, thumb_height) = slot.read_valid().expect("a `normal` thumbnail was written");
-        assert_eq!((thumb_width, thumb_height), (128, 64));
+        // A `normal` 128x64 would not cover the 100x100 box, so the slot is the stored size's.
+        let slot = thumbnails::Slot::for_file(&cache, &big, (200, 100)).unwrap();
+        let (_, thumb_width, thumb_height) = slot.read_valid().expect("a `large` thumbnail was written");
+        assert_eq!((thumb_width, thumb_height), (256, 128));
+        let (_, width, height, natural) =
+            decode_raster(&big, (100, 100), Some(&cache), Charge::Free, &|| true).unwrap();
+        assert_eq!((width, height, natural), (200, 100, None), "the next open draws the thumbnail, at the same size");
+
+        // Another program's `normal` thumbnail, which cannot cover the box, is passed over.
+        let normal = thumbnails::Slot::for_file(&cache, &big, (100, 100)).unwrap();
+        normal.write(&[9, 8, 7, 255].repeat(128 * 64), 128, 64).unwrap();
+        let (_, width, height, _) = decode_raster(&big, (100, 100), Some(&cache), Charge::Free, &|| true).unwrap();
+        assert_eq!((width, height), (200, 100), "a 128x64 thumbnail drawn into a 100x100 cover box is upscaled");
 
         // Source gone: only the thumbnail can answer, and it does.
         std::fs::remove_file(&big).unwrap();
@@ -764,11 +785,11 @@ mod tests {
         let unreadable = dir.path().join("wall.xcf");
         std::fs::write(&unreadable, b"not a format `image` knows").unwrap();
         for (source, natural) in [(&png, Some((400, 200))), (&unreadable, None)] {
-            let slot = thumbnails::Slot::for_file(&cache, source, (100, 100)).unwrap();
+            let slot = thumbnails::Slot::for_file(&cache, source, (128, 64)).unwrap();
             slot.write(&[9, 8, 7, 255].repeat(128 * 64), 128, 64).unwrap();
             let written = std::fs::read(slot.path()).unwrap();
             let (_, width, height, size) =
-                decode_raster(source, (100, 100), Some(&cache), Charge::Free, &|| true).unwrap();
+                decode_raster(source, (128, 64), Some(&cache), Charge::Free, &|| true).unwrap();
             assert_eq!(((width, height), size), ((128, 64), None), "the thumbnail drew: {}", source.display());
             assert_eq!(header_size(source), natural);
             assert_eq!(std::fs::read(slot.path()).unwrap(), written, "the thumbnail is never rewritten");

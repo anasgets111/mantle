@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: an `image` that decodes on a worker (`async = true`) into a box of another shape than its picture, such as a 16:9 photo with `fit = "cover"` in a square, draws as sharp and cropped the same on every open. Later opens used to draw a smaller cached thumbnail scaled up, blurrier and cropped wider.
 - Fixed: a `text` whose content holds `\n\r` draws the empty line between them, as its box already counted. It used to draw one line fewer than it was tall.
 - Fixed: a content-sized `text` with `wrap = "word"` and `max_lines` is as wide as the lines it shows. It used to be as wide as its widest line, dropped ones included.
 - Fixed: a content-sized `text` with `elide` and left or right `padding` shows its whole content. At about one width in twenty it lost its last character to an ellipsis.
