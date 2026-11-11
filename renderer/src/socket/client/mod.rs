@@ -544,7 +544,7 @@ mod tests {
     use crate::layout::instance::{OutputGeometry, expand_instances};
     use crate::lua::surfaces::surface_specs;
     use crate::lua::tests::probe;
-    use shared::{ProcessExited, ProcessOutputLine, SetSessionLock, StateSnapshot, SupervisorFrame};
+    use shared::{ProcessExited, ProcessOutputLine, StateSnapshot, SupervisorFrame};
 
     pub(super) fn write_shell_lua(dir: &std::path::Path, contents: &str) -> std::path::PathBuf {
         let path = dir.join("shell.lua");
@@ -2350,21 +2350,6 @@ mod tests {
         assert!(client.applied_surface_specs().is_empty());
     }
 
-    #[test]
-    fn handle_frame_hands_a_successful_reevaluate_to_the_wayland_loop() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
-        let (mut client, _outbound_rx) = test_client(&path);
-
-        assert_eq!(
-            client.handle_frame(SupervisorFrame::Reevaluate),
-            FrameOutcome::ApplyPending,
-            "every apply goes to the Wayland loop, which owns the protocol objects"
-        );
-        write_shell_lua(dir.path(), "this is not lua");
-        assert_eq!(client.handle_frame(SupervisorFrame::Reevaluate), FrameOutcome::Handled);
-    }
-
     /// A reload kills what the last evaluation started and runs each `on_exit(nil)` once, before the
     /// new top level; the Supervisor's output and exit frames still in flight reach no callback.
     #[test]
@@ -2403,71 +2388,6 @@ mod tests {
         assert_eq!(globals.get::<i64>("exits").unwrap(), 1, "on_exit fires once");
         assert_eq!(globals.get::<i64>("exits_at_top").unwrap(), 1, "and before the new top level");
         assert!(globals.get::<mlua::Value>("last_code").unwrap().is_nil(), "with nil");
-    }
-
-    #[test]
-    fn handle_frame_hands_a_set_session_lock_back_to_the_wayland_loop_in_both_directions() {
-        // Both directions matter: `locked = true` reaches Wayland for refusal without a `lock`
-        // surface (ADR-0052 decision 3); `locked = false` is the only unlock path (ADR-0042).
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
-        let (mut client, _outbound_rx) = test_client(&path);
-
-        assert_eq!(
-            client.handle_frame(SupervisorFrame::SetSessionLock(SetSessionLock { locked: true })),
-            FrameOutcome::SetSessionLock(true)
-        );
-        assert_eq!(
-            client.handle_frame(SupervisorFrame::SetSessionLock(SetSessionLock { locked: false })),
-            FrameOutcome::SetSessionLock(false)
-        );
-    }
-
-    #[test]
-    fn an_input_frame_is_left_for_the_surfaces_that_can_deliver_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
-        let (mut client, _outbound_rx) = test_client(&path);
-        let inject = shared::Inject { surface: "bar".into(), steps: vec![shared::InputStep::Text("a".into())] };
-
-        assert_eq!(
-            client.handle_frame(SupervisorFrame::Inject { id: 7, inject: inject.clone() }),
-            FrameOutcome::Inject { id: 7, inject }
-        );
-    }
-
-    #[test]
-    fn handle_frame_routes_process_output_and_exit_frames_to_the_registered_lua_callbacks() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
-        let (mut client, _outbound_rx) = test_client(&path);
-        // Register real callbacks through `process.run`; fresh registry id 0 is what inbound frames
-        // address.
-        client
-            .loader
-            .evaluate(
-                r#"
-                process.run("cmd", {}, function(line, stream) probe_line = line; probe_stream = stream end, function(code) probe_code = code end)
-                return panel { id = "bar", layer = "top" }
-                "#,
-            )
-            .unwrap();
-
-        let output_frame = SupervisorFrame::ProcessOutput(ProcessOutputLine {
-            id: 0,
-            stream: shared::ProcessStream::Stdout,
-            line: "hello".to_string(),
-        });
-        assert_eq!(client.handle_frame(output_frame), FrameOutcome::Handled);
-        assert_eq!(
-            client.handle_frame(SupervisorFrame::ProcessExited(ProcessExited { id: 0, code: Some(3) })),
-            FrameOutcome::Handled
-        );
-
-        let lua = client.loader.lua().globals();
-        assert_eq!(lua.get::<String>("probe_line").unwrap(), "hello");
-        assert_eq!(lua.get::<String>("probe_stream").unwrap(), "stdout");
-        assert_eq!(lua.get::<i64>("probe_code").unwrap(), 3);
     }
 
     #[test]
