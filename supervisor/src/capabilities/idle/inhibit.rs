@@ -14,12 +14,9 @@ fn total(counts: &HashMap<u32, u32>) -> u32 {
     counts.values().sum()
 }
 
-/// `idle:inhibit(reason)`'s refcount half: increments `generation_id`; true only when the
-/// global total was zero before this call (ADR-0032's 0->1 rule), so the caller opens the fd.
-pub fn apply_inhibit(counts: &mut HashMap<u32, u32>, generation_id: u32) -> bool {
-    let total_before = total(counts);
+/// `idle:inhibit(reason)`'s refcount half: increments `generation_id`.
+pub fn apply_inhibit(counts: &mut HashMap<u32, u32>, generation_id: u32) {
     *counts.entry(generation_id).or_insert(0) += 1;
-    total_before == 0
 }
 
 /// `idle:release_inhibit()` decrements `generation_id`; true (close the fd) only when the
@@ -45,14 +42,9 @@ pub(crate) const SCREENSAVER_HOLDER: u32 = u32::MAX;
 const MAX_SCREENSAVER_HOLDS_PER_PEER: usize = 16;
 pub(crate) const MAX_SCREENSAVER_HOLDS: usize = 64;
 
-/// `ScreenSaver.Inhibit`: records the hold, its text capped, and reports the same 0->1 transition
-/// a config's hold does. The cookie is the client's handle for releasing it. `None`, recording
-/// nothing, past either hold limit.
-pub(crate) fn apply_screensaver_inhibit(
-    state: &mut InhibitState,
-    peer: String,
-    hold: IdleInhibitor,
-) -> Option<(u32, bool)> {
+/// `ScreenSaver.Inhibit`: records and counts the hold, its text capped. The cookie is the client's
+/// handle for releasing it. `None`, recording nothing, past either hold limit.
+pub(crate) fn apply_screensaver_inhibit(state: &mut InhibitState, peer: String, hold: IdleInhibitor) -> Option<u32> {
     let hold = super::state::inhibitor(&hold.who, &hold.why);
     let held = state.screensaver.values().filter(|(holder, _)| *holder == peer).count();
     if held >= MAX_SCREENSAVER_HOLDS_PER_PEER || state.screensaver.len() >= MAX_SCREENSAVER_HOLDS {
@@ -74,7 +66,8 @@ pub(crate) fn apply_screensaver_inhibit(
     // Never hand out 0: it is a legal cookie that clients routinely read as failure.
     state.next_cookie = cookie.wrapping_add(1).max(1);
     state.screensaver.insert(cookie, (peer, hold));
-    Some((cookie, apply_inhibit(&mut state.counts, SCREENSAVER_HOLDER)))
+    apply_inhibit(&mut state.counts, SCREENSAVER_HOLDER);
+    Some(cookie)
 }
 
 /// `ScreenSaver.UnInhibit`. `None` for a cookie nothing holds, which must not move the refcount:
@@ -217,8 +210,8 @@ pub(super) mod tests {
     #[test]
     fn the_fd_opens_on_the_first_hold_and_closes_on_the_last_release() {
         let mut counts = HashMap::new();
-        assert!(apply_inhibit(&mut counts, 1));
-        assert!(!apply_inhibit(&mut counts, 2), "a second concurrent generation does not reopen");
+        apply_inhibit(&mut counts, 1);
+        apply_inhibit(&mut counts, 2);
         assert!(!apply_release_inhibit(&mut counts, 1), "generation 2 still holds an inhibit");
         assert_eq!(counts.get(&1), Some(&0));
         assert_eq!(counts.get(&2), Some(&1));
@@ -261,7 +254,7 @@ pub(super) mod tests {
         let mut state = InhibitState::default();
         let long = format!("{}é{}", "a".repeat(255), "b".repeat(1024));
 
-        let (cookie, _) =
+        let cookie =
             apply_screensaver_inhibit(&mut state, ":1.42".into(), IdleInhibitor { who: long.clone(), why: long })
                 .unwrap();
 
@@ -271,30 +264,26 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn the_first_screensaver_hold_opens_the_fd_and_cookies_start_at_one() {
+    fn screensaver_holds_are_counted_and_cookies_start_at_one() {
         let mut state = InhibitState::default();
 
-        let (first, transition) = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video")).unwrap();
+        let first = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video")).unwrap();
 
         assert_eq!(first, 1, "0 is a cookie some clients reject");
-        assert!(transition);
-        let (second, transition) =
-            apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing audio")).unwrap();
+        let second = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing audio")).unwrap();
         assert_eq!(second, 2);
-        assert!(!transition, "the same client's second hold is already covered");
         assert_eq!(state.screensaver.len(), 2);
+        assert_eq!(state.counts[&SCREENSAVER_HOLDER], 2);
     }
 
     /// The whole point of one refcount: a browser's hold and a config's `idle:inhibit` are the
     /// same fd, so neither can drop it while the other wants it.
     #[test]
-    fn a_screensaver_hold_neither_reopens_nor_closes_the_fd_a_config_generation_holds() {
+    fn a_screensaver_hold_never_closes_the_fd_a_config_generation_holds() {
         let mut state = InhibitState::default();
         apply_inhibit(&mut state.counts, 1);
 
-        let (cookie, transition) =
-            apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video")).unwrap();
-        assert!(!transition, "generation 1 already opened it");
+        let cookie = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video")).unwrap();
 
         let transition = apply_screensaver_release(&mut state, cookie, ":1.42").expect("a live cookie");
         assert!(!transition, "generation 1 still holds it");
@@ -304,7 +293,7 @@ pub(super) mod tests {
     #[test]
     fn releasing_an_unknown_or_foreign_cookie_moves_no_refcount() {
         let mut state = InhibitState::default();
-        let (cookie, _) = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video")).unwrap();
+        let cookie = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video")).unwrap();
         assert_eq!(apply_screensaver_release(&mut state, cookie, ":1.99"), None, "another peer's cookie");
         apply_screensaver_release(&mut state, cookie, ":1.42").expect("a live cookie");
 
@@ -318,7 +307,7 @@ pub(super) mod tests {
         let mut state = InhibitState::default();
         apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video")).unwrap();
         apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing audio")).unwrap();
-        let (survivor, _) = apply_screensaver_inhibit(&mut state, ":1.99".into(), hold("Presenting")).unwrap();
+        let survivor = apply_screensaver_inhibit(&mut state, ":1.99".into(), hold("Presenting")).unwrap();
 
         let transition = drop_screensaver_peer(&mut state, ":1.42").expect("that peer held two");
 
@@ -334,7 +323,7 @@ pub(super) mod tests {
     fn a_config_reload_reaps_its_generation_without_touching_a_screensaver_hold() {
         let mut state = InhibitState::default();
         apply_inhibit(&mut state.counts, 1);
-        let (cookie, _) = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video")).unwrap();
+        let cookie = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video")).unwrap();
 
         let transition = cleanup_generation_inhibit(&mut state.counts, 1);
 
@@ -359,6 +348,9 @@ pub(super) mod tests {
 
     use crate::capabilities::test_support::p2p_pair_serving;
 
+    /// A reason the stub logind refuses, as a real one does on a denied polkit check.
+    pub(in crate::capabilities::idle) const REFUSED: &str = "refused";
+
     /// Stand-in for logind's `org.freedesktop.login1.Manager`. Its lock is a fresh pipe's write end;
     /// the read end goes to the test with the call, and reads EOF once every copy of the lock closes.
     pub(in crate::capabilities::idle) struct StubLogin1Manager {
@@ -369,10 +361,19 @@ pub(super) mod tests {
     #[zbus::interface(name = "org.freedesktop.login1.Manager")]
     impl StubLogin1Manager {
         #[zbus(name = "Inhibit")]
-        fn inhibit(&self, what: String, who: String, why: String, mode: String) -> zbus::zvariant::OwnedFd {
+        fn inhibit(
+            &self,
+            what: String,
+            who: String,
+            why: String,
+            mode: String,
+        ) -> zbus::fdo::Result<zbus::zvariant::OwnedFd> {
+            if why == REFUSED {
+                return Err(zbus::fdo::Error::AccessDenied(why));
+            }
             let (lock, held) = std::io::pipe().expect("a pipe to stand in for the lock");
             let _ = self.calls.send(((what, who, why, mode), lock));
-            std::os::fd::OwnedFd::from(held).into()
+            Ok(std::os::fd::OwnedFd::from(held).into())
         }
     }
 

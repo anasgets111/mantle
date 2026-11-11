@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: a video holding the screen awake through `org.freedesktop.ScreenSaver` keeps its hold when another app releases a hold logind had refused. That release used to drop the video's hold, so the screen idled mid-video. A hold logind refuses is retried by the next one.
 - Fixed: `mantle.bluetooth:pair(mac)` no longer fails after 25 seconds when a device waits for you to confirm a code, type a PIN or press a button. A pairing still unfinished after 90 seconds is cancelled and fails.
 - Fixed: a non-boolean `hittable`, such as `hittable = "yes"`, is a config error naming the property. It used to crash the shell, and `mantle check` passed it.
 - Fixed: an SVG shown by an `image`, `icon` or mask no longer opens files its `<image>` elements name, and no longer crashes the shell by nesting elements or chaining clip paths, masks or patterns thousands deep, so an icon from any app can no longer freeze, crash or exhaust the shell. Such an SVG fails to load instead: one nested more than 256 elements deep, holding more than 256 clip paths, masks and markers or more than 16 patterns, or gzipped twice. Pictures embedded in it draw blank past 8192 px on a side, or once its embedded pictures add up past 67 megapixels, as does an SVG nested inside an SVG nested inside an SVG.

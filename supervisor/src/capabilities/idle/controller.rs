@@ -279,29 +279,29 @@ impl IdleController {
         self.gate.lock().expect("mutex poisoned").forget_threshold(generation_id, sec);
     }
 
-    /// `idle:inhibit(reason)` (ADR-0032): refcount decision, global 0->1 `Inhibit` call, and
+    /// `idle:inhibit(reason)` (ADR-0032): refcount decision, `Inhibit` call, and
     /// `fd`/count write stay under one `state` lock. Releasing it allows a stale zero during the
     /// call (leak) or lets an inhibit/release pair write `fd` out of order (clobber).
     pub async fn inhibit(&self, generation_id: u32, reason: &str) {
         let mut state = self.inhibit.state.lock().await;
-        if apply_inhibit(&mut state.counts, generation_id) {
-            self.open_shared_fd(&mut state, generation_id, reason).await;
-        }
+        apply_inhibit(&mut state.counts, generation_id);
+        self.open_shared_fd(&mut state, generation_id, reason).await;
     }
 
-    /// The one logind fd every holder shares, taken on the global 0->1. The caller holds `state`
+    /// The one logind fd every holder shares, taken while none is held. The caller holds `state`
     /// for the reasons [`IdleController::inhibit`] gives.
     ///
     /// A login1 proxy-build failure is a silent no-op (built fresh, not cached; see
-    /// [`LiveInhibit::system_bus`]). A failed `Inhibit` call rolls back its count bump; a
-    /// `ScreenSaver` cookie recorded against it stays, and releasing it then finds a zero count
-    /// and does nothing.
+    /// [`LiveInhibit::system_bus`]). A failed `Inhibit` call keeps its count, so a later release
+    /// still matches its hold, and the next hold retries.
     async fn open_shared_fd(&self, state: &mut InhibitState, holder: u32, reason: &str) {
+        if state.fd.is_some() {
+            return;
+        }
         let proxy = match Login1ManagerProxy::new(&self.inhibit.system_bus).await {
             Ok(proxy) => proxy,
             Err(err) => {
                 warn!("inhibit(holder {holder}, {reason:?}) failed to build the login1 Manager proxy: {err}");
-                apply_release_inhibit(&mut state.counts, holder);
                 return;
             }
         };
@@ -312,7 +312,6 @@ impl IdleController {
             }
             Err(err) => {
                 warn!("Inhibit({INHIBIT_WHAT:?}, {INHIBIT_WHO:?}, {reason:?}, {INHIBIT_MODE:?}) failed: {err}");
-                apply_release_inhibit(&mut state.counts, holder);
             }
         }
     }
@@ -323,13 +322,10 @@ impl IdleController {
     pub async fn screensaver_inhibit(&self, peer: String, who: String, why: String) -> Option<u32> {
         let (cookie, holds) = {
             let mut state = self.inhibit.state.lock().await;
-            let (cookie, open_fd) =
-                apply_screensaver_inhibit(&mut state, peer, super::state::IdleInhibitor { who, why })?;
-            if open_fd {
-                // As recorded, so logind gets the capped reason too.
-                let reason = state.screensaver[&cookie].1.why.clone();
-                self.open_shared_fd(&mut state, SCREENSAVER_HOLDER, &reason).await;
-            }
+            let cookie = apply_screensaver_inhibit(&mut state, peer, super::state::IdleInhibitor { who, why })?;
+            // As recorded, so logind gets the capped reason too.
+            let reason = state.screensaver[&cookie].1.why.clone();
+            self.open_shared_fd(&mut state, SCREENSAVER_HOLDER, &reason).await;
             (cookie, screensaver_holds(&state))
         };
         // Debug, not info: a browser retakes its hold on every play, and the gate already says
@@ -566,7 +562,7 @@ mod tests {
     use tokio::io::AsyncReadExt;
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
-    use super::super::inhibit::tests::StubLogin1Manager;
+    use super::super::inhibit::tests::{REFUSED, StubLogin1Manager};
     use super::*;
     use crate::capabilities::test_support::{p2p_pair_serving, private_bus, within};
 
@@ -660,5 +656,20 @@ mod tests {
         let lock = taken(&mut locks).await;
         leaver.close().await.expect("leave the bus");
         released(lock).await;
+    }
+
+    /// A hold logind refused must neither leave the next holder without a lock nor, released
+    /// later, close the lock that holder took.
+    #[tokio::test]
+    async fn a_hold_logind_refused_never_costs_the_next_holder_its_lock() {
+        let (controller, mut locks, _logind) = controller().await;
+        let refused =
+            controller.screensaver_inhibit(":1.1".into(), String::new(), REFUSED.into()).await.expect("a cookie");
+
+        controller.screensaver_inhibit(":1.2".into(), String::new(), "Playing video".into()).await.expect("a cookie");
+        let _lock = taken(&mut locks).await;
+        assert!(controller.screensaver_release(refused, ":1.1").await);
+
+        assert!(controller.inhibit.state.lock().await.fd.is_some(), "the refused hold closed the video's lock");
     }
 }
