@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: a `mantle.network:connect` join still unsettled after 45 seconds is stopped when it reports `connection timed out`. It used to keep connecting, so the device could connect after showing the error, with a retyped key left unsaved.
 - Fixed: an update started with `mantle.updates:install()` keeps running if the shell restarts or crashes. It used to die at its next line of output, possibly mid-upgrade. Its whole output now goes to `$XDG_RUNTIME_DIR/mantle/install.log`, replaced by the next install; `install_log` still shows the last 200 lines while the shell runs, about a second behind.
 - Fixed: an `image` with `source_blur` that decodes on a worker (`async = true`, or an SVG) keeps drawing its previous size, scaled, while a resize decodes, as one without a blur does. It used to draw nothing until the new size landed, so it vanished for the length of a size animation.
 - Fixed: an SVG with an `feConvolveMatrix` `order` above 32 or an `feTurbulence` `seed` beyond a billion either way fails to load instead of crashing the Renderer.

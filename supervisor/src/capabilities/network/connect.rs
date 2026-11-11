@@ -142,7 +142,7 @@ impl NetworkController {
                 tokio::time::timeout(ACTIVATION_CEILING, controller.activation_outcome(&in_flight.active, &pending))
                     .await
                     .ok();
-            let activated = matches!(outcome, Some(Ok(())));
+            let (activated, timed_out) = (matches!(outcome, Some(Ok(()))), outcome.is_none());
             let (error, rejected_key) = activation_verdict(outcome);
             let ask_password = rejected_key
                 && match controller.pending_wifi(&pending) {
@@ -153,9 +153,15 @@ impl NetworkController {
                         .any(|profile| profile.settings.contains_key("802-1x")),
                     None => false,
                 };
-            // A superseded attempt must not persist its key.
-            if controller.finish_connect(attempt, &pending, error, ask_password) && activated {
+            // A superseded attempt must not persist its key; whatever superseded it stopped it.
+            if !controller.finish_connect(attempt, &pending, error, ask_password) {
+                return;
+            }
+            if activated {
                 controller.save_typed_key(&in_flight).await;
+            } else if timed_out && let Err(err) = controller.nm.deactivate_connection(&in_flight.active).await {
+                // Deactivated like a failed join, so a profile it created stays as after a rejection.
+                warn!("failed to stop the timed-out join {}: {err}", in_flight.active);
             }
         })
     }
@@ -273,7 +279,9 @@ pub(super) mod tests {
     use super::*;
     use crate::capabilities::network::NetworkState;
     use crate::capabilities::network::join::{JoinState, tests::joined};
-    use crate::capabilities::network::proxies::{DeviceProxy, NetworkManagerProxy, SettingsProxy, WirelessProxy};
+    use crate::capabilities::network::proxies::{
+        ACTIVE_STATE_ACTIVATING, DeviceProxy, NetworkManagerProxy, SettingsProxy, WirelessProxy,
+    };
     use crate::capabilities::test_support::{p2p_pair_serving, poll_until, within};
 
     /// A controller bound to a peer serving what `serve` installs.
@@ -455,7 +463,7 @@ pub(super) mod tests {
             let nm = FakeNm(aborted.then(|| Arc::clone(&join)), Arc::clone(&deactivations));
             let (mut controller, _receiver, _peer) = attempting(|peer| {
                 peer.serve_at("/org/freedesktop/NetworkManager", nm)?
-                    .serve_at(ACTIVE, Activated)?
+                    .serve_at(ACTIVE, Activation(ACTIVE_STATE_ACTIVATED))?
                     .serve_at(PROFILE, FakeProfile("home", Arc::default()))?
                     .serve_at(DEVICE, AvailableProfile(OwnedObjectPath::try_from(PROFILE).unwrap()))
             })
@@ -485,14 +493,36 @@ pub(super) mod tests {
         }
     }
 
-    struct Activated;
+    /// An activation whose `State` reads the given value and never changes.
+    struct Activation(u32);
 
     #[zbus::interface(name = "org.freedesktop.NetworkManager.Connection.Active")]
-    impl Activated {
+    impl Activation {
         #[zbus(property)]
         fn state(&self) -> u32 {
-            ACTIVE_STATE_ACTIVATED
+            self.0
         }
+    }
+
+    #[tokio::test]
+    async fn a_join_past_the_ceiling_is_stopped_and_reports_the_timeout() {
+        let deactivations = Arc::default();
+        let nm = FakeNm(None, Arc::clone(&deactivations));
+        let (controller, _receiver, _peer) = attempting(|peer| {
+            peer.serve_at("/org/freedesktop/NetworkManager", nm)?.serve_at(ACTIVE, Activation(ACTIVE_STATE_ACTIVATING))
+        })
+        .await;
+        let device = wifi(&controller, "wlan0", OwnedObjectPath::try_from(DEVICE).unwrap()).await;
+        controller.devices.lock().unwrap().wifi.push(device);
+        let (pending, attempt) = begun(&controller, home_on(DEVICE));
+        tokio::time::pause();
+
+        controller.watch_activation(attempt, joined(1), pending).await.unwrap();
+
+        let mut state = NetworkState::default();
+        controller.join.lock().unwrap().overlay(&mut state);
+        assert_eq!(state.connect_error.map(|error| error.message).as_deref(), Some("connection timed out"));
+        assert_eq!(deactivations.load(Ordering::SeqCst), 1, "a join reported as timed out must not keep connecting");
     }
 
     #[tokio::test]
@@ -502,7 +532,7 @@ pub(super) mod tests {
         let saves = Arc::default();
         let (controller, _receiver, _peer) = attempting(|peer| {
             peer.serve_at(ACTIVE, RejectedKey)?
-                .serve_at(ACCEPTED, Activated)?
+                .serve_at(ACCEPTED, Activation(ACTIVE_STATE_ACTIVATED))?
                 .serve_at(PROFILE, FakeProfile("home", Arc::clone(&saves)))
         })
         .await;
