@@ -95,7 +95,7 @@ struct SecretAgent {
 
 /// Takes the pending request for which `matches` holds and declines it. `by_user` drops its
 /// `connect_vpn` wait, so the failed activation sets no `vpn_error`.
-fn drop_request(
+pub(super) fn drop_request(
     vpn: &Mutex<VpnState>,
     events: &UnboundedSender<NetworkSignal>,
     by_user: bool,

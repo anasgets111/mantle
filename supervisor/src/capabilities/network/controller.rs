@@ -108,7 +108,7 @@ impl NetworkController {
         super::secret_agent::export(&connection, Arc::clone(&vpn), events.clone()).await;
         super::vpn::forward_active_changes(&connection, events.clone()).await;
         let mut owners = settings.inner().receive_owner_changed().await?;
-        let owner_events = events.clone();
+        let (owner_events, owner_vpn) = (events.clone(), Arc::clone(&vpn));
         let owner_connection = connection.clone();
         tokio::spawn(async move {
             use futures_util::StreamExt;
@@ -117,6 +117,8 @@ impl NetworkController {
             while let Some(owner) = owners.next().await
                 && owner_events.send(NetworkSignal::SavedChanged).is_ok()
             {
+                // Its secret request died with the NetworkManager that asked; a prompt would block the next.
+                super::secret_agent::drop_request(&owner_vpn, &owner_events, false, |_| true);
                 // A restarted NetworkManager forgot the agent. With no owner, a call would D-Bus-activate it.
                 if owner.is_some() {
                     let _ = owner_events.send(NetworkSignal::Restarted);
@@ -333,7 +335,7 @@ impl NetworkController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capabilities::test_support::{PrivateBus, private_bus, within};
+    use crate::capabilities::test_support::{PrivateBus, poll_until, private_bus, within};
 
     struct FakeNm(OwnedObjectPath);
 
@@ -379,6 +381,19 @@ mod tests {
         let state = network.handle_signal(NetworkSignal::Changed).await;
         assert!(state.ethernet_present && state.ethernet_enabled);
 
+        // The old NetworkManager asks for a VPN secret, then exits before it is answered.
+        let field = |value: &str| zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from(value)).unwrap();
+        let vpn = HashMap::from([("connection", HashMap::from([("type", field("vpn"))]))]);
+        let path = OwnedObjectPath::try_from("/org/freedesktop/NetworkManager/Settings/5").unwrap();
+        let ask = (vpn, path, "vpn", vec!["password"], 1u32);
+        let (asking, agent) = (first.clone(), network.connection.unique_name().unwrap().to_string());
+        tokio::spawn(async move {
+            let interface = Some("org.freedesktop.NetworkManager.SecretAgent");
+            let path = "/org/freedesktop/NetworkManager/SecretAgent";
+            asking.call_method(Some(agent.as_str()), path, interface, "GetSecrets", &ask).await
+        });
+        poll_until(|| network.vpn.lock().unwrap().secret.is_some().then_some(())).await;
+        first.release_name("org.freedesktop.NetworkManager").await.unwrap();
         drop(first);
         for (path, state) in [(device, 30), ("/org/freedesktop/NetworkManager/Devices/3", DEVICE_STATE_ACTIVATED)] {
             let _restarted = serve_nm(&bus, path, state).await;
@@ -387,6 +402,7 @@ mod tests {
             {
                 network.handle_signal(within(signals.recv()).await.unwrap()).await;
             }
+            assert!(network.vpn.lock().unwrap().secret.is_none(), "the prompt left with the NetworkManager that asked");
         }
     }
 

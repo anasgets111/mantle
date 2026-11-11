@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: `mantle.network.vpn_secret` clears when NetworkManager restarts. It used to stay up for 2 minutes answering nobody, and the restarted NetworkManager's own secret requests were refused until then.
 - Fixed: `mantle.network` joins and forgets a Wi-Fi network whose name is not UTF-8, such as a Latin-1 `café`, listed with `�` in its `ssid`. Joining one used to save a profile under the mangled name, which could never connect, asking again for the password of one already saved; `forget` deleted nothing.
 - Fixed: a `mantle.network:connect` join still unsettled after 45 seconds is stopped when it reports `connection timed out`. It used to keep connecting, so the device could connect after showing the error, with a retyped key left unsaved.
 - Fixed: an update started with `mantle.updates:install()` keeps running if the shell restarts or crashes. It used to die at its next line of output, possibly mid-upgrade. Its whole output now goes to `$XDG_RUNTIME_DIR/mantle/install.log`, replaced by the next install; `install_log` still shows the last 200 lines while the shell runs, about a second behind.
