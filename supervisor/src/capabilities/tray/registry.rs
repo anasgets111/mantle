@@ -290,6 +290,11 @@ fn spawn_menu_signal_forwarder(
                 let mut guard = registry.lock().expect("mutex poisoned");
                 let Some(entry) = guard.get_mut(&key) else { break };
                 entry.menu = menu.clone();
+                let cleared = menu.is_none() && store_menu(entry, Vec::new());
+                drop(guard);
+                if cleared && events.send(()).is_err() {
+                    break;
+                }
             }
             let Some(menu) = &menu else { continue };
             match fetch_menu_via(menu, &item_stem).await {
@@ -472,7 +477,12 @@ mod tests {
         ) -> (u32, super::super::proxies::RawMenuLayout) {
             self.fetches.fetch_add(1, Ordering::Relaxed);
             self.gate.acquire().await.unwrap().forget();
-            (1, (0, HashMap::new(), Vec::new()))
+            let child = zbus::zvariant::Value::from((
+                1,
+                HashMap::<String, zbus::zvariant::Value>::new(),
+                Vec::<zbus::zvariant::Value>::new(),
+            ));
+            (1, (0, HashMap::new(), vec![child.try_into().unwrap()]))
         }
 
         #[zbus(signal)]
@@ -662,6 +672,33 @@ mod tests {
                 tokio::time::sleep(MENU_SETTLE * 2).await;
                 let guard = registry.lock().unwrap();
                 if guard[&key].menu.as_ref().map(|menu| menu.inner().path().as_str()) == Some("/MenuBar2") {
+                    break;
+                }
+            }
+        })
+        .await;
+
+        // A menu taken away is no menu: its entries would click a proxy that is gone.
+        *menu_path.lock().unwrap() = "/";
+        crate::capabilities::test_support::within(async {
+            loop {
+                LateMenuItem::new_menu(&emitter).await.unwrap();
+                tokio::time::sleep(MENU_SETTLE * 2).await;
+                if ordered_items(&registry)[0].menu.as_ref().is_some_and(Vec::is_empty) {
+                    break;
+                }
+            }
+        })
+        .await;
+        assert!(registry.lock().unwrap()[&key].menu.is_none());
+
+        // The forwarder outlives a cleared menu: one set again shows.
+        *menu_path.lock().unwrap() = "/MenuBar";
+        crate::capabilities::test_support::within(async {
+            loop {
+                LateMenuItem::new_menu(&emitter).await.unwrap();
+                tokio::time::sleep(MENU_SETTLE * 2).await;
+                if ordered_items(&registry)[0].menu.as_ref().is_some_and(|menu| !menu.is_empty()) {
                     break;
                 }
             }
