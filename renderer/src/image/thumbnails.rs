@@ -103,6 +103,8 @@ impl Slot {
     /// spec. `png` reads text and `image` reads pixels, one open each; a 256px PNG is too small to
     /// justify a second decoder.
     pub fn read_valid(&self) -> Option<(Vec<u8>, u32, u32)> {
+        // A FIFO any process of this user plants here would block the open below for good.
+        super::decode::refuse_irregular(&self.path).ok()?;
         let file = std::fs::File::open(&self.path).ok()?;
         let reader = png::Decoder::new(BufReader::new(file)).read_info().ok()?;
         let info = reader.info();
@@ -294,6 +296,28 @@ mod tests {
             let slot = Slot::for_file(&cache, source, (100, 100)).unwrap();
             assert_eq!(slot.read_valid(), Some((pixels.clone(), 1, 1)), "{} lost its thumbnail", source.display());
         }
+    }
+
+    /// Any process of this user can plant a FIFO at a slot path, and opening one with no writer
+    /// blocks the decode worker forever.
+    #[test]
+    fn a_fifo_at_the_slot_path_is_refused_rather_than_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("wall.png");
+        ::image::RgbaImage::from_pixel(4, 2, ::image::Rgba([1, 2, 3, 255])).save(&source).unwrap();
+        let slot = Slot::for_file(&dir.path().join("cache"), &source, (100, 100)).unwrap();
+        std::fs::create_dir_all(slot.path().parent().unwrap()).unwrap();
+        nix::unistd::mkfifo(slot.path(), nix::sys::stat::Mode::S_IRWXU).expect("the test needs a real FIFO");
+        let fifo = slot.path().to_path_buf();
+        let (done, read) = std::sync::mpsc::channel();
+        std::thread::spawn(move || done.send(slot.read_valid()).unwrap());
+        let result = read.recv_timeout(std::time::Duration::from_secs(5));
+        if result.is_err() {
+            // Hand the blocked open a writer, so the thread ends instead of outliving the test.
+            use std::os::unix::fs::OpenOptionsExt;
+            drop(std::fs::OpenOptions::new().write(true).custom_flags(nix::libc::O_NONBLOCK).open(&fifo));
+        }
+        assert_eq!(result, Ok(None), "a FIFO is not a thumbnail");
     }
 
     #[test]
