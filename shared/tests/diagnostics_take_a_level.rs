@@ -114,12 +114,16 @@ fn a_message_does_not_repeat_the_subsystem_the_logger_puts_in_front_of_it() {
     assert!(offences.is_empty(), "the logger prints the subsystem (ADR-0229):\n{}", offences.join("\n"));
 }
 
-/// `source`'s lines, numbered from zero, minus every `#[cfg(test)]` item.
+/// `source`'s lines, numbered from zero, minus every `#[cfg(test)]` item, or none for a file that opens
+/// with `#![cfg(test)]`.
 ///
 /// ponytail: counts braces without lexing, so a lone `{` or `}` in a test's string literal ends the
 /// skip early or late. Upgrade to `syn` if that ever misreads a file.
 fn runtime_lines(source: &str) -> Vec<(usize, &str)> {
     let mut kept = Vec::new();
+    if source.starts_with("#![cfg(test)]") {
+        return kept;
+    }
     let mut lines = source.lines().enumerate();
     while let Some((offset, line)) = lines.next() {
         if line.trim() != "#[cfg(test)]" {

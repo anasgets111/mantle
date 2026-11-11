@@ -1,4 +1,4 @@
-Fixtures for the docs screenshots (`renderer/src/check.rs`, `doc_examples`).
+Fixtures for the docs screenshots (`renderer/src/check/doc_examples.rs`).
 
 | Path | Source | Licence |
 | --- | --- | --- |
