@@ -124,13 +124,14 @@ fn hyprland_socket_path_in(runtime_dir: &str, signature: &str, name: &str) -> Pa
 }
 
 /// One `.socket.sock` command. Hyprland answers once per connection and closes it: `j/<what>`
-/// returns the `hyprctl -j` JSON, a write returns `ok` or the reason it refused (ADR-0118).
+/// returns the `hyprctl -j` JSON, a write returns `ok` or the reason it refused (ADR-0118). Lossy:
+/// Hyprland copies a client's title bytes into its JSON as they are.
 pub(super) fn hyprland_request(socket_path: &Path, command: &str) -> std::io::Result<String> {
     let mut stream = connect(socket_path)?;
     stream.write_all(command.as_bytes())?;
-    let mut reply = String::new();
-    stream.read_to_string(&mut reply)?;
-    Ok(reply)
+    let mut reply = Vec::new();
+    stream.read_to_end(&mut reply)?;
+    Ok(String::from_utf8_lossy(&reply).into_owned())
 }
 
 /// A write and its reply check, blocking; `capability` prefixes the log line. An unread reply
@@ -387,6 +388,25 @@ mod tests {
 
         let json = r#"{"keyboards":[{"active_keymap":"error","layout":"us,ara","main":true}]}"#;
         assert!(parse_hyprland_devices(json).is_none(), "the last good layout stands instead");
+    }
+
+    /// Hyprland copies a client's title bytes into its JSON as they are, so one Latin-1 title must
+    /// not fail the whole read.
+    #[test]
+    fn a_reply_that_is_not_utf8_reads_lossily() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".socket.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            conn.read_exact(&mut [0; b"j/clients".len()]).unwrap();
+            conn.write_all(b"[{\"title\":\"caf\xe9\"}]").unwrap();
+        });
+
+        let clients: Option<serde_json::Value> = read(&path, "clients");
+
+        server.join().unwrap();
+        assert_eq!(clients, Some(serde_json::json!([{ "title": "caf\u{FFFD}" }])));
     }
 
     /// A fake `.socket.sock` answering every request `follow` makes at start: one workspace on one

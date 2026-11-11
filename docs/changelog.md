@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: on sway and Hyprland, a window whose title is not UTF-8, such as a Latin-1 X11 title, no longer empties or freezes `mantle.workspaces` and `mantle.windows`; the bad bytes show as `�`, as on mango.
 - Fixed: `mantle.mpris` reads a track `length` sent as an unsigned integer, as some players send it. Such tracks used to have no `length`, and a seek past their end was not clamped.
 - Fixed: a media player that stops answering no longer keeps other players out of `mantle.mpris.players`. Each player used to wait its turn behind it, up to about 100 seconds, departures included.
 - Fixed: a notification body image given as a `file://` URI, such as `<img src="file:///usr/share/icons/app.png"/>`, shows when the file is under a trusted icon directory, as a plain path does. It used to be dropped.

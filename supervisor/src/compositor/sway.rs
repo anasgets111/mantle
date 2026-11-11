@@ -306,11 +306,12 @@ fn sway_read(stream: &mut impl Read) -> std::io::Result<(u32, Vec<u8>)> {
     Ok((kind, payload))
 }
 
-/// One request on a fresh connection; the first frame back is the reply.
+/// One request on a fresh connection; the first frame back is the reply, made valid UTF-8: sway
+/// copies a client's title bytes into its JSON as they are, and serde refuses the whole reply over one.
 fn sway_request(socket_path: &Path, kind: u32, payload: &str) -> std::io::Result<Vec<u8>> {
     let mut stream = connect(socket_path)?;
     sway_write(&mut stream, kind, payload.as_bytes())?;
-    Ok(sway_read(&mut stream)?.1)
+    Ok(String::from_utf8_lossy(&sway_read(&mut stream)?.1).into_owned().into_bytes())
 }
 
 /// One `RUN_COMMAND` on the shared action thread; sway answers `[{"success":bool,"error":..}]`.
@@ -605,6 +606,8 @@ mod tests {
         assert_eq!(sway_read(&mut frame.as_slice()).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
     }
 
+    /// sway copies a client's title bytes into its JSON as they are, so one Latin-1 title must not
+    /// fail the whole reply.
     #[test]
     fn a_sway_request_reads_the_first_frame_the_server_answers_with() {
         let dir = tempfile::tempdir().unwrap();
@@ -613,13 +616,13 @@ mod tests {
         let server = std::thread::spawn(move || {
             let (mut conn, _) = listener.accept().unwrap();
             let asked = sway_read(&mut conn).unwrap();
-            sway_write(&mut conn, asked.0, b"[]").unwrap();
+            sway_write(&mut conn, asked.0, b"[\"caf\xe9\"]").unwrap();
             asked
         });
 
         let reply = sway_request(&path, SWAY_GET_WORKSPACES, "").unwrap();
 
-        assert_eq!(reply, b"[]");
+        assert_eq!(serde_json::from_slice::<Vec<String>>(&reply).unwrap(), ["caf\u{FFFD}"]);
         assert_eq!(server.join().unwrap(), (SWAY_GET_WORKSPACES, Vec::new()));
     }
 
