@@ -613,6 +613,19 @@ mod tests {
         assert_eq!(height, 2.0 * 12.0 * 1.2, "a capped run reserves the lines it keeps, not the ones it dropped");
     }
 
+    /// taffy hands the measure a border-box known width; paint wraps at the content box inside it.
+    #[test]
+    fn a_padded_wrapping_text_is_as_tall_as_the_lines_it_paints() {
+        for width in [r#"width = 120"#, r#"width = "fill""#] {
+            let (drawn, height) = text_box(&format!(
+                r#"panel {{ id = "bar", width = 120, child = column {{ width = "fill", children = {{ text {{ {width},
+                    padding = {{ left = 40, right = 40 }}, content = "{LONG}", wrap = "word" }} }} }} }}"#
+            ));
+            let lines = drawn.lines().count();
+            assert_eq!(height, lines as f32 * 12.0 * 1.2, "{width}: {lines} painted lines in {drawn:?}");
+        }
+    }
+
     /// taffy probes a wrapping text at max-content, where it is one line, before offering it the
     /// width it will actually get. The one-entry memo in [`solve`] is keyed on that width for this
     /// reason: blind to it, the node would keep the probe's answer and lay out one line of four.

@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: a `text` with `wrap = "word"` and left or right `padding` is as tall as the lines it draws. It used to wrap its measured height at the width outside its padding, so it came out lines short and its last lines drew over whatever sat below. A multiline `textfield` with padding grows the same way.
 - Fixed: `mantle.mpris` actions sent to one player run in the order they were sent, so a `seek` followed by `control("next")` no longer lands on the next track. A player that stops answering holds up only its own actions; past 32 waiting on it, new ones are dropped with a warning.
 - Fixed: on Hyprland, `mantle.workspaces:focus` and `mantle.windows:move` accept a workspace number written with a leading `+` or zeros, such as `"+3"`. Hyprland used to refuse the command.
 - Fixed: on sway and Hyprland, a window whose title is not UTF-8, such as a Latin-1 X11 title, no longer empties or freezes `mantle.workspaces` and `mantle.windows`; the bad bytes show as `�`, as on mango.

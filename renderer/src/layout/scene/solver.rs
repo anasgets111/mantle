@@ -540,12 +540,14 @@ fn measure_leaf(
             let Some(measure) = context else {
                 return taffy::Size::ZERO;
             };
+            // `known` is the border box, `offered` the content box; paint wraps at the content box.
+            let known = known.width.map(|width| (width - inset(style.padding.left, style.padding.right)).max(0.0));
             match measure {
                 Measure::Square(size) => clamp(taffy::Size { width: *size, height: *size }),
                 Measure::Line(height) => clamp(taffy::Size { width: 0.0, height: *height }),
                 Measure::Field { id, face, lines, bar } => {
                     let draft = drafts.get(id).map_or("", |draft| draft.text.as_str());
-                    let width = known.width.or(match offered.width {
+                    let width = known.or(match offered.width {
                         taffy::AvailableSpace::Definite(width) => Some(width),
                         _ => None,
                     });
@@ -568,7 +570,6 @@ fn measure_leaf(
                     let max_width = match wrap {
                         node::Wrap::None => None,
                         node::Wrap::Word => known
-                            .width
                             .or(match offered.width {
                                 taffy::AvailableSpace::Definite(width) => Some(width),
                                 taffy::AvailableSpace::MinContent => Some(0.0),
