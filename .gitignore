@@ -10,3 +10,4 @@
 # A docs screenshot that failed its check, left for review (`docs/development/documenting.md`).
 /docs/images/**/*.new.png
 **/__pycache__/
+mutants.out*/

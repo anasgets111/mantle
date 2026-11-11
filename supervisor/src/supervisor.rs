@@ -129,6 +129,8 @@ pub(crate) struct Supervisor {
     reaps: tokio::task::JoinSet<()>,
     /// Fires when the departed generation's children are gone; see [`Supervisor::dispatch_process_command`].
     departed_reaped: Option<tokio::sync::oneshot::Receiver<()>>,
+    /// The sleep delay's wait (ADR-0385), answered by the next lock report, whatever it says.
+    sleep_waits: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl Supervisor {
@@ -177,6 +179,7 @@ impl Supervisor {
             process_done_tx,
             reaps: tokio::task::JoinSet::new(),
             departed_reaped: None,
+            sleep_waits: None,
         };
         // Boot-built controllers have no lazy reader to publish their initial state. An owed relock
         // leaves `lock` nil until its `LockReport`: a default `active = false` here would tell the
@@ -476,6 +479,19 @@ impl Supervisor {
         self.push_lock_state();
     }
 
+    /// logind announced sleep (ADR-0385): lock as `mantle.lock:lock()` does and answer `locked` once
+    /// the lock is up or refused, or at once if it already is up.
+    pub(crate) fn lock_before_sleep(&mut self, locked: tokio::sync::oneshot::Sender<()>) {
+        if self.lock.snapshot().active {
+            let _ = locked.send(());
+            return;
+        }
+        info!("the system is about to sleep; locking first");
+        self.sleep_waits = Some(locked);
+        self.lock.lock();
+        self.push_lock_state();
+    }
+
     /// One frame of the lock's PAM conversation (ADR-0042, ADR-0381). The serial rejects frames
     /// from a conversation whose lock is gone: PAM can outlive its lock while the compositor or
     /// idle timer changes locks. A failure that showed a prompt starts the next attempt at once;
@@ -532,6 +548,9 @@ impl Supervisor {
             lock::SessionLock::Unchanged => {}
         }
         self.lock.record(lock::LockEvent::Reported(report.outcome));
+        if let Some(locked) = self.sleep_waits.take() {
+            let _ = locked.send(());
+        }
         // PAM starts with the lock, so its prompt is on screen before anything is typed (ADR-0381).
         self.lock.converse(self.lock_starter(pam_worker::PASSWORD));
         self.listen_for_fingerprint();
@@ -592,42 +611,52 @@ impl Supervisor {
 mod tests {
     use super::*;
 
+    use crate::capabilities::test_support::{PrivateBus, private_bus};
+    use tokio::sync::mpsc;
+
+    /// A Supervisor booted in `dir` over an exited `/bin/true`, with its lock commands. The box
+    /// keeps its other channels open for the test's length.
+    async fn booted(
+        bus: &PrivateBus,
+        dir: &std::path::Path,
+    ) -> (Supervisor, mpsc::UnboundedReceiver<shared::SetSessionLock>, Box<dyn std::any::Any>) {
+        let connection = bus.connection().await;
+        let (sound_tx, sounds) = std::sync::mpsc::sync_channel(1);
+        let (idle_tx, idle) = mpsc::unbounded_channel();
+        let (capabilities, signals) = Capabilities::new(connection.clone(), sound_tx, idle_tx);
+        let (lock_tx, lock_commands) = mpsc::unbounded_channel();
+        let (logind_tx, logind) = mpsc::unbounded_channel();
+        let bridge = lock::logind::SessionBridge::new(connection, logind_tx).await;
+        let (pam_tx, pam) = mpsc::unbounded_channel();
+        let (polkit_tx, polkit) = mpsc::unbounded_channel();
+        let (done_tx, done) = mpsc::unbounded_channel();
+        let renderer = Renderer::new("/bin/true".into(), dir, dir, None, 0, None);
+        let child = renderer.spawn(0).unwrap();
+        let mut supervisor = Supervisor::new(
+            socket::GenerationRegistry::default(),
+            child,
+            renderer,
+            capabilities,
+            LockController::new(lock_tx),
+            lock::SessionLockedFlag::at(dir.join("session-locked")),
+            bridge,
+            pam_tx,
+            polkit_tx,
+            done_tx,
+        );
+        supervisor.authoritative.child.wait().await.unwrap();
+        (supervisor, lock_commands, Box::new((sounds, idle, signals, logind, pam, polkit, done)))
+    }
+
     #[tokio::test]
     async fn boot_built_capabilities_hydrate_their_first_state_but_an_owed_relock_holds_lock_back() {
-        use crate::capabilities::test_support::private_bus;
-        use tokio::sync::mpsc;
-
         let bus = private_bus().await;
         for locked in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             if locked {
                 std::fs::File::create(dir.path().join("session-locked")).unwrap();
             }
-            let connection = bus.connection().await;
-            let (sound_tx, _sounds) = std::sync::mpsc::sync_channel(1);
-            let (idle_tx, _idle) = mpsc::unbounded_channel();
-            let (capabilities, _signals) = Capabilities::new(connection.clone(), sound_tx, idle_tx);
-            let (lock_tx, mut lock_commands) = mpsc::unbounded_channel();
-            let (logind_tx, _logind) = mpsc::unbounded_channel();
-            let bridge = lock::logind::SessionBridge::new(connection, logind_tx).await;
-            let (pam_tx, _pam) = mpsc::unbounded_channel();
-            let (polkit_tx, _polkit) = mpsc::unbounded_channel();
-            let (done_tx, _done) = mpsc::unbounded_channel();
-            let renderer = Renderer::new("/bin/true".into(), dir.path(), dir.path(), None, 0, None);
-            let child = renderer.spawn(0).unwrap();
-            let mut supervisor = Supervisor::new(
-                socket::GenerationRegistry::default(),
-                child,
-                renderer,
-                capabilities,
-                LockController::new(lock_tx),
-                lock::SessionLockedFlag::at(dir.path().join("session-locked")),
-                bridge,
-                pam_tx,
-                polkit_tx,
-                done_tx,
-            );
-            supervisor.authoritative.child.wait().await.unwrap();
+            let (mut supervisor, mut lock_commands, _open) = booted(&bus, dir.path()).await;
 
             // A locked boot relocks on its first registration, so only the unlocked one replays twice.
             let generations: &[u32] = if locked { &[0] } else { &[0, 1] };
@@ -654,6 +683,26 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn sleep_locks_and_waits_for_the_next_lock_report_unless_already_locked() {
+        let bus = private_bus().await;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut supervisor, mut lock_commands, _open) = booted(&bus, dir.path()).await;
+
+        let (locked_tx, mut locked) = tokio::sync::oneshot::channel();
+        supervisor.lock_before_sleep(locked_tx);
+        assert_eq!(lock_commands.try_recv().unwrap(), shared::SetSessionLock { locked: true });
+        assert!(locked.try_recv().is_err(), "the delay must hold until the Renderer answers");
+        supervisor.record_lock_report(shared::LockReport { outcome: shared::LockOutcome::Refused("none".into()) });
+        assert_eq!(locked.try_recv(), Ok(()), "a refused lock has nothing left to wait for");
+
+        supervisor.lock.record(lock::LockEvent::Reported(shared::LockOutcome::Locked));
+        let (locked_tx, mut locked) = tokio::sync::oneshot::channel();
+        supervisor.lock_before_sleep(locked_tx);
+        assert_eq!(locked.try_recv(), Ok(()), "an existing lock releases the delay at once");
+        assert!(lock_commands.try_recv().is_err());
     }
 
     #[test]

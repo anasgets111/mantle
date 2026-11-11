@@ -8852,3 +8852,15 @@ usvg recurses per `<tspan>` and per link with no limit, and 256 pattern links ov
 
 Rejected: reading absolute hrefs through `read_capped`, which closes the freeze but still lets any
 client's icon draw any image the user can read.
+
+## 0385. Lock before sleep: a logind delay inhibitor, released by the next lock report or after 3 s
+
+`docs/surfaces/lock.md` promised a lock before suspend that nothing implemented, so a lid close
+resumed unlocked. The Supervisor now holds `Inhibit("sleep", "delay")` once the config starts
+`mantle.lock` (a lock's password field does), and on `PrepareForSleep(true)` takes the same lock path
+as `loginctl lock-session`, closing the fd on the Renderer's next `LockReport` (`Locked`, or a
+refusal that leaves nothing to wait for), at once if already locked, or after 3 s. logind's own cap,
+`InhibitDelayMaxSec`, defaults to 5 s; at 3 s the shell gives up first and logs that the lock was
+late, and a raised `InhibitDelayMaxSec` cannot stall a suspend on a dead Renderer. Lock latency on
+hardware is not yet measured. Resume takes a fresh fd; a refused first one is logged once and not
+retried. Rejected: a Lua opt-in, which leaves every config unlocked by default.

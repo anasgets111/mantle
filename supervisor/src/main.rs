@@ -307,6 +307,9 @@ async fn run_supervisor(
     // rather than after config happens to read a member.
     let (logind_lock_tx, mut logind_lock_requests) = tokio::sync::mpsc::unbounded_channel::<()>();
     let session_bridge = lock::logind::SessionBridge::new(connection.clone(), logind_lock_tx).await;
+    // Taken by the first `mantle.lock` start, so a config that cannot lock never delays a suspend.
+    let (sleep_locks_tx, mut sleep_locks) = tokio::sync::mpsc::unbounded_channel();
+    let mut sleep_locks_tx = Some(sleep_locks_tx);
     let (pam_events_tx, mut pam_events) = tokio::sync::mpsc::unbounded_channel::<(u64, shared::PamMessage)>();
     let (process_done_tx, mut process_done) = tokio::sync::mpsc::unbounded_channel::<(u32, u64)>();
 
@@ -393,6 +396,7 @@ async fn run_supervisor(
             }
             Some(command) = lock_commands.recv() => supervisor.send_lock_command(command),
             Some(()) = logind_lock_requests.recv() => supervisor.lock_requested_by_logind(),
+            Some(locked) = sleep_locks.recv() => supervisor.lock_before_sleep(locked),
             // Other half of the `secure_submit(lock, authenticate)` arm: the only path where
             // Success becomes an unlock order (ADR-0042).
             Some((serial, message)) = pam_events.recv() => supervisor.record_pam_message(serial, message),
@@ -432,6 +436,12 @@ async fn run_supervisor(
                         // Built at boot; starting it registers the agent (ADR-0070 decision 5,
                         // ADR-0114).
                         Capability::Polkit => polkit_agent.register(&connection),
+                        Capability::Lock => {
+                            if let Some(requests) = sleep_locks_tx.take() {
+                                let bound = lock::sleep::LOCK_BEFORE_SLEEP;
+                                tokio::spawn(lock::sleep::delay_sleep_until_locked(connection.clone(), requests, bound));
+                            }
+                        }
                         capability => supervisor.capabilities.start(capability).await,
                     }
                 }

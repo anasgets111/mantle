@@ -8,6 +8,7 @@
 pub mod controller;
 pub mod flag;
 pub mod logind;
+pub mod sleep;
 pub mod state;
 
 pub use controller::{LockController, dispatch};

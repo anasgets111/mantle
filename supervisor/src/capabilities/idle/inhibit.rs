@@ -122,6 +122,11 @@ pub(crate) trait Login1Manager {
     /// `BlockInhibited` change, never on a timer (ADR-0139/ADR-0141).
     #[zbus(name = "ListInhibitors")]
     fn list_inhibitors(&self) -> zbus::Result<Vec<super::state::InhibitorRow>>;
+
+    /// `true` just before suspend or hibernate, which then waits for `delay` inhibitors to close;
+    /// `false` on resume.
+    #[zbus(signal, name = "PrepareForSleep")]
+    fn prepare_for_sleep(&self, start: bool) -> zbus::Result<()>;
 }
 
 /// ADR-0032 fixes `what`/`who`/`mode`; only `mode = "block"` stops systemd's auto-suspend-on-idle,
@@ -204,7 +209,7 @@ pub(crate) struct LiveInhibit {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+pub(in crate::capabilities) mod tests {
     use super::*;
 
     #[test]
@@ -353,8 +358,8 @@ pub(super) mod tests {
 
     /// Stand-in for logind's `org.freedesktop.login1.Manager`. Its lock is a fresh pipe's write end;
     /// the read end goes to the test with the call, and reads EOF once every copy of the lock closes.
-    pub(in crate::capabilities::idle) struct StubLogin1Manager {
-        pub(in crate::capabilities::idle) calls:
+    pub(in crate::capabilities) struct StubLogin1Manager {
+        pub(in crate::capabilities) calls:
             tokio::sync::mpsc::UnboundedSender<((String, String, String, String), std::io::PipeReader)>,
     }
 

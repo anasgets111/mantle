@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: a config with a `lock` locks before the machine suspends, from the lid, `systemctl suspend` or anything else. The suspend waits up to 3 s for the lock screen to show, then goes ahead. It used to suspend unlocked, so the desktop showed on resume until something locked it.
 - Breaking: `palette.quantize` raises on a relative path, as `file.read` does. It used to resolve against the Renderer's working directory, which nothing sets. Build the path from `mantle.config_dir` or start it with `~/`.
 - Fixed: `mantle.storage:open` and `mantle.storage:set` with a relative path raise an error at the call naming it, as `mantle.folders:watch` does. They used to do nothing, with nothing logged above debug.
 - Fixed: `mantle.mpris:seek` on a player without `mpris:trackid` does nothing when the player cannot report its position. It used to seek from the position last signalled, which lands seconds off on a playing track.

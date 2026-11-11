@@ -118,7 +118,7 @@ The field's keystrokes go to PAM and never reach Lua.
 | Show the desktop wallpaper behind it | An `image` in the per-output `child`, keyed by `output` ([per-output content](panel.md#per-output-content)) |
 | Put a clock on it | `mantle.clock:map(function(clock) return os.date("%H:%M", clock.time) end, "")` |
 | Add an unlock button beside the field | A clickable node with `submits_secure = true` sends the field like Enter ([pointer](../guide/input.md#pointer)). Give it and the field an `accessible_name` so Tab and screen readers reach both ([keyboard controls](../guide/input.md#keyboard-controls-and-accessibility)) |
-| Lock before suspend | Invoke `lock` from your idle or suspend handler ([idle](../capabilities/idle.md)) |
+| Lock before suspend | Nothing to add. A config with a `lock` holds a logind `sleep` delay inhibitor, so any suspend (lid, `systemctl suspend`, a power menu) locks first and waits up to 3 s for the lock screen to show, then goes ahead. Already locked or refused, it does not wait. logind's `InhibitDelayMaxSec` (default 5 s) caps the wait; a lock that misses it logs a warning |
 
 ## Gotchas
 
@@ -138,4 +138,5 @@ Source: [lock spec](../../renderer/src/layout/node/spec.rs),
 [at most one lock](../../renderer/src/lua/surfaces.rs),
 [session lock](../../renderer/src/wayland/lock.rs),
 [authenticate check](../../renderer/src/layout/secure_submit.rs),
-[rename while locked](../../renderer/src/wayland/output.rs).
+[rename while locked](../../renderer/src/wayland/output.rs),
+[lock before sleep](../../supervisor/src/capabilities/lock/sleep.rs).
