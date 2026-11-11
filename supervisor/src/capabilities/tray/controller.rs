@@ -5,10 +5,12 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use enumflags2::BitFlags;
+use futures_util::StreamExt;
 use shared::action::ScrollOrientation;
 use shared::{debug, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use zbus::fdo::RequestNameFlags;
+use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedObjectPath, Value};
 
 use crate::capabilities::epoch_seconds;
@@ -43,15 +45,18 @@ impl TrayController {
             .await
             .inspect_err(|err| error!("failed to bind org.freedesktop.DBus for NameOwnerChanged tracking: {err}"))
             .ok();
-        let departures = match &dbus_proxy {
-            Some(dbus_proxy) => name_departures(dbus_proxy, "vanished tray items stay listed").await,
-            None => None,
+        // `acquired` before RequestName: winning the name, now or once another watcher exits, announces the host.
+        let (departures, acquired) = match &dbus_proxy {
+            Some(dbus_proxy) => (
+                name_departures(dbus_proxy, "vanished tray items stay listed").await,
+                dbus_proxy.receive_name_acquired().await.ok(),
+            ),
+            None => (None, None),
         };
         let registry: ItemRegistry = Arc::new(Mutex::new(HashMap::new()));
         let watcher = StatusNotifierWatcher {
             connection: connection.clone(),
             registry: registry.clone(),
-            host_registered: Arc::default(),
             events: events.clone(),
         };
         // Continue after export failure; tray setup must not abort the Supervisor.
@@ -61,6 +66,18 @@ impl TrayController {
         match connection.request_name_with_flags(WATCHER_BUS_NAME, BitFlags::<RequestNameFlags>::empty()).await {
             Ok(reply) => debug!("RequestName({WATCHER_BUS_NAME}) -> {reply}"),
             Err(err) => error!("RequestName({WATCHER_BUS_NAME}) failed: {err}"),
+        }
+        if let Some(mut acquired) = acquired {
+            let connection = connection.clone();
+            tokio::spawn(async move {
+                while let Some(signal) = acquired.next().await {
+                    if signal.args().is_ok_and(|args| args.name.as_str() == WATCHER_BUS_NAME)
+                        && let Ok(emitter) = SignalEmitter::new(&connection, WATCHER_OBJECT_PATH)
+                    {
+                        let _ = StatusNotifierWatcher::status_notifier_host_registered(&emitter).await;
+                    }
+                }
+            });
         }
 
         let task = (connection, registry.clone(), events.clone());
@@ -318,6 +335,43 @@ mod tests {
         let paths: Vec<String> =
             registry.lock().unwrap().keys().map(|(_, object_path)| object_path.to_string()).collect();
         assert_eq!(paths, vec!["/StatusNotifierItem/1".to_string()]);
+    }
+
+    /// Another watcher, counting the hosts that register with it.
+    struct RivalWatcher(tokio::sync::mpsc::UnboundedSender<()>);
+
+    #[zbus::interface(name = "org.kde.StatusNotifierWatcher")]
+    impl RivalWatcher {
+        fn register_status_notifier_host(&self, _service: String) {
+            let _ = self.0.send(());
+        }
+    }
+
+    /// Queued behind another watcher, this host registered with that one; winning the name later
+    /// has to announce it here, or items waiting for a host never register.
+    #[tokio::test]
+    async fn winning_the_watcher_name_from_another_watcher_announces_the_host() {
+        use crate::capabilities::test_support::{private_bus, within};
+        use futures_util::StreamExt;
+
+        let bus = private_bus().await;
+        let (hosts, mut rival_hosts) = tokio::sync::mpsc::unbounded_channel();
+        let rival = bus.builder().serve_at(WATCHER_OBJECT_PATH, RivalWatcher(hosts)).unwrap();
+        let rival = rival.name(WATCHER_BUS_NAME).unwrap().build().await.unwrap();
+        let listener = bus.connection().await;
+        let rule = zbus::MatchRule::builder().msg_type(zbus::message::Type::Signal);
+        let rule = rule.member("StatusNotifierHostRegistered").unwrap().build();
+        let mut announced = zbus::MessageStream::for_match_rule(rule, &listener, None).await.unwrap();
+        let (events, _events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let _tray = TrayController::new(bus.connection().await, events).await;
+        within(rival_hosts.recv()).await.expect("this host registers with the rival");
+        rival.release_name(WATCHER_BUS_NAME).await.unwrap();
+
+        within(announced.next()).await.expect("stream open").unwrap();
+        let watcher =
+            zbus::Proxy::new(&listener, WATCHER_BUS_NAME, WATCHER_OBJECT_PATH, "org.kde.StatusNotifierWatcher");
+        let registered: bool = watcher.await.unwrap().get_property("IsStatusNotifierHostRegistered").await.unwrap();
+        assert!(registered, "this host is registered once its watcher owns the name");
     }
 
     #[test]

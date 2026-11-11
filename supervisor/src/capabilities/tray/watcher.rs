@@ -1,8 +1,5 @@
 //! The exported `org.kde.StatusNotifierWatcher` object itself (ADR-0031's "dual-role dance").
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use shared::{debug, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -13,7 +10,6 @@ use super::registry::{ItemRegistry, register_item};
 pub(super) struct StatusNotifierWatcher {
     pub(super) connection: zbus::Connection,
     pub(super) registry: ItemRegistry,
-    pub(super) host_registered: Arc<AtomicBool>,
     pub(super) events: UnboundedSender<()>,
 }
 
@@ -53,17 +49,9 @@ impl StatusNotifierWatcher {
     }
 
     #[zbus(name = "RegisterStatusNotifierHost")]
-    async fn register_status_notifier_host(
-        &self,
-        _service: String,
-        #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
-    ) {
+    async fn register_status_notifier_host(&self, _service: String) {
         // Accepted trivially (ADR-0031). Mantle is the relevant host; this exists for spec
         // completeness and permits self-registration (see `TrayController::new`).
-        // Relaxed: a lone flag, it orders no other memory.
-        if !self.host_registered.swap(true, Ordering::Relaxed) {
-            let _ = emitter.status_notifier_host_registered().await;
-        }
     }
 
     #[zbus(property, name = "RegisteredStatusNotifierItems")]
@@ -80,7 +68,8 @@ impl StatusNotifierWatcher {
 
     #[zbus(property, name = "IsStatusNotifierHostRegistered")]
     async fn is_status_notifier_host_registered(&self) -> bool {
-        self.host_registered.load(Ordering::Relaxed)
+        // Mantle's own host: this watcher answers only while it runs.
+        true
     }
 
     #[zbus(property, name = "ProtocolVersion")]
@@ -99,7 +88,7 @@ impl StatusNotifierWatcher {
         service: &str,
     ) -> zbus::Result<()>;
     #[zbus(signal)]
-    async fn status_notifier_host_registered(
+    pub(super) async fn status_notifier_host_registered(
         signal_emitter: &zbus::object_server::SignalEmitter<'_>,
     ) -> zbus::Result<()>;
     #[zbus(signal)]
@@ -116,9 +105,8 @@ pub(super) mod tests {
 
     use super::super::{DEFAULT_ITEM_OBJECT_PATH, RawIconPixmap, RawToolTip, WATCHER_OBJECT_PATH};
     use super::*;
-    use crate::capabilities::test_support::{p2p_pair, p2p_pair_serving, poll_until, within};
-    use futures_util::StreamExt;
-    use std::sync::Mutex;
+    use crate::capabilities::test_support::{p2p_pair, p2p_pair_serving, poll_until};
+    use std::sync::{Arc, Mutex};
 
     // ---- fabricated unique names must be rejected ----
 
@@ -135,7 +123,7 @@ pub(super) mod tests {
 
     fn test_watcher(connection: zbus::Connection, registry: ItemRegistry) -> StatusNotifierWatcher {
         let (events, _events_rx) = tokio::sync::mpsc::unbounded_channel();
-        StatusNotifierWatcher { connection, registry, host_registered: Arc::default(), events }
+        StatusNotifierWatcher { connection, registry, events }
     }
 
     /// Stub for the properties `register_item` reads. A bare p2p peer never replies, so the real
@@ -285,33 +273,5 @@ pub(super) mod tests {
 
         assert!(result.is_err(), "a fabricated unique name not equal to the real sender must be rejected");
         assert!(registry.lock().unwrap().is_empty(), "a rejected registration must not create a registry entry");
-    }
-
-    #[tokio::test]
-    async fn the_first_host_registration_sets_the_flag_and_announces_it_once() {
-        let (connection, peer) = p2p_pair().await;
-        let mut incoming = zbus::MessageStream::from(&peer);
-        let watcher = test_watcher(connection.clone(), Arc::new(Mutex::new(HashMap::new())));
-        let register = || {
-            let emitter = zbus::object_server::SignalEmitter::new(&connection, WATCHER_OBJECT_PATH).unwrap();
-            watcher.register_status_notifier_host("host".to_string(), emitter)
-        };
-        assert!(!watcher.is_status_notifier_host_registered().await);
-
-        register().await;
-        assert!(watcher.is_status_notifier_host_registered().await);
-        let signal = within(incoming.next()).await.expect("stream open").unwrap();
-        assert_eq!(signal.header().member().map(|member| member.as_str()), Some("StatusNotifierHostRegistered"));
-
-        // A second registration is silent: the sentinel signal below must be the next message.
-        register().await;
-        let emitter = zbus::object_server::SignalEmitter::new(&connection, WATCHER_OBJECT_PATH).unwrap();
-        emitter.status_notifier_host_registered().await.unwrap();
-        let next = within(incoming.next()).await.expect("stream open").unwrap();
-        assert_eq!(next.header().member().map(|member| member.as_str()), Some("StatusNotifierHostRegistered"));
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(100), incoming.next()).await.is_err(),
-            "a second registration must not announce again"
-        );
     }
 }

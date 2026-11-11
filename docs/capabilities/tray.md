@@ -119,7 +119,7 @@ registers itself as a host.
 
 | Contract | Behavior |
 | :--- | :--- |
-| Name | Requested without `DoNotQueue`: if another watcher owns it, Mantle queues behind it |
+| Name | Requested without `DoNotQueue`: if another watcher owns it, Mantle queues behind it and sees only the items it adopts at start. Winning the name emits `StatusNotifierHostRegistered`, so items register with Mantle |
 | Adoption | At start, adopts items already on the bus at `/StatusNotifierItem`, `/StatusNotifierItem/1` or `/org/chromium/StatusNotifierItem/1`, for apps that never re-register |
 | Removal | An item leaves, and its spooled PNGs are deleted, when its bus name loses its owner |
 | Icon | `IconName` found in the item's `IconThemePath`, then `IconName` as a theme name, then the largest valid pixmap: square, 1 to 128 px, exactly `w × h × 4` ARGB bytes, spooled as a PNG under `tray/` |
