@@ -763,6 +763,10 @@ mod tests {
         assert!(oversized_warns(&snapshot("test-warn-a")));
         assert!(!oversized_warns(&snapshot("test-warn-a")), "the same capability again is quiet");
         assert!(oversized_warns(&snapshot("test-warn-b")), "another capability still warns");
+        assert_eq!(frame_kind(&snapshot("mpris")), "mpris");
+        let answer = shared::CallResult { id: 1, outcome: shared::CallOutcome::Returned(serde_json::Value::Null) };
+        assert_eq!(frame_kind(&SupervisorFrame::CallResult(answer)), "call answer");
+        assert_eq!(frame_kind(&SupervisorFrame::Reevaluate), "non-snapshot");
     }
 
     /// A state push grown past the frame cap is dropped before it is queued, where its capability

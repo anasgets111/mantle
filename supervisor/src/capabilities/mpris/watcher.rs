@@ -141,29 +141,43 @@ mod tests {
         }
     }
 
-    /// A player that arrived while every slot was taken is picked up once one frees, rather than
-    /// staying untracked until it or the shell restarts.
+    /// A player left out while every slot was taken, at the first scan or on arriving later, is
+    /// picked up once one frees, rather than staying untracked until it or the shell restarts.
     #[tokio::test]
     async fn a_player_left_out_at_the_limit_is_tracked_once_a_slot_frees() {
         use crate::capabilities::test_support::{poll_until, private_bus};
         let bus = private_bus().await;
-        let mut players = Vec::new();
-        for index in 0..=super::super::MAX_PLAYERS {
+        let player = |index: usize| {
             let name = format!("{MPRIS_SERVICE_PREFIX}p{index}");
             let peer = bus.builder().name(name.clone()).unwrap().serve_at("/org/mpris/MediaPlayer2", Root).unwrap();
-            players.push((name, peer.build().await.unwrap()));
+            async move { (name, peer.build().await.unwrap()) }
+        };
+        let mut players = Vec::new();
+        for index in 0..=super::super::MAX_PLAYERS {
+            players.push(player(index).await);
         }
         let registry = PlayerRegistry::default();
         let (events, _woken) = tokio::sync::mpsc::unbounded_channel();
         spawn_discovery(bus.builder().build().await.unwrap(), registry.clone(), events).await;
         let tracked = |name: &str| registry.lock().unwrap().contains_key(name);
-        let left_out = players.iter().position(|(name, _)| !tracked(name)).expect("one name is past the limit");
-        let left_out_name = players[left_out].0.clone();
+        let untracked = |players: &[(String, zbus::Connection)]| {
+            players.iter().map(|(name, _)| name.clone()).find(|name| !tracked(name))
+        };
 
-        let freed = (left_out + 1) % players.len();
-        drop(players.remove(freed));
+        let free_a_slot = |players: &mut Vec<(String, zbus::Connection)>| {
+            let freed = players.iter().position(|(name, _)| tracked(name)).unwrap();
+            drop(players.remove(freed));
+        };
 
-        poll_until(|| tracked(&left_out_name).then_some(())).await;
+        let left_out = untracked(&players).expect("the scan leaves one name out");
+        free_a_slot(&mut players);
+        poll_until(|| tracked(&left_out).then_some(())).await;
+
+        // Now one arrives after startup, while every slot is taken.
+        players.push(player(100).await);
+        let left_out = poll_until(|| untracked(&players)).await;
+        free_a_slot(&mut players);
+        poll_until(|| tracked(&left_out).then_some(())).await;
         assert_eq!(registry.lock().unwrap().len(), super::super::MAX_PLAYERS);
     }
 
