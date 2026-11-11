@@ -8890,3 +8890,15 @@ Replaced by rasterizing an `image` node's SVG on the decode workers whatever `as
 icons stay inline for a complete first frame (ADR-0122). Deferred: a killable helper process.
 Correction: every `icon` stays inline, an absolute path included, and so do file masks and shader
 samplers.
+
+## 0388. SVG filters are limited to QtSvg's primitives
+
+usvg and resvg overflow or unwrap on some filter values, which aborts the release Renderer: an
+`feConvolveMatrix` order, an `feTurbulence` seed or frequency, an `feMorphology` radius in
+bounding-box units. The pre-parse walk now refuses any `fe*` element outside `feGaussianBlur`,
+`feOffset`, `feFlood`, `feMerge`, `feComposite`, `feColorMatrix` and `feBlend` (QtSvg's set). Of
+87,217 SVG files under `/usr/share` (by path), files using each: `feGaussianBlur` 322,
+`feColorMatrix` 76, `feComposite` 7, `feFlood` 4, `feOffset` 4, `feBlend` 4, every other primitive
+0, so none is refused. Rejected: bounds per attribute (82f4502d), which tracked one panic at a time
+and still missed values scaled by a bounding box or transform. A huge offset or filter region still
+panics in tiny-skia; a killable helper process (planned) covers that.

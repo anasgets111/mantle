@@ -30,6 +30,11 @@ const MAX_SVG_DEPTH: usize = 256;
 const MAX_SVG_LINKS: usize = 256;
 /// A pattern link costs about 8 KiB of stack in release, four times a clip's; icons use 2 at most.
 const MAX_SVG_PATTERNS: usize = 16;
+/// Filter primitives a document may use, QtSvg's set: others overflow or unwrap in usvg and resvg,
+/// aborting the renderer, and no installed icon uses one (ADR-0388). ponytail: a huge offset or
+/// filter region still panics in tiny-skia; upgrade: rasterize in a killable helper process.
+const SVG_FILTERS: [&str; 8] =
+    ["feGaussianBlur", "feOffset", "feFlood", "feMerge", "feMergeNode", "feComposite", "feColorMatrix", "feBlend"];
 
 /// Rasterizes with longest edge `box_px`; [`fitted_rect`](super::fitted_rect) handles placement.
 /// The `bool` says whether the document asked for a font, so only those pixels go stale when the
@@ -97,7 +102,7 @@ pub(super) fn rasterize_svg(
     };
     if !within_recursion_limits(&data) {
         return Err(format!(
-            "svg nests past {MAX_SVG_DEPTH} elements, links past its limits, repeats an image or overflows a filter"
+            "svg nests past {MAX_SVG_DEPTH} elements, links past its limits, repeats an image or uses an unsupported filter"
         ));
     }
     let tree = Tree::from_data(&data, &options).map_err(|err| err.to_string())?;
@@ -189,7 +194,7 @@ fn embedded_image(
 }
 
 /// Whether `svg` stays inside [`MAX_SVG_DEPTH`], [`MAX_SVG_LINKS`] and [`MAX_SVG_PATTERNS`],
-/// walked without recursion, converts each embedded image once and overflows no filter integer.
+/// walked without recursion, converts each embedded image once and filters only by [`SVG_FILTERS`].
 /// Parsed as usvg parses it, so entity-expanded elements count; a document that does not parse is
 /// left for usvg to refuse.
 ///
@@ -217,13 +222,7 @@ fn within_recursion_limits(svg: &[u8]) -> bool {
                 matches!(node.tag_name().name(), "mask" | "pattern" | "clipPath" | "marker" | "filter")
                     || node.attribute("id").is_some_and(|id| linked.contains(id))
             }),
-            "feImage" => {
-                node.attributes().any(|attr| attr.name() == "href" && !attr.value().trim_start().starts_with('#'))
-            }
-            // usvg multiplies `order`'s components and resvg negates the seed unchecked, which
-            // aborts the renderer. Kernels are 3 or 5 wide in practice; no installed icon has one.
-            "feConvolveMatrix" => past(node, "order", 32.0),
-            "feTurbulence" => past(node, "seed", 1e9),
+            name if name.starts_with("fe") => !SVG_FILTERS.contains(&name),
             _ => false,
         };
         let parent = node.parent().and_then(|parent| depths.get(parent.id().get_usize())).copied();
@@ -240,21 +239,6 @@ fn within_recursion_limits(svg: &[u8]) -> bool {
         }
     }
     true
-}
-
-/// Whether `node`'s `attr` holds a number past `bound`, or one this cannot read. Split as svgtypes
-/// reads a list: on separators and on a sign not after an exponent's `e`, so `7e4+7e4` is two.
-fn past(node: resvg::usvg::roxmltree::Node, attr: &str, bound: f64) -> bool {
-    let values = node.attributes().filter(|named| named.name() == attr).map(|named| named.value());
-    let pieces = values.flat_map(|value| {
-        let mut after = ' ';
-        value.split(move |c: char| {
-            let exponent = matches!(c, '+' | '-') && matches!(after, 'e' | 'E');
-            after = c;
-            !(c.is_ascii_alphanumeric() || c == '.' || exponent)
-        })
-    });
-    pieces.filter(|piece| !piece.is_empty()).any(|piece| !piece.parse::<f64>().is_ok_and(|n| n <= bound))
 }
 
 /// A `-symbolic` file name, or a theme's `symbolic/` directory (Adwaita), as GTK decides it.
@@ -826,35 +810,49 @@ pub(super) mod tests {
             let refused = rasterize_at(&doc(body.clone()), 2).expect_err(&body);
             assert!(refused.contains("repeats an image"), "{refused}");
         }
-        // An image drawn once still draws beside a `<use>` and an `feImage` naming an element.
-        let once = format!(
-            r##"<filter id="f"><feImage href="#r"/></filter><rect id="r" width="2" height="2" fill="red"/><use href="#r"/>{image}"##
-        );
+        // An image drawn once still draws beside a `<use>` naming an element.
+        let once = format!(r##"<rect id="r" width="2" height="2" fill="red"/><use href="#r"/>{image}"##);
         assert!(rasterize_at(&doc(once), 2).is_ok_and(|pixels| all_red(&pixels)));
     }
 
-    /// usvg multiplies `order`'s components and resvg negates `seed` unchecked; with overflow
-    /// checks on and `panic = "abort"` in release, either would abort the renderer.
+    /// `rect` under a filter of `primitives`.
+    fn filtered(primitives: &str) -> String {
+        svg(&format!(r#"<filter id="f">{primitives}</filter><rect width="2" height="2" fill="red" filter="url(#f)"/>"#))
+    }
+
+    /// Outside QtSvg's set, usvg and resvg overflow or unwrap on some values (`order`, `seed`,
+    /// a morphology radius in bounding-box units); in release that aborts the renderer.
     #[test]
-    fn a_filter_attribute_that_would_overflow_is_refused_before_usvg_parses_it() {
-        let filtered = |primitive: &str| {
-            svg(&format!(
-                r#"<filter id="f">{primitive}</filter><rect width="2" height="2" fill="red" filter="url(#f)"/>"#
-            ))
-        };
-        for (primitive, refused) in [
-            (r#"<feConvolveMatrix order="3" kernelMatrix="0 0 0 0 1 0 0 0 0"/>"#, false),
-            (r#"<feTurbulence seed="-7"/>"#, false),
-            (r#"<feTurbulence seed="1e+3"/>"#, false),
-            (r#"<feConvolveMatrix order="3e+0" kernelMatrix="0 0 0 0 1 0 0 0 0"/>"#, false),
-            (r#"<feConvolveMatrix order="3E-0,3" kernelMatrix="0 0 0 0 1 0 0 0 0"/>"#, false),
-            (r#"<feConvolveMatrix order="65536"/>"#, true),
-            (r#"<feConvolveMatrix order="7e4+7e4"/>"#, true),
-            (r#"<feTurbulence seed="-3e38"/>"#, true),
+    fn a_filter_primitive_outside_the_allowlist_refuses_the_document_without_panicking() {
+        for primitive in [
+            r#"<feConvolveMatrix order="65536"/>"#,
+            r#"<feTurbulence seed="-3e38"/>"#,
+            r#"<feMorphology radius="3e38"/>"#,
+            r#"<feDiffuseLighting><feDistantLight/></feDiffuseLighting>"#,
+            r##"<feImage href="#r"/>"##,
+            r#"<feUnknown/>"#,
         ] {
-            let doc = filtered(primitive);
+            let doc = filtered(primitive).replace(r#"id="f""#, r#"id="f" primitiveUnits="objectBoundingBox""#);
             let drawn = std::thread::spawn(move || rasterize_at(&doc, 2)).join().expect(primitive);
-            assert_eq!(drawn.is_err_and(|err| err.contains("overflows a filter")), refused, "{primitive}");
+            assert!(drawn.is_err_and(|err| err.contains("unsupported filter")), "{primitive}");
+        }
+        let nested = data_url("image/svg+xml", filtered(r#"<feTurbulence/>"#).as_bytes());
+        assert!(all_clear(&rasterize_doc(&image_doc(&nested))), "the nested parse takes the same walk");
+    }
+
+    #[test]
+    fn each_allowlisted_filter_primitive_still_draws() {
+        for primitive in [
+            r#"<feGaussianBlur stdDeviation="0.1"/>"#,
+            r#"<feOffset dx="0"/>"#,
+            r#"<feFlood flood-color="red"/>"#,
+            r#"<feMerge><feMergeNode in="SourceGraphic"/></feMerge>"#,
+            r#"<feComposite in="SourceGraphic" in2="SourceGraphic"/>"#,
+            r#"<feColorMatrix type="saturate" values="1"/>"#,
+            r#"<feBlend in="SourceGraphic" in2="SourceGraphic"/>"#,
+        ] {
+            let drawn = rasterize_at(&filtered(primitive), 2);
+            assert!(drawn.is_ok_and(|pixels| pixels.as_chunks::<4>().0.iter().any(|px| px[3] > 0)), "{primitive}");
         }
     }
 
