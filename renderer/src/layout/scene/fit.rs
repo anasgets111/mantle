@@ -767,6 +767,19 @@ mod tests {
         assert_eq!(drawn.split_whitespace().collect::<Vec<_>>(), LONG.split_whitespace().collect::<Vec<_>>());
     }
 
+    /// A content-sized capped text is as wide as the lines it keeps, not the ones it dropped.
+    #[test]
+    fn a_capped_texts_width_ignores_the_lines_it_dropped() {
+        let (scene, _lua, _shaping, _surface) = applied(
+            r#"panel { id = "bar", child = column { children = {
+                text { content = "Hi\nmuch longer second line", wrap = "word", max_lines = 1 },
+                text { content = "Hi" },
+            } } }"#,
+        );
+        let texts = &scene.surface("bar@TEST").unwrap().children[0].children;
+        assert_eq!(texts[0].rect.width, texts[1].rect.width);
+    }
+
     /// `max_lines = 0` is the uncapped spelling a `Bound` needs, since a signal cannot produce
     /// "absent". It has to mean the same thing as leaving the property off.
     #[test]

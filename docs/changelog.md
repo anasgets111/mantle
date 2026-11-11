@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: a content-sized `text` with `wrap = "word"` and `max_lines` is as wide as the lines it shows. It used to be as wide as its widest line, dropped ones included.
 - Fixed: a content-sized `text` with `elide` and left or right `padding` shows its whole content. At about one width in twenty it lost its last character to an ellipsis.
 - Fixed: a `text` without `wrap = "word"` ignores `max_lines`, as documented. Its box used to stop at `max_lines` lines while every line of a multi-line `content` still drew, over whatever sat below.
 - Fixed: a `text` with `wrap = "word"` and left or right `padding` is as tall as the lines it draws. It used to wrap its measured height at the width outside its padding, so it came out lines short and its last lines drew over whatever sat below. A multiline `textfield` with padding grows the same way.

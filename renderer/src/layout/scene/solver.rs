@@ -585,7 +585,8 @@ fn measure_leaf(
                     }
                     let shaped = shaping.shape(face.request(content.to_string(), max_width, runs.clone()));
                     let lines = max_lines.map_or(shaped.lines.len(), |cap| shaped.lines.len().min(cap));
-                    let size = taffy::Size { width: shaped.width, height: lines as f32 * face.line_height };
+                    let width = shaped.shaped.iter().take(lines).fold(0.0, |width, line| line.width.max(width));
+                    let size = taffy::Size { width, height: lines as f32 * face.line_height };
                     *memo = Some((max_width, size));
                     clamp(size)
                 }
