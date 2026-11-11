@@ -33,8 +33,8 @@ pub(super) fn dispatch_to_workspace(
         warn!("{id:?} is not a Hyprland workspace id; ignored");
         return;
     };
-    if parsed > 0 {
-        return dispatch(build(id), capability);
+    if let Some(selector) = number_selector(id) {
+        return dispatch(build(&selector), capability);
     }
     on_command_socket(move |socket_path| {
         let Some(workspaces) = read::<Vec<HyprlandWorkspace>>(socket_path, "workspaces") else { return };
@@ -43,6 +43,12 @@ pub(super) fn dispatch_to_workspace(
         };
         hyprland_command(socket_path, &format!("dispatch {}", build(&named_selector(&workspace.name))), capability);
     });
+}
+
+/// A positive id's selector, the number Hyprland focuses or creates, written as Lua reads it: `+3`
+/// is a syntax error. `None` for anything else: a named workspace's id is negative.
+fn number_selector(id: &str) -> Option<String> {
+    id.parse::<i64>().ok().filter(|number| *number > 0).map(|number| number.to_string())
 }
 
 /// The table form, not `hl.dsp.focus(N)`: `focus` takes one table and reads the field, the same
@@ -127,6 +133,17 @@ mod tests {
             r#"hl.dsp.workspace.toggle_special("é")"#,
             "a non-ASCII name reaches the socket as itself, not as its bytes read as codepoints"
         );
+    }
+
+    /// Lua has no unary `+`, so `workspace = +3` is a syntax error; a number goes as Lua reads it.
+    #[test]
+    fn a_workspace_number_is_sent_as_a_plain_lua_number() {
+        for (id, selector) in [("3", Some("3")), ("+3", Some("3")), ("007", Some("7")), ("-98", None), ("0", None)] {
+            assert_eq!(number_selector(id).as_deref(), selector, "{id:?}");
+        }
+        let named = number_selector("-98").unwrap_or_else(|| named_selector("chat"));
+        assert_eq!(focus_command(&named), r#"hl.dsp.focus({ workspace = "name:chat" })"#);
+        assert_eq!(focus_command(&number_selector("+3").unwrap()), "hl.dsp.focus({ workspace = 3 })");
     }
 
     #[test]
