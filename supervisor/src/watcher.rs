@@ -13,9 +13,9 @@
 //! A `path -> hash` map (ADR-0047 decision 3) rejects byte-identical saves, which editors often
 //! truncate/rewrite; debounce only collapses one burst. Deleted files always count.
 //!
-//! A checkout that takes the whole config directory away kills every watch at once, and the tree
-//! that comes back has new inodes with no surviving watch to announce them. An emptied `wd_to_dir`
-//! therefore re-adds the root on a timer.
+//! A checkout that takes the whole config directory away, or a rename of it, leaves the tree that
+//! comes back with new inodes and no watch to announce them. The root's own watch reporting it gone
+//! therefore drops every watch and re-adds the root on a timer.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
@@ -31,10 +31,15 @@ use shared::{debug, warn};
 use tokio::sync::mpsc;
 
 /// Handled inotify kinds: create, atomic-save rename in/out (including delete-via-rename),
-/// delete, and completed write. `MODIFY` fires per `write()` and would hash half-written files;
-/// `CLOSE_WRITE` follows it with the whole file.
+/// delete, completed write, and the root renamed away. `MODIFY` fires per `write()` and would hash
+/// half-written files; `CLOSE_WRITE` follows it with the whole file.
 fn watch_mask() -> WatchMask {
-    WatchMask::CREATE | WatchMask::MOVED_TO | WatchMask::MOVED_FROM | WatchMask::DELETE | WatchMask::CLOSE_WRITE
+    WatchMask::CREATE
+        | WatchMask::MOVED_TO
+        | WatchMask::MOVED_FROM
+        | WatchMask::DELETE
+        | WatchMask::CLOSE_WRITE
+        | WatchMask::MOVE_SELF
 }
 
 /// Watches `dir` and recursively covers current subdirectories, including later directories walked
@@ -132,22 +137,32 @@ pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::Unbound
         // Absolute deadline, not a relative sleep re-armed by irrelevant events, which could delay
         // the trigger forever under unrelated activity.
         let mut deadline = crate::debounce::Burst::default();
-        // Armed when the last watch dies with the config tree.
+        // Armed when the root is deleted or renamed.
         let mut rewatch_at: Option<tokio::time::Instant> = None;
         loop {
             tokio::select! {
                 event = stream.next() => {
                     match event {
                         Some(Ok(event)) => {
+                            if event.mask.intersects(EventMask::IGNORED | EventMask::MOVE_SELF)
+                                && wd_to_dir.get(&event.wd) == Some(&root)
+                            {
+                                // The root was deleted or renamed. Surviving watches cover a tree
+                                // that is no longer the config (a symlinked subdirectory's target,
+                                // the renamed root), no event can report the root's return, and
+                                // every hashed path is about an inode that is gone.
+                                // ponytail: a symlinked root repointed while its old target stays
+                                // put reports nothing. Upgrade: watch the root's parent for its name.
+                                for (wd, _) in wd_to_dir.drain() {
+                                    let _ = watches.remove(wd);
+                                }
+                                hashes.clear();
+                                rewatch_at = Some(tokio::time::Instant::now() + REWATCH_RETRY);
+                                continue;
+                            }
                             if event.mask.contains(EventMask::IGNORED) {
                                 // Kernel dropped this watch; remove it from `wd_to_dir`.
                                 wd_to_dir.remove(&event.wd);
-                                if wd_to_dir.is_empty() {
-                                    // The root went too, so no event can report its return and
-                                    // every hashed path is about an inode that no longer exists.
-                                    hashes.clear();
-                                    rewatch_at = Some(tokio::time::Instant::now() + REWATCH_RETRY);
-                                }
                                 continue;
                             }
 
@@ -463,6 +478,44 @@ mod tests {
             recv_within(&mut rx, REWATCH_RETRY + WAIT).await.is_some(),
             "a config root that vanished and came back has to reload"
         );
+    }
+
+    /// `mv ~/.config/mantle ~/.config/mantle.old` reports no `IGNORED`: the watch follows the inode
+    /// to its new name, and the directory made in its place has none.
+    #[tokio::test]
+    async fn the_config_root_moved_away_and_recreated_still_reloads() {
+        let outer = tempfile::tempdir().unwrap();
+        let root = outer.path().join("mantle");
+        std::fs::create_dir(&root).unwrap();
+
+        let mut rx = spawn_watcher(&root, SHORT_DEBOUNCE).unwrap();
+        std::fs::rename(&root, outer.path().join("mantle.old")).unwrap();
+        std::fs::create_dir(&root).unwrap();
+
+        assert!(recv_within(&mut rx, REWATCH_RETRY + WAIT).await.is_some(), "the new root is watched");
+        std::fs::write(root.join("shell.lua"), "return {}").unwrap();
+        assert!(recv_within(&mut rx, WAIT).await.is_some(), "an edit inside the new root has to reload");
+    }
+
+    /// The watch on a symlinked subdirectory's target survives `rm -rf` of the root, so waiting for
+    /// every watch to die would wait forever.
+    #[tokio::test]
+    async fn the_config_root_deleted_with_a_symlinked_subdirectory_and_recreated_still_reloads() {
+        let outer = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = outer.path().join("mantle");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("shell.lua"), "return {}").unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("widgets")).unwrap();
+
+        let mut rx = spawn_watcher(&root, SHORT_DEBOUNCE).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(recv_within(&mut rx, WAIT).await.is_some(), "the delete itself fires first");
+        std::fs::create_dir(&root).unwrap();
+
+        assert!(recv_within(&mut rx, REWATCH_RETRY + WAIT).await.is_some(), "the new root is watched");
+        std::fs::write(root.join("shell.lua"), "return { id = 2 }").unwrap();
+        assert!(recv_within(&mut rx, WAIT).await.is_some(), "an edit inside the new root has to reload");
     }
 
     #[tokio::test]

@@ -8,6 +8,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 ## Unreleased
 
 - Fixed: a media player or a video holding the screen awake can no longer restart the shell in a loop by publishing a huge title, art URL or reason. `mantle.mpris` text fields stop at 1024 bytes and an `art_url` or `url` over 4096 bytes reads as empty; `mantle.idle.inhibitors` `who` and `why` from `ScreenSaver` clients stop at 256 bytes. An update still too large to send is skipped and later ones arrive.
+- Fixed: live reload resumes after the config directory is renamed away and recreated, or deleted while it held a symlinked subdirectory. Edits used to stop reloading until a restart, with nothing logged.
 
 ## 0.13.3 - 2026-11-10
 
