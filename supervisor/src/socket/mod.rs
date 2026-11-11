@@ -362,10 +362,19 @@ async fn handle_connection(
         let _ = connected_tx.send(generation_id);
     }
 
+    let writer_hangup = Arc::clone(&hangup);
     let writer = tokio::spawn(async move {
         while let Some(payload) = outbound_rx.recv().await {
-            if framing::write_frame(&mut write_half, &payload).await.is_err() {
-                break;
+            match framing::write_frame(&mut write_half, &payload).await {
+                Ok(()) => {}
+                // Refused before a byte was written, so the stream is still aligned for the next
+                // frame. Ending here would close the socket, and the respawned Renderer's replay
+                // would carry the same frame again.
+                Err(FramingError::FrameTooLarge { len }) => {
+                    warn!("dropped a {len}-byte frame for generation {generation_id}: over the frame cap");
+                }
+                // A dead writer must not stay registered, so leave by the departure path.
+                Err(_) => return writer_hangup.notify_one(),
             }
         }
     });
@@ -694,6 +703,45 @@ mod tests {
         let mut reported = [connected.recv().await.unwrap(), connected.recv().await.unwrap()];
         reported.sort_unstable();
         assert_eq!(reported, [1, 2], "the connected channel must report each handshake's generation_id");
+    }
+
+    /// A Renderer connected as generation 5, registered by the time this returns.
+    async fn connected_renderer(path: &Path) -> (GenerationRegistry, UnixStream) {
+        let (registry, _routes, _inbound, mut connected) = spawn_listener(path).unwrap();
+        expect_this_process(&registry, &[5]);
+        let mut client = UnixStream::connect(path).await.unwrap();
+        framing::write_json_frame(&mut client, &ConnectionHandshake { generation_id: 5 }).await.unwrap();
+        assert_eq!(crate::capabilities::test_support::within(connected.recv()).await, Some(5));
+        (registry, client)
+    }
+
+    /// Any session-bus application can grow a state push past the frame cap (an MPRIS title, a
+    /// pile of ScreenSaver holds). Losing that one push is the cost; the frames after it still flow.
+    #[tokio::test]
+    async fn a_frame_over_the_cap_is_dropped_and_the_next_frame_still_arrives() {
+        let dir = tempfile::tempdir().unwrap();
+        let (registry, mut client) = connected_renderer(&dir.path().join("control.sock")).await;
+
+        assert!(registry.send_to(5, vec![b'x'; framing::MAX_FRAME_LEN + 1]));
+        assert!(registry.send_to(5, b"after".to_vec()), "the connection survives the oversized frame");
+
+        let next = crate::capabilities::test_support::within(framing::read_frame(&mut client)).await.unwrap();
+        assert_eq!(next, b"after");
+    }
+
+    /// A writer that can no longer write must not leave the connection registered: every push to it
+    /// would vanish while the Renderer waits. Departing gets it respawned with every snapshot replayed.
+    #[tokio::test]
+    async fn a_failed_write_takes_the_connection_through_departure() {
+        let dir = tempfile::tempdir().unwrap();
+        let (registry, client) = connected_renderer(&dir.path().join("control.sock")).await;
+        // The peer stops reading but keeps its write half open, so only the write can notice.
+        let client = client.into_std().unwrap();
+        client.shutdown(std::net::Shutdown::Read).unwrap();
+
+        assert!(registry.send_to(5, b"lost".to_vec()));
+
+        crate::capabilities::test_support::poll_until(|| (!registry.is_registered(5)).then_some(())).await;
     }
 
     #[tokio::test]

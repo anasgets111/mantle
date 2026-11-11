@@ -127,8 +127,9 @@ pub(crate) async fn forward_until_closed<T: Clone>(
 /// Truncates to `max_bytes`, backing off to a UTF-8 boundary (bytes, not chars).
 ///
 /// Every capability that copies a string out of a third party's D-Bus reply caps it here, so the
-/// rule lives once: notifications for `Notify`'s properties and tray for the `StatusNotifierItem`
-/// and DBusMenu text an arbitrary application supplies.
+/// rule lives once: notifications for `Notify`'s properties, tray for the `StatusNotifierItem`
+/// and DBusMenu text an arbitrary application supplies, mpris for player metadata and idle for
+/// `ScreenSaver` holds.
 pub fn truncate_utf8_bytes(input: &str, max_bytes: usize) -> String {
     input[..input.floor_char_boundary(max_bytes)].to_string()
 }

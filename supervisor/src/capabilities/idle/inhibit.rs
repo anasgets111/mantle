@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use super::controller::IdleController;
 use super::state::IdleInhibitor;
+use crate::capabilities::truncate_utf8_bytes;
 
 fn total(counts: &HashMap<u32, u32>) -> u32 {
     counts.values().sum()
@@ -38,12 +39,21 @@ pub fn apply_release_inhibit(counts: &mut HashMap<u32, u32>, generation_id: u32)
 /// [`cleanup_generation_inhibit`] can never drop a browser's hold on a config reload.
 pub(crate) const SCREENSAVER_HOLDER: u32 = u32::MAX;
 
-/// `ScreenSaver.Inhibit`: records the hold and reports the same 0->1 transition a config's hold
-/// does. The cookie is the client's handle for releasing it.
+/// Cap on a `ScreenSaver` hold's `application_name` and `reason`. Any session-bus application
+/// supplies them and every hold rides in the `mantle.idle` push; like a tray title, they are drawn,
+/// never matched.
+const MAX_SCREENSAVER_TEXT_BYTES: usize = 256;
+
+/// `ScreenSaver.Inhibit`: records the hold, its text capped, and reports the same 0->1 transition a
+/// config's hold does. The cookie is the client's handle for releasing it.
 pub(crate) fn apply_screensaver_inhibit(state: &mut InhibitState, peer: String, hold: IdleInhibitor) -> (u32, bool) {
     let cookie = state.next_cookie;
     // Never hand out 0: it is a legal cookie that clients routinely read as failure.
     state.next_cookie = cookie.wrapping_add(1).max(1);
+    let hold = IdleInhibitor {
+        who: truncate_utf8_bytes(&hold.who, MAX_SCREENSAVER_TEXT_BYTES),
+        why: truncate_utf8_bytes(&hold.why, MAX_SCREENSAVER_TEXT_BYTES),
+    };
     state.screensaver.insert(cookie, (peer, hold));
     (cookie, apply_inhibit(&mut state.counts, SCREENSAVER_HOLDER))
 }
@@ -200,6 +210,20 @@ pub(super) mod tests {
     /// What the portal sends: no application name, a reason worth drawing.
     fn hold(why: &str) -> IdleInhibitor {
         IdleInhibitor { who: String::new(), why: why.to_string() }
+    }
+
+    /// Any session-bus application can call `Inhibit`, and every hold rides in the `mantle.idle` push.
+    #[test]
+    fn a_screensaver_holds_name_and_reason_are_capped_on_a_char_boundary() {
+        let mut state = InhibitState::default();
+        let long = format!("{}é{}", "a".repeat(255), "b".repeat(1024));
+
+        let (cookie, _) =
+            apply_screensaver_inhibit(&mut state, ":1.42".into(), IdleInhibitor { who: long.clone(), why: long });
+
+        let (_, hold) = &state.screensaver[&cookie];
+        assert_eq!(hold.who, "a".repeat(255), "the two-byte é straddles byte 256, so it goes whole");
+        assert_eq!(hold.why, "a".repeat(255));
     }
 
     #[test]

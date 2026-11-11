@@ -24,6 +24,15 @@ pub mod watcher;
 pub use controller::MprisController;
 use shared::action::MprisAction;
 
+/// Cap on each `Metadata` text field: title, artists, album, album artists, genres. Any session-bus
+/// application can be a player, and every field rides in the `mantle.mpris` push. Far past any
+/// real title, CJK included.
+const MAX_METADATA_TEXT_BYTES: usize = 1024;
+
+/// Cap on `mpris:artUrl` and `xesam:url`: `PATH_MAX`, room for any local `file://` art. A longer
+/// URL is dropped, not cut: a cut one names a different file or page.
+const MAX_METADATA_URL_BYTES: usize = 4096;
+
 /// `mantle.mpris` action dispatch (ADR-0037): `tokio::spawn`s each write action
 /// (ADR-0036/ADR-0029). Seeks are unclamped here; each command clamps, or declines to, where it runs.
 pub fn dispatch(controller: &MprisController, envelope: &shared::CommandEnvelope) {

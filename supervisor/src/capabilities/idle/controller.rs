@@ -322,10 +322,11 @@ impl IdleController {
     pub async fn screensaver_inhibit(&self, peer: String, who: String, why: String) -> u32 {
         let (cookie, holds) = {
             let mut state = self.inhibit.state.lock().await;
-            let hold = super::state::IdleInhibitor { who, why };
-            let reason = hold.why.clone();
-            let (cookie, open_fd) = apply_screensaver_inhibit(&mut state, peer, hold);
+            let (cookie, open_fd) =
+                apply_screensaver_inhibit(&mut state, peer, super::state::IdleInhibitor { who, why });
             if open_fd {
+                // As recorded, so logind gets the capped reason too.
+                let reason = state.screensaver[&cookie].1.why.clone();
                 self.open_shared_fd(&mut state, SCREENSAVER_HOLDER, &reason).await;
             }
             (cookie, screensaver_holds(&state))
