@@ -255,7 +255,7 @@ fn until_due(last_successful_check: Option<i64>, now: i64, interval: Duration) -
 async fn run_install(backend: Arc<dyn Backend>, state: Arc<Mutex<UpdatesState>>, events: UnboundedSender<()>) {
     let command = backend.install_command();
     let log = shared::runtime_root().map(|root| root.join("install.log"));
-    let (child, output) = match log.and_then(|log| spawn_logged(&command, &log)) {
+    let (child, output) = match log.and_then(|log| spawn_logged(&command, &log, "tail")) {
         Ok(spawned) => spawned,
         Err(err) => {
             let message = format!("failed to spawn {}: {err}", command.program);
@@ -273,21 +273,28 @@ async fn run_install(backend: Arc<dyn Backend>, state: Arc<Mutex<UpdatesState>>,
 
 /// Starts `command` writing into `log` (opened only here, `O_NOFOLLOW`; root pacman inherits the fd),
 /// and GNU `tail` following it until the command is reaped. No pipe, so our exit cannot SIGPIPE it.
-// ponytail: a restarted Supervisor neither knows nor shows a running install; a second fails on
-// pacman's db lock. Upgrade: record the installer's pid beside the log and follow it again.
-fn spawn_logged(command: &InstallCommand, log: &Path) -> std::io::Result<(Child, ChildStdout)> {
+/// The installer inherits a lock on the log with the fd, so while it runs another install is refused.
+// ponytail: a restarted Supervisor neither knows nor shows a running install, only refuses a second.
+// Upgrade: record the installer's pid beside the log and follow it again.
+fn spawn_logged(command: &InstallCommand, log: &Path, follower: &str) -> std::io::Result<(Child, Option<ChildStdout>)> {
     let open = |write: bool| {
         let mut options = std::fs::OpenOptions::new();
-        options.read(!write).write(write).create(write).truncate(write).mode(0o600);
+        options.read(!write).append(write).create(write).mode(0o600);
         options.custom_flags(libc::O_NOFOLLOW).open(log)
     };
     let (file, reader) = (open(true)?, open(false)?);
+    crate::instance::take_lock(&file).map_err(|err| {
+        std::io::Error::other(format!("an update started before the shell restarted is still running ({err})"))
+    })?;
+    file.set_len(0)?;
     let mut installer = Command::new(&command.program);
     installer.args(&command.arguments).process_group(0).stdin(Stdio::null()).stdout(file.try_clone()?).stderr(file);
     let child = installer.spawn()?;
     let pid = format!("--pid={}", child.id().unwrap_or_default());
-    let mut tail = Command::new("tail").args(["-c", "+1", "-f", &pid]).stdin(reader).stdout(Stdio::piped()).spawn()?;
-    Ok((child, tail.stdout.take().expect("tail's stdout is piped")))
+    // Without a reader the install still runs, so it is still tracked to its exit.
+    let tail = Command::new(follower).args(["-c", "+1", "-f", &pid]).stdin(reader).stdout(Stdio::piped()).spawn();
+    let tail = tail.map_err(|err| warn!("cannot follow {}: {err}; install_log stays empty", log.display()));
+    Ok((child, tail.ok().and_then(|mut tail| tail.stdout.take())))
 }
 
 /// Testable stdout loop for [`run_install`]. Wakes `main.rs` on every parsed line
@@ -297,10 +304,11 @@ async fn run_install_with_child(
     state: Arc<Mutex<UpdatesState>>,
     events: UnboundedSender<()>,
     mut child: tokio::process::Child,
-    output: ChildStdout,
+    output: Option<ChildStdout>,
 ) {
-    let mut lines = BoundedLines::new(output, "install log".into());
     let read = async {
+        let Some(output) = output else { return };
+        let mut lines = BoundedLines::new(output, "install log".into());
         while let Ok(Some(line)) = lines.next_line().await {
             let step = backend.parse_install_step(&line);
             let mut guard = state.lock().expect("mutex poisoned");
@@ -350,7 +358,7 @@ fn push_log_line(log: &mut Vec<String>, line: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capabilities::test_support::within;
+    use crate::capabilities::test_support::{poll_until, within};
     use crate::capabilities::updates::backend::{CheckReport, InstallStep};
     use crate::process;
 
@@ -665,9 +673,10 @@ mod tests {
     }
 
     /// A fake installer running `script`, logged under a fresh tempdir.
-    fn installer(script: &str) -> (Child, ChildStdout) {
+    fn installer(script: &str) -> (Child, Option<ChildStdout>) {
         let log = tempfile::tempdir().unwrap().keep().join("install.log");
-        spawn_logged(&InstallCommand { program: "sh".into(), arguments: process::sh_args(script) }, &log).unwrap()
+        spawn_logged(&InstallCommand { program: "sh".into(), arguments: process::sh_args(script) }, &log, "tail")
+            .unwrap()
     }
 
     #[tokio::test]
@@ -681,8 +690,8 @@ mod tests {
             go.display()
         );
         let command = InstallCommand { program: "sh".into(), arguments: process::sh_args(&script) };
-        let (mut child, output) = spawn_logged(&command, &log).unwrap();
-        let mut lines = BoundedLines::new(output, "test".into());
+        let (mut child, output) = spawn_logged(&command, &log, "tail").unwrap();
+        let mut lines = BoundedLines::new(output.unwrap(), "test".into());
         assert_eq!(within(lines.next_line()).await.unwrap().as_deref(), Some("first"));
         // The Supervisor exits, restarts or crashes.
         drop(lines);
@@ -702,7 +711,7 @@ mod tests {
         std::os::unix::fs::symlink(&target, &log).unwrap();
 
         let command = InstallCommand { program: "true".into(), arguments: vec![] };
-        assert!(spawn_logged(&command, &log).is_err());
+        assert!(spawn_logged(&command, &log, "tail").is_err());
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
     }
 
@@ -847,22 +856,43 @@ exit {exit_code}"
     }
 
     #[tokio::test]
-    async fn an_install_with_more_than_a_pipeful_of_stderr_finishes() {
-        let state = Arc::new(Mutex::new(UpdatesState::default()));
-        let script = "i=0; while [ \"$i\" -lt 80 ]; do printf '%01024d\\n' 0 >&2; i=$((i+1)); done; echo drained >&2";
-        let (child, output) = installer(script);
+    async fn an_install_whose_log_reader_cannot_start_is_still_tracked_to_its_exit() {
+        let log = tempfile::tempdir().unwrap().keep().join("install.log");
+        let command = InstallCommand { program: "sh".into(), arguments: process::sh_args("echo unread; exit 3") };
+        let (child, output) = spawn_logged(&command, &log, "/nonexistent/tail")
+            .expect("the installer is running, so the install must be tracked rather than reported failed");
+        let state = Arc::new(Mutex::new(UpdatesState { installing: true, ..UpdatesState::default() }));
         let (events_tx, _events_rx) = tokio::sync::mpsc::unbounded_channel();
+        run_install_with_child(Arc::new(StubBackend), Arc::clone(&state), events_tx, child, output).await;
 
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            run_install_with_child(Arc::new(StubBackend), Arc::clone(&state), events_tx, child, output),
-        )
-        .await
-        .expect("stderr drain blocked the installer");
+        let snapshot = state.lock().unwrap().clone();
+        assert!(!snapshot.installing);
+        assert_eq!((snapshot.install_exit_code, snapshot.install_error), (Some(3), None));
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "unread\n", "the file still has it");
+    }
 
-        let snapshot = state.lock().unwrap();
-        assert_eq!(snapshot.install_exit_code, Some(0));
-        assert_eq!(snapshot.install_log.last().map(String::as_str), Some("drained"));
+    #[tokio::test]
+    async fn a_second_install_is_refused_while_the_first_still_writes_the_log() {
+        // The Supervisor restarted mid-install, so nothing but the log knows the first still runs.
+        let dir = tempfile::tempdir().unwrap();
+        let (log, go) = (dir.path().join("install.log"), dir.path().join("go"));
+        let sh = |script: String| InstallCommand { program: "sh".into(), arguments: process::sh_args(&script) };
+        let first = format!(
+            "echo first; i=0; while [ ! -e '{}' ] && [ $i -lt 500 ]; do sleep 0.01; i=$((i+1)); done; echo last",
+            go.display()
+        );
+        let (mut first, _output) = spawn_logged(&sh(first), &log, "tail").unwrap();
+        poll_until(|| std::fs::read_to_string(&log).ok().filter(|text| text == "first\n")).await;
+
+        let refused = spawn_logged(&sh("echo second".into()), &log, "tail");
+        assert!(refused.unwrap_err().to_string().contains("still running"));
+        std::fs::write(&go, "").unwrap();
+        within(first.wait()).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "first\nlast\n", "the first install's log is whole");
+
+        let (mut next, _output) = spawn_logged(&sh("echo next".into()), &log, "tail").unwrap();
+        within(next.wait()).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "next\n", "a finished install's log is replaced");
     }
 
     #[test]

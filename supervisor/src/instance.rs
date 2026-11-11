@@ -40,7 +40,7 @@ fn whole_file(kind: libc::c_int) -> libc::flock {
 }
 
 /// Takes the lock without blocking. `file` must be open for writing.
-fn take_lock(file: &File) -> io::Result<()> {
+pub(crate) fn take_lock(file: &File) -> io::Result<()> {
     fcntl(file, FcntlArg::F_OFD_SETLK(&whole_file(libc::F_WRLCK)))?;
     Ok(())
 }
