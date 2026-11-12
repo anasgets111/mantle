@@ -20,7 +20,7 @@ use crate::lua::signal::{Signal, from_userdata};
 /// Stores keyed by absolute file path: two calls naming one file share one table/signals. It
 /// survives VM re-evaluation (ADR-0044 decision 4), so reload does not hand back a second table.
 #[derive(Default)]
-struct StoreRegistry(HashMap<String, Table>);
+struct StoreRegistry(HashMap<String, (Table, Table)>);
 
 /// Registers `persistent_table`. Resolve `mantle.storage` at call time; registration runs in
 /// `Loader::new`, before `lua::namespace::build` creates `mantle`.
@@ -58,12 +58,19 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
             };
             storage.call_method::<()>("open", (file.clone(), defaults.clone()))?;
 
-            if let Some(existing) = super::app_data_or_default::<StoreRegistry>(lua).0.get(&file).cloned() {
-                return Ok(PersistentTable(existing));
-            }
-
-            let store = build_store(lua, &file, storage, defaults)?;
-            super::app_data_or_default::<StoreRegistry>(lua).0.insert(file, store.clone());
+            // The store's signals read this table, not the one passed, so a reload's edited defaults
+            // land in the table the first call built.
+            let existing = super::app_data_or_default::<StoreRegistry>(lua).0.get(&file).cloned();
+            let (store, kept) = match existing {
+                Some(entry) => entry,
+                None => {
+                    let kept = lua.create_table()?;
+                    (build_store(lua, &file, storage, kept.clone())?, kept)
+                }
+            };
+            kept.clear()?;
+            defaults.for_each(|key: Value, value: Value| kept.raw_set(key, value))?;
+            super::app_data_or_default::<StoreRegistry>(lua).0.insert(file, (store.clone(), kept));
             Ok(PersistentTable(store))
         }
     )
@@ -197,6 +204,30 @@ fn build_store(lua: &Lua, file: &str, storage: mlua::AnyUserData, defaults: Tabl
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A reload's `persistent_table` call hands back the same table, so its edited defaults have to reach it.
+    #[test]
+    fn a_second_declaration_of_one_file_answers_its_new_defaults() {
+        use crate::lua::capability::Capability;
+        use crate::lua::signal::DirtyFlag;
+        let lua = Lua::new();
+        crate::lua::signal::register(&lua, DirtyFlag::new()).unwrap();
+        register(&lua).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (storage, _handle) =
+            Capability::new("storage", DirtyFlag::new(), crate::lua::capability::CommandSender::new(0, tx));
+        let mantle = lua.create_table().unwrap();
+        mantle.set("storage", storage).unwrap();
+        lua.globals().set("mantle", mantle).unwrap();
+        let read = |defaults: &str| {
+            lua.load(format!(r#"return persistent_table({{ path = "/s/x.json", defaults = {defaults} }}).theme:get()"#))
+                .eval::<String>()
+                .unwrap()
+        };
+        assert_eq!(read(r#"{ theme = "dark" }"#), "dark");
+        crate::lua::signal::begin_evaluation(&lua);
+        assert_eq!(read(r#"{ theme = "light" }"#), "light");
+    }
 
     #[test]
     fn an_absolute_file_path_is_its_own_key() {
