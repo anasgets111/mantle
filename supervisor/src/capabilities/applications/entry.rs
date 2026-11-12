@@ -10,8 +10,8 @@ use std::path::Path;
 /// config, and passing a second value could make argv and displayed metadata disagree.
 const FIELD_CODES: [char; 13] = ['f', 'F', 'u', 'U', 'd', 'D', 'n', 'N', 'i', 'c', 'k', 'v', 'm'];
 
-/// `[Desktop Entry]` keys as written. Only `Exec` is unescaped by [`tokenize_exec`]; other keys
-/// are display strings passed through verbatim.
+/// `[Desktop Entry]` values with the file format's `\s \n \t \r \\` escapes decoded. `Exec`'s own
+/// quoting is a second layer, applied by [`tokenize_exec`].
 pub type Group = HashMap<String, String>;
 
 /// Reads the `[Desktop Entry]` group out of a `.desktop` file's contents.
@@ -48,9 +48,16 @@ pub fn parse_group(contents: &str) -> Option<Group> {
         if key.contains('[') {
             continue; // a localized key, skipped deliberately.
         }
-        group.insert(key.to_string(), value.trim().to_string());
+        group.insert(key.to_string(), unescape(value.trim()));
     }
     inside.then_some(group)
+}
+
+/// Decodes the value escapes; an unknown `\x` stays as written. Splitting on `\\` first keeps an
+/// escaped backslash from joining the letter after it.
+fn unescape(value: &str) -> String {
+    let decode = |part: &str| part.replace("\\s", " ").replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r");
+    value.split("\\\\").map(decode).collect::<Vec<_>>().join("\\")
 }
 
 /// Whether a key is the specification's `true`; absent is false for `NoDisplay`, `Hidden`, and
@@ -182,6 +189,18 @@ Exec=firefox --new-window
         assert_eq!(group.get("Name").map(String::as_str), Some("Thing"), "always the unlocalized value");
         assert_eq!(group.len(), 1);
         assert!(parse_group("[Desktop Action foo]\nName=x\n").is_none());
+    }
+
+    /// A Wine launcher writes `\\\\` for each backslash of its Windows path: the value layer
+    /// halves it, then `Exec`'s quoting halves it again.
+    #[test]
+    fn parse_group_decodes_value_escapes_before_exec_quoting() {
+        let group = parse_group("[Desktop Entry]\nName=a\\sb\\\\n\nExec=wine \"C:\\\\\\\\x\" \\q\n").unwrap();
+        assert_eq!(group.get("Name").map(String::as_str), Some("a b\\n"));
+        assert_eq!(
+            tokenize_exec(&group["Exec"]),
+            Some(("wine".to_string(), vec![r"C:\x".to_string(), r"\q".to_string()]))
+        );
     }
 
     #[test]
