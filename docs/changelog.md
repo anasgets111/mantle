@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: a focused `textfield` calls the `on_change`, `on_submit` and `on_cancel` its node declares now, and follows its current `escape`. After a rebuild or a config reload that replaced them while it kept focus, it used to call the ones it had when it was focused.
 - Fixed: Ctrl+X, Ctrl+C and Ctrl+V in a `textfield` follow the letter the layout types, as Ctrl+A, Ctrl+Z and Ctrl+Y already did. Under Dvorak or Bépo they used to act on the keys where QWERTY has X, C and V, so Ctrl+Q cut and Ctrl+X did nothing; a non-Latin layout still uses those keys.
 - Changed: `capture.live` takes at least 0.001 frames per second. A smaller positive rate, such as `live = 1e-20`, used to pass the check and then abort the shell on its first capture; it is now refused at load like `live = 0`.
 - Fixed: a content-sized `text` with `wrap = "word"` and left or right `padding` stays on the one line it was measured at, and with `max_lines` and `elide` keeps its last kept line whole. At some paddings its last word used to move to a second line, or the line lost a character to the ellipsis.
