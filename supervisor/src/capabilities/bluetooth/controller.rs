@@ -15,6 +15,7 @@ use super::registry::{AdapterSlot, DeviceRegistry, hydrate, spawn_object_manager
 use super::{
     BluetoothSignal, BluetoothState, ConnectedDevice, DeviceAction, DiscoveredDevice, PairedDevice, class_to_category,
 };
+use crate::capabilities::bind;
 
 /// How long [`BluetoothController::pair`] retries a refused `Connect`, and how often. Many headsets
 /// refuse the first one while they finish pairing. GNOME's `bluetooth-settings-widget.c` uses the
@@ -411,12 +412,13 @@ impl BluetoothController {
     /// `bluetooth:forget(mac)`: resolves `mac` and calls `Adapter1.RemoveDevice(path)`, clearing
     /// paired credentials from disk.
     pub async fn forget(&self, mac: &str) {
-        let Some(adapter) = self.adapter() else {
-            debug!("forget({mac:?}) failed: no Bluetooth adapter is present");
-            return;
+        let Some((path, device)) = self.resolve_device(mac, "forget") else { return };
+        // Only the adapter a device hangs under can remove it, and it need not be the one in use.
+        let removed = async {
+            let parent = OwnedObjectPath::try_from(path.as_str().rsplit_once('/').map_or("/", |(parent, _)| parent))?;
+            bind::<Adapter1Proxy>(device.inner().connection(), parent).await?.remove_device(&path).await
         };
-        let Some((path, _)) = self.resolve_device(mac, "forget") else { return };
-        if let Err(err) = adapter.remove_device(&path).await {
+        if let Err(err) = removed.await {
             warn!("RemoveDevice({mac:?}) failed: {err}");
         }
     }
@@ -673,6 +675,36 @@ mod tests {
         within(controller.connect("AA")).await;
         assert_eq!(count(&connects), 1);
         pairing.abort();
+    }
+
+    /// An adapter that reports the devices `RemoveDevice` is asked to drop.
+    struct RemovingAdapter(tokio::sync::mpsc::UnboundedSender<String>);
+
+    #[zbus::interface(name = "org.bluez.Adapter1")]
+    impl RemovingAdapter {
+        fn remove_device(&self, device: zbus::zvariant::ObjectPath<'_>) {
+            let _ = self.0.send(device.to_string());
+        }
+    }
+
+    /// `forget` asks the adapter its device hangs under, with none in use at all.
+    #[tokio::test]
+    async fn forget_removes_a_device_through_its_own_adapter() {
+        const DEVICE: &str = "/org/bluez/hci1/dev_AA";
+        let (removed, mut removals) = tokio::sync::mpsc::unbounded_channel();
+        let (caller, _served) = crate::capabilities::test_support::p2p_pair_serving(|peer| {
+            peer.serve_at("/org/bluez/hci1", RemovingAdapter(removed))
+        })
+        .await;
+        let path = OwnedObjectPath::try_from(DEVICE).unwrap();
+        let device = Device1Proxy::builder(&caller).path(path.clone()).unwrap().build().await.unwrap();
+        let (controller, _receiver) = controller();
+        let entry = DeviceEntry { mac: "AA".into(), device, battery: None, forwarder: tokio::spawn(async {}) };
+        controller.devices.lock().unwrap().insert(path, entry);
+
+        controller.forget("AA").await;
+
+        assert_eq!(within(removals.recv()).await.as_deref(), Some(DEVICE));
     }
 
     struct FakeAdapter;
