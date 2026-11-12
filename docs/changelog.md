@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: a focused plain `textfield` whose `secure_submit` a signal sets lets go of its draft and focus. Keys typed into it used to keep reaching its old `on_change`, though it now showed as masked.
 - Breaking: `mantle.notifications:set_sound` and `mantle.android_connect:send_files` raise on a relative path, as `mantle.storage:open` does. They used to do nothing, with a line at debug level or a warning. Build the path from `mantle.config_dir`, start a `set_sound` path with `~/`, and give `send_files` absolute paths (it does not expand `~/`).
 - Fixed: `mantle` given an argument that is not valid UTF-8 prints `mantle: "..." is not valid UTF-8` and the help, with exit status 2. It used to panic.
 - Fixed: `mantle.sysinfo.disks` keeps its last list when `lsblk` prints something unreadable. It used to empty the list until the next read.

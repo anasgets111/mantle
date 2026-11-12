@@ -143,14 +143,17 @@ pub(super) fn requested_focus(
 
 /// Re-reads `field`'s callbacks and `escape` from its node in `tree`: a rebuild or reload hands the
 /// node new closures, and the copy taken at focus would run the old ones. A node not found, hidden
-/// or gone, keeps the copy: [`App::prune_text_field_focus`] decides when a gone field lets go.
-fn refresh_callbacks(field: &mut FocusedTextField, tree: Option<&layout::ResolvedNode>) {
-    let path = tree.and_then(|tree| layout::hit::path_to_node(tree, field.id));
-    if let Some(FieldTarget::Plain { on_change, on_submit, on_cancel, escape, .. }) =
-        path.and_then(|path| field_target(&path, true))
-    {
-        (field.on_change, field.on_submit, field.on_cancel, field.escape) = (on_change, on_submit, on_cancel, escape);
+/// or gone, keeps the copy for [`App::prune_text_field_focus`] to judge; one turned masked answers
+/// `false` with none left, since its plain focus must go before a key reaches Lua (ADR-0005).
+fn refresh_callbacks(field: &mut FocusedTextField, tree: Option<&layout::ResolvedNode>) -> bool {
+    let Some(path) = tree.and_then(|tree| layout::hit::path_to_node(tree, field.id)) else { return true };
+    let live = field_target(&path, true);
+    (field.on_change, field.on_submit, field.on_cancel) = (None, None, None);
+    if let Some(FieldTarget::Plain { on_change, on_submit, on_cancel, escape, .. }) = &live {
+        (field.on_change, field.on_submit, field.on_cancel) = (on_change.clone(), on_submit.clone(), on_cancel.clone());
+        field.escape = *escape;
     }
+    !matches!(live, Some(FieldTarget::Masked { .. }))
 }
 
 /// Whether a plain field takes the keys arriving now. A masked field armed anywhere in scope takes
@@ -450,10 +453,8 @@ impl App {
         // ([`App::text_field_takes_keys`]). A field whose node is gone -- the reply was sent or
         // closed and the row removed -- has nowhere to show a draft, and its callbacks belong to a
         // card that no longer exists, so the next key is what finally lets it go.
-        if focused_alive != Some(false) {
-            if let Some(field) = self.focused_text_field.as_mut() {
-                refresh_callbacks(field, scene.surface(&field.surface_id));
-            }
+        let plain = |field: &mut FocusedTextField| refresh_callbacks(field, scene.surface(&field.surface_id));
+        if focused_alive != Some(false) && self.focused_text_field.as_mut().is_none_or(plain) {
             return;
         }
         debug!(2; "the focused textfield is gone; dropping what was typed");
@@ -568,7 +569,10 @@ impl App {
         }
         // Clone before callbacks can write a signal and re-resolve the scene.
         let Some(field) = self.focused_text_field.as_mut() else { return };
-        refresh_callbacks(field, self.client.scene().surface(&field.surface_id));
+        if !refresh_callbacks(field, self.client.scene().surface(&field.surface_id)) {
+            self.focus_text_field(None);
+            return;
+        }
         let (text, on_change, on_submit, on_cancel, surface_id, field_id) = (
             field.buffer.clone(),
             field.on_change.clone(),
@@ -646,7 +650,7 @@ mod tests {
             escape: Escape::Pass,
             ..draft(0, "typed")
         };
-        refresh_callbacks(&mut field, Some(&tree));
+        assert!(refresh_callbacks(&mut field, Some(&tree)), "a plain node keeps its focus");
         let live = node::fields::textfield::on_submit.read(&node.properties).unwrap();
         assert!(live.is_some() && field.on_submit == live, "on_submit is the node's own");
         assert!(field.on_change.is_none(), "the node declares no on_change");
@@ -654,9 +658,25 @@ mod tests {
 
         let other = lua.create_function(|_, _: String| Ok(())).unwrap();
         let rebuilt = tree_with(&lua, vec![with_property(plain_textfield(&lua), "on_change", Value::Function(other))]);
-        refresh_callbacks(&mut field, Some(&rebuilt));
+        assert!(refresh_callbacks(&mut field, Some(&rebuilt)), "so does a node not found");
         assert!(field.on_submit == live, "a tree without the field's node keeps what it had");
         assert_eq!(field.buffer, "typed", "the draft is not the callbacks' to touch");
+
+        // The node is still there but declares neither callback: Enter must not reach the old one.
+        let mut bare = textfield(&lua, None);
+        bare.id = field.id;
+        refresh_callbacks(&mut field, Some(&tree_with(&lua, vec![bare])));
+        assert!(field.on_submit.is_none(), "a node that dropped on_submit calls nothing");
+
+        // A signal turned the node masked under a plain focus: typed keys must never reach Lua.
+        field.on_change = Some(lua.create_function(|_, _: String| Ok(())).unwrap());
+        let mut masked = textfield(&lua, Some(secure_submit_table(&lua, "lock", "authenticate")));
+        masked.id = field.id;
+        assert!(
+            !refresh_callbacks(&mut field, Some(&tree_with(&lua, vec![masked]))),
+            "a node turned masked drops the plain focus"
+        );
+        assert!(field.on_change.is_none(), "and hears no keys through it meanwhile");
     }
 
     /// ADR-0189. A submit clears the buffer and reports that clearing through `on_change("")`. If
