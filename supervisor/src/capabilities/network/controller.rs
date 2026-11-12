@@ -106,8 +106,13 @@ impl NetworkController {
         forward(profiles, NetworkSignal::SavedChanged, events.clone());
         let vpn = Arc::<Mutex<super::vpn::VpnState>>::default();
         super::secret_agent::export(&connection, Arc::clone(&vpn), events.clone()).await;
-        super::vpn::forward_active_changes(&connection, events.clone()).await;
+        let nm_owner = Arc::default();
+        super::vpn::forward_active_changes(&connection, Arc::clone(&nm_owner), events.clone()).await;
         let mut owners = settings.inner().receive_owner_changed().await?;
+        // Read after subscribing, so a change in between lands in `owners` and overwrites it.
+        let dbus = zbus::fdo::DBusProxy::new(&connection).await?;
+        *nm_owner.lock().expect("mutex poisoned") =
+            dbus.get_name_owner(settings.inner().destination().clone()).await.ok();
         let (owner_events, owner_vpn) = (events.clone(), Arc::clone(&vpn));
         let owner_connection = connection.clone();
         tokio::spawn(async move {
@@ -117,6 +122,7 @@ impl NetworkController {
             while let Some(owner) = owners.next().await
                 && owner_events.send(NetworkSignal::SavedChanged).is_ok()
             {
+                *nm_owner.lock().expect("mutex poisoned") = owner.clone().map(Into::into);
                 // Its secret request died with the NetworkManager that asked; a prompt would block the next.
                 super::secret_agent::drop_request(&owner_vpn, &owner_events, false, |_| true);
                 // A restarted NetworkManager forgot the agent. With no owner, a call would D-Bus-activate it.

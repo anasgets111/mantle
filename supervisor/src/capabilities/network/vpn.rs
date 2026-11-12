@@ -1,10 +1,12 @@
 //! Saved VPN and WireGuard profiles: listing, `connect_vpn`/`disconnect_vpn` and the verdict.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt;
 use shared::state::network::{VpnError, VpnInfo, VpnKind};
 use tokio::sync::mpsc::UnboundedSender;
+use zbus::names::OwnedUniqueName;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 use super::connect::{ACTIVATION_CEILING, ActiveConnectionProxy};
@@ -55,19 +57,22 @@ fn failure_text(reason: u32) -> &'static str {
 }
 
 /// Every active connection's StateChanged, which `ActiveConnections` does not report.
-pub(super) async fn forward_active_changes(connection: &zbus::Connection, events: UnboundedSender<NetworkSignal>) {
+pub(super) async fn forward_active_changes(
+    connection: &zbus::Connection,
+    nm_owner: Arc<Mutex<Option<OwnedUniqueName>>>,
+    events: UnboundedSender<NetworkSignal>,
+) {
     let rule = "type='signal',sender='org.freedesktop.NetworkManager',interface='org.freedesktop.NetworkManager.Connection.Active',member='StateChanged'";
     let rule = zbus::MatchRule::try_from(rule).expect("a valid match rule");
     // The bus applies `sender` to broadcasts only, and zbus cannot match a well-known name: a
-    // signal sent to the Supervisor directly still lands here, so check it against NM's owner.
-    let bus = connection.clone();
+    // signal sent to the Supervisor directly still lands here, so check it against NM's owner. A bus
+    // call here would stall the connection's reader once a flood fills the stream's queue.
     let subscribed = zbus::MessageStream::for_match_rule(rule, connection, None).await.map(|stream| {
         Box::pin(stream.filter(move |message| {
-            let (bus, message) = (bus.clone(), message.as_ref().ok().cloned());
-            async move {
-                let Some(message) = message else { return false };
-                crate::capabilities::sent_by_owner(&bus, &message.header(), "org.freedesktop.NetworkManager").await
-            }
+            let header = message.as_ref().ok().map(zbus::Message::header);
+            let owner = nm_owner.lock().expect("mutex poisoned");
+            let sender = header.as_ref().and_then(zbus::message::Header::sender);
+            std::future::ready(matches!((owner.as_deref(), sender), (Some(owner), Some(sender)) if owner == sender))
         }))
     });
     let subscribed = subscribed.map(|stream| (stream, futures_util::stream::empty::<()>()));
@@ -210,7 +215,6 @@ impl NetworkController {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
@@ -340,7 +344,8 @@ mod tests {
         let nm = bus.builder().name("org.freedesktop.NetworkManager").unwrap().build().await.unwrap();
         let (ours, impostor) = (bus.connection().await, bus.connection().await);
         let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
-        forward_active_changes(&ours, events).await;
+        let owner = Some(nm.unique_name().unwrap().to_owned());
+        forward_active_changes(&ours, Arc::new(Mutex::new(owner)), events).await;
         let interface = "org.freedesktop.NetworkManager.Connection.Active";
 
         let direct = ours.unique_name().unwrap().to_string();
@@ -354,6 +359,38 @@ mod tests {
         assert_eq!(within(received.recv()).await, Some(NetworkSignal::Changed));
         let more = tokio::time::timeout(Duration::from_millis(50), received.recv()).await;
         assert!(more.is_err(), "another sender's StateChanged must not rebuild the state");
+    }
+
+    #[tokio::test]
+    async fn an_impostor_flood_delays_neither_a_genuine_signal_nor_a_method_call() {
+        let bus = crate::capabilities::test_support::private_bus().await;
+        let nm = bus.builder().name("org.freedesktop.NetworkManager").unwrap().build().await.unwrap();
+        let (ours, impostor) = (bus.connection().await, bus.connection().await);
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let owner = Some(nm.unique_name().unwrap().to_owned());
+        forward_active_changes(&ours, Arc::new(Mutex::new(owner)), events).await;
+        let interface = "org.freedesktop.NetworkManager.Connection.Active";
+
+        let direct = ours.unique_name().unwrap().to_string();
+        for _ in 0..200 {
+            impostor
+                .emit_signal(Some(direct.as_str()), ACTIVE, interface, "StateChanged", &(2u32, 0u32))
+                .await
+                .unwrap();
+        }
+        zbus::fdo::DBusProxy::new(&impostor).await.unwrap().get_id().await.unwrap();
+        let bound = Duration::from_secs(2);
+        let call = async { zbus::fdo::DBusProxy::new(&ours).await.unwrap().get_id().await.unwrap() };
+        tokio::time::timeout(bound, call).await.expect("an unrelated call on the flooded connection must answer");
+        nm.emit_signal(None::<&str>, ACTIVE, interface, "StateChanged", &(2u32, 0u32)).await.unwrap();
+
+        let genuine = tokio::time::timeout(bound, received.recv()).await;
+        assert_eq!(
+            genuine.expect("NetworkManager's signal must not queue behind the flood"),
+            Some(NetworkSignal::Changed)
+        );
+        let more = tokio::time::timeout(Duration::from_millis(50), received.recv()).await;
+        assert!(more.is_err(), "the impostors' StateChanged must not rebuild the state");
     }
 
     #[tokio::test]
