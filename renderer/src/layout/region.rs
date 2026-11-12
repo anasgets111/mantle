@@ -346,12 +346,16 @@ fn collect_input_regions(
         collect_input_regions(child, rect.x, rect.y, scan, matrix, child_clip, hittable, out);
     }
     // Only an unclipped box's overflow adds to it; one rect per descendant inside it would bloat the region.
+    // Only this node's descendants are looked at: a retain over all of `out` was quadratic in claims.
     if let Some(own) = claimed {
-        let mut at = 0;
-        out.retain(|region| {
-            at += 1;
-            at <= start || !own.contains(*region)
-        });
+        let mut kept = start;
+        for at in start..out.len() {
+            if !own.contains(out[at]) {
+                out.swap(kept, at);
+                kept += 1;
+            }
+        }
+        out.truncate(kept);
     }
 }
 
@@ -837,6 +841,39 @@ mod tests {
         assert_eq!(
             overlay_input_regions(&root, 1.0),
             [PhysicalRect { x0: 0, y0: 0, x1: 100, y1: 50 }, PhysicalRect { x0: 80, y0: 0, x1: 120, y1: 20 }]
+        );
+
+        let r = |x0, y0, x1, y1| PhysicalRect { x0, y0, x1, y1 };
+        let bx = |rect, kids| region_node(1, "rect", rect, solid_paint(), kids);
+        let leaf = |x, y, w, h| bx((x, y, w, h), vec![]);
+        let scan = |kids| overlay_input_regions(&region_node(2, "panel", (0.0, 0.0, 300.0, 300.0), None, kids), 1.0);
+        let moved = |x, y, w, h, tx| {
+            let mut n = leaf(x, y, w, h);
+            n.transform.translate = (tx, 0.0);
+            n
+        };
+        let prior = leaf(5.0, 5.0, 10.0, 10.0);
+        for (kids, extra) in [
+            (vec![], vec![]),
+            (vec![leaf(10.0, 10.0, 20.0, 20.0)], vec![]),
+            (
+                vec![leaf(80.0, 0.0, 30.0, 10.0), leaf(80.0, 20.0, 40.0, 10.0)],
+                vec![r(80, 0, 110, 10), r(80, 20, 120, 30)],
+            ),
+        ] {
+            let want: Vec<_> = [r(5, 5, 15, 15), r(0, 0, 100, 50)].into_iter().chain(extra).collect();
+            assert_eq!(scan(vec![prior.clone(), bx((0.0, 0.0, 100.0, 50.0), kids)]), want);
+        }
+        let nested = bx(
+            (10.0, 10.0, 20.0, 20.0),
+            vec![leaf(0.0, 0.0, 10.0, 10.0), leaf(25.0, 0.0, 10.0, 10.0), leaf(70.0, 0.0, 40.0, 10.0)],
+        );
+        let clipped = region_node(3, "column", (80.0, 30.0, 40.0, 20.0), None, vec![leaf(0.0, 0.0, 60.0, 10.0)])
+            .with_clip(node::ClipShape::Box);
+        let kids = vec![nested, moved(0.0, 0.0, 15.0, 10.0, 95.0), moved(90.0, 0.0, 10.0, 10.0, -50.0), clipped];
+        assert_eq!(
+            scan(vec![prior, bx((0.0, 0.0, 100.0, 50.0), kids)]),
+            [r(5, 5, 15, 15), r(0, 0, 100, 50), r(80, 10, 120, 20), r(95, 0, 110, 10), r(80, 30, 120, 40)]
         );
     }
 
