@@ -262,6 +262,11 @@ impl RendererClient {
     pub fn tick_animations(&mut self, due: &[String], now: std::time::Instant) -> Vec<String> {
         let instances = self.instances.iter().filter(|instance| due.contains(&instance.instance_id));
         let ticked = self.scene.tick(instances, &self.shaping, self.loader.lua(), now);
+        // A windowed list the tick left short of its viewport builds again, as after a pass.
+        for cell in self.scene.read_by_lua(self.dirty.take_quiet()) {
+            self.dirty.mark_cell(cell);
+            self.owes_pass = true;
+        }
         self.mark_layout_readers();
         ticked
     }
@@ -1130,6 +1135,40 @@ mod tests {
         assert!(client.re_resolve_if_dirty());
         client.loader.lua().load("h:set(400)").exec().unwrap();
         assert!(client.re_resolve_if_dirty());
+        assert!((400.0..4000.0).contains(&built(&client)), "windowed, and built to {}", built(&client));
+    }
+
+    /// The same hint when a tween, not a pass, grows the viewport: the next pass builds the rows.
+    #[test]
+    fn a_windowed_list_a_tween_outgrew_builds_again_on_the_next_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            r#"
+            h = state("h", 100)
+            local rows = {}
+            for i = 1, 200 do rows[i] = "r" .. i end
+            return panel { id = "bar", layer = "top", child = column { children = {
+                list { width = 50, height = h, scroll = scroll("s"), items = rows,
+                    animate = { height = { duration = 100, easing = "linear" } },
+                    key = function(k) return k end, each = function() return rect { height = 20 } end },
+            } } }
+            "#,
+        );
+        let (mut client, _rx) = test_client(&path);
+        assert!(run_startup(&mut client));
+        let built = |client: &RendererClient| {
+            let list = &client.scene.surface("bar@TEST").unwrap().children[0].children[0];
+            list.children.last().map_or(0.0, |row| row.rect.y + row.rect.height)
+        };
+        client.loader.lua().load("h:set(101)").exec().unwrap();
+        assert!(client.re_resolve_if_dirty());
+        client.loader.lua().load("h:set(400)").exec().unwrap();
+        assert!(client.re_resolve_if_dirty());
+        let started = client.scene.surface("bar@TEST").unwrap().children[0].children[0].tweens[0].started;
+        client.tick_animations(&["bar@TEST".into()], started + std::time::Duration::from_millis(200));
+        assert!(client.next_wake_deadline().is_some(), "the short window owes a pass");
+        while client.re_resolve_if_dirty() {}
         assert!((400.0..4000.0).contains(&built(&client)), "windowed, and built to {}", built(&client));
     }
 
