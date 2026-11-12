@@ -394,9 +394,11 @@ mod tests {
     use mlua::Value;
 
     use super::*;
+    use crate::layout;
     use crate::layout::node::MoveTween;
     use crate::layout::node::PropMap;
     use crate::layout::scene::NodeId;
+    use crate::socket::client::tests::{run_startup, test_client, write_shell_lua};
 
     /// A `rect` carrying one paint property, the way the region scan sees one.
     fn rect_paint(key: &'static str, value: impl FnOnce(&mlua::Lua) -> Value) -> Option<PaintStyle> {
@@ -993,5 +995,96 @@ mod tests {
         let mut root = region_node(6, "panel", (0.0, 0.0, 50.0, 20.0), None, vec![card]);
         set(&mut root, false);
         assert!(overlay_input_regions(&root, 1.0).is_empty());
+    }
+
+    /// The whole `compositor_blur` path from Lua to the rects the compositor is handed (ADR-0195), on the
+    /// shape the design exists for: a full-screen surface whose click-catcher covers everything
+    /// and whose only glass is one card. A `layer-rule` blurring the surface rect flattens the
+    /// entire output; this must hand over the card alone.
+    #[test]
+    fn a_full_screen_surfaces_blur_region_is_the_card_that_asked_and_not_the_catcher() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell_lua = write_shell_lua(
+            dir.path(),
+            r##"return {
+                panel {
+                    id = "host", layer = "overlay",
+                    anchor = { top = true, bottom = true, left = true, right = true },
+                    exclusive_zone = false, width = "fill", height = "fill",
+                    child = rect { width = "fill", height = "fill", children = {
+                        rect { width = "fill", height = "fill", on_click = function() end },
+                        column { margin = { top = 260, left = 200 }, children = {
+                            rect {
+                                width = 620, height = 260, radius = 0,
+                                background = "#20222eb0", compositor_blur = true,
+                            },
+                        } },
+                    } },
+                },
+            }"##,
+        );
+        let (mut client, _rx) = test_client(&shell_lua);
+        assert!(run_startup(&mut client), "the config must resolve into a scene");
+        let tree = client.scene().surface("host@TEST").expect("the panel resolved");
+
+        assert_eq!(
+            layout::blur_regions(tree, 1.0),
+            [crate::text::snap::PhysicalRect { x0: 200, y0: 260, x1: 820, y1: 520 }],
+            "the card that asked, at its surface-local position"
+        );
+        assert_eq!(
+            layout::overlay_input_regions(tree, 1.0),
+            [
+                crate::text::snap::PhysicalRect { x0: 0, y0: 0, x1: 1920, y1: 1080 },
+                crate::text::snap::PhysicalRect { x0: 200, y0: 260, x1: 820, y1: 520 }
+            ],
+            "while the catcher still takes every click, which is the difference between the two walks"
+        );
+    }
+
+    /// ADR-0204. A `Background` wallpaper paints an opaque box and a full-surface image and can
+    /// receive nothing, so it must claim no input: it occludes nothing, and claiming the output
+    /// stopped the compositor clearing window focus over an empty workspace. The same tree on `Top`
+    /// keeps the paint proxy, because there a drawn card must not leak a click to the window behind it.
+    #[test]
+    fn overlay_input_regions_follow_the_layer() {
+        for (layer, expected, case) in [
+            (
+                "background",
+                crate::text::snap::PhysicalRect { x0: 0, y0: 0, x1: 120, y1: 40 },
+                "the handler's box alone; the painted ground claims nothing",
+            ),
+            (
+                "top",
+                crate::text::snap::PhysicalRect { x0: 0, y0: 0, x1: 1920, y1: 1080 },
+                "the painted ground claims the surface and the walk stops there",
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let shell_lua = write_shell_lua(
+                dir.path(),
+                &format!(
+                    r##"return {{
+                    panel {{
+                        id = "host", layer = "{layer}",
+                        anchor = {{ top = true, bottom = true, left = true, right = true }},
+                        exclusive_zone = "ignore", width = "fill", height = "fill",
+                        background = "#11111bff",
+                        child = rect {{
+                            width = "fill", height = "fill", background = "#202020ff",
+                            children = {{
+                                rect {{ width = 120, height = 40, on_click = function() end }},
+                            }},
+                        }},
+                    }},
+                }}"##
+                ),
+            );
+            let (mut client, _rx) = test_client(&shell_lua);
+            assert!(run_startup(&mut client), "{layer}: the config must resolve into a scene");
+            let tree = client.scene().surface("host@TEST").expect("the panel resolved");
+
+            assert_eq!(layout::overlay_input_regions(tree, 1.0), [expected], "{layer}: {case}");
+        }
     }
 }

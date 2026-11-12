@@ -9,6 +9,9 @@
 //!
 //! This file is the socket thread's transport; the Wayland thread's [`RendererClient`] is `client`'s.
 
+#[cfg(test)]
+pub(crate) mod client;
+#[cfg(not(test))]
 mod client;
 
 pub use client::{FrameOutcome, RendererClient};
