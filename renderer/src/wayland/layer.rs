@@ -174,19 +174,6 @@ fn set_margin(layer: &LayerSurface, margin: node::EdgeInsets) {
     layer.set_margin(margin.top as i32, margin.right as i32, margin.bottom as i32, margin.left as i32);
 }
 
-/// State for a kept panel when `visible` turns true, based on whether its create configure was
-/// acked. [`App::bind_and_clear`] records the size; `App::unbind` resets it to `(0, 0)`. No
-/// configure carries zero on both axes.
-///
-/// Startup-created hidden panels are usually already configured. An `osd` shown in the same
-/// dispatch turn can still have no ack; attaching then triggers niri's "must ack the initial
-/// configure before attaching buffer" error. Measured boot crash rate: roughly one run in four,
-/// each costing a generation restart. Waiting costs nothing because [`App::bind_and_clear`] will
-/// finish the show when the configure arrives.
-fn map_state_for_kept_layer(configured_size: (u32, u32)) -> MapState {
-    if configured_size == (0, 0) { MapState::AwaitingConfigure } else { MapState::Mapped }
-}
-
 /// An `exclusive_zone` zone from the compositor-configured size, not creation-time guesses (`Fill` has
 /// no size yet). One top/bottom edge reserves height; one left/right edge reserves width; all
 /// other anchor shapes reserve `0` because the protocol defines only those strips.
@@ -356,26 +343,17 @@ impl App {
         });
     }
 
-    /// Shows a `panel` (ADR-0088). The role holding a `LayerSurface` distinguishes two states.
-    ///
-    /// **Never shown.** [`App::create_panel`] already built a bufferless surface. Painting attaches
-    /// the first buffer and maps it only after its configure is acked.
-    ///
-    /// **Hidden after being shown.** [`App::drop_role_object`] destroyed the object, so rebuild from the last
-    /// spec and wait in [`MapState::AwaitingConfigure`]; attaching before the initial ack is the
-    /// protocol error niri reports.
+    /// Shows a `panel` (ADR-0088). An unmapped panel has no layer object: [`App::create_panel`]
+    /// defers it for a hidden panel, and [`App::drop_role_object`] destroyed it for one hidden after
+    /// being shown. Build it from the last spec and wait in [`MapState::AwaitingConfigure`];
+    /// attaching before the initial ack is the protocol error niri reports.
     ///
     /// Repeat [`App::create_panel`]'s guard because signal-bound `width`/`height` can turn a fixed
     /// axis into `Fill` after creation; `set_size(_, 0)` would kill the connection.
     pub(super) fn show_panel(&mut self, qh: &QueueHandle<App>, index: usize) {
-        let TrackedRole::Panel { layer, spec, output, output_size, measured, .. } = &self.surfaces[index].role else {
+        let TrackedRole::Panel { spec, output, output_size, measured, .. } = &self.surfaces[index].role else {
             return;
         };
-        if layer.is_some() {
-            self.surfaces[index].map_state = map_state_for_kept_layer(self.surfaces[index].configured_size);
-            debug!("{} mapping: visible = true", self.surfaces[index].surface_id);
-            return;
-        }
         // `measured` is this pass's: [`App::apply_resolved_state`] writes it from the solved root
         // before it gets here, so a panel measured from its content is created at the size the
         // tree that is about to be painted actually takes.
@@ -574,20 +552,6 @@ mod tests {
         assert_eq!(
             keyboard_interactivity_for(node::KeyboardInteractivity::Exclusive),
             KeyboardInteractivity::Exclusive
-        );
-    }
-
-    #[test]
-    fn a_panel_shown_before_its_first_configure_waits_for_the_ack_instead_of_attaching() {
-        assert_eq!(
-            map_state_for_kept_layer((0, 0)),
-            MapState::AwaitingConfigure,
-            "nothing acked yet, so painting here would be the protocol error that kills the connection"
-        );
-        assert_eq!(
-            map_state_for_kept_layer((1920, 39)),
-            MapState::Mapped,
-            "the ordinary case: created hidden at startup, configured long before anything showed it"
         );
     }
 
