@@ -260,8 +260,10 @@ impl App {
         if gone {
             debug!(2; "the surface holding the focused secure_submit field is gone; dropping it and scrubbing its buffer");
             self.focus_secure_submit(None);
-            // No `leave` follows either, so no press held there may be released into what is left.
+            // No `leave` follows either, so no press held there may be released or repeat into what is
+            // left. Not `keyboard_lost`: the keyboard may stay on a parent, with its modifiers still held.
             self.pressed_keys.clear();
+            self.repeating = None;
         }
     }
 
