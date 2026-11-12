@@ -753,6 +753,29 @@ mod tests {
     }
 
     #[test]
+    fn flipping_a_list_direction_resizes_the_kept_items_for_the_new_axis() {
+        let (lua, surface) = surface_from(
+            r#"dir = state("dir", "vertical")
+                return panel { id = "bar", child = column { width = 100, height = 60, children = {
+                    list { direction = dir, items = { "a", "b" }, width = "fill", height = "fill",
+                        key = function(name) return name end,
+                        each = function(name) built = (built or 0) + 1 return rect { id = name, width = "fill", height = 10 } end }
+                } } }"#,
+        );
+        let shaping = ShapingHandle::spawn();
+        let mut scene = Scene::new();
+        let apply =
+            |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        apply(&mut scene);
+        lua.load(r#"dir:set("horizontal")"#).exec().unwrap();
+        apply(&mut scene);
+        let items = &scene.surface("bar@TEST").unwrap().children[0].children[0].children;
+        let sizes: Vec<_> = items.iter().map(|item| (item.rect.width, item.rect.height)).collect();
+        assert_eq!(sizes, [(50.0, 10.0), (50.0, 10.0)]);
+        assert_eq!(lua.globals().get::<usize>("built").unwrap(), 2, "the items were kept, not rebuilt");
+    }
+
+    #[test]
     fn keyed_list_items_do_not_move_from_frozen_rects_on_thaw() {
         let (lua, surface) = surface_from(
             r#"open = state("open", true)

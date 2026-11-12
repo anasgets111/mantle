@@ -240,7 +240,8 @@ pub(super) fn prepare_retained(
     let paint = if relayout || refit { node::paint_style(kind, &properties)? } else { old_paint };
     let taffy_id = match old_taffy {
         Some(taffy_id) => {
-            if relayout {
+            // A kept `list` item's parent can change axis with no change of its own.
+            if relayout || move_on_solve {
                 let measure = measure_for(id, kind, paint.as_ref(), &properties, &style)?;
                 update_solver_node(tree, taffy_id, kind, &properties, &style, parent_axis, measure)?;
             }
