@@ -1,6 +1,5 @@
 //! Wayland selection for plain-field copy and bounded paste into either field kind.
 
-use std::hash::{BuildHasher, RandomState};
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -37,8 +36,7 @@ enum PasteTarget {
 
 pub(in crate::wayland) struct PendingPaste {
     target: PasteTarget,
-    keys: RandomState,
-    state: Option<u64>,
+    edits: u64,
     offer: wayland_client::protocol::wl_data_offer::WlDataOffer,
     result: std::sync::mpsc::Receiver<Option<Zeroizing<Vec<u8>>>>,
 }
@@ -76,20 +74,19 @@ fn read_offer(mut pipe: ReadPipe, multiline: bool) -> Option<Zeroizing<Vec<u8>>>
     }
 }
 
-/// What a paste needs unchanged to land: its target focused, with the text and selection it had,
-/// so a scroll or another field's edit does not cancel it. Keyed hashing keeps no copy of a secret.
-fn target_state(
+/// A paste lands on the field it was asked for, unless that field was edited, moved its caret,
+/// changed mask or lost focus since: `asked` and `now` are `App::field_edits`, which counts those.
+fn paste_lands(
     target: &PasteTarget,
-    secure: Option<(&FocusedField, &[u8])>,
+    (asked, now): (u64, u64),
+    secure: Option<&FocusedField>,
     plain: Option<&FocusedTextField>,
-    keys: &RandomState,
-) -> Option<u64> {
-    match target {
-        PasteTarget::Masked(field) => secure.filter(|(focus, _)| *focus == field).map(|(_, text)| keys.hash_one(text)),
-        PasteTarget::Plain { surface_id, id } => plain
-            .filter(|field| field.surface_id == *surface_id && field.id == *id)
-            .map(|field| keys.hash_one((&field.buffer, field.selection))),
-    }
+) -> bool {
+    asked == now
+        && match target {
+            PasteTarget::Masked(field) => secure == Some(field),
+            PasteTarget::Plain { surface_id, id } => plain.is_some_and(|f| f.surface_id == *surface_id && f.id == *id),
+        }
 }
 
 fn selected_text(field: &FocusedTextField) -> Option<Arc<str>> {
@@ -204,19 +201,7 @@ impl App {
         {
             return;
         }
-        let keys = RandomState::new();
-        self.paste = Some(PendingPaste {
-            state: self.paste_target_state(&target, &keys),
-            target,
-            keys,
-            offer: offer.inner().clone(),
-            result: rx,
-        });
-    }
-
-    fn paste_target_state(&self, target: &PasteTarget, keys: &RandomState) -> Option<u64> {
-        let secure = self.focused_secure_submit.as_ref().map(|focus| (&**focus, focus.buffer.expose_secret()));
-        target_state(target, secure, self.focused_text_field.as_ref(), keys)
+        self.paste = Some(PendingPaste { target, edits: self.field_edits, offer: offer.inner().clone(), result: rx });
     }
 
     pub(in crate::wayland) fn finish_paste(&mut self) {
@@ -233,7 +218,8 @@ impl App {
             .as_ref()
             .and_then(|device| device.data().selection_offer())
             .is_some_and(|offer| offer.inner() == &paste.offer);
-        if !offer_current || self.paste_target_state(&paste.target, &paste.keys) != paste.state {
+        let (secure, plain) = (self.focused_secure_submit.as_deref(), self.focused_text_field.as_ref());
+        if !offer_current || !paste_lands(&paste.target, (paste.edits, self.field_edits), secure, plain) {
             return;
         }
         let Some(bytes) = result else { return };
@@ -242,16 +228,12 @@ impl App {
             return;
         }
         match paste.target {
-            PasteTarget::Masked(field)
-                if self.focused_secure_submit.as_deref() == Some(&field) && self.secure_field_takes_keys() =>
-            {
+            PasteTarget::Masked(_) if self.secure_field_takes_keys() => {
                 self.push_secure_text(text);
                 self.mark_focused_secure_submit_changed();
             }
-            PasteTarget::Plain { surface_id, id }
-                if self.focused_text_field.as_ref().is_some_and(|field| {
-                    field.surface_id == surface_id && field.id == id && self.text_field_takes_keys(field)
-                }) =>
+            PasteTarget::Plain { .. }
+                if self.focused_text_field.as_ref().is_some_and(|field| self.text_field_takes_keys(field)) =>
             {
                 self.apply_plain_action_inner(super::keyboard::KeyAction::Append(text), None, false);
             }
@@ -358,39 +340,30 @@ mod tests {
         assert_eq!(selected_text(&long).as_deref().map(str::len), Some(MAX_TEXT_BYTES + 1));
     }
 
+    /// The count is `App::field_edits`, which only the focused field's text, selection, mask and
+    /// focus changes advance; a scroll or an edit elsewhere leaves it.
     #[test]
-    fn only_the_targets_own_text_selection_or_focus_cancels_a_paste() {
-        let keys = RandomState::new();
-        let field = super::keyboard::tests::draft(1, "hello");
-        let target = PasteTarget::Plain { surface_id: field.surface_id.clone(), id: field.id };
-        let recorded = target_state(&target, None, Some(&field), &keys);
-        assert!(recorded.is_some());
-        // A scroll or another field's edit leaves the target's text and selection alone.
-        assert_eq!(target_state(&target, None, Some(&field.clone()), &keys), recorded);
-        let typed = FocusedTextField { buffer: "hello!".into(), ..field.clone() };
-        assert_ne!(target_state(&target, None, Some(&typed), &keys), recorded, "its text changed");
-        let moved = FocusedTextField { selection: (0, 5), ..field.clone() };
-        assert_ne!(target_state(&target, None, Some(&moved), &keys), recorded, "its selection changed");
-        let other = super::keyboard::tests::draft(2, "hello");
-        assert_eq!(target_state(&target, None, Some(&other), &keys), None, "focus moved to another field");
-        assert_eq!(target_state(&target, None, None, &keys), None, "the target is gone");
+    fn a_paste_lands_only_on_its_target_with_no_edit_counted_since() {
+        let field = super::keyboard::tests::draft(1, "");
+        let plain = PasteTarget::Plain { surface_id: field.surface_id.clone(), id: field.id };
+        assert!(paste_lands(&plain, (7, 7), None, Some(&field)), "a scroll or another field's edit counts nothing");
+        // Typing then submitting leaves the same empty text, and a caret move the same text: both counted.
+        assert!(!paste_lands(&plain, (7, 9), None, Some(&field)), "the target was edited, however it ended");
+        let other = super::keyboard::tests::draft(2, "");
+        assert!(!paste_lands(&plain, (7, 7), None, Some(&other)), "focus moved to another field");
+        assert!(!paste_lands(&plain, (7, 7), None, None), "the target is gone");
 
         let secret = FocusedField {
             surface_id: "lock@eDP-1".into(),
             id: layout::scene::NodeId::test(3),
             target: node::SecureSubmitTarget { capability: "lock".into(), action: "authenticate".into(), name: None },
         };
-        let target = PasteTarget::Masked(secret.clone());
-        let recorded = target_state(&target, Some((&secret, b"hunter2")), None, &keys);
-        assert!(recorded.is_some());
-        assert_eq!(target_state(&target, Some((&secret, b"hunter2")), Some(&field), &keys), recorded);
-        assert_ne!(
-            target_state(&target, Some((&secret, b"hunter3")), None, &keys),
-            recorded,
-            "a secret of the same length"
-        );
+        let masked = PasteTarget::Masked(secret.clone());
+        assert!(paste_lands(&masked, (7, 7), Some(&secret), None));
+        assert!(!paste_lands(&masked, (7, 8), Some(&secret), None), "an unmask scrubbing an empty buffer counts");
         let elsewhere = FocusedField { id: layout::scene::NodeId::test(4), ..secret.clone() };
-        assert_eq!(target_state(&target, Some((&elsewhere, b"hunter2")), None, &keys), None);
+        assert!(!paste_lands(&masked, (7, 7), Some(&elsewhere), None));
+        assert!(!paste_lands(&masked, (7, 7), None, Some(&field)), "a plain field is not the masked target");
     }
 
     #[test]

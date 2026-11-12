@@ -166,12 +166,14 @@ impl App {
     }
 
     pub(in crate::wayland) fn mark_focused_text_field_changed(&mut self) {
+        self.field_edits = self.field_edits.wrapping_add(1);
         if let Some(id) = self.focused_text_field.as_ref().map(|f| f.surface_id.clone()) {
             self.mark_field_input_changed(&id);
         }
     }
 
     pub(in crate::wayland) fn mark_focused_secure_submit_changed(&mut self) {
+        self.field_edits = self.field_edits.wrapping_add(1);
         if let Some(id) = self.focused_secure_submit.as_ref().map(|f| f.surface_id.clone()) {
             self.mark_field_input_changed(&id);
         }

@@ -103,6 +103,8 @@ pub struct App {
     clipboard_writers: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     paste: Option<input::PendingPaste>,
     field_revision: u64,
+    /// The focused field's edits, caret moves, mask and focus changes: what cancels a pending paste.
+    field_edits: u64,
     text_input: input::TextInput,
     waker: crate::wake::Waker,
     layer_shell: LayerShell,

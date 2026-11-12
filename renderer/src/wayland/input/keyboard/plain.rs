@@ -354,6 +354,7 @@ impl App {
         if store_draft(&mut self.parked_drafts, self.focused_text_field.as_mut(), surface_id, id, text) {
             self.cancel_text_input_composition();
             self.text_input.note_other_change();
+            self.field_edits = self.field_edits.wrapping_add(1);
         }
         self.mark_field_input_changed(surface_id);
         self.fit_field(surface_id, id);
@@ -595,7 +596,8 @@ impl App {
         if edit.cancelled {
             self.focus_text_field(None);
         }
-        self.mark_field_input_changed(&surface_id);
+        // `focus_text_field(None)` above already repainted a cancelled field's surface.
+        self.mark_focused_text_field_changed();
         if edit.changed {
             self.fit_field(&surface_id, field_id);
         }

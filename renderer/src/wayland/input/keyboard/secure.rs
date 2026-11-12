@@ -58,7 +58,7 @@ fn submit_frame_for(
 /// buffer lives inside the focus, so no plaintext can outlive it: dropping zeroizes.
 pub(in crate::wayland) struct SecureFocus {
     pub(super) field: FocusedField,
-    pub(in crate::wayland::input) buffer: shared::SecureBuffer,
+    pub(super) buffer: shared::SecureBuffer,
     /// The field is `masked = false`, so paint may draw `buffer` (see [`follow_mask`]).
     pub(super) revealed: bool,
 }

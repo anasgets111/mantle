@@ -81,6 +81,7 @@ pub fn run(
         clipboard_writers: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         paste: None,
         field_revision: 0,
+        field_edits: 0,
         text_input,
         waker: waker.clone(),
         layer_shell,

@@ -327,7 +327,7 @@ impl App {
             (field.selection, field.span, field.goal_x) = (selection, Span { produced: selection, ..span }, None);
             field.history.break_typing();
             self.text_input.note_other_change();
-            self.mark_field_input_changed(instance_id);
+            self.mark_focused_text_field_changed();
             self.fit_focused_field();
         }
     }
