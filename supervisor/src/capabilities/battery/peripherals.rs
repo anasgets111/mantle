@@ -11,7 +11,7 @@ use tokio::task::JoinHandle;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 use super::controller::{DISPLAY_DEVICE, device_properties, from_upower, get};
-use crate::capabilities::{forward_until_closed, properties_proxy};
+use crate::capabilities::{RETRY_FIRST, forward_until_closed, next_delay, properties_proxy};
 
 #[zbus::proxy(
     interface = "org.freedesktop.UPower",
@@ -195,14 +195,18 @@ pub(super) async fn run(connection: zbus::Connection, updates: UnboundedSender<R
     };
     let (changed, mut device_changes) = tokio::sync::mpsc::unbounded_channel();
     let mut watches = HashMap::new();
+    let mut retry = RETRY_FIRST;
     loop {
         let enumerated = refresh(&upower, &connection, &mut watches, &changed, &updates).await;
         if updates.is_closed() {
             return;
         }
+        if enumerated {
+            retry = RETRY_FIRST;
+        }
         tokio::select! {
             _ = updates.closed() => return,
-            _ = tokio::time::sleep(std::time::Duration::from_secs(1)), if !enumerated => {},
+            _ = tokio::time::sleep(retry), if !enumerated => retry = next_delay(retry),
             Some(_) = added.next() => {},
             Some(_) = removed.next() => {},
             Some(_) = device_changes.recv() => {},
@@ -322,6 +326,43 @@ mod tests {
         let unreadable = next_matching(&mut updates, |list| list.first().is_some_and(|d| d.kind == "unknown")).await;
         assert_eq!((unreadable[0].percent, unreadable[0].level.as_deref()), (None, None));
 
+        follower.abort();
+    }
+
+    struct Unwell(mpsc::UnboundedSender<tokio::time::Instant>);
+
+    #[zbus::interface(name = "org.freedesktop.UPower")]
+    impl Unwell {
+        fn enumerate_devices(&self) -> zbus::fdo::Result<Vec<OwnedObjectPath>> {
+            let _ = self.0.send(tokio::time::Instant::now());
+            Err(zbus::fdo::Error::Failed("UPower is not working".into()))
+        }
+    }
+
+    /// A UPower that never answers is asked less often each time, not once a second for ever.
+    #[tokio::test]
+    async fn a_failing_enumeration_is_retried_with_a_growing_delay() {
+        let bus = private_bus().await;
+        let (asked, mut asks) = mpsc::unbounded_channel();
+        let _service = bus
+            .builder()
+            .serve_at("/org/freedesktop/UPower", Unwell(asked))
+            .unwrap()
+            .name("org.freedesktop.UPower")
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let (tx, _updates) = mpsc::unbounded_channel();
+        let follower = tokio::spawn(run(bus.connection().await, tx));
+
+        // Real time: paused time would jump over the bus round trips. The gaps are 1 s, then 2 s.
+        let mut times = Vec::new();
+        for _ in 0..3 {
+            times.push(within(asks.recv()).await.unwrap());
+        }
+        let gaps: Vec<_> = times.windows(2).map(|pair| pair[1] - pair[0]).collect();
+        assert!(gaps[1] >= gaps[0] * 3 / 2, "the retry gaps stayed flat: {gaps:?}");
         follower.abort();
     }
 
