@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: `mantle.sysinfo.disks` keeps its last list when `lsblk` prints something unreadable. It used to empty the list until the next read.
 - Fixed: `mantle log` keeps recording after the terminal the shell was started from closes, and the terminal keeps its copy if the log cannot be written. Each used to stop the other.
 - Fixed: `mantle.sysinfo` `cpu_percent` no longer counts guest time twice on a machine running virtual machines. It read lower than the real load while guests were busy.
 - Fixed: `mantle.audio` returns to the lowest-id sink and source as the default when PipeWire clears its default-device metadata, such as with `pw-metadata -d`. It used to keep marking the device named before the clear.

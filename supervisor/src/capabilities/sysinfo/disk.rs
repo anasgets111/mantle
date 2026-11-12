@@ -53,11 +53,10 @@ fn collect_partitions(
     }
 }
 
-/// Parses `lsblk --json --bytes` output into physical disk records.
-pub fn parse_lsblk(json_text: &str) -> Vec<DiskDevice> {
-    let Ok(resp) = serde_json::from_str::<LsblkResponse>(json_text) else {
-        return Vec::new();
-    };
+/// Parses `lsblk --json --bytes` output into physical disk records; `None` for output that is not
+/// `lsblk`'s JSON, so the caller keeps the last good list.
+pub fn parse_lsblk(json_text: &str) -> Option<Vec<DiskDevice>> {
+    let resp = serde_json::from_str::<LsblkResponse>(json_text).ok()?;
 
     let mut disks = Vec::new();
     for dev in resp.blockdevices {
@@ -88,7 +87,7 @@ pub fn parse_lsblk(json_text: &str) -> Vec<DiskDevice> {
         });
     }
 
-    disks
+    Some(disks)
 }
 
 /// Set while an `lsblk` child is alive. One stuck in D-state (hung network mount) survives
@@ -100,7 +99,7 @@ static LSBLK_BUSY: AtomicBool = AtomicBool::new(false);
 pub async fn read_disks() -> Option<Vec<DiskDevice>> {
     let args = ["--json", "--bytes", "--output", "NAME,TYPE,MOUNTPOINTS,FSUSED,FSSIZE"];
     let stdout = run_logged("lsblk", &args, Duration::from_secs(3), &LSBLK_BUSY, false).await?;
-    Some(parse_lsblk(&String::from_utf8_lossy(&stdout)))
+    parse_lsblk(&String::from_utf8_lossy(&stdout))
 }
 
 #[cfg(test)]
@@ -117,7 +116,7 @@ mod tests {
 
     #[test]
     fn parse_lsblk_parses_disks_and_ignores_zram() {
-        let disks = parse_lsblk(SAMPLE_LSBLK);
+        let disks = parse_lsblk(SAMPLE_LSBLK).unwrap();
         assert_eq!(disks.len(), 1);
         let nvme = &disks[0];
         assert_eq!(nvme.name, "nvme0n1");
@@ -141,14 +140,14 @@ mod tests {
             {"name":"sda1","mountpoints":["/a"],"fsused":50,"fssize":100},
             {"name":"sda2","mountpoints":["/b"],"fsused":50,"fssize":100}
         ]}]}"#;
-        let disks = parse_lsblk(json);
+        let disks = parse_lsblk(json).unwrap();
         assert_eq!(disks[0].used_bytes, 100);
         assert_eq!(disks[0].total_bytes, 200);
     }
 
     #[test]
     fn parse_lsblk_handles_malformed_json_gracefully() {
-        assert_eq!(parse_lsblk("not json"), Vec::new());
-        assert_eq!(parse_lsblk("{}"), Vec::new());
+        assert_eq!(parse_lsblk("not json"), None, "unparsable output keeps the last list");
+        assert_eq!(parse_lsblk("{}"), Some(Vec::new()));
     }
 }
