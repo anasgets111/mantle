@@ -294,7 +294,7 @@ impl Capability {
         }
         let mut arguments = Vec::with_capacity(args.len());
         for (index, value) in args.into_iter().enumerate() {
-            // ponytail: only a top-level NaN or inf; one inside a table marshals as null (upgrade: walk tables).
+            // A top-level NaN or inf gets a word here; `to_json` refuses one inside a table.
             if let Value::Number(n) = value
                 && !n.is_finite()
             {
@@ -306,7 +306,7 @@ impl Capability {
                 )));
             }
             // A function or userdata has no JSON form, so only here can the error name its slot.
-            let json = lua.from_value::<serde_json::Value>(value).map_err(|err| {
+            let json = super::json::to_json(lua, value, Default::default()).map_err(|err| {
                 mlua::Error::runtime(format!(
                     "mantle.{}:{action} could not marshal argument {}: {err}",
                     self.name,
@@ -444,6 +444,8 @@ pub(crate) mod tests {
         for (call, needle) in [
             (r#"mantle.probe:set_app_volume("firefox", function() end)"#, "argument 2"),
             ("mantle.probe:set_app_volume(7, 'x')", "bad argument #2: expected a number, got string \"x\""),
+            // 2^40 paths through shared subtables: refused by count before mlua expands them.
+            ("local t = { 'x' } for _ = 1, 40 do t = { t, t } end mantle.probe:set_app_volume(7, t)", "values"),
         ] {
             let err = lua.load(call).exec().unwrap_err();
             assert!(err.to_string().contains(needle), "{call}: the error must name the offending slot: {err}");

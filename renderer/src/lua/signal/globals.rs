@@ -3,9 +3,10 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
-use mlua::{AnyUserData, IntoLua, Lua, LuaSerdeExt, Table, Value, Variadic};
+use mlua::{AnyUserData, IntoLua, Lua, Table, Value, Variadic};
 
 use crate::layout::node::preview_for_error;
+use crate::lua::json::to_json;
 use crate::lua::location::Site;
 use crate::lua::luacats::{As, Generic, LuaType, SignalOf, lua_fn};
 use crate::lua::marshal::{Num, a_type, list_entries, out_of_range, rect_table};
@@ -113,7 +114,7 @@ pub fn declared_states(lua: &Lua) -> Vec<String> {
     let mut lines: Vec<String> = (registry.2.iter())
         .filter_map(|name| Some((name, registry.0.get(name)?)))
         .map(|(name, (signal, _))| {
-            let json = signal.get_value(lua).ok().and_then(|value| lua.from_value::<serde_json::Value>(value).ok());
+            let json = signal.get_value(lua).ok().and_then(|value| to_json(lua, value, Default::default()).ok());
             json.map_or_else(|| name.clone(), |json| format!("{name}\t{json}"))
         })
         .collect();
@@ -804,11 +805,12 @@ mod tests {
         lua.load(r#"state("open", false):set(true) state("kind", "true") state("tags", { "a" }) state("fn", print)"#)
             .exec()
             .unwrap();
+        lua.load("local t = { 'x' } for _ = 1, 40 do t = { t, t } end state('dag', t)").exec().unwrap();
         promote_states(&lua);
         let listed = declared_states(&lua);
         // A string stays quoted, so `mantle set kind '"true"'` restores a string and not a boolean;
         // a function has no JSON, so its name stands alone.
-        assert_eq!(listed, ["fn", "kind\t\"true\"", "open\ttrue", "tags\t[\"a\"]"]);
+        assert_eq!(listed, ["dag", "fn", "kind\t\"true\"", "open\ttrue", "tags\t[\"a\"]"]);
 
         // A reload that raises part-way is never promoted: the scene on screen, and its names, stay.
         begin_evaluation(&lua);

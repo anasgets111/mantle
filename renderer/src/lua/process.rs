@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use mlua::{Function, Lua, LuaSerdeExt, Value};
+use mlua::{Function, Lua, Value};
 use shared::ProcessStream;
 
 use super::luacats::{As, lua_class, lua_fn, spelled};
@@ -208,12 +208,12 @@ pub fn register(lua: &Lua, registry: ProcessRegistry) -> mlua::Result<()> {
             opts: Option<As<Value, DetachOpts>>,
         ) {
             let opts = opts
-                .map(|opts| lua.from_value::<serde_json::Value>(opts.0))
+                .map(|opts| super::json::to_json(lua, opts.0, Default::default()))
                 .transpose()
                 .and_then(|json| {
                     serde_json::from_value::<Option<shared::action::LaunchOpts>>(json.clone().unwrap_or_default())
                         .map(|_| json)
-                        .map_err(mlua::Error::external)
+                        .map_err(|err| err.to_string())
                 })
                 .map_err(|err| mlua::Error::runtime(format!("process.detach: opts: {err}")))?;
             detach_registry.detach(&cmd, &args.unwrap_or_default(), opts);
@@ -298,6 +298,11 @@ mod tests {
         let err = lua.load(r#"process.detach("kate", nil, { env = { A = true } })"#).exec().unwrap_err();
         assert!(err.to_string().contains("process.detach: opts"), "{err}");
         assert!(queued_command(&mut rx).is_none(), "a refused env must not reach the Supervisor");
+        let err = lua
+            .load("local t = { 'x' } for _ = 1, 40 do t = { t, t } end process.detach('kate', nil, { env = t })")
+            .exec()
+            .unwrap_err();
+        assert!(err.to_string().contains("values"), "{err}");
 
         lua.load(r#"process.detach("kate")"#).exec().unwrap();
         let bare = queued_command(&mut rx).unwrap();

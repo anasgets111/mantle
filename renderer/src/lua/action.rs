@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use mlua::{Function, Lua, LuaSerdeExt, MultiValue, Value, Variadic};
+use mlua::{Function, Lua, MultiValue, Value, Variadic};
 
 use super::signal::CpuBudget;
 
@@ -25,8 +25,8 @@ use super::signal::CpuBudget;
 /// megabyte is already past what `mantle call` can usefully print.
 const MAX_ANSWER_BYTES: usize = 1024 * 1024;
 
-/// Whether `value` serializes past [`MAX_ANSWER_BYTES`], counted off the Lua value: `from_value`
-/// builds a node per path through shared subtables, so 40 levels of `{ t, t }` would fill memory first.
+/// Whether `value` serializes past [`MAX_ANSWER_BYTES`], counted off the Lua value: `to_json` caps
+/// values, not bytes, so a megabyte string held in a thousand slots would expand to a gigabyte first.
 fn over_the_limit(value: &Value) -> bool {
     struct Count(usize);
     impl std::io::Write for Count {
@@ -99,14 +99,8 @@ pub fn dispatch(lua: &Lua, name: &str, arguments: &[serde_json::Value]) -> share
         Ok(value) if over_the_limit(&value) => shared::CallOutcome::Failed(format!(
             "what it returned is over the {MAX_ANSWER_BYTES}-byte limit for an answer"
         )),
-        Ok(value) => match lua.from_value::<serde_json::Value>(value) {
-            Ok(json) => match serde_json::to_vec(&json).map(|bytes| bytes.len()) {
-                Ok(len) if len > MAX_ANSWER_BYTES => shared::CallOutcome::Failed(format!(
-                    "what it returned is {len} bytes, over the {MAX_ANSWER_BYTES}-byte limit for an answer"
-                )),
-                Ok(_) => shared::CallOutcome::Returned(json),
-                Err(err) => shared::CallOutcome::Failed(format!("what it returned does not serialize: {err}")),
-            },
+        Ok(value) => match super::json::to_json(lua, value, Default::default()) {
+            Ok(json) => shared::CallOutcome::Returned(json),
             Err(err) => shared::CallOutcome::Failed(format!("what it returned does not convert to JSON: {err}")),
         },
         Err(err) => shared::CallOutcome::Failed(crate::lua::describe(&err)),

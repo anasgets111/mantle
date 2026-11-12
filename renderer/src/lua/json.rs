@@ -37,10 +37,15 @@ fn decode(lua: &Lua, bytes: &[u8]) -> Result<Value, String> {
 /// serde_json writes as `null`, nesting past what decode reads, a shared table expanding past
 /// [`MAX_VALUES`], a sparse array, and a decoded array given a named key.
 fn encode(lua: &Lua, value: Value) -> Result<String, String> {
-    Walk { array_mt: lua.array_metatable(), path: Vec::new(), left: MAX_VALUES }.reject_unencodable(&value)?;
     let options = mlua::serde::de::Options::new().detect_mixed_tables(true).sort_keys(true);
-    let json: serde_json::Value = lua.from_value_with(value, options).map_err(|err| err.to_string())?;
-    serde_json::to_string(&json).map_err(|err| err.to_string())
+    serde_json::to_string(&to_json(lua, value, options)?).map_err(|err| err.to_string())
+}
+
+/// The one conversion of a config's value to JSON, behind [`Walk`]: capability arguments, states,
+/// `process.detach` options, `mantle call` answers and `json.encode`.
+pub fn to_json(lua: &Lua, value: Value, options: mlua::serde::de::Options) -> Result<serde_json::Value, String> {
+    Walk { array_mt: lua.array_metatable(), path: Vec::new(), left: MAX_VALUES }.reject_unencodable(&value)?;
+    lua.from_value_with(value, options).map_err(|err| err.to_string())
 }
 
 /// The deepest nesting `decode` reads back: serde_json's limit of 128 stops at the 128th container.
