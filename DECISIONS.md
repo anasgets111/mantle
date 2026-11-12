@@ -8904,3 +8904,14 @@ and still missed values scaled by a bounding box or transform. A huge offset or 
 panics in tiny-skia; a killable helper process (planned) covers that.
 Correction: a huge `feGaussianBlur` `stdDeviation` also overflows resvg's box blur, and CSS
 `filter: blur()` or `drop-shadow()` reaches it with no `fe*` element; the helper covers those too.
+
+## 0389. SVG rasterizes in-process: the killable helper was designed and declined
+
+ADR-0387 and ADR-0388 deferred a killable helper process for the SVG cases the caps cannot reach.
+Design: one long-lived helper per decode worker, about 300 lines, 3 s and 10 s kill deadlines.
+Measured: a typical icon rasterizes in 0.05 ms in-process and 0.09 ms through a helper; a helper
+starts in about 1.7 ms; the slowest installed icon at 512 px takes 0.68 s. The maintainer chose to
+accept the remaining risk rather than add a process boundary. Kept: the structural caps (ADR-0384)
+and the filter allowlist (ADR-0387, ADR-0388). Open: a hostile SVG can still abort the Renderer
+through a few filter values, and can still freeze it when drawn as an `icon` on the dispatch thread.
+Rejected: the helper process, which stays the upgrade path if that risk stops being acceptable.

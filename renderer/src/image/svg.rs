@@ -34,7 +34,7 @@ const MAX_SVG_PATTERNS: usize = 16;
 /// aborting the renderer, and no installed icon uses one (ADR-0388). ponytail: a huge offset or
 /// filter region still panics in tiny-skia, a huge `stdDeviation` overflows resvg's box blur, and
 /// CSS `filter: blur()` or `drop-shadow()` reaches it with no `fe*` element for the walk to see.
-/// Upgrade: rasterize in a killable helper process.
+/// Upgrade: rasterize in a killable helper process (designed, declined: ADR-0389).
 const SVG_FILTERS: [&str; 8] =
     ["feGaussianBlur", "feOffset", "feFlood", "feMerge", "feMergeNode", "feComposite", "feColorMatrix", "feBlend"];
 
