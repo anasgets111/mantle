@@ -204,6 +204,10 @@ fn build_store(lua: &Lua, file: &str, storage: mlua::AnyUserData, defaults: Tabl
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lua;
+    use crate::lua::tests::probe;
+    use crate::socket::client::tests::{bare_client, push, queued_frame};
+    use shared::RendererFrame;
 
     /// A reload's `persistent_table` call hands back the same table, so its edited defaults have to reach it.
     #[test]
@@ -251,6 +255,174 @@ mod tests {
         ] {
             let err = file_path(path).unwrap_err().to_string();
             assert!(err.contains(needle), "{path:?}: the message has to say what to fix: {err}");
+        }
+    }
+
+    #[test]
+    fn a_declared_store_opens_the_file_the_config_named_and_nothing_else() {
+        // ADR-0136: path, file name, and defaults belong to config; the envelope must carry exactly
+        // `shell.lua`'s values, not a directory chosen here.
+        let (client, mut outbound_rx) = bare_client();
+
+        client
+            .loader()
+            .lua()
+            .load(r#"store = persistent_table { path = "/tmp/bar/settings.json", defaults = { theme = "mocha" } }"#)
+            .exec()
+            .unwrap();
+
+        let RendererFrame::Command(envelope) = queued_frame(&mut outbound_rx) else {
+            panic!("declaring a store must queue a RendererFrame::Command");
+        };
+        assert_eq!(envelope.params.capability, "storage");
+        assert_eq!(envelope.params.action, "open");
+        assert_eq!(
+            envelope.params.arguments,
+            vec![serde_json::json!("/tmp/bar/settings.json"), serde_json::json!({ "theme": "mocha" })],
+            "the joined path is the key both sides use, so it is built once, here"
+        );
+    }
+
+    #[test]
+    fn a_stores_key_reads_the_value_the_supervisor_pushed_for_that_file() {
+        let (client, _outbound_rx) = bare_client();
+        client.loader().lua().load(r#"store = persistent_table { path = "/tmp/bar/state.json" }"#).exec().unwrap();
+
+        push(
+            &client,
+            "storage",
+            1,
+            serde_json::json!({
+                "contents": { "/tmp/bar/state.json": { "theme": "latte", "wallpaper": { "fit": "cover" } } }
+            }),
+        );
+
+        let setup = r#"
+            theme = store.theme:get()
+            fit = store.wallpaper:get().fit
+            unset = store.nothing_here:get()
+        "#;
+        assert_eq!(probe::<String>(client.loader(), setup, "theme"), "latte");
+        assert_eq!(probe::<String>(client.loader(), setup, "fit"), "cover", "a table value is stored whole");
+        assert_eq!(
+            probe::<Option<String>>(client.loader(), setup, "unset"),
+            None,
+            "a key the file does not have reads nil, so a property falls back to its documented default"
+        );
+    }
+
+    #[test]
+    fn a_stores_declared_default_reads_before_the_first_push_and_whenever_the_file_lacks_the_key() {
+        let (client, _outbound_rx) = bare_client();
+        client
+            .loader()
+            .lua()
+            .load(r#"store = persistent_table { path = "/tmp/bar/state.json", defaults = { theme = "mocha" } }"#)
+            .exec()
+            .unwrap();
+
+        let setup = r#"theme = store.theme:get() other = store.other:get()"#;
+        assert_eq!(probe::<String>(client.loader(), setup, "theme"), "mocha");
+        assert_eq!(probe::<Option<String>>(client.loader(), setup, "other"), None, "no default, no value");
+
+        push(&client, "storage", 1, serde_json::json!({ "contents": { "/tmp/bar/state.json": { "theme": "latte" } } }));
+        assert_eq!(probe::<String>(client.loader(), setup, "theme"), "latte");
+
+        // `set("theme", nil)` deletes the key; the next push lacks it and the default shows again.
+        push(&client, "storage", 2, serde_json::json!({ "contents": { "/tmp/bar/state.json": {} } }));
+        assert_eq!(probe::<String>(client.loader(), setup, "theme"), "mocha");
+        assert_eq!(probe::<Option<String>>(client.loader(), setup, "other"), None);
+    }
+
+    #[test]
+    fn a_stores_key_runs_on_change_for_a_write_to_that_key_only() {
+        let (client, _outbound_rx) = bare_client();
+        let lua = client.loader().lua();
+        lua.load(
+            r#"
+            store = persistent_table { path = "/tmp/bar/state.json", defaults = { theme = "mocha" } }
+            seen = {}
+            store.theme:on_change(function(now, before) seen[#seen + 1] = before .. "->" .. now end)
+            "#,
+        )
+        .exec()
+        .unwrap();
+        let push = |revision, payload| {
+            push(&client, "storage", revision, payload);
+            lua::signal::run_state_handlers(lua);
+        };
+
+        push(1, serde_json::json!({ "contents": { "/tmp/bar/state.json": { "theme": "latte" } } }));
+        push(2, serde_json::json!({ "contents": { "/tmp/bar/state.json": { "theme": "latte", "font": "Inter" } } }));
+
+        let seen: Vec<String> = lua.load("return seen").eval().unwrap();
+        assert_eq!(seen, ["mocha->latte"], "a write to another key fires nothing");
+    }
+
+    #[test]
+    fn a_store_the_first_push_omits_still_reads_its_defaults() {
+        let (client, _outbound_rx) = bare_client();
+        client
+            .loader()
+            .lua()
+            .load(
+                r#"
+                a = persistent_table { path = "/tmp/bar/a.json", defaults = { theme = "mocha" } }
+                b = persistent_table { path = "/tmp/bar/b.json", defaults = { theme = "frappe" } }"#,
+            )
+            .exec()
+            .unwrap();
+        push(&client, "storage", 1, serde_json::json!({ "contents": { "/tmp/bar/a.json": { "theme": "latte" } } }));
+
+        let setup = r#"a_theme = a.theme:get() b_theme = b.theme:get() b_other = b.other:get()"#;
+        assert_eq!(probe::<String>(client.loader(), setup, "a_theme"), "latte");
+        assert_eq!(probe::<String>(client.loader(), setup, "b_theme"), "frappe", "B has not been pushed yet");
+        assert_eq!(probe::<Option<String>>(client.loader(), setup, "b_other"), None);
+    }
+
+    #[test]
+    fn a_stores_write_names_the_same_file_the_declaration_did() {
+        let (client, mut outbound_rx) = bare_client();
+        client.loader().lua().load(r#"store = persistent_table { path = "/tmp/bar/state.json" }"#).exec().unwrap();
+        let _open = queued_frame(&mut outbound_rx);
+
+        client.loader().lua().load(r#"store:set("theme", "latte")"#).exec().unwrap();
+
+        let RendererFrame::Command(envelope) = queued_frame(&mut outbound_rx) else {
+            panic!("a store write must be queued as RendererFrame::Command");
+        };
+        assert_eq!(envelope.params.action, "set");
+        assert_eq!(
+            envelope.params.arguments,
+            vec![serde_json::json!("/tmp/bar/state.json"), serde_json::json!("theme"), serde_json::json!("latte")]
+        );
+    }
+
+    #[test]
+    fn two_declarations_of_one_file_are_one_table() {
+        // A module and `shell.lua` may redeclare a store, and in-place reload reruns all
+        // declarations: all three executions land on one table and signal per key, or one `:set()`
+        // leaves the other stale.
+        let (client, _outbound_rx) = bare_client();
+
+        let setup = r#"
+            first = persistent_table { path = "/tmp/bar/state.json" }
+            second = persistent_table { path = "/tmp/bar/state.json" }
+            same = rawequal(first, second)
+        "#;
+        assert!(probe::<bool>(client.loader(), setup, "same"), "the file path is the identity");
+    }
+
+    #[test]
+    fn a_store_path_must_be_an_absolute_file_and_name_is_gone() {
+        let (client, _outbound_rx) = bare_client();
+        for (spec, needle) in [
+            (r#"{ path = "bar/state.json" }"#, "must be absolute"),
+            (r#"{ path = "/tmp/bar/" }"#, "must name a file"),
+            (r#"{ path = "/tmp/bar", name = "state.json" }"#, "name"),
+        ] {
+            let err = client.loader().lua().load(format!("persistent_table {spec}")).exec().unwrap_err().to_string();
+            assert!(err.contains(needle), "{spec}: {err}");
         }
     }
 }
