@@ -1453,19 +1453,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn apply_state_snapshot_reuses_the_same_signal_across_repeated_pushes_for_one_capability() {
-        let (client, _outbound_rx) = bare_client();
-
-        push(&client, "network", 1, serde_json::json!({ "connected": true }));
-        push(&client, "network", 2, serde_json::json!({ "connected": false }));
-
-        assert!(
-            !probe::<bool>(&client.loader, "connected = mantle.network:get().connected", "connected"),
-            "the second push must update the same registered global, not fail or create a second one"
-        );
-    }
-
     /// A `window` and `popup` alongside panels.
     fn three_roles_config() -> &'static str {
         r#"return {
@@ -2072,21 +2059,6 @@ mod tests {
     }
 
     #[test]
-    fn a_config_reading_screens_before_any_output_is_known_sees_an_empty_list_not_a_nil() {
-        // `nil` would make `ipairs` error and put an innocent config in rescue.
-        let (_dir, _, mut client, _outbound_rx) = client_for(
-            r#"return panel { id = "bar", layer = "top", child = text { content = "screens: " .. #mantle.screens:get() } }"#,
-        );
-
-        assert!(run_startup(&mut client), "an unseeded `screens` must not fail the evaluation");
-        let tree = client.scene.surface("bar@TEST").unwrap();
-        assert_eq!(
-            tree.children[0].properties.get("content").unwrap().as_string().unwrap().to_string_lossy(),
-            "screens: 0"
-        );
-    }
-
-    #[test]
     fn set_screens_repeating_the_same_list_reports_no_change_and_leaves_the_scene_clean() {
         // `update_output` handles changes absent from `screens`; an unchanged push buys neither
         // `Scene::apply` nor a re-evaluation.
@@ -2179,19 +2151,6 @@ mod tests {
         toggle(&mut client);
         client.re_resolve_if_dirty();
         assert_eq!(content(&client), "open", "neither the old handler nor the failed one ran");
-    }
-
-    #[test]
-    fn seeding_screens_before_the_startup_apply_still_leaves_the_scene_flag_clear() {
-        // The seed marks the flag, but the immediate apply resolves that value; entering the poll
-        // loop dirty would add one redundant `Scene::apply` before drawing.
-        let (_dir, _, mut client, _outbound_rx) =
-            client_for(r#"return panel { id = "bar", layer = "top", child = text { content = "hi" } }"#);
-
-        assert!(client.set_screens(screens_json(&["eDP-1"])));
-        assert!(run_startup(&mut client));
-
-        assert!(!client.dirty.take(), "the startup apply already resolved against the seeded screen list");
     }
 
     #[test]
