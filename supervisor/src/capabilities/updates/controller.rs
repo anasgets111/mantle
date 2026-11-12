@@ -25,6 +25,9 @@ use shared::state::updates::UpdateCandidate;
 /// Tail length for [`UpdatesState::install_log`]. Enough to hold a failure and nearby lines; a
 /// 2,000-package run belongs in a file, not a state payload reserialized on every progress line.
 const LOG_TAIL_LINES: usize = 200;
+/// Bytes kept of each `install_log` line, so a full tail of escaped binary output fits one frame;
+/// `install.log` keeps the whole line.
+const MAX_LOG_LINE_BYTES: usize = 4096;
 
 /// How often a scheduled check asks whether it is due; also the retry delay after a failure.
 const CHECK_POLL: Duration = Duration::from_secs(300);
@@ -348,10 +351,11 @@ async fn run_install_with_child(
 /// Appends to the install-log tail, dropping its oldest line at capacity. Keep a `Vec`, not a
 /// `VecDeque`: the state serializes as a JSON array, and shifting 200 pointers is not the cost
 /// here.
-fn push_log_line(log: &mut Vec<String>, line: String) {
+fn push_log_line(log: &mut Vec<String>, mut line: String) {
     if log.len() >= LOG_TAIL_LINES {
         log.remove(0);
     }
+    line.truncate(line.floor_char_boundary(MAX_LOG_LINE_BYTES));
     log.push(line);
 }
 
@@ -893,6 +897,24 @@ exit {exit_code}"
         let (mut next, _output) = spawn_logged(&sh("echo next".into()), &log, "tail").unwrap();
         within(next.wait()).await.unwrap();
         assert_eq!(std::fs::read_to_string(&log).unwrap(), "next\n", "a finished install's log is replaced");
+    }
+
+    /// The proof that no install output can push `mantle.updates` past the frame cap: a full tail of
+    /// `BoundedLines`' longest lines, in characters JSON escapes to six bytes. The package list and
+    /// error texts are left small: no install output reaches them.
+    #[test]
+    fn the_largest_updates_snapshot_fits_in_one_frame() {
+        use crate::capabilities::test_support::{snapshot_frame_len, worst_case_text};
+        let mut state = UpdatesState::default();
+        for _ in 0..LOG_TAIL_LINES {
+            push_log_line(&mut state.install_log, worst_case_text(64 * 1024));
+        }
+
+        let len = snapshot_frame_len(shared::Capability::Updates, &state);
+
+        assert!(len < shared::framing::MAX_FRAME_LEN, "{len} bytes");
+        push_log_line(&mut state.install_log, "a".repeat(MAX_LOG_LINE_BYTES - 1) + "é");
+        assert_eq!(state.install_log.last().map(String::len), Some(MAX_LOG_LINE_BYTES - 1), "cut before the é");
     }
 
     #[test]

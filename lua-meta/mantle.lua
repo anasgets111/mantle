@@ -793,7 +793,7 @@
 ---@field install_error? string Why the package manager could not be run or waited on, or `nil`. Its own failures are `install_exit_code`.
 ---@field install_exit_code? integer Package manager's exit code for the last install (`0` success); `nil` while running, before one, or when a signal killed it.
 ---@field install_finished_at? integer Unix seconds when the last install's process ended, whatever its status; `nil` while running, before one, or when it failed to spawn.
----@field install_log string[] The last 200 lines of install output, stdout and stderr interleaved, newest last; cleared when an install starts. All of it is in `$XDG_RUNTIME_DIR/mantle/install.log` until the next.
+---@field install_log string[] The last 200 lines of install output, each cut to 4 KiB, stdout and stderr interleaved, newest last; cleared when an install starts. All of it is in `$XDG_RUNTIME_DIR/mantle/install.log` until the next.
 ---@field install_total_steps integer Packages in the transaction; `0` until the first step line, so draw progress as indeterminate.
 ---@field installing boolean An install is running; the `install_*` fields describe the latest run.
 ---@field last_successful_check? integer Unix seconds of the last successful check (or the `checked_at` seed), else `nil`.
