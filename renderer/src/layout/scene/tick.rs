@@ -193,8 +193,8 @@ pub(super) fn prepare_retained(
     let painted = paints(&node.tweens);
     let samples = node::step(&mut node.tweens, &mut node.properties, now, lua, paint_only)?;
     // A tick keeps the size its running tween pins; a pass measures again.
-    let injected = move_on_solve
-        && node.resolve_memo.as_ref().is_some_and(|memo| drop_injected_sizes(&mut node.properties, memo.raw()));
+    let injected =
+        move_on_solve && node.resolve_memo.as_ref().is_some_and(|memo| drop_injected_sizes(&mut node.properties, memo));
     let relayout = injected || (changed && !paint_only);
     // `fit_text_to_box` rewrites a text's content only to wrap or cut it; such a paint is read fresh below.
     let refit = matches!(
@@ -656,6 +656,43 @@ mod tests {
         apply(&mut scene);
         let node = item(&scene);
         assert_eq!((node.rect.width, node.tweens.len()), (100.0, 1), "a reused item eases too");
+        scene.tick(&instances, &shaping, &lua, node.tweens[0].started + ms(100));
+        assert_eq!(item(&scene).rect.width, 200.0);
+
+        lua.load(r#"state("cw", 100):set(150)"#).exec().unwrap();
+        apply(&mut scene);
+        let node = item(&scene);
+        assert_eq!((node.rect.width, node.tweens.len()), (200.0, 1), "the settled pin is gone");
+        scene.tick(&instances, &shaping, &lua, node.tweens[0].started + ms(100));
+        assert_eq!(item(&scene).rect.width, 150.0);
+    }
+
+    #[test]
+    fn a_reused_item_with_an_omitted_width_signal_drops_the_pin_when_it_settles() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"panel { id = "bar", child = column { width = state("cw", 100), children = {
+                list { width = "fill", items = { "a" }, each = function(name)
+                    return rect { width = state("iw", nil), height = 10, align_h = "stretch", animate = { width = { duration = 100, easing = "linear" } } }
+                end } } } }"#,
+        );
+        let instances = [instance_at(&surface, full())];
+        let item = |scene: &Scene| scene.surface("bar@TEST").unwrap().children[0].children[0].children[0].clone();
+        let apply =
+            |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let ms = std::time::Duration::from_millis;
+        apply(&mut scene);
+        assert_eq!(item(&scene).rect.width, 100.0);
+
+        lua.load(r#"state("cw", 100):set(200)"#).exec().unwrap();
+        apply(&mut scene);
+        let node = item(&scene);
+        assert_eq!(
+            (node.rect.width, node.tweens.len()),
+            (100.0, 1),
+            "an omitted width signal eases like an absent width"
+        );
         scene.tick(&instances, &shaping, &lua, node.tweens[0].started + ms(100));
         assert_eq!(item(&scene).rect.width, 200.0);
 

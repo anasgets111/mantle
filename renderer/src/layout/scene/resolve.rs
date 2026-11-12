@@ -30,6 +30,8 @@ pub struct ResolveMemo {
     dropped: bool,
     /// No table property held a signal when `raw` was declared ([`node::tables_plain`]).
     tables_plain: bool,
+    /// `[width, height]` a signal in `raw` resolved to nothing: [`drop_injected_sizes`] treats them as undeclared.
+    omitted: [bool; 2],
 }
 
 /// One node's properties for this pass, displayed values and parse included, and the memo they
@@ -85,7 +87,7 @@ pub(super) fn resolve(
         // parses again: `finish` fitted its kept paint to last pass's box.
         let moving = tweens.iter().any(|tween| !tween.resting);
         node::advance(&mut tweens, &mut properties, now, lua)?;
-        let injected = drop_injected_sizes(&mut properties, &memo.raw);
+        let injected = drop_injected_sizes(&mut properties, &memo);
         let style =
             if moving || injected { Rc::new(LayoutStyle::parse(&properties)?) } else { Rc::clone(&r.layout_style) };
         let paint = if moving || kind == "text" { node::paint_style(kind, &properties)? } else { r.paint.take() };
@@ -98,7 +100,9 @@ pub(super) fn resolve(
     let shown = retained.as_deref().map(|r| (r.tweens.as_slice(), &*r.properties));
     let (tweens, movement) = node::retarget(kind, shown, &mut properties, now, lua, reentry && shown.is_none())?;
     let properties = Rc::new(properties);
-    let memo = Rc::new(ResolveMemo { raw, lua: lua.weak(), stamp, cells: frame.finish(), dropped, tables_plain });
+    let omitted = ["width", "height"].map(|key| raw.contains_key(key) && !properties.contains_key(key));
+    let memo =
+        Rc::new(ResolveMemo { raw, lua: lua.weak(), stamp, cells: frame.finish(), dropped, tables_plain, omitted });
     let paint = node::paint_style(kind, &properties)?;
     let style = Rc::new(LayoutStyle::parse(&properties)?);
     Ok(Resolved { properties, style, paint, tweens, movement: movement.map(Box::new), memo })
@@ -176,11 +180,11 @@ fn drop_refused_values(
 }
 
 /// Drops a `width`/`height` a layout injected for a content-sized axis (`pass::measure_content_sizes`)
-/// and the declaration `raw` lacks, so the next solve measures the content again.
-pub(super) fn drop_injected_sizes(properties: &mut Rc<PropMap>, raw: &PropMap) -> bool {
+/// and the declaration `memo` lacks or resolved to nothing, so the next solve measures the content again.
+pub(super) fn drop_injected_sizes(properties: &mut Rc<PropMap>, memo: &ResolveMemo) -> bool {
     let mut dropped = false;
-    for key in ["width", "height"] {
-        if properties.contains_key(key) && !raw.contains_key(key) {
+    for (key, omitted) in ["width", "height"].into_iter().zip(memo.omitted) {
+        if properties.contains_key(key) && (omitted || !memo.raw.contains_key(key)) {
             Rc::make_mut(properties).remove(key);
             dropped = true;
         }
