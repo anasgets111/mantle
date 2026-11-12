@@ -174,7 +174,7 @@ pub(super) fn walk(dir: &Path, depth: usize, dirs: &mut Vec<PathBuf>, out: &mut 
         let Ok(meta) = path.metadata() else { continue };
         if meta.is_dir() {
             walk(&path, depth + 1, dirs, out);
-        } else if path.extension().is_some_and(|ext| ext == "desktop") {
+        } else if meta.is_file() && path.extension().is_some_and(|ext| ext == "desktop") {
             out.push(path);
         }
     }
@@ -347,6 +347,20 @@ mod tests {
 
         assert_eq!(name("zed"), Some("Zed Editor"), "an exact desktop file id outranks a lowercased WM class");
         assert_eq!(name("Zed"), Some("Impostor"), "the exact WM class still resolves to the entry declaring it");
+    }
+
+    /// Reading a FIFO or device named `*.desktop` would block the scan forever.
+    #[test]
+    fn walk_lists_regular_desktop_files_only() {
+        let dir = tempfile::tempdir().unwrap();
+        write_entry(dir.path(), "real.desktop", &application("Real", ""));
+        nix::unistd::mkfifo(&dir.path().join("wedge.desktop"), nix::sys::stat::Mode::from_bits_truncate(0o600))
+            .unwrap();
+
+        let mut files = Vec::new();
+        walk(dir.path(), 0, &mut Vec::new(), &mut files);
+
+        assert_eq!(files, vec![dir.path().join("real.desktop")]);
     }
 
     #[test]
