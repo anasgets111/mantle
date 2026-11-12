@@ -8901,6 +8901,8 @@ tile and filter pass per use. Weights put every kind at 2-3 ns in release: 2^28 
 (breeze `kiten`, blurs) needs 82M, 3.3x headroom; at 512 px two icons are refused. Render stays
 inline (ADR-0122); its worst case is now bounded. Rejected: a wall-clock timeout, which cannot stop
 resvg or free a decode worker it holds, and a separate process, a new trust boundary for one call.
+Superseded by ADR-0387 (2026-11-12): `draw_cost` is removed and `image` SVGs rasterize on the decode
+workers; the refusal of an `<image>` usvg would decode per use is kept.
 
 ## 0387. SVG draw cost is not estimated; app-supplied SVG rasterizes on the decode workers
 
@@ -8928,6 +8930,8 @@ and still missed values scaled by a bounding box or transform. A huge offset or 
 panics in tiny-skia; a killable helper process (planned) covers that.
 Correction: a huge `feGaussianBlur` `stdDeviation` also overflows resvg's box blur, and CSS
 `filter: blur()` or `drop-shadow()` reaches it with no `fe*` element; the helper covers those too.
+Correction (2026-11-12): `SVG_FILTERS` (`renderer/src/image/svg.rs`) allows eight filter elements,
+including `feMergeNode` alongside `feMerge`.
 
 ## 0389. SVG rasterizes in-process: the killable helper was designed and declined
 
@@ -8939,3 +8943,4 @@ accept the remaining risk rather than add a process boundary. Kept: the structur
 and the filter allowlist (ADR-0387, ADR-0388). Open: a hostile SVG can still abort the Renderer
 through a few filter values, and can still freeze it when drawn as an `icon` on the dispatch thread.
 Rejected: the helper process, which stays the upgrade path if that risk stops being acceptable.
+Correction (2026-11-12): the filter allowlist is ADR-0388 alone, not ADR-0387.
