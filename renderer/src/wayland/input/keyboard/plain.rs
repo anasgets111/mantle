@@ -452,9 +452,9 @@ impl App {
         self.parked_drafts = parked;
         // Liveness of the surface and of the node, not of the keyboard (ADR-0108): a field whose
         // surface lost the keyboard keeps its draft and simply takes no keys until it is back
-        // ([`App::text_field_takes_keys`]). A field whose node is gone -- the reply was sent or
-        // closed and the row removed -- has nowhere to show a draft, and its callbacks belong to a
-        // card that no longer exists, so the next key is what finally lets it go.
+        // ([`App::text_field_takes_keys`]). [`App::drop_unusable_text_field_focus`] already drops
+        // a focused field removed from a live surface; this also clears parked drafts whose node or
+        // surface is gone, or a focused field whose surface went unlive or whose node turned masked.
         let plain = |field: &mut FocusedTextField| refresh_callbacks(field, scene.surface(&field.surface_id));
         if focused_alive != Some(false) && self.focused_text_field.as_mut().is_none_or(plain) {
             return;

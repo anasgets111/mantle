@@ -1138,8 +1138,6 @@ pub(super) mod tests {
         &scene.surface("bar@TEST").unwrap().children[0]
     }
 
-    /// A segmented control: labels of different widths share the widest one's slot, its margins
-    /// included, and a content-sized row is that many slots wide.
     /// A sized `homogeneous` row writes no slot, so flipping it on must not keep the tracks of the row before.
     #[test]
     fn flipping_a_sized_row_homogeneous_gives_equal_shares() {
@@ -1154,6 +1152,8 @@ pub(super) mod tests {
         assert_eq!(xs, [0.0, 33.0, 67.0]);
     }
 
+    /// A segmented control: labels of different widths share the widest one's slot, its margins
+    /// included, and a content-sized row is that many slots wide.
     #[test]
     fn a_content_sized_homogeneous_row_gives_every_child_the_widest_slot() {
         let alone = |text: &str, margin: &str| {

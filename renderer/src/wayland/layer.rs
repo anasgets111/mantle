@@ -397,11 +397,10 @@ impl App {
     ///
     /// Only a `Mapped` surface: a bufferless commit would be the protocol's re-map procedure.
     pub(super) fn apply_spec_change(&mut self, index: usize, mut fresh: PanelSpec, visible: bool) {
-        // [`App::apply_visibility`]'s own unmap test, run before it: a mapped panel going invisible
-        // loses its layer object later this pass, so requests sent now die with it. Not just waste --
+        // [`App::apply_visibility`]'s own unmap test, run before it: a panel going invisible loses
+        // its layer object later this pass, so requests sent now die with it. Not just waste --
         // `keyboard_interactivity: None` on a still-mapped surface makes Hyprland refocus the last
-        // focused window, onto its workspace. A panel that is merely still hidden keeps its layer and
-        // [`App::show_panel`] never re-sends, so it does need them.
+        // focused window, onto its workspace.
         let unmapping =
             !visible && matches!(self.surfaces[index].map_state, MapState::AwaitingConfigure | MapState::Mapped);
         let (TrackedRole::Panel { layer: Some(layer), spec: applied, output_size, measured, requested, .. }, false) =
