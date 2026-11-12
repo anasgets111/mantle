@@ -43,10 +43,10 @@ fn flip_damage(damage: &mut [DamageRect], height: u32) {
     }
 }
 
-/// `create_buffer`'s arguments for a compositor-chosen size, `None` past the protocol's `i32`,
-/// pool size included.
+/// `create_buffer`'s arguments for a compositor-chosen size, `None` for an empty one or past the
+/// protocol's `i32`, pool size included.
 fn buffer_layout(width: u32, height: u32, stride: u32) -> Option<(i32, i32, i32, usize)> {
-    let len = i32::try_from(u64::from(stride) * u64::from(height)).ok()?;
+    let len = i32::try_from(u64::from(stride) * u64::from(height)).ok().filter(|&len| len > 0 && width > 0)?;
     Some((i32::try_from(width).ok()?, i32::try_from(height).ok()?, i32::try_from(stride).ok()?, len as usize))
 }
 
@@ -94,7 +94,7 @@ pub(super) fn negotiate_buffer(
         return existing;
     }
     let (w, h, s, len) = buffer_layout(width, height, stride)?;
-    let mut pool = SlotPool::new(len.max(1), shm).ok()?;
+    let mut pool = SlotPool::new(len, shm).ok()?;
     let (buffer, _canvas) = pool.create_buffer(w, h, s, format).ok()?;
     Some(NegotiatedBuffer { pool, buffer, width, height, stride, format })
 }
@@ -142,7 +142,10 @@ mod tests {
         assert_eq!(buffer_layout(1 << 31, 1, u32::MAX), None, "width past i32");
         assert_eq!(buffer_layout(16, 1 << 31, 64), None, "height past i32");
         assert_eq!(buffer_layout(16_384, 1 << 15, 65_536), None, "a pool past i32::MAX bytes");
-        assert_eq!(buffer_layout(0, 0, 0), Some((0, 0, 0, 0)));
+        // wl_shm_pool.create_buffer answers a zero dimension with a fatal `invalid_stride`.
+        for (width, height, stride) in [(0, 0, 0), (0, 10, 64), (16, 0, 64)] {
+            assert_eq!(buffer_layout(width, height, stride), None, "{width}x{height}");
+        }
     }
 
     #[test]
