@@ -17,7 +17,7 @@ use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::MissedTickBehavior;
 
-use super::super::{publish, udev_watch};
+use super::super::udev_watch;
 
 /// Resolved sysfs nodes for all three lock indicators. All-or-nothing: a missing sibling makes
 /// [`resolve_lock_leds`] return `None` because hardware exposes all three or none.
@@ -231,7 +231,7 @@ async fn poll_leds<T>(
         tokio::select! {
             woke = &mut until => return Some(woke),
             _ = tick.tick() => {
-                if !publish(state, events, read_leds(leds, state)) {
+                if store_leds(state, read_leds(leds)) && events.send(()).is_err() {
                     return None;
                 }
             }
@@ -239,18 +239,25 @@ async fn poll_leds<T>(
     }
 }
 
-/// `state` with the three locks re-read from sysfs; an unreadable LED keeps its last value.
-fn read_leds(leds: &LockLeds, state: &Mutex<KeyboardState>) -> KeyboardState {
-    let mut next = state.lock().expect("mutex poisoned").clone();
-    for (led, lock) in
-        [(&leds.caps, &mut next.caps_lock), (&leds.num, &mut next.num_lock), (&leds.scroll, &mut next.scroll_lock)]
-    {
-        match read_led_on(led) {
-            Ok(on) => *lock = on,
-            Err(err) => debug!("failed to read {led:?}; keeping its last state: {err}"),
+/// The caps, num and scroll LEDs read from sysfs; an unreadable one is `None` and keeps its last value.
+fn read_leds(leds: &LockLeds) -> [Option<bool>; 3] {
+    [&leds.caps, &leds.num, &leds.scroll].map(|led| {
+        read_led_on(led).inspect_err(|err| debug!("failed to read {led:?}; keeping its last state: {err}")).ok()
+    })
+}
+
+/// Stores the LEDs read into the three lock fields and nothing else, so a layout or backlight another
+/// task wrote meanwhile stands. Whether a lock changed.
+fn store_leds(state: &Mutex<KeyboardState>, read: [Option<bool>; 3]) -> bool {
+    let mut guard = state.lock().expect("mutex poisoned");
+    let state = &mut *guard;
+    let mut changed = false;
+    for (lock, on) in [&mut state.caps_lock, &mut state.num_lock, &mut state.scroll_lock].into_iter().zip(read) {
+        if let Some(on) = on {
+            changed |= std::mem::replace(lock, on) != on;
         }
     }
-    next
+    changed
 }
 
 /// Forwards `EV_LED` changes until the fd ends, which unplugging the keyboard does with `ENODEV`.
@@ -304,8 +311,7 @@ pub(super) fn watch_locks(leds_root: &Path, state: Arc<Mutex<KeyboardState>>, ev
     let mut stream = open_led_stream(&state);
     // Read before the first snapshot, as evdev's `sync_locks` is, so it never starts at `false`.
     if let (None, Some(leds)) = (&stream, resolve_lock_leds(&leds_root)) {
-        let next = read_leds(&leds, &state);
-        *state.lock().expect("mutex poisoned") = next;
+        store_leds(&state, read_leds(&leds));
     }
     tokio::spawn(async move {
         let mut watch = udev_watch("input")
@@ -360,6 +366,7 @@ pub(super) fn watch_locks(leds_root: &Path, state: Arc<Mutex<KeyboardState>>, ev
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::test_support::within;
 
     fn write_led(dir: &Path, name: &str, brightness: &str) -> PathBuf {
         let led_dir = dir.join(name);
@@ -439,6 +446,42 @@ mod tests {
         drop(rx);
         std::fs::write(caps.join("brightness"), "0").unwrap();
         assert_eq!(poll_leds(&leds, &state, &tx, std::future::pending::<()>()).await, None);
+    }
+
+    /// Another task's write to the layout, made while a poll reads the LEDs, must outlive the poll.
+    /// A FIFO for `brightness` holds the read open until the test has made that write.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_poll_leaves_a_layout_set_while_it_reads_the_leds() {
+        let root = tempfile::tempdir().unwrap();
+        let caps = write_led(root.path(), "input3::capslock", "0");
+        write_led(root.path(), "input3::numlock", "0");
+        write_led(root.path(), "input3::scrolllock", "0");
+        let fifo = caps.join("brightness");
+        std::fs::remove_file(&fifo).unwrap();
+        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
+        let leds = resolve_lock_leds(root.path()).unwrap();
+        let state = Arc::new(Mutex::new(KeyboardState::default()));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let poll = tokio::spawn({
+            let state = Arc::clone(&state);
+            async move { poll_leds(&leds, &state, &tx, stopped).await }
+        });
+
+        // Opening the write end returns once the poll has opened the read end, so it has begun.
+        let mut writer =
+            tokio::task::spawn_blocking(move || File::options().write(true).open(fifo)).await.unwrap().unwrap();
+        state.lock().unwrap().active_layout = "German".to_string();
+        io::Write::write_all(&mut writer, b"1").unwrap();
+        drop(writer); // the poll reads to end of file
+        within(rx.recv()).await.expect("the poll published the caps lock");
+        // Ends the poll before its next read, which would wait for a writer for ever.
+        stop.send(()).unwrap();
+        within(poll).await.unwrap();
+
+        let state = state.lock().unwrap();
+        assert!(state.caps_lock);
+        assert_eq!(state.active_layout, "German", "the poll wrote back the layout it read before the change");
     }
 
     fn input_event(type_: u16, code: u16, value: i32) -> [u8; 24] {
