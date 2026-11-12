@@ -116,15 +116,15 @@ An `image` crossfading between sources uses its own `transition` property, not `
 
 Every frame's value is clamped to the property's [range](runtime.md#limits-and-budgets), which
 catches overshoot from `Back`, `Elastic`, a Bezier with `y` outside `[0, 1]`, or a spring. Only
-`margin`, `translate`, `rotate`, `progress` and a `shadows` layer's `offset` and `spread` may go negative.
-`padding`, `spacing` and icon `size` have no range as plain values but tween within `[0, 8192]`.
+`margin`, `spacing`, `line_spacing`, `translate`, `rotate`, `progress` and a `shadows` layer's `offset` and
+`spread` may go negative. `padding` and icon `size` have no range as plain values but tween within `[0, 8192]`.
 Path coordinates stay within `[-8192, 8192]` and arc radii at 0 or more.
 
 ### Layout cost
 
 | Tween on | Each frame |
 | :--- | :--- |
-| `opacity`, colours, `radius`, `translate`, `scale`, `rotate`, `origin`, `progress`, `commands`, `fill`, `stroke`, `stroke_width`, `shadows`, `ring`, `effect` | Repaints; no layout pass |
+| `opacity`, colours, `radius`, `translate`, `scale`, `rotate`, `origin`, `progress`, `commands`, `shape`, `fill`, `stroke`, `stroke_width`, `trim_start`, `trim_end`, `shift`, `corner_smoothing`, `shadows`, `ring`, `effect` | Repaints; no layout pass |
 | Anything else: `width`, `height`, `margin`, `padding`, `spacing`, `font_size`, … | Lays the surface out again |
 
 Slide with `translate` and grow on hover with `scale` when surrounding nodes should stay put.

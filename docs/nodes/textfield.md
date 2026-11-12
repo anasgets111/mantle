@@ -166,7 +166,6 @@ return { panel { id = "reply", layer = "top", anchor = { bottom = true },
 | `on_cancel` alone never fires | It does not make the field focusable. Add `on_change` or `on_submit` |
 | You cannot read the draft from Lua | It arrives only through `on_change` and `on_submit`. `focus_target(name):set_text` writes it; Enter and Escape clear it; removing the node drops it |
 | `on_submit` never fires on a password field | A `secure_submit` field sends to its capability instead |
-| `font` on a `textfield` is refused | Fields use the `fonts` chain |
 | `background` on a `textfield` is refused | It is not a box. Wrap it in a `rect` |
 
 See also: [input](../guide/input.md), [list](list.md), [text](text.md), [surfaces: panel](../surfaces/panel.md).
