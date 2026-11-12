@@ -254,7 +254,7 @@ fn elide_edges<'s>(
             at(largest_fitting(n - 1, |kept| {
                 let (head, tail) = at(kept);
                 let fitted = build(head, tail);
-                measured_width(&fitted.text, &fitted.runs, face, shaping) <= width
+                measured_width(&fitted.text, &fitted.runs, face, shaping) <= width + FIT_SLACK
             }))
         }
     };
@@ -411,6 +411,24 @@ mod tests {
             }
             assert_eq!(drawn.last().unwrap().0, name, "the widest box keeps it all");
             assert_eq!(odd_and_even.len(), if elide == "middle" { 2 } else { 0 }, "both split parities occur");
+
+            let candidate = &drawn.iter().find(|(t, cut)| *cut && t.chars().count() > 6).unwrap().0;
+            let (mut scene, lua, shaping, surface) = applied(&format!(
+                r#"w = state("w", 1000)
+                return panel {{ id = "bar", child = text {{ content = "{name}", width = w, elide = "{elide}" }} }}"#
+            ));
+            let Some(PaintStyle::Text { face, .. }) = &scene.surface("bar@TEST").unwrap().children[0].paint else {
+                panic!("expected text");
+            };
+            let face = face.clone();
+            let cw = measured_width(candidate, &[], &face, &shaping);
+            assert!(measured_width(name, &[], &face, &shaping) > cw + FIT_SLACK);
+            lua.load(format!("w:set({})", cw - FIT_SLACK * 0.5)).exec().unwrap();
+            apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            assert_eq!(&drawn_text(&scene), candidate, "{elide} within FIT_SLACK");
+            lua.load(format!("w:set({})", cw - FIT_SLACK * 2.0)).exec().unwrap();
+            apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            assert!(drawn_text(&scene).chars().count() < candidate.chars().count(), "{elide} beyond FIT_SLACK");
         }
     }
 

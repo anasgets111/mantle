@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: a `text` with `elide = "start"` or `"middle"` keeps the last fitting character when layout rounds the box width a hair narrower, as `elide = "end"` already does. It used to drop one more character.
 - Fixed: a failing `mantle check` prints only its diagnostic. A capability action that an `on_change` handler ran during the check, such as `mantle.updates:check()`, used to print an `ERROR ... the control-socket writer is gone` line first, once per sample pass.
 - Fixed: a `text` with `wrap = "word"`, and a `multiline` `textfield`, break a word wider than the box inside the word, as documented. The word used to stay on one line, cut off at the box edge, and with `max_lines` and `elide` it showed no ellipsis and `elided` stayed `false`. In the field, End and a click past a row's right edge put the caret at the end of that row, not the start of the next.
 - Fixed: `mantle.applications` starts a program in the directory its `.desktop` file names in `Path=`, as Wine and Steam launchers expect. It used to start every program in the shell's own directory. A `Path` that is not a directory logs a warning and the program starts as before.
