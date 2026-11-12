@@ -151,15 +151,29 @@ pub(super) enum Motion {
     To(usize),
 }
 
-/// The clipboard action Ctrl plus the key at evdev `raw_code` (X, C, V) asks for; a masked field has
-/// no selection to cut or copy, so only paste reaches it.
-fn clipboard_chord(raw_code: u32, masked: bool) -> Option<crate::lua::focus::FieldAction> {
+/// Whether `event` is the chord key for the lowercase `letter`: by what it types, or by where it
+/// sits, evdev `raw_code`, when it types no Latin letter (ADR-0238 decision 2). Under an Arabic or
+/// Cyrillic layout the keysym is that layout's own letter, and asking only what it types loses the
+/// chord to exactly the people most likely to be using one.
+fn chord_letter(event: &KeyEvent, letter: char, raw_code: u32) -> bool {
+    match event.keysym.key_char() {
+        Some(typed) if typed.is_ascii_alphabetic() => typed.eq_ignore_ascii_case(&letter),
+        _ => event.raw_code == raw_code,
+    }
+}
+
+/// The clipboard action Ctrl plus X, C or V asks for; a masked field has no selection to cut or
+/// copy, so only paste reaches it. The codes are evdev's (linux/input-event-codes.h).
+fn clipboard_chord(event: &KeyEvent, masked: bool) -> Option<crate::lua::focus::FieldAction> {
     use crate::lua::focus::FieldAction;
-    match raw_code {
-        45 if !masked => Some(FieldAction::Cut),
-        46 if !masked => Some(FieldAction::Copy),
-        47 => Some(FieldAction::Paste),
-        _ => None,
+    if chord_letter(event, 'v', 47) {
+        Some(FieldAction::Paste)
+    } else if masked {
+        None
+    } else if chord_letter(event, 'x', 45) {
+        Some(FieldAction::Cut)
+    } else {
+        chord_letter(event, 'c', 46).then_some(FieldAction::Copy)
     }
 }
 
@@ -172,19 +186,8 @@ fn clipboard_chord(raw_code: u32, masked: bool) -> Option<crate::lua::focus::Fie
 /// Return, and appending it would put an invisible ESC in a PAM password. Ignore repeated Enter;
 /// `secure_submit_frame` zeroizes on submit, so repeat would send an empty PAM attempt.
 fn key_action<'a>(event: &'a KeyEvent, repeat: bool, ctrl: bool, shift: bool) -> KeyAction<'a> {
-    /// evdev's code for the key `a` sits on, which the Wayland key event carries verbatim
-    /// (linux/input-event-codes.h).
-    const KEY_A: u32 = 30;
-    const KEY_Z: u32 = 44;
-    const KEY_Y: u32 = 21;
-
-    // The key `a` sits on, by what it types or by where it is (ADR-0238 decision 2). Under an
-    // Arabic or Cyrillic layout the keysym is that layout's own letter, and asking only what it
-    // types loses the chord to exactly the people most likely to be using one.
-    let latin = event.keysym.key_char().is_some_and(|c| c.is_ascii_alphabetic());
-    let selects_all = matches!(event.keysym, Keysym::a | Keysym::A) || (!latin && event.raw_code == KEY_A);
-    let z = matches!(event.keysym, Keysym::z | Keysym::Z) || (!latin && event.raw_code == KEY_Z);
-    let y = matches!(event.keysym, Keysym::y | Keysym::Y) || (!latin && event.raw_code == KEY_Y);
+    let (selects_all, z, y) =
+        (chord_letter(event, 'a', 30), chord_letter(event, 'z', 44), chord_letter(event, 'y', 21));
     // Ctrl reaches editing, word motion and select-all. Every other chord belongs to the
     // compositor, and swallowing it here would take it from them.
     if ctrl {
@@ -331,7 +334,7 @@ impl KeyboardHandler for App {
             // Only a field that takes the chord keeps it; with none focused it bubbles to `on_key`.
             let field_takes = self.secure_field_takes_keys()
                 || self.focused_text_field.as_ref().is_some_and(|field| self.text_field_takes_keys(field));
-            if field_takes && let Some(action) = clipboard_chord(event.raw_code, self.secure_field_takes_keys()) {
+            if field_takes && let Some(action) = clipboard_chord(&event, self.secure_field_takes_keys()) {
                 self.run_field_action(action, Some(serial));
                 return;
             }
@@ -564,9 +567,18 @@ pub(in crate::wayland) mod tests {
     #[test]
     fn ctrl_x_c_v_map_to_cut_copy_paste_and_a_masked_field_only_pastes() {
         use crate::lua::focus::FieldAction::{Copy, Cut, Paste};
-        assert_eq!([45, 46, 47].map(|code| clipboard_chord(code, false)), [Some(Cut), Some(Copy), Some(Paste)]);
-        assert_eq!([45, 46, 47].map(|code| clipboard_chord(code, true)), [None, None, Some(Paste)]);
-        assert_eq!(clipboard_chord(30, false), None);
+        let at = |keysym, utf8, raw_code| KeyEvent { raw_code, ..key(keysym, Some(utf8)) };
+        let qwerty = [at(Keysym::x, "x", 45), at(Keysym::c, "c", 46), at(Keysym::v, "v", 47)];
+        assert_eq!(qwerty.each_ref().map(|event| clipboard_chord(event, false)), [Some(Cut), Some(Copy), Some(Paste)]);
+        assert_eq!(qwerty.each_ref().map(|event| clipboard_chord(event, true)), [None, None, Some(Paste)]);
+        assert_eq!(clipboard_chord(&at(Keysym::a, "a", 30), false), None);
+
+        // ADR-0238 decision 2: a Latin keysym decides, so Dvorak's X (QWERTY B) cuts and its Q
+        // (QWERTY X) does not; a non-Latin keysym falls back to the physical key.
+        let dvorak = [at(Keysym::x, "x", 48), at(Keysym::c, "c", 23), at(Keysym::v, "v", 52)];
+        assert_eq!(dvorak.each_ref().map(|event| clipboard_chord(event, false)), [Some(Cut), Some(Copy), Some(Paste)]);
+        assert_eq!(clipboard_chord(&at(Keysym::q, "q", 45), false), None);
+        assert_eq!(clipboard_chord(&at(Keysym::Arabic_ra, "ر", 47), false), Some(Paste));
     }
     use crate::layout::secure_submit::sole_secure_submit;
     use crate::layout::secure_submit::tree_can_authenticate;
