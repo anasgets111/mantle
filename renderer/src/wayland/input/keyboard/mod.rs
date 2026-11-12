@@ -311,12 +311,7 @@ impl KeyboardHandler for App {
         // keyboard, not the reply. It stops keys/caret until focus returns.
         self.mark_focused_text_field_changed();
         self.armed = None;
-        // A Shift released while someone else holds the keyboard sends no `modifiers` here, and a
-        // stale one turns the next press into a selection the user never made (ADR-0236). The
-        // release that would stop a repeat does not arrive either.
-        self.held = Held::default();
-        self.repeating = None;
-        self.pressed_keys.clear();
+        self.keyboard_lost();
         debug!(2; "keyboard focus left {left}");
     }
 
@@ -410,6 +405,16 @@ impl KeyboardHandler for App {
 }
 
 impl App {
+    /// For `leave`, a destroyed focused surface and a removed keyboard. A Shift released while
+    /// someone else holds the keyboard sends no `modifiers` here, and a stale one turns the next
+    /// press into a selection the user never made (ADR-0236). The release that would stop a repeat
+    /// or reach `on_key_release` does not arrive either.
+    pub(in crate::wayland) fn keyboard_lost(&mut self) {
+        self.held = Held::default();
+        self.repeating = None;
+        self.pressed_keys.clear();
+    }
+
     /// Whether `instance_id` is still a surface this process has a live `wl_surface` for.
     /// `TrackedRole::wl_surface` is the right test: it answers `None` for both shapes a gone
     /// surface takes, the entry removed outright ([`App::destroy_surface_by_id`]) or kept with its

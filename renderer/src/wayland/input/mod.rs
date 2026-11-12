@@ -105,7 +105,7 @@ impl SeatHandler for App {
                 // No keyboard means no leave; clear stale focus and its half-typed secret
                 // (ADR-0050 decision 4).
                 self.keyboard_focus = None;
-                self.pressed_keys.clear();
+                self.keyboard_lost();
                 self.set_control_focus(None);
                 self.focus_secure_submit(None);
                 self.data_device = None;

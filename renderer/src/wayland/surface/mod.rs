@@ -576,6 +576,7 @@ impl App {
         // No `leave` follows a client-side destroy; stale focus would scrub and re-arm every frame.
         if self.keyboard_focus.as_deref() == Some(self.surfaces[index].surface_id.as_str()) {
             self.keyboard_focus = None;
+            self.keyboard_lost();
             self.set_control_focus(None);
             self.focus_secure_submit(None);
         }
