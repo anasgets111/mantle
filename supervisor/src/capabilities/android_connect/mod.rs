@@ -559,13 +559,13 @@ mod tests {
     }
 
     #[test]
-    fn sendable_takes_only_absolute_regular_files() {
+    fn sendable_takes_only_regular_files() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("a.txt");
         std::fs::write(&file, "x").unwrap();
         let file = file.to_str().unwrap();
         assert!(sendable(&[file.into()]));
-        for bad in [dir.path().to_str().unwrap(), "a.txt", "/no/such/file"] {
+        for bad in [dir.path().to_str().unwrap(), "/no/such/file"] {
             assert!(!sendable(&[file.into(), bad.into()]), "{bad} rejects the batch");
         }
     }

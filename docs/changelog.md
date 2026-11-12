@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Breaking: `mantle.notifications:set_sound` and `mantle.android_connect:send_files` raise on a relative path, as `mantle.storage:open` does. They used to do nothing, with a line at debug level or a warning. Build the path from `mantle.config_dir`, start a `set_sound` path with `~/`, and give `send_files` absolute paths (it does not expand `~/`).
 - Fixed: `mantle` given an argument that is not valid UTF-8 prints `mantle: "..." is not valid UTF-8` and the help, with exit status 2. It used to panic.
 - Fixed: `mantle.sysinfo.disks` keeps its last list when `lsblk` prints something unreadable. It used to empty the list until the next read.
 - Fixed: `mantle log` keeps recording after the terminal the shell was started from closes, and the terminal keeps its copy if the log cannot be written. Each used to stop the other.

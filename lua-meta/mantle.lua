@@ -824,7 +824,7 @@
 ---@field ping fun(self: AndroidConnectCapability, id: string, message?: string) Sends a ping notification with an optional custom message.
 ---@field send_clipboard fun(self: AndroidConnectCapability, id: string, text: string) Sends text to the remote device's clipboard.
 ---@field share_clipboard fun(self: AndroidConnectCapability, id: string) Sends the current desktop clipboard to the device.
----@field send_files fun(self: AndroidConnectCapability, id: string, files: string[]) Sends existing local files to the device.
+---@field send_files fun(self: AndroidConnectCapability, id: string, files: string[]) Sends existing local files, given as absolute paths, to the device.
 ---@field browse fun(self: AndroidConnectCapability, id: string) Mounts the device's storage via SFTP and opens it in the file manager.
 ---@field unmount fun(self: AndroidConnectCapability, id: string) Unmounts the device's SFTP storage.
 ---@field pair fun(self: AndroidConnectCapability, id: string) Initiates pairing with an unpaired device.

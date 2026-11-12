@@ -80,7 +80,7 @@ Call each as `mantle.android_connect:<action>(arguments...)`; `?` marks an argum
 | `ping` | `id: string, message?: string` | Sends a ping notification with an optional custom message. |
 | `send_clipboard` | `id: string, text: string` | Sends text to the remote device's clipboard. |
 | `share_clipboard` | `id: string` | Sends the current desktop clipboard to the device. |
-| `send_files` | `id: string, files: string[]` | Sends existing local files to the device. |
+| `send_files` | `id: string, files: string[]` | Sends existing local files, given as absolute paths, to the device. |
 | `browse` | `id: string` | Mounts the device's storage via SFTP and opens it in the file manager. |
 | `unmount` | `id: string` | Unmounts the device's SFTP storage. |
 | `pair` | `id: string` | Initiates pairing with an unpaired device. |

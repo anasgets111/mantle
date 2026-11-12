@@ -164,6 +164,15 @@ fn absolute<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String,
     if path.starts_with('/') { Ok(path) } else { Err(serde::de::Error::custom("expected an absolute path")) }
 }
 
+fn absolute_all<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::Error> {
+    let paths = <Vec<String> as serde::Deserialize>::deserialize(deserializer)?;
+    if paths.iter().all(|path| path.starts_with('/')) {
+        Ok(paths)
+    } else {
+        Err(serde::de::Error::custom("expected absolute paths"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,6 +270,17 @@ mod tests {
             // Relative would resolve against the Supervisor's working directory (ADR-0136).
             (decode::<StorageAction>("set", json!(["s.json", "theme", 1])), Err("absolute")),
             (decode::<StorageAction>("open", json!(["s.json"])), Err("absolute")),
+            // The Supervisor ignored these two silently; now the call raises in the config.
+            (
+                decode::<NotificationsAction>("set_sound", json!(["low", "/usr/share/a.ogg"])),
+                Ok(r#"SetSound { urgency: Low, path: "/usr/share/a.ogg" }"#),
+            ),
+            (decode::<NotificationsAction>("set_sound", json!(["low", "a.ogg"])), Err("absolute")),
+            (
+                decode::<AndroidConnectAction>("send_files", json!(["phone", ["/a.txt", "/b.txt"]])),
+                Ok(r#"SendFiles { id: "phone", files: ["/a.txt", "/b.txt"] }"#),
+            ),
+            (decode::<AndroidConnectAction>("send_files", json!(["phone", ["/a.txt", "b.txt"]])), Err("absolute")),
         ] {
             match (&decoded, expected) {
                 (Ok(got), Ok(want)) => assert_eq!(got, want),

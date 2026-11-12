@@ -163,15 +163,12 @@ async fn daemon_proxy(bus: &zbus::Connection) -> zbus::Result<DaemonProxy<'stati
     DaemonProxy::builder(bus).cache_properties(zbus::proxy::CacheProperties::No).build().await
 }
 
-/// Whether every path is an absolute regular file: the daemon `expect`s to open each one, so a
-/// directory would crash its event task. One bad path rejects the batch.
+/// Whether every path is a regular file: the daemon `expect`s to open each one, so a directory
+/// would crash its event task. The action already holds them absolute. One bad path rejects the batch.
 pub fn sendable(files: &[String]) -> bool {
-    let ok = files.iter().all(|f| {
-        let p = Path::new(f);
-        p.is_absolute() && std::fs::metadata(p).is_ok_and(|m| m.is_file())
-    });
+    let ok = files.iter().all(|f| std::fs::metadata(f).is_ok_and(|m| m.is_file()));
     if !ok {
-        warn!("send_files: every path must be an absolute path to an existing regular file");
+        warn!("send_files: every path must be an existing regular file");
     }
     ok
 }

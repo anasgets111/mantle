@@ -23,8 +23,12 @@ pub enum AndroidConnectAction {
     SendClipboard { id: String, text: String },
     /// Sends the current desktop clipboard to the device.
     ShareClipboard { id: String },
-    /// Sends existing local files to the device.
-    SendFiles { id: String, files: Vec<String> },
+    /// Sends existing local files, given as absolute paths, to the device.
+    SendFiles {
+        id: String,
+        #[serde(deserialize_with = "super::absolute_all")]
+        files: Vec<String>,
+    },
     /// Mounts the device's storage via SFTP and opens it in the file manager.
     Browse { id: String },
     /// Unmounts the device's SFTP storage.
@@ -430,7 +434,11 @@ pub enum NotificationsAction {
     Reply { id: u32, text: String },
     /// Sets an urgency tier's sound: an existing file under `/usr/share`, `/usr/local/share`, `/opt`
     /// or `$XDG_DATA_HOME`, else ignored; `path` may start with `~/`. Only Ogg Vorbis and 16-bit PCM WAV play.
-    SetSound { urgency: Urgency, path: String },
+    SetSound {
+        urgency: Urgency,
+        #[serde(deserialize_with = "super::absolute")]
+        path: String,
+    },
     /// Gates non-critical notification sounds.
     SetDnd { enabled: bool },
     /// Mutes non-critical sounds like `set_dnd`, without changing `dnd`.
