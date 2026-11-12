@@ -175,7 +175,7 @@ pub fn parse_radius(properties: &PropMap) -> Result<Radii, LayoutError> {
 }
 
 /// The range an overshooting easing is clamped into: the property table's `range`, else
-/// `[0, 8192]`; `margin`, which no parser bounds, tweens through negatives as `translate` does.
+/// `[0, 8192]`; `margin`, `spacing` and `line_spacing`, which no parser bounds, tween through negatives as `translate` does.
 /// The tween clamps every numeric property, even those without a row range. `spacing`, icon
 /// `size`, and `margin` accept negatives. `padding` takes the `[0, 8192]` range, though the solver
 /// would absorb a negative: overflow is spelled with a negative `margin`, so padding only insets.
@@ -198,7 +198,11 @@ pub(super) fn range_of(property: &str) -> (f32, f32) {
     if property == "scroll" {
         return (0.0, f32::MAX);
     }
-    fields::range(property).unwrap_or(if property == "margin" { (-8192.0, 8192.0) } else { (0.0, 8192.0) })
+    fields::range(property).unwrap_or(if matches!(property, "margin" | "spacing" | "line_spacing") {
+        (-8192.0, 8192.0)
+    } else {
+        (0.0, 8192.0)
+    })
 }
 
 /// What an absent key in `property`'s `{ x, y }` or edge table means: the identity for that

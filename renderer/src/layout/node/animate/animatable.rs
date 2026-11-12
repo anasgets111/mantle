@@ -529,6 +529,14 @@ mod tests {
     }
 
     #[test]
+    fn a_spacing_tweens_through_negatives_as_the_parser_allows() {
+        for property in ["spacing", "line_spacing"] {
+            let eased = Animatable::Number(-8.0).lerp(&Animatable::Number(-2.0), 0.5, property);
+            assert_eq!(eased, Animatable::Number(-5.0), "{property}");
+        }
+    }
+
+    #[test]
     fn a_corner_table_tweens_per_corner_and_clamps_at_zero() {
         let lua = Lua::new();
         let table = |src: &str| {
