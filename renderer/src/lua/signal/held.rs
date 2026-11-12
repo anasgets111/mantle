@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn delay_and_pulse_see_an_equal_fresh_table_as_unchanged() {
         let lua = mlua::Lua::new();
-        let table = || Value::Table(lua.load("return { 1, 2, kind = 'x' }").eval().unwrap());
+        let table = || Value::Table(lua.load("return { 1, 2, kind = 'x', run = print }").eval().unwrap());
         let (now, hold) = (Instant::now(), Duration::from_millis(100));
         let mut cell = DelayCell { held: table(), pending: None };
         let mut armed = false;

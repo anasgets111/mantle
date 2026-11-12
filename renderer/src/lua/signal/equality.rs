@@ -24,15 +24,15 @@ fn same_scalar(a: &Value, b: &Value) -> bool {
 /// Entries [`same_value`] walks before calling two tables different.
 pub(super) const SAME_TABLE_ENTRIES: usize = 256;
 
-/// [`same_scalar`], plus two different plain-data tables (no metatable, scalar keys, scalar or
-/// plain-table values) equal entry for entry. The same table, anywhere in either, is a change: a
+/// [`same_scalar`], plus two different plain tables (no metatable, scalar keys; scalar or
+/// plain-table values, or the very same function, userdata or thread) equal entry for entry. The same table, anywhere in either, is a change: a
 /// writer that mutated it in place and wrote it again is signalling one.
 pub(crate) fn same_value(a: &Value, b: &Value) -> bool {
     compare(a, b) == Some(true)
 }
 
 /// [`same_value`], `None` where it gives up: a metatable, a shared table, a key that is not a
-/// literal, or past [`SAME_TABLE_ENTRIES`].
+/// literal, two different functions, userdata or threads, or past [`SAME_TABLE_ENTRIES`].
 pub(super) fn compare(a: &Value, b: &Value) -> Option<bool> {
     fn same_table(a: &mlua::Table, b: &mlua::Table, budget: &mut usize) -> Option<bool> {
         if a == b || a.metatable().is_some() || b.metatable().is_some() {
@@ -49,7 +49,10 @@ pub(super) fn compare(a: &Value, b: &Value) -> Option<bool> {
             let other = b.raw_get::<Value>(key).ok()?;
             let same = match (&value, &other) {
                 (Value::Table(value), Value::Table(other)) => same_table(value, other, budget)?,
-                _ => same_scalar(&value, &other),
+                _ if is_comparable_literal(&value) || is_comparable_literal(&other) => same_scalar(&value, &other),
+                // A function, userdata or thread has no entries to walk: the same one is the same,
+                // and two built anew may do the same thing.
+                _ => (value == other).then_some(true)?,
             };
             if !same {
                 return Some(false);
@@ -91,6 +94,11 @@ mod tests {
             ("local s = { 1 } return { s }, { s }", None),
             ("local k = {} return { [k] = 1 }, { [k] = 1 }", None),
             ("local a, b = {}, {} for i = 1, 257 do a[i], b[i] = i, i end return a, b", None),
+            // A function, userdata or thread is the same by identity: it has no entries to walk.
+            ("local f = function() end return { f, 1 }, { f, 1 }", Some(true)),
+            ("return { function() end }, { function() end }", None),
+            ("local f = function() end return { f }, { 1 }", Some(false)),
+            ("local c = coroutine.create(print) return { io.stdout, c }, { io.stdout, c }", Some(true)),
         ] {
             let (a, b) = pair(chunk);
             assert_eq!(compare(&a, &b), expected, "{chunk}");
