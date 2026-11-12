@@ -107,16 +107,7 @@ pub fn depart(
     for (property, target) in targets {
         let from =
             Animatable::from_value(property, properties.get(property))?.unwrap_or_else(|| target.identity(property));
-        let tween = Tween {
-            property,
-            from,
-            to: target,
-            started: now,
-            spec: spec.clone(),
-            reversal: None,
-            resting: false,
-            shown: None,
-        };
+        let tween = Tween::new(property, from, target, now, spec.clone());
         properties.insert(property, tween.at(now).to_value(lua).map_err(|e| invalid("animate", e.to_string()))?);
         tweens.push(tween);
     }
@@ -154,6 +145,10 @@ struct Reversal {
 }
 
 impl Tween {
+    fn new(property: &'static str, from: Animatable, to: Animatable, started: Instant, spec: AnimationSpec) -> Self {
+        Tween { property, from, to, started, spec, reversal: None, resting: false, shown: None }
+    }
+
     fn eased_duration(&self, duration: Duration) -> Duration {
         duration.mul_f64(f64::from(self.reversal.as_ref().map_or(1.0, |reversal| reversal.factor)))
     }
@@ -282,21 +277,18 @@ pub fn retarget(
                     } else {
                         sequence.clone()
                     };
-                    Tween {
+                    Tween::new(
                         property,
-                        from: sequence.frames[0].value.clone(),
-                        to: sequence.frames.last().expect("a parsed sequence has frames").value.clone(),
+                        sequence.frames[0].value.clone(),
+                        sequence.frames.last().expect("a parsed sequence has frames").value.clone(),
                         // A row back in a windowed list rests on its last frame (ADR-0152).
-                        started: if reentry && sequence.loops.is_some() {
+                        if reentry && sequence.loops.is_some() {
                             now.checked_sub(sequence.played() + spec.delay).unwrap_or(now)
                         } else {
                             now
                         },
-                        spec: AnimationSpec { motion: Motion::Sequence(sequence), ..spec },
-                        reversal: None,
-                        resting: false,
-                        shown: None,
-                    }
+                        AnimationSpec { motion: Motion::Sequence(sequence), ..spec },
+                    )
                 }
             };
             // Against `now`, not against what the carried run was resting on: `advance` is the only
@@ -357,16 +349,7 @@ pub fn retarget(
                     None
                 };
                 let spec = handed_over(spec, running, &displayed, &target, now);
-                Tween {
-                    property,
-                    from: displayed,
-                    to: target,
-                    started: now,
-                    spec,
-                    reversal,
-                    resting: false,
-                    shown: None,
-                }
+                Tween { reversal, ..Tween::new(property, displayed, target, now, spec) }
             }
             Some(running) if !running.done(now) => {
                 // A spring's `velocity` is the rate the last retarget handed it, not a number the
@@ -423,14 +406,8 @@ pub fn retarget_measured(
         Some(running) if running.to == to && !running.done(now) => running,
         _ if shown == measured => return Ok(None),
         _ => Tween {
-            property,
-            from: Animatable::Number(shown),
-            to,
-            started: now,
-            spec,
             reversal: Some(Reversal { origin: Animatable::Number(shown), factor: 1.0 }),
-            resting: false,
-            shown: None,
+            ..Tween::new(property, Animatable::Number(shown), to, now, spec)
         },
     };
     let Animatable::Number(size) = tween.at(now) else { unreachable!("a size tween holds numbers") };
@@ -522,16 +499,7 @@ pub fn retarget_scroll(spec: AnimationSpec, tweens: &mut Vec<Tween>, shown: f32,
     let (from, to) = (Animatable::Number(shown), Animatable::Number(target));
     let spec = handed_over(spec, running.as_ref(), &from, &to, now);
     if shown != target {
-        tweens.push(Tween {
-            property: "scroll",
-            from,
-            to,
-            started: now,
-            spec,
-            reversal: None,
-            resting: false,
-            shown: None,
-        });
+        tweens.push(Tween::new("scroll", from, to, now, spec));
     }
 }
 
@@ -847,20 +815,17 @@ mod tests {
                 animate = { background = 5000, exit = { duration = 100, opacity = 0 } } }"##,
         );
         let now = Instant::now();
-        let mut tweens = vec![Tween {
-            property: "background",
-            from: Animatable::Color(Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 }),
-            to: Animatable::Color(Rgba { r: 0.0, g: 1.0, b: 0.0, a: 1.0 }),
-            started: now,
-            spec: AnimationSpec {
+        let mut tweens = vec![Tween::new(
+            "background",
+            Animatable::Color(Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 }),
+            Animatable::Color(Rgba { r: 0.0, g: 1.0, b: 0.0, a: 1.0 }),
+            now,
+            AnimationSpec {
                 motion: Motion::Eased { duration: Duration::from_secs(5), easing: Easing::Linear },
                 delay: Duration::ZERO,
                 from: None,
             },
-            reversal: None,
-            resting: false,
-            shown: None,
-        }];
+        )];
         assert!(depart("rect", &mut tweens, &mut properties, now, &lua).unwrap());
         let properties: Vec<&str> = tweens.iter().map(|t| t.property).collect();
         assert_eq!(properties, ["opacity"], "the five-second background tween does not outlive the exit");
@@ -915,16 +880,7 @@ mod tests {
         .remove("width")
         .unwrap();
         let started = Instant::now();
-        let tween = Tween {
-            property: "width",
-            from: Animatable::Number(0.0),
-            to: Animatable::Number(100.0),
-            started,
-            spec,
-            reversal: None,
-            resting: false,
-            shown: None,
-        };
+        let tween = Tween::new("width", Animatable::Number(0.0), Animatable::Number(100.0), started, spec);
         assert_eq!(tween.at(started), Animatable::Number(0.0), "it starts where it starts");
         assert_eq!(tween.at(started + Duration::from_millis(100)), Animatable::Number(100.0), "and lands on target");
     }
@@ -955,16 +911,7 @@ mod tests {
             "return { animate = { width = { spring = { stiffness = 200, damping = 10 } } } }",
             "return { animate = { width = { duration = 100, easing = \"out_cubic\" } } }",
         ] {
-            let tween = Tween {
-                property: "width",
-                from: Animatable::Number(0.0),
-                to: Animatable::Number(0.3),
-                started,
-                spec: spec(&lua, src),
-                reversal: None,
-                resting: false,
-                shown: None,
-            };
+            let tween = Tween::new("width", Animatable::Number(0.0), Animatable::Number(0.3), started, spec(&lua, src));
             let settled = started + Duration::from_secs(60);
             assert!(tween.done(settled), "{src}");
             assert_eq!(tween.at(settled), Animatable::Number(0.3), "{src}");
@@ -974,20 +921,17 @@ mod tests {
     #[test]
     fn a_delay_holds_the_start_value_then_runs_the_whole_duration() {
         let started = Instant::now();
-        let tween = Tween {
-            property: "width",
-            from: Animatable::Number(0.0),
-            to: Animatable::Number(100.0),
+        let tween = Tween::new(
+            "width",
+            Animatable::Number(0.0),
+            Animatable::Number(100.0),
             started,
-            spec: AnimationSpec {
+            AnimationSpec {
                 motion: Motion::Eased { duration: Duration::from_millis(100), easing: Easing::Linear },
                 delay: Duration::from_millis(50),
                 from: None,
             },
-            reversal: None,
-            resting: false,
-            shown: None,
-        };
+        );
         assert_eq!(tween.at(started), Animatable::Number(0.0));
         assert_eq!(
             tween.at(started + Duration::from_millis(50)),
@@ -1005,20 +949,17 @@ mod tests {
     fn a_pass_that_lengthens_the_delay_of_a_moving_tween_does_not_rewind_it() {
         let lua = Lua::new();
         let started = Instant::now();
-        let running = [Tween {
-            property: "width",
-            from: Animatable::Number(0.0),
-            to: Animatable::Number(100.0),
+        let running = [Tween::new(
+            "width",
+            Animatable::Number(0.0),
+            Animatable::Number(100.0),
             started,
-            spec: AnimationSpec {
+            AnimationSpec {
                 motion: Motion::Eased { duration: Duration::from_millis(200), easing: Easing::Linear },
                 delay: Duration::ZERO,
                 from: None,
             },
-            reversal: None,
-            resting: false,
-            shown: None,
-        }];
+        )];
         let shown: PropMap = PropMap::from_iter([("width", Value::Number(50.0))]);
         let mut properties =
             rect_props(&lua, "return { width = 100, animate = { width = { duration = 200, delay = 120 } } }");

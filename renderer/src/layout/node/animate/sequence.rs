@@ -461,16 +461,7 @@ mod tests {
         let started = Instant::now();
         let Motion::Sequence(ref sequence) = spec.motion else { panic!("a sequence") };
         let first = sequence.frames[0].value.clone();
-        let tween = Tween {
-            property: "width",
-            from: first.clone(),
-            to: first,
-            started,
-            spec: spec.clone(),
-            reversal: None,
-            resting: false,
-            shown: None,
-        };
+        let tween = Tween::new("width", first.clone(), first, started, spec.clone());
         assert_eq!(tween.at(started), Animatable::Number(40.0), "the lead-in holds the first frame");
         assert_eq!(tween.at(started + Duration::from_millis(999)), Animatable::Number(40.0), "for all of it");
         assert_eq!(tween.at(started + Duration::from_millis(1000)), Animatable::Number(0.0), "then the jump lands");
@@ -513,16 +504,8 @@ mod tests {
         )
         .unwrap().0;
         let started = Instant::now();
-        let tween = Tween {
-            property: "opacity",
-            from: Animatable::Number(0.0),
-            to: Animatable::Number(1.0),
-            started,
-            spec: specs["opacity"].clone(),
-            reversal: None,
-            resting: false,
-            shown: None,
-        };
+        let tween =
+            Tween::new("opacity", Animatable::Number(0.0), Animatable::Number(1.0), started, specs["opacity"].clone());
         let at = |ms| match tween.at(started + Duration::from_millis(ms)) {
             Animatable::Number(n) => n,
             other => panic!("{other:?}"),
@@ -558,16 +541,7 @@ mod tests {
             parse_animate("rect", &rect_props(&lua, &source)).unwrap().0.remove("scale").unwrap()
         };
         let started = Instant::now();
-        let tween = |spec| Tween {
-            property: "scale",
-            from: Animatable::Number(1.0),
-            to: Animatable::Number(1.0),
-            started,
-            spec,
-            reversal: None,
-            resting: false,
-            shown: None,
-        };
+        let tween = |spec| Tween::new("scale", Animatable::Number(1.0), Animatable::Number(1.0), started, spec);
         let run = tween(entry(0));
         assert_eq!(run.holds_until(started + ms(1000)), Some(started + ms(3600)));
         assert_eq!(run.holds_until(started + ms(3600)), None, "moving from the boundary");

@@ -363,16 +363,7 @@ mod tests {
         let lua = Lua::new();
         let sprung = spec(&lua, "return { animate = { width = { spring = { stiffness = 200, damping = 10 } } } }");
         let started = Instant::now();
-        let running = Tween {
-            property: "width",
-            from: Animatable::Number(0.0),
-            to: Animatable::Number(100.0),
-            started,
-            spec: sprung.clone(),
-            reversal: None,
-            resting: false,
-            shown: None,
-        };
+        let running = Tween::new("width", Animatable::Number(0.0), Animatable::Number(100.0), started, sprung.clone());
         let midway = started + Duration::from_millis(50);
         let displayed = running.at(midway);
         assert!(matches!(displayed, Animatable::Number(n) if n > 0.0 && n < 100.0), "{displayed:?}");
@@ -402,16 +393,13 @@ mod tests {
     fn the_handed_velocity_matches_the_rate_the_value_was_actually_moving_at() {
         let spring = Spring::new(200.0, 10.0, 0.0);
         let started = Instant::now();
-        let running = Tween {
-            property: "width",
-            from: Animatable::Number(0.0),
-            to: Animatable::Number(100.0),
+        let running = Tween::new(
+            "width",
+            Animatable::Number(0.0),
+            Animatable::Number(100.0),
             started,
-            spec: AnimationSpec { motion: Motion::Spring(spring), delay: Duration::ZERO, from: None },
-            reversal: None,
-            resting: false,
-            shown: None,
-        };
+            AnimationSpec { motion: Motion::Spring(spring), delay: Duration::ZERO, from: None },
+        );
         // 220 ms in, an underdamped spring of these constants is past its target and coming back,
         // so the displacement left has the opposite sign to the one it started with.
         for millis in [20, 60, 220] {
@@ -436,16 +424,13 @@ mod tests {
         let source = "return { width = 300, animate = { width = { spring = { stiffness = 200, damping = 10 } } } }";
         let started = Instant::now();
         let carried = Spring::new(200.0, 10.0, 40.0);
-        let running = [Tween {
-            property: "width",
-            from: Animatable::Number(0.0),
-            to: Animatable::Number(300.0),
+        let running = [Tween::new(
+            "width",
+            Animatable::Number(0.0),
+            Animatable::Number(300.0),
             started,
-            spec: AnimationSpec { motion: Motion::Spring(carried), delay: Duration::ZERO, from: None },
-            reversal: None,
-            resting: false,
-            shown: None,
-        }];
+            AnimationSpec { motion: Motion::Spring(carried), delay: Duration::ZERO, from: None },
+        )];
         let shown: PropMap = PropMap::from_iter([("width", Value::Number(120.0))]);
 
         let mut properties = rect_props(&lua, source);
