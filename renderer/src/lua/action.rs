@@ -25,6 +25,22 @@ use super::signal::CpuBudget;
 /// megabyte is already past what `mantle call` can usefully print.
 const MAX_ANSWER_BYTES: usize = 1024 * 1024;
 
+/// Whether `value` serializes past [`MAX_ANSWER_BYTES`], counted off the Lua value: `from_value`
+/// builds a node per path through shared subtables, so 40 levels of `{ t, t }` would fill memory first.
+fn over_the_limit(value: &Value) -> bool {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len();
+            if self.0 > MAX_ANSWER_BYTES { Err(std::io::Error::other("over")) } else { Ok(bytes.len()) }
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    serde_json::to_writer(Count(0), value).is_err_and(|err| err.is_io())
+}
+
 /// Every `action(name, fn)` this evaluation declared. In `app_data` beside the other registries, so
 /// ADR-0044 decision 4's persistent VM holds it and a replaced Renderer starts empty.
 #[derive(Default)]
@@ -80,6 +96,9 @@ pub fn dispatch(lua: &Lua, name: &str, arguments: &[serde_json::Value]) -> share
     // The cap a capability's `on_change` handler runs under: a spinning handler must not take the frame.
     match CpuBudget::call::<_, Value>(lua, &handler, MultiValue::from_vec(args)) {
         // `nil` and no return at all are the same value: Lua cannot tell them apart.
+        Ok(value) if over_the_limit(&value) => shared::CallOutcome::Failed(format!(
+            "what it returned is over the {MAX_ANSWER_BYTES}-byte limit for an answer"
+        )),
         Ok(value) => match lua.from_value::<serde_json::Value>(value) {
             Ok(json) => match serde_json::to_vec(&json).map(|bytes| bytes.len()) {
                 Ok(len) if len > MAX_ANSWER_BYTES => shared::CallOutcome::Failed(format!(
@@ -183,6 +202,29 @@ mod tests {
         .unwrap();
         let why = failure(dispatch(&lua, "big", &[]));
         assert!(why.contains("limit"), "{why}");
+    }
+
+    #[test]
+    fn an_answer_of_exactly_the_limit_still_returns() {
+        let lua = lua_registered(register);
+        // Two bytes of quotes round the string.
+        lua.load(format!(
+            r#"local fit = string.rep("x", {}) action("fit", function() return fit end)"#,
+            MAX_ANSWER_BYTES - 2
+        ))
+        .exec()
+        .unwrap();
+        assert!(matches!(dispatch(&lua, "fit", &[]), shared::CallOutcome::Returned(_)));
+    }
+
+    #[test]
+    fn a_table_sharing_its_subtables_is_refused_by_size_without_being_expanded() {
+        let lua = lua_registered(register);
+        // 2^40 paths to the leaves, a few KiB of Lua.
+        lua.load(r#"local t = { "leaf" } for _ = 1, 40 do t = { t, t } end action("dag", function() return t end)"#)
+            .exec()
+            .unwrap();
+        assert!(failure(dispatch(&lua, "dag", &[])).contains("limit"));
     }
 
     #[test]

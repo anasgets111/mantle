@@ -38,6 +38,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 - Fixed: a `width` or `height` signal that resolves to nothing on a reused `list` item follows the content again once its tween settles. It used to keep the last measured size.
 - Fixed: a node with an `effect` layer, such as `blur`, and a backdrop `shader` with `padding` draws the shader's reach into a clipped region. It used to draw nothing when the box itself was clipped out.
 - Fixed: `delay` and `pulse` over a signal that builds a table of the same entries on every read settle. The `delay` used to keep waking the shell every millisecond and the `pulse` to read true forever.
+- Fixed: a `mantle call` action that returns a table holding the same subtable many times over, such as 40 levels of `{ t, t }`, fails with the answer size limit. It used to exhaust memory and abort the shell.
 - Fixed: a content-sized `text` with `elide` and left or right `padding` shows its whole content. At about one width in twenty it lost its last character to an ellipsis.
 - Fixed: a `text` without `wrap = "word"` ignores `max_lines`, as documented. Its box used to stop at `max_lines` lines while every line of a multi-line `content` still drew, over whatever sat below.
 - Fixed: a `text` with `wrap = "word"` and left or right `padding` is as tall as the lines it draws. It used to wrap its measured height at the width outside its padding, so it came out lines short and its last lines drew over whatever sat below. A multiline `textfield` with padding grows the same way.
