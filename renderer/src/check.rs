@@ -365,10 +365,12 @@ fn evaluate(config_dir: &Path) -> Result<(LoadOutput, Vec<SurfaceSpec>, Namespac
     // evaluation, and a bare `Loader` dies on the first `mantle.` access. Capabilities read `nil`,
     // as at real boot before the first snapshot.
     //
-    // Frames go into an undrained channel: without a Supervisor, `process.run` has nowhere to run.
-    // Correct for a checker that evaluates, but does not start, a config. Nothing polls
-    // `palette.quantize` here either.
-    let (outbound_tx, _outbound_rx) = tokio::sync::mpsc::unbounded_channel();
+    // Frames go into an undrained channel: without a Supervisor, `process.run` and every action have
+    // nowhere to run. Correct for a checker that evaluates, but does not start, a config. Nothing
+    // polls `palette.quantize` here either. The VM holds the receiver, so an action from a handler
+    // the sample passes run still queues instead of logging that the writer is gone.
+    let (outbound_tx, outbound_rx) = tokio::sync::mpsc::unbounded_channel::<shared::RendererFrame>();
+    loader.lua().set_app_data(outbound_rx);
     let commands = CommandSender::new(0, outbound_tx);
     crate::lua::process::register(loader.lua(), ProcessRegistry::new(commands.clone()))
         .map_err(|err| err.to_string())?;
@@ -868,6 +870,38 @@ mod tests {
         )
         .unwrap();
         super::run(dir.path()).expect("a handler may register another");
+    }
+
+    /// An action from a handler the sample passes run queues into the check VM's own channel, on
+    /// a failing check too, rather than logging that the control-socket writer is gone.
+    #[test]
+    fn an_action_from_a_handler_queues_silently_beside_a_failing_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("shell.lua"),
+            "mantle.updates:on_change(function() mantle.updates:check() end)\n\
+             return panel { id = 'bar', layer = 'top', child = rect { hittable = 'yes' } }\n",
+        )
+        .unwrap();
+        let (output, specs, namespace, loader) = super::evaluate(dir.path()).unwrap();
+        let size = super::LogicalSize { width: 1920.0, height: 1080.0 };
+        let shaping = super::ShapingHandle::spawn();
+        let failures = super::lay_out_passes(&output, &specs, &namespace, &loader, &shaping, size).unwrap_err();
+        assert!(failures[0].contains("invalid value for `hittable`"), "{failures:?}");
+        let mut frames = loader
+            .lua()
+            .remove_app_data::<tokio::sync::mpsc::UnboundedReceiver<shared::RendererFrame>>()
+            .expect("the check VM holds its outbound receiver");
+        let queued = std::iter::from_fn(|| frames.try_recv().ok());
+        assert!(
+            queued
+                .filter(
+                    |frame| matches!(frame, shared::RendererFrame::Command(command) if command.params.action == "check")
+                )
+                .count()
+                > 1,
+            "each sample pass's handler queued its `check`"
+        );
     }
 
     /// An object with no known fields, such as a struct with none, takes any key.
