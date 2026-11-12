@@ -2,7 +2,7 @@
 
 use wayland_client::globals::GlobalList;
 use wayland_client::protocol::wl_surface;
-use wayland_client::{Connection, Dispatch, QueueHandle};
+use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::wp::fractional_scale::v1::client::{wp_fractional_scale_manager_v1, wp_fractional_scale_v1};
 use wayland_protocols::wp::viewporter::client::{wp_viewport, wp_viewporter};
 
@@ -107,41 +107,9 @@ impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, wl_surface::WlSurface
     }
 }
 
-impl Dispatch<wp_viewport::WpViewport, ()> for App {
-    fn event(
-        _state: &mut Self,
-        _proxy: &wp_viewport::WpViewport,
-        _event: wp_viewport::Event,
-        _data: &(),
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-    ) {
-    }
-}
-
-impl Dispatch<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1, ()> for App {
-    fn event(
-        _state: &mut Self,
-        _proxy: &wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
-        _event: wp_fractional_scale_manager_v1::Event,
-        _data: &(),
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-    ) {
-    }
-}
-
-impl Dispatch<wp_viewporter::WpViewporter, ()> for App {
-    fn event(
-        _state: &mut Self,
-        _proxy: &wp_viewporter::WpViewporter,
-        _event: wp_viewporter::Event,
-        _data: &(),
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-    ) {
-    }
-}
+delegate_noop!(App: ignore wp_viewport::WpViewport);
+delegate_noop!(App: ignore wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1);
+delegate_noop!(App: ignore wp_viewporter::WpViewporter);
 
 #[cfg(test)]
 mod tests {
