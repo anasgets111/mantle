@@ -618,6 +618,29 @@ mod tests {
         assert_eq!(height, 3.0 * 12.0 * 1.2, "so the box holds every line it draws");
     }
 
+    /// A word wider than the box breaks mid-word onto lines that each fit, the box holds every line
+    /// it paints, and under a cap the dropped rest is elided and reported.
+    #[test]
+    fn a_word_wider_than_the_box_breaks_inside_it() {
+        let word = "w".repeat(60);
+        let (scene, _lua, shaping, _surface) = applied(&format!(
+            r#"panel {{ id = "bar", child = column {{ children = {{
+                text {{ width = 80, content = "{word}", wrap = "word" }},
+                text {{ width = 80, content = "{word}", wrap = "word", max_lines = 2, elide = "end" }},
+            }} }} }}"#
+        ));
+        let texts = &scene.surface("bar@TEST").unwrap().children[0].children;
+        let Some(PaintStyle::Text { content, face, .. }) = &texts[0].paint else { panic!("a text") };
+        let lines: Vec<&str> = content.lines().collect();
+        assert!(lines.len() > 2, "{word:?} at 80 px breaks inside the word: {content:?}");
+        assert_eq!(lines.concat(), word, "every character survives the breaks");
+        assert!(lines.iter().all(|line| measured_width(line, &[], face, &shaping) <= 80.0 + FIT_SLACK), "{lines:?}");
+        assert_eq!(texts[0].rect.height, lines.len() as f32 * 12.0 * 1.2, "the box holds every painted line");
+        let Some(PaintStyle::Text { content, elided, .. }) = &texts[1].paint else { panic!("a text") };
+        assert!(*elided && content.lines().count() == 2 && content.ends_with('\u{2026}'), "{content:?}");
+        assert_eq!(texts[1].rect.height, 2.0 * 12.0 * 1.2);
+    }
+
     /// taffy hands the measure a border-box known width; paint wraps at the content box inside it.
     #[test]
     fn a_padded_wrapping_text_is_as_tall_as_the_lines_it_paints() {

@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: a `text` with `wrap = "word"`, and a `multiline` `textfield`, break a word wider than the box inside the word, as documented. The word used to stay on one line, cut off at the box edge, and with `max_lines` and `elide` it showed no ellipsis and `elided` stayed `false`.
 - Fixed: `mantle.applications` starts a program in the directory its `.desktop` file names in `Path=`, as Wine and Steam launchers expect. It used to start every program in the shell's own directory. A `Path` that is not a directory logs a warning and the program starts as before.
 - Fixed: a paste into a `textfield` lands unless that field was edited, its caret or selection moved, its `masked` changed, or it lost focus while the clipboard was read. Scrolling a `multiline` field, an input method switching on or off, or an edit in another field used to drop it.
 - Fixed: a key held while the surface with the keyboard is hidden, such as one whose `on_key` hides its own popup, stops repeating. It used to keep repeating into the next focused field, and its release could reach an `on_key_release` it was never pressed in.

@@ -113,6 +113,24 @@ mod tests {
         assert_eq!(count(text, &face, 60.0, &shaping), 5);
     }
 
+    /// A word wider than the field breaks inside it, and the caret and a click find the row a byte
+    /// was painted on.
+    #[test]
+    fn a_word_wider_than_the_field_wraps_onto_rows_the_caret_follows() {
+        let shaping = ShapingHandle::spawn();
+        let face = crate::layout::hit::tests::face(14.0, 0.0);
+        let text = "w".repeat(40);
+        let paragraphs = shaping.shape_lines(&text, &[], face.shaping_style(), None, Some(60.0));
+        let rows = rows(&text, &paragraphs);
+        assert!(rows.len() > 2, "40 w at 60 px is several rows");
+        assert!(rows.iter().all(|row| row.line.width <= 60.0 + shaping::FIT_SLACK));
+        assert_eq!(count(&text, &face, 60.0, &shaping), rows.len());
+        let second = &rows[1];
+        assert_eq!(row_of(&rows, second.start + 1), 1, "a byte inside the second row is on it");
+        assert_eq!(second.caret_x(second.start), 0.0, "its first byte is at the row's left edge");
+        assert_eq!(second.caret_at(second.caret_x(second.start + 2)), second.start + 2, "a click finds that byte");
+    }
+
     #[test]
     fn fitted_shows_the_caret_row_and_drops_a_stale_offset_when_the_text_shrinks() {
         assert_eq!(fitted(0.0, Some(4), 5, 10.0, 30.0), 20.0, "row 4 at the bottom of three");

@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use parley::fontique::{Blob, Collection, CollectionOptions};
 use parley::setting::Tag;
 use parley::{
-    FontContext, FontFamilyName, FontStyle, FontVariation, FontWeight, Layout, LayoutContext, LineHeight, StyleProperty,
+    FontContext, FontFamilyName, FontStyle, FontVariation, FontWeight, Layout, LayoutContext, LineHeight, OverflowWrap,
+    StyleProperty,
 };
 use shared::debug;
 
@@ -184,6 +185,11 @@ pub(super) fn shape(
         .map(|(tag, value)| FontVariation::new(Tag::from_bytes(*tag), f32::from_bits(*value)))
         .collect();
     builder.push_default(StyleProperty::FontVariations(variations.as_slice().into()));
+    // A word wider than the line breaks inside it. Not at width 0, the solver's min-content probe,
+    // which CSS `break-word` keeps at the longest word rather than one character.
+    if request.max_width.is_some_and(|width| width > 0.0) {
+        builder.push_default(StyleProperty::OverflowWrap(OverflowWrap::BreakWord));
+    }
     for run in &request.runs {
         let start = run.range.start.min(request.text.len());
         let end = run.range.end.min(request.text.len());
