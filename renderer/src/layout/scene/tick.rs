@@ -90,7 +90,7 @@ impl Scene {
                     if let Err(err) = publish_geometry(&tree, 0.0, 0.0, lua, true) {
                         debug!("{key}: writing a geometry signal failed: {err}");
                     }
-                    if !tree.animating() {
+                    if tree.tick_is_paint_only() {
                         note_settled_geometry(&tree, lua);
                     }
                     self.solver_trees.insert(key.to_string(), solver);
@@ -1038,6 +1038,22 @@ mod tests {
         assert_eq!(crate::lua::signal::take_layout_changed(&lua).len(), 1, "the settling frame is not");
         let rect: mlua::Table = lua.load(r#"return geometry("g"):get()"#).eval().unwrap();
         assert_eq!(rect.get::<f32>("width").unwrap(), 90.0);
+    }
+
+    #[test]
+    fn a_looping_paint_only_tween_does_not_hold_back_the_settled_geometry() {
+        let (mut scene, lua, shaping, surface) = applied(
+            r#"return panel { id = "bar", child = rect { width = state("w", 40), height = 20, geometry = geometry("g"),
+                animate = { width = { duration = 100, easing = "linear" },
+                    opacity = { duration = 100, easing = "linear", loops = "infinite", keyframes = { 1, 0.5 } } } } }"#,
+        );
+        lua.load(r#"state("w", 40):set(90)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        crate::lua::signal::take_layout_changed(&lua);
+        let started = scene.surface("bar@TEST").unwrap().children[0].tweens.iter().map(|t| t.started).max().unwrap();
+        let instances = [instance_at(&surface, full())];
+        scene.tick(&instances, &shaping, &lua, started + std::time::Duration::from_millis(100));
+        assert_eq!(crate::lua::signal::take_layout_changed(&lua).len(), 1, "the loop still runs, the box has settled");
     }
 
     #[test]
