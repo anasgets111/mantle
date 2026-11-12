@@ -436,8 +436,13 @@ async fn handle_connection(
     tokio::pin!(read_loop);
     tokio::select! {
         () = &mut read_loop => {}
+        // Only a failed write hangs up on a control client: it is never registered, so never respawned.
         () = hangup.notified() => {
-            info!("hanging up on generation {generation_id} so it exits and can be respawned");
+            if control_client {
+                debug!("closing a control client's connection after a failed write");
+            } else {
+                info!("hanging up on generation {generation_id} so it exits and can be respawned");
+            }
         }
     }
 

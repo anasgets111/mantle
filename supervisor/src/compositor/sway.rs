@@ -311,7 +311,7 @@ fn sway_read(stream: &mut impl Read) -> std::io::Result<(u32, Vec<u8>)> {
 fn sway_request(socket_path: &Path, kind: u32, payload: &str) -> std::io::Result<Vec<u8>> {
     let mut stream = connect(socket_path)?;
     sway_write(&mut stream, kind, payload.as_bytes())?;
-    Ok(String::from_utf8_lossy(&sway_read(&mut stream)?.1).into_owned().into_bytes())
+    Ok(String::from_utf8_lossy_owned(sway_read(&mut stream)?.1).into_bytes())
 }
 
 /// One `RUN_COMMAND` on the shared action thread; sway answers `[{"success":bool,"error":..}]`.

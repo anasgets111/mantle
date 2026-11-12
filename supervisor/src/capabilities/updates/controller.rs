@@ -252,9 +252,9 @@ fn until_due(last_successful_check: Option<i64>, now: i64, interval: Duration) -
 }
 
 /// Assumes `state.installing` and its progress fields were set by `UpdatesController::install`'s
-/// atomic check-and-set. Runs `Backend::install_command` against the live system as root, reads
-/// stdout line by line, parses progress into `state`, and never exposes raw output to Lua
-/// (ADR-0034).
+/// atomic check-and-set. Runs `Backend::install_command` against the live system as root, its
+/// output written to `$XDG_RUNTIME_DIR/mantle/install.log`, and follows that file line by line:
+/// progress is parsed into `state` and the last [`LOG_TAIL_LINES`] lines are kept in `install_log`.
 async fn run_install(backend: Arc<dyn Backend>, state: Arc<Mutex<UpdatesState>>, events: UnboundedSender<()>) {
     let command = backend.install_command();
     let log = shared::runtime_root().map(|root| root.join("install.log"));
@@ -300,7 +300,7 @@ fn spawn_logged(command: &InstallCommand, log: &Path, follower: &str) -> std::io
     Ok((child, tail.ok().and_then(|mut tail| tail.stdout.take())))
 }
 
-/// Testable stdout loop for [`run_install`]. Wakes `main.rs` on every parsed line
+/// Testable loop over the followed log for [`run_install`]. Wakes `main.rs` on every parsed line
 /// (ADR-0034), not only at completion.
 async fn run_install_with_child(
     backend: Arc<dyn Backend>,

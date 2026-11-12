@@ -131,7 +131,7 @@ pub(super) fn hyprland_request(socket_path: &Path, command: &str) -> std::io::Re
     stream.write_all(command.as_bytes())?;
     let mut reply = Vec::new();
     stream.read_to_end(&mut reply)?;
-    Ok(String::from_utf8_lossy(&reply).into_owned())
+    Ok(String::from_utf8_lossy_owned(reply))
 }
 
 /// A write and its reply check, blocking; `capability` prefixes the log line. An unread reply
