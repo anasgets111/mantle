@@ -84,7 +84,7 @@ pub(crate) fn dispatch(
                     Ok(opts) => opts.unwrap_or_default(),
                     Err(err) => return warn!("process.detach: refused {cmd:?}: {err}"),
                 };
-                if let Err(err) = crate::process::spawn_detached(&cmd, &args, &opts.env) {
+                if let Err(err) = crate::process::spawn_detached(&cmd, &args, &opts.env, None) {
                     warn!("process.detach: spawning {cmd:?} failed: {err}");
                 }
             }

@@ -7,6 +7,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use shared::warn;
+
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::capabilities::publish;
@@ -146,8 +148,16 @@ impl ApplicationsController {
     /// wrong is worse than naming the missing variable.
     pub fn launch(&self, id: &str, env: &[(String, Option<String>)]) -> Result<(), LaunchError> {
         let target = self.launch_targets.lock().expect("applications launch map mutex poisoned").get(id).cloned();
-        let (command, args) = command_line(std::env::var("TERMINAL").ok(), target.ok_or(LaunchError::Unknown)?)?;
-        crate::process::spawn_detached(&command, &args, env).map_err(|err| LaunchError::Spawn(err.to_string()))
+        let mut target = target.ok_or(LaunchError::Unknown)?;
+        let dir = target.dir.take().filter(|dir| {
+            dir.is_dir() || {
+                warn!("{id}: Path={} is not a directory; launching in the shell's own", dir.display());
+                false
+            }
+        });
+        let (command, args) = command_line(std::env::var("TERMINAL").ok(), target)?;
+        crate::process::spawn_detached(&command, &args, env, dir.as_deref())
+            .map_err(|err| LaunchError::Spawn(err.to_string()))
     }
 
     /// After [`openable_url`] accepts it (ADR-0103), hands `url` to `xdg-open` detached. A
@@ -159,7 +169,7 @@ impl ApplicationsController {
     /// spawn error.
     pub fn open_url(&self, url: &str) -> Result<(), OpenUrlError> {
         openable_url(url).map_err(OpenUrlError::Refused)?;
-        crate::process::spawn_detached("xdg-open", &[url.to_string()], &[])
+        crate::process::spawn_detached("xdg-open", &[url.to_string()], &[], None)
             .map_err(|err| OpenUrlError::Spawn(err.to_string()))
     }
 }
@@ -247,6 +257,35 @@ mod tests {
         crate::capabilities::test_support::poll_until(|| touched.exists().then_some(())).await;
     }
 
+    /// The spec's `Path` is the working directory; Wine and Steam entries depend on it. One that is
+    /// not a directory must not stop the launch.
+    #[tokio::test]
+    async fn launch_runs_in_the_entrys_path_and_falls_back_when_it_is_not_a_directory() {
+        let marker = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let pwd_into = |out: &std::path::Path| format!("sh -c \"pwd > {0}.part && mv {0}.part {0}\"", out.display());
+        let (inside, outside) = (marker.path().join("inside"), marker.path().join("outside"));
+        let with_path =
+            |dir: &std::path::Path, out| format!("{}Path={}\n", runnable("P", &pwd_into(out)), dir.display());
+        let (controller, _dir) = controller_over(&[
+            ("in.desktop", &with_path(work.path(), &inside)),
+            ("out.desktop", &with_path(&marker.path().join("missing"), &outside)),
+        ])
+        .await;
+
+        controller.launch("in", &[]).expect("launch");
+        controller.launch("out", &[]).expect("a missing Path must not stop the launch");
+
+        // Canonical on both sides: a logical `$PWD` may name the directory through a symlink.
+        let read = |out: &std::path::Path| {
+            std::fs::read_to_string(out).ok()?.trim().parse::<PathBuf>().ok()?.canonicalize().ok()
+        };
+        let ran_in = crate::capabilities::test_support::poll_until(|| read(&inside)).await;
+        assert_eq!(ran_in, work.path().canonicalize().unwrap());
+        let ran_out = crate::capabilities::test_support::poll_until(|| read(&outside)).await;
+        assert_eq!(ran_out, std::env::current_dir().unwrap().canonicalize().unwrap());
+    }
+
     #[tokio::test]
     async fn launching_an_id_that_is_not_installed_is_reported_rather_than_spawning_anything() {
         let (controller, _dir) = controller_over(&[("thing.desktop", &runnable("Thing", "/bin/true"))]).await;
@@ -255,7 +294,7 @@ mod tests {
     }
 
     fn console_program() -> LaunchTarget {
-        LaunchTarget { command: "/usr/bin/top".to_string(), args: vec!["-u".to_string()], terminal: true }
+        LaunchTarget { command: "/usr/bin/top".to_string(), args: vec!["-u".to_string()], terminal: true, dir: None }
     }
 
     #[test]
@@ -272,8 +311,12 @@ mod tests {
         assert_eq!(command, "foot");
         assert_eq!(args, vec!["-e".to_string(), "/usr/bin/top".to_string(), "-u".to_string()]);
 
-        let graphical =
-            LaunchTarget { command: "firefox".to_string(), args: vec!["--new-tab".to_string()], terminal: false };
+        let graphical = LaunchTarget {
+            command: "firefox".to_string(),
+            args: vec!["--new-tab".to_string()],
+            terminal: false,
+            dir: None,
+        };
         let (command, args) = command_line(Some("foot".to_string()), graphical).expect("no terminal needed");
         assert_eq!(command, "firefox", "$TERMINAL must not wrap an entry that never asked for it");
         assert_eq!(args, vec!["--new-tab".to_string()]);

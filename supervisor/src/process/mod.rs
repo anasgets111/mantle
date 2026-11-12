@@ -70,9 +70,18 @@ pub fn spawn_group_leader(cmd: impl AsRef<OsStr>, args: &[String], envs: &[(&str
 ///
 /// The three standard streams go to `/dev/null`, so it cannot scribble on the shell's own stdout.
 /// `env` edits the inherited environment: `Some` sets, `None` unsets. The names and values must
-/// already be validated (`shared::action::LaunchOpts`): `Command::env` panics on NUL.
-pub fn spawn_detached(cmd: &str, args: &[String], env: &[(String, Option<String>)]) -> io::Result<()> {
+/// already be validated (`shared::action::LaunchOpts`): `Command::env` panics on NUL. `cwd` is the
+/// working directory, this process's own when `None`.
+pub fn spawn_detached(
+    cmd: &str,
+    args: &[String],
+    env: &[(String, Option<String>)],
+    cwd: Option<&std::path::Path>,
+) -> io::Result<()> {
     let mut command = Command::new(cmd);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
     for (name, value) in env {
         match value {
             Some(value) => command.env(name, value),
@@ -436,7 +445,7 @@ mod tests {
         // for the handover would make the test's timing part of what it asserts, for nothing.
         // The rename lands the pid whole; `>` alone lets the poll below read an empty file.
         let script = format!("printf %s \"$PPID\" > {0}.part && mv {0}.part {0}", out.display());
-        spawn_detached("sh", &sh_args(&script), &[]).expect("spawn");
+        spawn_detached("sh", &sh_args(&script), &[], None).expect("spawn");
 
         crate::capabilities::test_support::poll_until(|| out.exists().then_some(())).await;
         let recorded = std::fs::read_to_string(&out).expect("the detached program must have run");
@@ -454,7 +463,7 @@ mod tests {
             out.display()
         );
         let env = [("MANTLE_PROBE".to_string(), Some("set".to_string())), ("HOME".to_string(), None)];
-        spawn_detached("sh", &sh_args(&script), &env).expect("spawn");
+        spawn_detached("sh", &sh_args(&script), &env, None).expect("spawn");
 
         crate::capabilities::test_support::poll_until(|| out.exists().then_some(())).await;
         assert_eq!(std::fs::read_to_string(&out).unwrap(), "set|unset");
@@ -463,7 +472,7 @@ mod tests {
     #[tokio::test]
     async fn a_nonexistent_detached_program_reports_an_error() {
         let path = tempfile::tempdir().unwrap().path().join("missing-program");
-        let result = spawn_detached(path.to_str().unwrap(), &[], &[]);
+        let result = spawn_detached(path.to_str().unwrap(), &[], &[], None);
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
     }
 }

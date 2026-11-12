@@ -22,6 +22,8 @@ pub struct LaunchTarget {
     pub args: Vec<String>,
     /// `Terminal=true`: wrap this console program in an emulator.
     pub terminal: bool,
+    /// `Path`: the working directory to run it in.
+    pub dir: Option<PathBuf>,
 }
 
 /// One scan's result.
@@ -91,7 +93,8 @@ pub fn scan(dirs: &[PathBuf]) -> ScanResult {
                 debug!(2; "{id}: Exec={exec:?} has no command left after field-code removal, skipping this entry");
                 continue;
             };
-            launch.insert(id.clone(), LaunchTarget { command, args, terminal: flag(&group, "Terminal") });
+            let dir = group.get("Path").filter(|dir| !dir.is_empty()).map(PathBuf::from);
+            launch.insert(id.clone(), LaunchTarget { command, args, terminal: flag(&group, "Terminal"), dir });
             wm_classes.push((id.clone(), group.get("StartupWMClass").cloned()));
             entries.push(AppSummary {
                 id,
