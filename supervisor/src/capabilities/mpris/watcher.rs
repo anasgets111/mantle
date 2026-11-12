@@ -3,9 +3,12 @@
 //! Players never register; scan `ListNames` once, then watch `NameOwnerChanged` for arrivals and
 //! departures under the same prefix (ADR-0036).
 
+use std::collections::HashMap;
+
 use futures_util::StreamExt;
 use shared::{error, warn};
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::task::JoinHandle;
 
 use super::player::{PlayerRegistry, register_player, unregister_player};
 
@@ -64,6 +67,12 @@ fn player_owner_rule() -> zbus::Result<zbus::MatchRule<'static>> {
         .build())
 }
 
+/// Forgets registrations that have run to the end, so `pending` holds only those in flight and not
+/// one entry per player name seen.
+fn drop_finished(pending: &mut HashMap<String, JoinHandle<()>>) {
+    pending.retain(|_, task| !task.is_finished());
+}
+
 /// Binds `org.freedesktop.DBus`, subscribes to `NameOwnerChanged`, scans with
 /// [`discover_existing`], then starts the forwarder over that live subscription. Bind or
 /// subscribe failure logs and disables discovery.
@@ -98,13 +107,14 @@ pub(super) async fn spawn_discovery(
     let mut found = discover_existing(&dbus_proxy, &registry).await;
     // Registrations in flight, each its own task: one player that never answers takes about 100 s
     // of call timeouts. Its departure cancels it.
-    let mut pending = std::collections::HashMap::new();
+    let mut pending = HashMap::new();
     // ponytail: at most MAX_PLAYERS registrations run at once, however many player names a client
     // owns; 8 that never answer stall the rest until they time out or leave, as 8 names held by one
     // client do. A waiting name is never refused for the ones in flight. Upgrade: a per-owner limit.
     let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(super::MAX_PLAYERS));
     tokio::spawn(async move {
         loop {
+            drop_finished(&mut pending);
             for name in found.drain(..) {
                 let (connection, registry, events) = (connection.clone(), registry.clone(), events.clone());
                 let (bus_name, permits) = (name.clone(), permits.clone());
@@ -155,6 +165,19 @@ mod tests {
         fn identity(&self) -> String {
             "Fixture".into()
         }
+    }
+
+    #[tokio::test]
+    async fn a_finished_registration_leaves_the_pending_map() {
+        let finished = tokio::spawn(async {});
+        let running = tokio::spawn(std::future::pending());
+        tokio::task::yield_now().await;
+        let mut pending = HashMap::from([("finished".to_string(), finished), ("running".to_string(), running)]);
+
+        drop_finished(&mut pending);
+
+        assert_eq!(pending.keys().collect::<Vec<_>>(), ["running"]);
+        pending["running"].abort();
     }
 
     /// A player left out while every slot was taken, at the first scan or on arriving later, is
