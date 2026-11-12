@@ -352,7 +352,10 @@ pub(super) fn update_solver_node(
         (solver_style.size, solver_style.margin) = (current.size, current.margin);
     }
     // The slot [`fit_slots`] wrote is not rebuilt here; taking it back would dirty the node every pass.
-    if let Some(Measure::Slots { wrap, .. }) = measure {
+    // It writes none for a sized, unwrapped one, whose tracks are rebuilt.
+    if let Some(Measure::Slots { wrap, content, .. }) = measure
+        && (wrap || content)
+    {
         if wrap {
             solver_style.grid_template_columns.clone_from(&current.grid_template_columns);
             solver_style.grid_template_rows.clone_from(&current.grid_template_rows);
@@ -1137,6 +1140,20 @@ pub(super) mod tests {
 
     /// A segmented control: labels of different widths share the widest one's slot, its margins
     /// included, and a content-sized row is that many slots wide.
+    /// A sized `homogeneous` row writes no slot, so flipping it on must not keep the tracks of the row before.
+    #[test]
+    fn flipping_a_sized_row_homogeneous_gives_equal_shares() {
+        let (mut scene, lua, shaping, surface) = applied(
+            "same = state('same', false)
+            return panel { id = 'bar', child = row { homogeneous = same, width = 100, children = {
+                rect { width = 10, height = 10 }, rect { width = 40, height = 10 }, rect { width = 10, height = 10 } } } }",
+        );
+        lua.load("same:set(true)").exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let xs: Vec<f32> = corners(flow_of(&scene)).iter().map(|corner| corner.0.round()).collect();
+        assert_eq!(xs, [0.0, 33.0, 67.0]);
+    }
+
     #[test]
     fn a_content_sized_homogeneous_row_gives_every_child_the_widest_slot() {
         let alone = |text: &str, margin: &str| {
