@@ -599,8 +599,10 @@ fn parse_loop_status(status: &str) -> Option<LoopStatus> {
 
 /// Removes a departed `bus_name` (`NameOwnerChanged` with an empty new owner) and aborts its
 /// forwarder. No-op if untracked, including skipped `playerctld` or uncontrollable sources.
-pub(super) fn unregister_player(registry: &PlayerRegistry, bus_name: &str, events: &UnboundedSender<()>) {
+/// Returns whether it was tracked.
+pub(super) fn unregister_player(registry: &PlayerRegistry, bus_name: &str, events: &UnboundedSender<()>) -> bool {
     let removed = registry.lock().expect("mutex poisoned").remove(bus_name);
+    let tracked = removed.is_some();
     if let Some(entry) = removed {
         debug!("MPRIS player departed: {bus_name}");
         if let Some(handle) = entry.forwarder {
@@ -614,6 +616,7 @@ pub(super) fn unregister_player(registry: &PlayerRegistry, bus_name: &str, event
         }
         let _ = events.send(());
     }
+    tracked
 }
 
 #[cfg(test)]
@@ -911,13 +914,13 @@ mod resync_tests {
 }
 
 #[cfg(test)]
-mod ordering_tests {
+pub(super) mod ordering_tests {
     use super::*;
     use crate::capabilities::test_support::p2p_pair;
 
     /// An entry with only the two ordering fields. Binding a proxy makes no call, so a p2p pair
     /// with nobody answering is enough.
-    async fn entry(connection: &zbus::Connection, id: &str, registered: u64) -> PlayerEntry {
+    pub(in super::super) async fn entry(connection: &zbus::Connection, id: &str, registered: u64) -> PlayerEntry {
         PlayerEntry {
             player: bind_player(connection, "org.mpris.MediaPlayer2.probe").await.expect("binding makes no call"),
             root: bind_root(connection, "org.mpris.MediaPlayer2.probe").await.expect("binding makes no call"),

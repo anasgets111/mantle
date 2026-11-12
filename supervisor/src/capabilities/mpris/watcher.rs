@@ -141,9 +141,8 @@ pub(super) async fn spawn_discovery(
                     let _ = task.await;
                 }
                 let was_full = registry.lock().expect("mpris registry mutex poisoned").len() >= super::MAX_PLAYERS;
-                unregister_player(&registry, &name, &events);
-                // A slot may have freed: pick up the players left out at the limit.
-                if was_full {
+                // A slot freed: pick up the players left out at the limit.
+                if unregister_player(&registry, &name, &events) && was_full {
                     found = discover_existing(&dbus_proxy, &registry).await;
                 }
             }
@@ -178,6 +177,46 @@ mod tests {
 
         assert_eq!(pending.keys().collect::<Vec<_>>(), ["running"]);
         pending["running"].abort();
+    }
+
+    /// A bus that lists no names and records how many players were tracked at each `ListNames`.
+    struct ListingBus {
+        registry: PlayerRegistry,
+        scans: std::sync::Arc<std::sync::Mutex<Vec<usize>>>,
+    }
+
+    #[zbus::interface(name = "org.freedesktop.DBus")]
+    impl ListingBus {
+        fn list_names(&self) -> Vec<String> {
+            self.scans.lock().unwrap().push(self.registry.lock().unwrap().len());
+            Vec::new()
+        }
+    }
+
+    /// A client cycling player names it never got tracked drives no `ListNames` per release.
+    #[tokio::test]
+    async fn only_a_departure_that_frees_a_slot_rescans() {
+        use crate::capabilities::test_support::{p2p_pair_serving, poll_until};
+        let (registry, scans) = (PlayerRegistry::default(), std::sync::Arc::default());
+        let listing = ListingBus { registry: registry.clone(), scans: std::sync::Arc::clone(&scans) };
+        let (connection, bus) = p2p_pair_serving(|peer| peer.serve_at("/org/freedesktop/DBus", listing)).await;
+        let name = |index: usize| format!("{MPRIS_SERVICE_PREFIX}p{index}");
+        for index in 0..super::super::MAX_PLAYERS {
+            let entry = super::super::player::ordering_tests::entry(&connection, &name(index), index as u64).await;
+            registry.lock().unwrap().insert(name(index), entry);
+        }
+        let (events, _woken) = tokio::sync::mpsc::unbounded_channel();
+        spawn_discovery(connection, registry.clone(), events).await;
+        let depart = |name: String| {
+            let signal = zbus::Message::signal("/org/freedesktop/DBus", "org.freedesktop.DBus", "NameOwnerChanged");
+            signal.unwrap().sender("org.freedesktop.DBus").unwrap().build(&(name, ":1.9", "")).unwrap()
+        };
+
+        bus.send(&depart(name(100))).await.unwrap();
+        bus.send(&depart(name(0))).await.unwrap();
+
+        poll_until(|| (scans.lock().unwrap().len() >= 2).then_some(())).await;
+        assert_eq!(*scans.lock().unwrap(), [super::super::MAX_PLAYERS, super::super::MAX_PLAYERS - 1]);
     }
 
     /// A player left out while every slot was taken, at the first scan or on arriving later, is
