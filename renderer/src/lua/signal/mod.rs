@@ -29,7 +29,7 @@ use crate::lua::marshal;
 
 pub(crate) use budget::{CpuBudget, LayoutPassBudget, anchor_cpu_budget, thread_cpu_time};
 pub use dirty::{DirtyFlag, DirtyScope, LiveSignalHandle};
-use equality::same_value;
+pub(crate) use equality::same_value;
 pub use globals::{
     any_focused_registered, any_hover_registered, any_pointer_registered, begin_evaluation, declared_states,
     promote_states, register, take_layout_changed, write_selection, write_state,

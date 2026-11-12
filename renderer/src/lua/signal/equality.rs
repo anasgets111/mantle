@@ -27,7 +27,7 @@ pub(super) const SAME_TABLE_ENTRIES: usize = 256;
 /// [`same_scalar`], plus two different plain-data tables (no metatable, scalar keys, scalar or
 /// plain-table values) equal entry for entry. The same table, anywhere in either, is a change: a
 /// writer that mutated it in place and wrote it again is signalling one.
-pub(super) fn same_value(a: &Value, b: &Value) -> bool {
+pub(crate) fn same_value(a: &Value, b: &Value) -> bool {
     fn same_table(a: &mlua::Table, b: &mlua::Table, budget: &mut usize) -> bool {
         if a == b || a.metatable().is_some() || b.metatable().is_some() {
             return false;

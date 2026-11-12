@@ -84,7 +84,10 @@ pub struct Kept {
 
 impl PartialEq for Kept {
     fn eq(&self, other: &Self) -> bool {
-        self.shader == other.shader
+        match (&self.shader, &other.shader) {
+            (Some(a), Some(b)) => a == b || crate::lua::signal::same_value(a, b),
+            (a, b) => a == b,
+        }
     }
 }
 
@@ -524,6 +527,20 @@ mod tests {
             Animatable::from_value("commands", Some(&Value::Integer(1))).is_err(),
             "a bad target fails as the property would"
         );
+    }
+
+    #[test]
+    fn a_shader_table_built_anew_is_the_same_effect() {
+        let lua = Lua::new();
+        let effect = |src: &str| {
+            let value: Value = lua.load(src).eval().unwrap();
+            Animatable::from_value("effect", Some(&value)).unwrap().unwrap()
+        };
+        let shader = |file: &str| effect(&format!(r#"return {{ blur = 4, shader = {{ source = "{file}" }} }}"#));
+        assert_eq!(shader("/s.frag"), shader("/s.frag"), "a table rebuilt each pass restarts nothing");
+        assert_ne!(shader("/s.frag"), shader("/t.frag"));
+        assert_eq!(effect("return { blur = 4 }"), effect("return { blur = 4 }"));
+        assert_ne!(effect("return { blur = 4 }"), shader("/s.frag"), "a shader against none");
     }
 
     #[test]
