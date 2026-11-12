@@ -4,7 +4,8 @@
 /// produce the percentage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CpuSample {
-    /// Sum of every field (`user+nice+system+idle+iowait+irq+softirq+steal+guest+guest_nice`).
+    /// `user+nice+system+idle+iowait+irq+softirq+steal`. `guest` and `guest_nice` are left out: the
+    /// kernel already counts them in `user` and `nice`.
     pub total: u64,
     /// `idle + iowait`, the two "not busy" fields (ADR-0035).
     pub idle_total: u64,
@@ -21,7 +22,7 @@ pub fn parse_stat_line(line: &str) -> Option<CpuSample> {
     if values.len() < 4 {
         return None;
     }
-    let total = values.iter().sum();
+    let total = values.iter().take(8).sum();
     let idle_total = values[3] + values.get(4).copied().unwrap_or(0);
     Some(CpuSample { total, idle_total })
 }
@@ -52,6 +53,12 @@ mod tests {
     #[test]
     fn parse_stat_line_rejects_a_per_core_line() {
         assert_eq!(super::parse_stat_line("cpu0 764261 30925 178799 31420264 97776 155846 457625 0 0 0"), None);
+    }
+
+    #[test]
+    fn parse_stat_line_counts_guest_time_once() {
+        let sample = super::parse_stat_line("cpu 100 0 100 700 0 0 0 0 50 50").unwrap();
+        assert_eq!(sample.total, 900, "guest and guest_nice are inside user and nice");
     }
 
     #[test]
