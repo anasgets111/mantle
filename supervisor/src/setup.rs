@@ -88,7 +88,7 @@ fn luarc_json(stub_dir: &Path) -> String {
     "jit": "disable",
     "ffi": "disable"
   }},
-  "workspace.library": ["{}"],
+  "workspace.library": [{}],
   "workspace.checkThirdParty": false,
   "diagnostics.severity": {{ "unused-local": "Warning" }},
   "diagnostics.neededFileStatus": {{ "unused-local": "Any" }},
@@ -106,7 +106,7 @@ fn luarc_json(stub_dir: &Path) -> String {
   }}
 }}
 "#,
-        stub_dir.display()
+        serde_json::Value::from(stub_dir.display().to_string())
     )
 }
 
@@ -275,6 +275,14 @@ mod tests {
 
     /// The `workspace.library` path has to be absolute, or the editor resolves it against the
     /// config directory and finds nothing, with no error anywhere.
+    /// A quote or backslash in the path must not break the JSON.
+    #[test]
+    fn the_luarc_escapes_the_stub_directory() {
+        let dir = Path::new("/home/a\"b\\c/stubs");
+        let luarc: serde_json::Value = serde_json::from_str(&luarc_json(dir)).expect("valid JSON");
+        assert_eq!(luarc["workspace.library"][0].as_str(), Some(dir.to_str().unwrap()));
+    }
+
     #[test]
     fn the_generated_luarc_points_at_an_absolute_stub_directory() {
         let dir = tempfile::tempdir().unwrap();
