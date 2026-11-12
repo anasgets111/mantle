@@ -37,6 +37,8 @@ pub struct AndroidConnectController {
     events: UnboundedSender<()>,
     bus: Option<zbus::Connection>,
     config_dir: Option<PathBuf>,
+    /// Serializes command edits across their file I/O, which the state lock must not wait on.
+    edit_lock: Arc<Mutex<()>>,
 }
 
 impl AndroidConnectController {
@@ -51,7 +53,7 @@ impl AndroidConnectController {
         if let Some(bus) = &session_bus {
             tokio::spawn(run_watcher(bus.clone(), Arc::clone(&state), events.clone(), config_dir.clone()));
         }
-        Self { state, events, bus: session_bus, config_dir }
+        Self { state, events, bus: session_bus, config_dir, edit_lock: Arc::default() }
     }
 
     pub fn snapshot(&self) -> AndroidConnectState {
@@ -126,7 +128,7 @@ impl AndroidConnectController {
         })
     }
 
-    /// Rereads `runcommand.json` under the state lock, so concurrent edits cannot lose one, applies
+    /// Rereads `runcommand.json` under the edit lock, so concurrent edits cannot lose one, applies
     /// `f` and, when it returns true, saves the file. A file that does not parse is never overwritten.
     fn edit_commands(&self, f: impl FnOnce(&mut Vec<AndroidCommand>) -> bool) -> io::Result<bool> {
         let path = self
@@ -134,7 +136,7 @@ impl AndroidConnectController {
             .as_deref()
             .map(|dir| dir.join(COMMANDS_FILE))
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no config dir"))?;
-        let mut state = self.state.lock().expect("mutex poisoned");
+        let _editing = self.edit_lock.lock().expect("mutex poisoned");
         let mut list = read_commands(&path)?;
         if !f(&mut list) {
             return Ok(false);
@@ -143,7 +145,7 @@ impl AndroidConnectController {
             std::fs::create_dir_all(parent)?;
         }
         shared::write_atomic(&path, &serde_json::to_vec_pretty(&list).map_err(io::Error::other)?)?;
-        state.commands = list;
+        self.state.lock().expect("mutex poisoned").commands = list;
         let _ = self.events.send(());
         Ok(true)
     }

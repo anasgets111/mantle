@@ -383,6 +383,29 @@ mod tests {
         assert_eq!(std::fs::read(&file).unwrap(), b"{ not json");
     }
 
+    /// A command edit stuck on its file must not stop the state being read: the main loop snapshots it.
+    #[test]
+    fn a_command_edit_waiting_on_its_file_does_not_block_a_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(super::config::COMMANDS_FILE);
+        nix::unistd::mkfifo(&file, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
+        let controller = AndroidConnectController::new(None, Some(dir.path().into()), mpsc::unbounded_channel().0);
+        let editing = controller.clone();
+        let edit = std::thread::spawn(move || editing.add_command("one", "true"));
+        // The edit holds whatever it holds once it has opened the FIFO to read.
+        let mut writer = std::fs::File::options().write(true).open(&file).unwrap();
+
+        let (done, snapshotted) = std::sync::mpsc::channel();
+        let reader = controller.clone();
+        std::thread::spawn(move || done.send(reader.snapshot()));
+        let blocked = snapshotted.recv_timeout(std::time::Duration::from_secs(2)).is_err();
+
+        std::io::Write::write_all(&mut writer, b"[]").unwrap();
+        drop(writer);
+        assert!(edit.join().unwrap().unwrap());
+        assert!(!blocked, "the snapshot waited for the edit's file read");
+    }
+
     #[tokio::test]
     async fn clipboard_auto_share_is_read_on_connect_and_written_by_its_action() {
         let dir = tempfile::tempdir().unwrap();
