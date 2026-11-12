@@ -513,6 +513,12 @@ async fn converse_with_worker(
     match ended {
         // A worker that did not answer leaves the lock screen saying only "early eof" (the 2026-09-08
         // lockout had no other evidence), so log how it died, not just the on-screen error text.
+        // A slow second factor is a retry, not a broken PAM stack: `StartFailed` tells the user to
+        // repair it from a terminal.
+        Exchange::Failed(err) if err.kind() == std::io::ErrorKind::TimedOut => {
+            warn!("the worker timed out: {err}");
+            Exchange::Verdict(shared::PamOutcome::PamError("the module did not answer in time; try again".to_string()))
+        }
         Exchange::Failed(err) => {
             let post_mortem = post_mortem(&reaped);
             error!("pam worker exchange failed: {err}; the worker {post_mortem}");
@@ -840,6 +846,26 @@ mod tests {
         let (ended, _) = with_worker(child, TEST_TIMEOUT).await;
         assert!(matches!(verdict(ended), shared::PamOutcome::StartFailed(_)));
         assert!(crate::process::exited(&[pid]).await, "the worker (pid {pid}) should be reaped, not left sleeping");
+    }
+
+    /// A module that takes over the reply timeout to check a second factor is a retry, not a PAM
+    /// stack that needs repair.
+    #[tokio::test]
+    async fn a_worker_slow_to_reply_after_an_answer_asks_for_a_retry() {
+        let prompt = shared::PamMessage::Prompt { text: "Password:".into(), echo: false };
+        let child = fake_worker(&[prompt], "sleep 30");
+        let (events, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        let (answer_tx, answers) = tokio::sync::mpsc::unbounded_channel();
+        let exchange = converse_with_worker(child, 7, &events, answers, Duration::from_millis(200));
+        let answer = async {
+            heard.recv().await.expect("the prompt reaches the controller");
+            answer_tx.send(shared::Zeroizing::new(b"hunter2".to_vec())).unwrap();
+            answer_tx
+        };
+        let (ended, answer_tx) = within(async { tokio::join!(exchange, answer) }).await;
+
+        assert!(matches!(verdict(ended), shared::PamOutcome::PamError(_)));
+        drop(answer_tx);
     }
 
     /// The 2026-09-08 lockout: the worker vanished and "early eof" was the entire diagnosis.
