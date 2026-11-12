@@ -542,6 +542,19 @@ fn bind_default_metadata(
                     state_mut.publish_audio();
                     return 0;
                 }
+                // `pw-metadata -d`: no key clears everything the subject set.
+                None => {
+                    let mut state_mut = state_for_property.borrow_mut();
+                    if subject == 0 {
+                        (state_mut.default_sink_name, state_mut.default_source_name) = (None, None);
+                    } else {
+                        state_mut.app_pins.remove(&subject);
+                    }
+                    state_mut.publish_audio();
+                    drop(state_mut);
+                    cap_default_sink(&state_for_property);
+                    return 0;
+                }
                 _ => return 0,
             };
             let mut state_mut = state_for_property.borrow_mut();
@@ -702,6 +715,11 @@ mod tests {
 
     /// A private PipeWire with one null sink and no session manager, listening at `dir/pipewire-0`.
     fn daemon(dir: &std::path::Path) -> Daemon {
+        daemon_with(dir, "")
+    }
+
+    /// [`daemon`] with `extra` `context.objects` entries beside the sink.
+    fn daemon_with(dir: &std::path::Path, extra: &str) -> Daemon {
         let config = dir.join("pipewire.conf");
         std::fs::write(
             &config,
@@ -715,7 +733,8 @@ mod tests {
             context.objects = [ { factory = adapter args = {
                 factory.name = support.null-audio-sink node.name = test-sink media.class = Audio/Sink
                 audio.position = [ FL FR ]
-            } } ]",
+            } } EXTRA ]"
+                .replace("EXTRA", extra),
         )
         .unwrap();
         let child = Command::new("pipewire")
@@ -853,6 +872,38 @@ mod tests {
 
         mixer.commands.send(AudioCommand::SetNullSinks(Vec::new())).unwrap();
         until(&mut mixer.published, |audio| audio.sinks.len() == 1 && !declared(audio));
+    }
+
+    /// `pw-metadata -d 0` clears every key the subject set, with no key in the event, so the
+    /// default sink falls back to the lowest id instead of staying on the name cleared.
+    #[test]
+    fn clearing_the_default_metadata_falls_back_to_the_lowest_sink() {
+        let dir = tempfile::tempdir().unwrap();
+        let _pipewire = daemon_with(
+            dir.path(),
+            "{ factory = adapter args = { factory.name = support.null-audio-sink node.name = test-sink-2
+                media.class = Audio/Sink audio.position = [ FL FR ] } }
+            { factory = metadata args = { metadata.name = default } }",
+        );
+        let mut mixer = mixer(dir.path());
+        let pw_metadata = |args: &[&str]| {
+            let status = Command::new("pw-metadata")
+                .args(["-n", "default"])
+                .args(args)
+                .env("PIPEWIRE_RUNTIME_DIR", dir.path())
+                .status()
+                .expect("pw-metadata runs");
+            assert!(status.success(), "pw-metadata {args:?}");
+        };
+        let active = |audio: &AudioState| {
+            audio.sinks.iter().find(|sink| sink.active).map(|sink| sink.node_name.clone()).unwrap_or_default()
+        };
+        until(&mut mixer.published, |audio| audio.sinks.len() == 2 && active(audio) == "test-sink");
+
+        pw_metadata(&["0", "default.audio.sink", r#"{"name":"test-sink-2"}"#, "Spa:String:JSON"]);
+        until(&mut mixer.published, |audio| active(audio) == "test-sink-2");
+        pw_metadata(&["-d", "0"]);
+        until(&mut mixer.published, |audio| active(audio) == "test-sink");
     }
 
     /// The conf `set_virtual_devices` writes loads in `pipewire -c`: a loopback is a sink by its name.

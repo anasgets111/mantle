@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: `mantle.audio` returns to the lowest-id sink and source as the default when PipeWire clears its default-device metadata, such as with `pw-metadata -d`. It used to keep marking the device named before the clear.
 - Fixed: `mantle.bluetooth:forget` removes a device that hangs under a second Bluetooth adapter, not only one under the adapter in use. It used to fail with a warning. A device paired to both adapters still lists twice.
 - Fixed: when a PAM module takes over 30 seconds to answer a password, such as a slow second factor, `mantle.lock.error` reads `authentication error: the module did not answer in time; try again`. It used to say authentication is unavailable and needs a terminal login to repair.
 - Fixed: a `mantle.processes` program paused with `SIGSTOP` is continued when it is stopped, so it handles its stop signal, such as a recorder finishing its file. It used to be killed outright after the grace period. At shutdown the programs now stop together, not one after another.
