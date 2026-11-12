@@ -37,7 +37,6 @@ pub(crate) struct Row<'a> {
 
 /// The rows of paragraphs `shape_lines` wrapped. A soft-wrapped row ends before the spaces at its
 /// break; a paragraph's last row ends at its newline, so End there keeps trailing spaces.
-// ponytail: a mid-word wrap's end is the next row's start, so End lands there; caret affinity is the upgrade.
 pub(crate) fn rows<'a>(text: &str, paragraphs: &'a [(usize, ShapeResult)]) -> Vec<Row<'a>> {
     let mut rows = Vec::new();
     for &(para, ref shaped) in paragraphs {
@@ -51,9 +50,11 @@ pub(crate) fn rows<'a>(text: &str, paragraphs: &'a [(usize, ShapeResult)]) -> Ve
     rows
 }
 
-/// The row a caret at `at` draws on: the last that starts at or before it.
-pub(crate) fn row_of(rows: &[Row<'_>], at: usize) -> usize {
-    rows.iter().rposition(|row| row.start <= at).unwrap_or(0)
+/// The row a caret at `at` draws on: the last that starts at or before it, or, `upstream`, the one
+/// before when a mid-word wrap makes `at` both that row's end and this one's start.
+pub(crate) fn row_of(rows: &[Row<'_>], at: usize, upstream: bool) -> usize {
+    let index = rows.iter().rposition(|row| row.start <= at).unwrap_or(0);
+    index - usize::from(upstream && index > 0 && rows[index - 1].end == at)
 }
 
 impl Row<'_> {
@@ -67,9 +68,10 @@ impl Row<'_> {
         shaping::caret_x(self.line, at - self.para)
     }
 
-    /// The byte on this row nearest row-relative `x`.
-    pub(crate) fn caret_at(&self, x: f32) -> usize {
-        (self.para + shaping::caret_at(self.line, x, self.end - self.para)).clamp(self.start, self.end)
+    /// The byte on this row nearest row-relative `x`, and whether it ends the row: [`row_of`]'s `upstream`.
+    pub(crate) fn caret_at(&self, x: f32) -> (usize, bool) {
+        let at = (self.para + shaping::caret_at(self.line, x, self.end - self.para)).clamp(self.start, self.end);
+        (at, at == self.end)
     }
 }
 
@@ -106,10 +108,14 @@ mod tests {
         let rows = rows(text, &paragraphs);
         let spans: Vec<_> = rows.iter().map(|row| &text[row.start..row.end]).collect();
         assert_eq!(spans, ["hello", "world", "foo bar  ", "", "end"]);
-        assert_eq!(row_of(&rows, 6), 1, "the byte after a soft break is the next row's");
-        assert_eq!(row_of(&rows, 5), 0);
-        assert_eq!(row_of(&rows, 22), 3, "an empty paragraph is a row");
-        assert_eq!(rows[1].caret_at(1000.0), 11, "past a soft-wrapped row is its end, not the next row");
+        // Affinity changes nothing where a space or a newline sits between the rows.
+        for upstream in [false, true] {
+            assert_eq!(row_of(&rows, 6, upstream), 1, "the byte after a soft break is the next row's");
+            assert_eq!(row_of(&rows, 5, upstream), 0);
+            assert_eq!(row_of(&rows, 22, upstream), 3, "an empty paragraph is a row");
+            assert_eq!(row_of(&rows, 23, upstream), 4, "the row after a newline");
+        }
+        assert_eq!(rows[1].caret_at(1000.0), (11, true), "past a soft-wrapped row is its end, not the next row");
         assert_eq!(count(text, &face, 60.0, &shaping), 5);
     }
 
@@ -126,9 +132,15 @@ mod tests {
         assert!(rows.iter().all(|row| row.line.width <= 60.0 + shaping::FIT_SLACK));
         assert_eq!(count(&text, &face, 60.0, &shaping), rows.len());
         let second = &rows[1];
-        assert_eq!(row_of(&rows, second.start + 1), 1, "a byte inside the second row is on it");
+        assert_eq!(row_of(&rows, second.start + 1, true), 1, "a byte inside the second row is on it");
         assert_eq!(second.caret_x(second.start), 0.0, "its first byte is at the row's left edge");
-        assert_eq!(second.caret_at(second.caret_x(second.start + 2)), second.start + 2, "a click finds that byte");
+        let click = second.caret_at(second.caret_x(second.start + 2));
+        assert_eq!(click, (second.start + 2, false), "a click finds that byte");
+        // The byte that ends the first row starts the second: affinity says which the caret is on.
+        let (past, upstream) = rows[0].caret_at(1000.0);
+        assert_eq!((past, upstream), (second.start, true), "a click past the first row's edge keeps to it");
+        assert_eq!((row_of(&rows, past, true), row_of(&rows, past, false)), (0, 1));
+        assert_eq!(rows[0].caret_x(past), rows[0].line.width, "at the first row's right edge");
     }
 
     #[test]

@@ -100,7 +100,7 @@ fn store_draft(
 ) -> bool {
     let end = (text.len(), text.len());
     if let Some(field) = focused.filter(|field| field.surface_id == surface_id && field.id == id) {
-        (field.buffer, field.selection, field.goal_x) = (text.to_owned(), end, None);
+        (field.buffer, field.selection, field.goal_x, field.upstream) = (text.to_owned(), end, None, false);
         field.history.clear();
         return true;
     }
@@ -134,6 +134,7 @@ pub(super) fn requested_focus(
         span: Default::default(),
         click: None,
         goal_x: None,
+        upstream: false,
         on_change,
         on_submit,
         on_cancel,

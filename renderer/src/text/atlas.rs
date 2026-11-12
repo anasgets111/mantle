@@ -132,8 +132,8 @@ pub struct TextDraw<'a> {
     pub face: &'a Typeface,
     pub color: Rgba,
     pub align: TextAlign,
-    /// A focused plain `textfield`'s `(anchor, caret)` byte offsets into `text` (ADR-0236).
-    pub caret: Option<(usize, usize)>,
+    /// A focused plain `textfield`'s `(anchor, caret, upstream)` (ADR-0236, [`field_rows::row_of`]).
+    pub caret: Option<(usize, usize, bool)>,
     /// The blink's phase: off drops the bar and keeps the selection and scroll.
     pub caret_on: bool,
     pub caret_style: CaretStyle,
@@ -432,7 +432,7 @@ impl TextPainter {
                 let rows = field_rows::rows(text, &shaped_lines);
                 let scrolled =
                     field_rows::clamp_scroll(scroll * scale, rows.len(), step, (physical.y1 - physical.y0) as f32);
-                (caret.map(|(_, at)| field_rows::row_of(&rows, at)), physical.y0 as f32 - scrolled)
+                (caret.map(|(_, at, upstream)| field_rows::row_of(&rows, at, upstream)), physical.y0 as f32 - scrolled)
             }
             None => (None, physical.y0 as f32),
         };
@@ -449,9 +449,9 @@ impl TextPainter {
                 let top = baseline - laid.baseline * scale;
                 let selection = match wrap {
                     Some(_) => {
-                        caret.map(|(anchor, at)| (anchor.saturating_sub(line_start), at.saturating_sub(line_start)))
+                        caret.map(|(anchor, at, _)| (anchor.saturating_sub(line_start), at.saturating_sub(line_start)))
                     }
-                    None => caret.filter(|_| row == 1),
+                    None => caret.filter(|_| row == 1).map(|(anchor, at, _)| (anchor, at)),
                 };
                 let bar_here = wrap.is_none() || caret_row == Some(row - 1);
                 // Past the width that fits, the line follows the caret rather than its alignment,

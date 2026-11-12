@@ -42,9 +42,9 @@ pub enum FieldFocus<'a> {
         /// Focused node, stable across movement, resizing, and inserted siblings.
         id: NodeId,
         text: &'a str,
-        /// `(anchor, caret)` byte offsets into `text` while the field takes keys, `None` when it
-        /// does not, which is what hides the caret (ADR-0108).
-        caret: Option<(usize, usize)>,
+        /// `(anchor, caret)` byte offsets into `text` and `upstream` ([`crate::layout::field_rows::row_of`])
+        /// while the field takes keys, `None` when it does not, which is what hides the caret (ADR-0108).
+        caret: Option<(usize, usize, bool)>,
         /// The blink's phase: off hides the bar alone, so the selection and the line's scroll to
         /// the caret hold still.
         caret_on: bool,
@@ -554,7 +554,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
                         // only masked input is kept out (ADR-0005). Upgrade: a zeroizing draw if that changes.
                         // Revealed text scrolls to its end, where typing lands, with the bar still hidden.
                         let (content, scroll_end) = match revealed {
-                            Some(text) if !*masked => (text.to_string(), Some((text.len(), text.len()))),
+                            Some(text) if !*masked => (text.to_string(), Some((text.len(), text.len(), false))),
                             _ => (mask.repeat(*filled), None),
                         };
                         Some((content, scroll_end, false, Vec::new(), false))
@@ -568,7 +568,8 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
                     {
                         let (content, preedit_range, caret) =
                             super::compose_preedit(text, *selection, preedit, *cursor);
-                        let scroll_caret = Some(caret.unwrap_or((preedit_range.end, preedit_range.end)));
+                        let scroll_caret =
+                            Some(caret.map_or((preedit_range.end, preedit_range.end, false), |(a, b)| (a, b, false)));
                         let runs = vec![StyleRun {
                             range: preedit_range,
                             bold: false,
@@ -1415,8 +1416,11 @@ mod tests {
         assert_eq!(drawn_text(&build(&tree, 1.0, None)), vec!["Reply".to_string()]);
 
         let id = tree.children[0].id;
-        let typed =
-            build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "on my way", caret: Some((9, 9)), caret_on: true }));
+        let typed = build(
+            &tree,
+            1.0,
+            Some(&FieldFocus::Plain { id, text: "on my way", caret: Some((9, 9, false)), caret_on: true }),
+        );
         assert_eq!(drawn_text(&typed), vec!["on my way".to_string()]);
     }
 
@@ -1435,7 +1439,8 @@ mod tests {
         };
         assert_eq!(color(&build(&tree, 1.0, None)), Some((0.0, 1.0)));
         let id = tree.children[0].id;
-        let typed = build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "x", caret: Some((1, 1)), caret_on: true }));
+        let typed =
+            build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "x", caret: Some((1, 1, false)), caret_on: true }));
         assert_eq!(color(&typed), Some((1.0, 0.0)));
         let caret = typed.commands.iter().find_map(|cmd| match &cmd.draw {
             Draw::Text { caret_style, .. } => Some((caret_style.color.r, caret_style.color.b)),
@@ -1454,7 +1459,8 @@ mod tests {
         let tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 60.0 });
         assert_eq!(tree.children[0].rect.height, 40.0, "one line of `font_size * line_height`");
         let id = tree.children[0].id;
-        let typed = build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "x", caret: Some((1, 1)), caret_on: true }));
+        let typed =
+            build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "x", caret: Some((1, 1, false)), caret_on: true }));
         for list in [build(&tree, 1.0, None), typed] {
             let Some(Draw::Text {
                 face: node::Typeface { font, font_size, line_height, letter_spacing, font_weight, italic, variations },
@@ -1509,7 +1515,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(content.as_ref(), "a語b");
-        assert_eq!(*caret, Some((4, 4)));
+        assert_eq!(*caret, Some((4, 4, false)));
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].range, 1..4);
         assert!(runs[0].underline);
@@ -1530,7 +1536,7 @@ mod tests {
             hidden
                 .commands
                 .iter()
-                .any(|cmd| { matches!(&cmd.draw, Draw::Text { caret: Some((4, 4)), caret_on: false, .. }) })
+                .any(|cmd| { matches!(&cmd.draw, Draw::Text { caret: Some((4, 4, false)), caret_on: false, .. }) })
         );
     }
 
@@ -1547,7 +1553,7 @@ mod tests {
             drawn_text(&build(
                 &tree,
                 1.0,
-                Some(&FieldFocus::Plain { id, text: "", caret: Some((0, 0)), caret_on: true })
+                Some(&FieldFocus::Plain { id, text: "", caret: Some((0, 0, false)), caret_on: true })
             )),
             vec!["Reply".to_string()]
         );
@@ -1564,7 +1570,8 @@ mod tests {
         let tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
         let id = tree.children[0].id;
 
-        let list = build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "", caret: Some((0, 0)), caret_on: true }));
+        let list =
+            build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "", caret: Some((0, 0, false)), caret_on: true }));
         assert!(
             list.commands
                 .iter()
@@ -1607,7 +1614,7 @@ mod tests {
         let list = build(
             &tree,
             1.0,
-            Some(&FieldFocus::Plain { id: elsewhere, text: "not mine", caret: Some((0, 0)), caret_on: true }),
+            Some(&FieldFocus::Plain { id: elsewhere, text: "not mine", caret: Some((0, 0, false)), caret_on: true }),
         );
         assert_eq!(drawn_text(&list), vec!["Reply".to_string()]);
     }
@@ -1632,7 +1639,7 @@ mod tests {
             drawn_text(&build(
                 &moved,
                 1.0,
-                Some(&FieldFocus::Plain { id, text: "on my way", caret: Some((9, 9)), caret_on: true })
+                Some(&FieldFocus::Plain { id, text: "on my way", caret: Some((9, 9, false)), caret_on: true })
             )),
             vec!["on my way".to_string()],
             "the caret follows the node, not the box it used to occupy"
@@ -1653,7 +1660,10 @@ mod tests {
         let elsewhere =
             node::SecureSubmitTarget { capability: "network".to_string(), action: "connect".to_string(), name: None };
         for (what, focus) in [
-            ("a plain focus", Some(FieldFocus::Plain { id, text: "hunter2", caret: Some((0, 0)), caret_on: true })),
+            (
+                "a plain focus",
+                Some(FieldFocus::Plain { id, text: "hunter2", caret: Some((0, 0, false)), caret_on: true }),
+            ),
             ("no focus", None),
             ("an empty count", Some(FieldFocus::Masked { id, target: &target, filled: 0, revealed: None })),
             (
@@ -1715,7 +1725,7 @@ mod tests {
             Draw::Text { caret, caret_on, .. } => Some((caret, caret_on)),
             _ => None,
         });
-        assert_eq!(scroll, Some((Some((6, 6)), false)), "a long answer scrolls to its end, with no bar drawn");
+        assert_eq!(scroll, Some((Some((6, 6, false)), false)), "a long answer scrolls to its end, with no bar drawn");
     }
 
     /// The dots are shaped in the field's own typeface, and no caret position is ever derived from them.

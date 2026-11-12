@@ -99,7 +99,7 @@ pub(super) fn double_click(last: Option<&LastClick>, now: LastClick) -> (bool, O
 pub(super) fn press_chooses_focus(
     hit_field: Option<FieldTarget>,
     instance_id: &str,
-    caret: Option<usize>,
+    caret: Option<(usize, bool)>,
     extend: bool,
     click: Option<Click>,
     focused_secure_submit: Option<&FocusedField>,
@@ -120,7 +120,7 @@ pub(super) fn press_chooses_focus(
                 resumed.map(|field| (field.buffer.clone(), field.history.clone())).unwrap_or_default();
             history.break_typing();
             // Where the press landed; the end of the draft when nothing measured it (ADR-0236).
-            let caret = caret.unwrap_or(buffer.len()).min(buffer.len());
+            let (caret, upstream) = caret.map_or((buffer.len(), false), |(at, up)| (at.min(buffer.len()), up));
             let span = match (held, click) {
                 (Some((held, _)), _) if extend => held,
                 (held, click) => {
@@ -149,6 +149,7 @@ pub(super) fn press_chooses_focus(
                     span,
                     click: click.filter(|_| !extend),
                     goal_x: None,
+                    upstream: upstream && selection.1 == caret,
                     on_change,
                     on_submit,
                     on_cancel,
@@ -312,7 +313,7 @@ mod tests {
         let (masked, plain) = press_chooses_focus(
             Some(plain_field(&lua, 7)),
             "notification_area@eDP-1",
-            Some(7),
+            Some((7, true)),
             false,
             left(),
             None,
@@ -322,6 +323,7 @@ mod tests {
         assert_eq!(plain.buffer, "half a sentence");
         assert!(plain.typing, "the caret is back");
         assert_eq!(plain.selection, (7, 7), "the caret lands where the press did, not at the end");
+        assert!(plain.upstream, "on the row the press found it at the end of");
         // `prune_text_field_focus` keys liveness off this, so the draft's stale surface would drop
         // what was typed.
         assert_eq!(plain.surface_id, "notification_area@eDP-1", "the press names the surface");
@@ -355,7 +357,7 @@ mod tests {
         let (_, plain) = press_chooses_focus(
             Some(plain_field(&lua, 7)),
             "notification_area@eDP-1",
-            Some(4),
+            Some((4, false)),
             true,
             left(),
             None,
@@ -369,7 +371,7 @@ mod tests {
         let (_, plain) = press_chooses_focus(
             Some(plain_field(&lua, 7)),
             "notification_area@eDP-1",
-            Some(4),
+            Some((4, false)),
             false,
             left(),
             None,
@@ -424,7 +426,7 @@ mod tests {
             let (_, plain) = press_chooses_focus(
                 Some(plain_field(&lua, 7)),
                 "bar@eDP-1",
-                Some(caret),
+                Some((caret, false)),
                 false,
                 if primary { left() } else { None },
                 None,
@@ -446,7 +448,16 @@ mod tests {
         let (lua, t0) = (Lua::new(), Instant::now());
         let press = |held: Option<FocusedTextField>, id, at, extend, button: Option<Click>| {
             let click = button.map(|(_, p)| (t0 + Duration::from_millis(at), p));
-            press_chooses_focus(Some(plain_field(&lua, id)), "bar@eDP-1", Some(5), extend, click, None, held.as_ref()).1
+            press_chooses_focus(
+                Some(plain_field(&lua, id)),
+                "bar@eDP-1",
+                Some((5, true)),
+                extend,
+                click,
+                None,
+                held.as_ref(),
+            )
+            .1
         };
         let at = |x| Some((t0, (x, 10.0)));
         let first = press(Some(draft(7, "one two three")), 7, 0, false, at(10.0)).unwrap();
@@ -456,6 +467,7 @@ mod tests {
         let units = [first.span.unit, second.span.unit, third.span.unit, fourth.span.unit];
         assert_eq!(units, [Unit::Char, Unit::Word, Unit::Line, Unit::Char]);
         assert_eq!((second.selection, third.selection), ((4, 7), (0, 13)));
+        assert_eq!((first.upstream, second.upstream), (true, false), "only a caret at the pressed byte keeps it");
         let unit =
             |held: &FocusedTextField, id, ms, x| press(Some(held.clone()), id, ms, false, at(x)).unwrap().span.unit;
         assert_eq!(unit(&first, 7, 401, 10.0), Unit::Char, "too slow");
@@ -471,9 +483,17 @@ mod tests {
     fn shift_press_keeps_the_unit_and_an_edit_or_select_all_drops_it() {
         let lua = Lua::new();
         let shift = |caret, held| {
-            press_chooses_focus(Some(plain_field(&lua, 7)), "bar@eDP-1", Some(caret), true, left(), None, Some(&held))
-                .1
-                .expect("focused")
+            press_chooses_focus(
+                Some(plain_field(&lua, 7)),
+                "bar@eDP-1",
+                Some((caret, false)),
+                true,
+                left(),
+                None,
+                Some(&held),
+            )
+            .1
+            .expect("focused")
         };
         let word = FocusedTextField {
             selection: (4, 7),

@@ -104,7 +104,7 @@ pub fn caret_at(
     text: &str,
     caret: usize,
     shaping: &ShapingHandle,
-) -> Option<usize> {
+) -> Option<(usize, bool)> {
     let depth = path.iter().rposition(|node| node.kind == "textfield")?;
     // A masked field has none: a position inside a secret is one nothing outside `SecureBuffer`
     // may hold (ADR-0064).
@@ -127,7 +127,7 @@ pub fn caret_at(
     let laid = shaped.shaped.first()?;
     // The same slide paint applies, or a scrolled draft answers every press with the wrong byte.
     let left = field_line_left(Some(laid), *align, rect.x, rect.x + rect.width, caret, bar.width, 1.0);
-    Some(shaping::caret_at(laid, x - left, text.len()))
+    Some((shaping::caret_at(laid, x - left, text.len()), false))
 }
 
 pub(crate) fn field_line(text: &str, face: &Typeface, shaping: &ShapingHandle) -> Option<ShapeResult> {
@@ -612,26 +612,26 @@ pub(crate) mod tests {
         let path = [&field];
         // The node sits at x = 10, and `point` is surface-local, so every press is offset by it.
         let at = |x: f32| caret_at(&path, LogicalPoint { x: 10.0 + x, y: 5.0 }, text, 0, &shaping);
-        assert_eq!(at(-4.0), Some(0), "a press left of the text lands before the first character");
-        assert_eq!(at(width_of(&shaping, "hel") + 1.0), Some(3), "just past the third character's midpoint");
-        assert_eq!(at(width_of(&shaping, text) + 40.0), Some(text.len()), "past the end is the end");
+        assert_eq!(at(-4.0), Some((0, false)), "a press left of the text lands before the first character");
+        assert_eq!(at(width_of(&shaping, "hel") + 1.0), Some((3, false)), "just past the third character's midpoint");
+        assert_eq!(at(width_of(&shaping, text) + 40.0), Some((text.len(), false)), "past the end is the end");
         let padded = field.clone().with_padding(20.0);
         let x = 30.0 + width_of(&shaping, "hel") + 1.0;
         let press = caret_at(&[&padded], LogicalPoint { x, y: 5.0 }, text, 0, &shaping);
-        assert_eq!(press, Some(3), "the line starts inside the padding, as paint starts it");
+        assert_eq!(press, Some((3, false)), "the line starts inside the padding, as paint starts it");
 
         field.transform.scale = (2.0, 1.0);
         field.transform.translate = (30.0, 0.0);
         let untransformed = LogicalPoint { x: 10.0 + width_of(&shaping, "hel") + 1.0, y: 5.0 };
         let (x, y) = apply_affine(field.transform.matrix(field.rect), untransformed.x, untransformed.y);
-        assert_eq!(caret_at(&[&field], LogicalPoint { x, y }, text, 0, &shaping), Some(3));
+        assert_eq!(caret_at(&[&field], LogicalPoint { x, y }, text, 0, &shaping), Some((3, false)));
 
         // A moving field answers where it is painted, as a moving link does.
         field.transform = Default::default();
         field.movement = Some(Box::new(MoveTween::test((20.0, 0.0))));
         let (x, y) = apply_affine(path_transform(&[&field]), untransformed.x, untransformed.y);
         assert_ne!(x, untransformed.x, "the move has an offset to undo");
-        assert_eq!(caret_at(&[&field], LogicalPoint { x, y }, text, 0, &shaping), Some(3));
+        assert_eq!(caret_at(&[&field], LogicalPoint { x, y }, text, 0, &shaping), Some((3, false)));
         assert_eq!(node_local(&[&field], LogicalPoint { x, y }).map(|p| p.x), Some(untransformed.x - 10.0));
 
         // A masked field never answers: its caret would say where the secret is (ADR-0064).
@@ -687,8 +687,8 @@ pub(crate) mod tests {
         let boundary = shaping::caret_x(laid, 4);
         assert!(boundary > plain.shaped[0].glyphs[4].x + 20.0, "the default metrics would put it far left");
         let press = |x: f32| caret_at(&[&field], LogicalPoint { x: 10.0 + x, y: 5.0 }, text, 0, &shaping);
-        assert_eq!(press(boundary + 1.0), Some(4), "just past the fourth boundary");
-        assert_eq!(press(boundary - 1.0), Some(4), "and just short of it");
+        assert_eq!(press(boundary + 1.0), Some((4, false)), "just past the fourth boundary");
+        assert_eq!(press(boundary - 1.0), Some((4, false)), "and just short of it");
     }
 
     #[test]
@@ -704,10 +704,10 @@ pub(crate) mod tests {
         field.paint = Some(paint);
         let x = 10.0 + width_of(&shaping, "he") + 1.0;
         let press = |field: &ResolvedNode, y: f32| caret_at(&[field], LogicalPoint { x, y }, text, 0, &shaping);
-        assert_eq!(press(&field, 5.0), Some(2), "\"he|llo\" on the first row");
-        assert_eq!(press(&field, line + 5.0), Some(8), "and on the second");
+        assert_eq!(press(&field, 5.0), Some((2, false)), "\"he|llo\" on the first row");
+        assert_eq!(press(&field, line + 5.0), Some((8, false)), "and on the second");
         field.scrolled = line;
-        assert_eq!(press(&field, 5.0), Some(8), "scrolled one row, the top of the box is the second row");
+        assert_eq!(press(&field, 5.0), Some((8, false)), "scrolled one row, the top of the box is the second row");
     }
 
     /// An empty draft measures to 0 like any other press, which is why `hit_under` hands this
@@ -717,7 +717,7 @@ pub(crate) mod tests {
         let shaping = ShapingHandle::spawn();
         let mut field = ResolvedNode::test("textfield", (10.0, 0.0, 200.0, 28.0), Vec::new());
         field.paint = Some(field_paint("reply", face(14.0, 0.0)));
-        assert_eq!(caret_at(&[&field], LogicalPoint { x: 90.0, y: 5.0 }, "", 0, &shaping), Some(0));
+        assert_eq!(caret_at(&[&field], LogicalPoint { x: 90.0, y: 5.0 }, "", 0, &shaping), Some((0, false)));
     }
 
     #[test]

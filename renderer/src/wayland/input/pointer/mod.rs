@@ -316,15 +316,17 @@ impl App {
     fn drag_selection(&mut self, index: usize, instance_id: &str, position: (f64, f64)) {
         let selecting =
             self.focused_text_field.as_ref().is_some_and(|field| field.selecting && field.surface_id == instance_id);
-        let Some(caret) = selecting.then(|| self.hit_under(index, position).caret).flatten() else {
+        let Some((caret, upstream)) = selecting.then(|| self.hit_under(index, position).caret).flatten() else {
             return;
         };
         if let Some(field) = self.focused_text_field.as_mut()
             && let span = field.span.live(&field.buffer, field.selection)
             && let selection = extend_by_unit(&field.buffer, span, caret)
-            && selection != field.selection
+            && let upstream = (upstream && selection.1 == caret)
+            && (selection, upstream) != (field.selection, field.upstream)
         {
             (field.selection, field.span, field.goal_x) = (selection, Span { produced: selection, ..span }, None);
+            field.upstream = upstream;
             field.history.break_typing();
             self.text_input.note_other_change();
             self.mark_focused_text_field_changed();

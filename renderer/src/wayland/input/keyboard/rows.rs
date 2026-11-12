@@ -33,17 +33,17 @@ pub(super) fn multiline_action<'a>(
 fn row_motion(
     rows: &[field_rows::Row<'_>],
     motion: Motion,
-    caret: usize,
+    (caret, upstream): (usize, bool),
     goal: Option<f32>,
     (align, width): (node::TextAlign, f32),
-) -> Option<(usize, Option<f32>)> {
-    let index = field_rows::row_of(rows, caret);
+) -> Option<((usize, bool), Option<f32>)> {
+    let index = field_rows::row_of(rows, caret, upstream);
     let row = rows.get(index)?;
     let next = match motion {
         Motion::Up => index.checked_sub(1)?,
         Motion::Down => index + 1,
-        Motion::RowStart => return Some((row.start, None)),
-        _ => return Some((row.end, None)),
+        Motion::RowStart => return Some(((row.start, false), None)),
+        _ => return Some(((row.end, true), None)),
     };
     let goal = goal.unwrap_or_else(|| row.left(align, 0.0, width) + row.caret_x(caret));
     let next = rows.get(next)?;
@@ -101,21 +101,24 @@ impl App {
     /// A row motion resolved against the focused field's rows, [`row_motion`].
     pub(super) fn resolve_row_motion<'a>(&mut self, action: KeyAction<'a>) -> KeyAction<'a> {
         let KeyAction::Move(motion @ (Motion::Up | Motion::Down | Motion::RowStart | Motion::RowEnd)) = action else {
-            if let Some(field) = self.focused_text_field.as_mut() {
-                field.goal_x = None;
+            // A bare modifier or Escape moves no caret (a clearing Escape leaves byte 0), so upstream holds.
+            if let Some(field) =
+                self.focused_text_field.as_mut().filter(|_| !matches!(action, KeyAction::Ignore | KeyAction::Clear))
+            {
+                (field.goal_x, field.upstream) = (None, false);
             }
             return action;
         };
         let resolved = self.focused_text_field.as_ref().and_then(|field| {
             let (view, _) = self.field_view(&field.surface_id, field.id)?;
             field_rows::with_rows(&field.buffer, view.face, view.width, &self.shaping, |rows| {
-                row_motion(rows, motion, field.selection.1, field.goal_x, (view.align, view.width))
+                row_motion(rows, motion, (field.selection.1, field.upstream), field.goal_x, (view.align, view.width))
             })
         });
-        let (Some((to, goal)), Some(field)) = (resolved, self.focused_text_field.as_mut()) else {
+        let (Some(((to, upstream), goal)), Some(field)) = (resolved, self.focused_text_field.as_mut()) else {
             return KeyAction::Ignore;
         };
-        field.goal_x = goal;
+        (field.goal_x, field.upstream) = (goal, upstream);
         KeyAction::Move(Motion::To(to))
     }
 
@@ -126,7 +129,7 @@ impl App {
         let text = self.draft_of(surface_id, id).to_owned();
         let focused = self.focused_text_field.as_ref().filter(|field| field.surface_id == surface_id && field.id == id);
         let scroll = field_rows::with_rows(&text, view.face, view.width, &self.shaping, |rows| {
-            let caret = focused.map(|field| field_rows::row_of(rows, field.selection.1));
+            let caret = focused.map(|field| field_rows::row_of(rows, field.selection.1, field.upstream));
             field_rows::fitted(view.scrolled, caret, rows.len(), view.face.line_height, view.height)
         });
         // ponytail: the box resizes in the next pass, so this frame scrolls against the old height; paint clamps it.
@@ -175,7 +178,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::key;
+    use super::super::tests::{draft, key};
     use super::*;
 
     #[test]
@@ -213,15 +216,74 @@ mod tests {
             assert_eq!(spans, ["hello", "world", "ab", "hello", "there"], "the test needs wrapped rows");
             let at = (node::TextAlign::Start, 60.0);
             // From after "wor" down to the short row's end, then on to "hel" under the goal it kept.
-            let (short, goal) = row_motion(rows, Motion::Down, 9, None, at).unwrap();
-            assert_eq!(short, 14, "past a shorter row's end is that end");
+            let (short, goal) = row_motion(rows, Motion::Down, (9, false), None, at).unwrap();
+            assert_eq!(short, (14, true), "past a shorter row's end is that end");
             let (deeper, kept) = row_motion(rows, Motion::Down, short, goal, at).unwrap();
-            assert_eq!((deeper, kept), (19, goal), "the goal x outlives the short row: \"hell|o\"");
-            assert_eq!(row_motion(rows, Motion::Up, 6, None, at).map(|(to, _)| to), Some(0), "up a soft wrap");
-            assert_eq!(row_motion(rows, Motion::Up, 3, None, at), None, "up from the first row is not the field's");
-            assert_eq!(row_motion(rows, Motion::Down, 25, None, at), None, "nor down from the last");
-            assert_eq!(row_motion(rows, Motion::RowStart, 9, Some(4.0), at), Some((6, None)), "Home: the row's start");
-            assert_eq!(row_motion(rows, Motion::RowEnd, 2, None, at), Some((5, None)), "End: before the break's space");
+            assert_eq!((deeper, kept), ((19, false), goal), "the goal x outlives the short row: \"hell|o\"");
+            assert_eq!(
+                row_motion(rows, Motion::Up, (6, false), None, at).map(|(to, _)| to.0),
+                Some(0),
+                "up a soft wrap"
+            );
+            assert_eq!(
+                row_motion(rows, Motion::Up, (3, true), None, at),
+                None,
+                "up from the first row is not the field's"
+            );
+            assert_eq!(row_motion(rows, Motion::Down, (25, true), None, at), None, "nor down from the last");
+            let home = row_motion(rows, Motion::RowStart, (9, false), Some(4.0), at);
+            assert_eq!(home, Some(((6, false), None)), "Home: the row's start");
+            let end = row_motion(rows, Motion::RowEnd, (2, false), None, at);
+            assert_eq!(end, Some(((5, true), None)), "End: before the break's space");
+            assert_eq!(field_rows::row_of(rows, 5, true), 0, "where affinity changes nothing");
+            let last = row_motion(rows, Motion::RowEnd, (22, false), None, at).unwrap().0;
+            assert_eq!(field_rows::row_of(rows, last.0, last.1), 4, "End on the last row");
+        });
+    }
+
+    /// A mid-word wrap: one byte ends row 0 and starts row 1. End keeps the caret on row 0 and the
+    /// keys after it start from there.
+    #[test]
+    fn end_on_a_mid_word_wrap_stays_on_its_row_for_the_keys_after_it() {
+        let shaping = crate::text::shaping::ShapingHandle::spawn();
+        let face = crate::layout::hit::tests::face(14.0, 0.0);
+        let text = "w".repeat(40);
+        let end = field_rows::with_rows(&text, &face, 60.0, &shaping, |rows| {
+            let at = (node::TextAlign::Start, 60.0);
+            let row = |(to, upstream): (usize, bool)| field_rows::row_of(rows, to, upstream);
+            let end = rows[0].end;
+            assert_eq!(end, rows[1].start, "the test needs a mid-word wrap");
+            let (to, _) = row_motion(rows, Motion::RowEnd, (1, false), None, at).unwrap();
+            assert_eq!((to, row(to)), ((end, true), 0), "End stays on its row");
+            assert!(rows[0].caret_x(end) > rows[0].caret_x(end - 1), "at its right edge");
+            let home = row_motion(rows, Motion::RowStart, to, None, at);
+            assert_eq!(home, Some(((0, false), None)), "Home returns to its start");
+            // Up and Down leave from the row the caret is drawn on, at its x.
+            assert_eq!(row_motion(rows, Motion::Up, to, None, at), None, "Up from row 0 is not the field's");
+            let (down, goal) = row_motion(rows, Motion::Down, to, None, at).unwrap();
+            assert_eq!((row(down), goal), (1, Some(rows[0].caret_x(end))), "Down from row 0's end");
+            assert_eq!(row(row_motion(rows, Motion::Up, down, goal, at).unwrap().0), 0, "and Up back");
+            assert_eq!(
+                row(row_motion(rows, Motion::Down, (end, false), None, at).unwrap().0),
+                2,
+                "unlike row 1's start"
+            );
+            end
+        });
+        // Arrows and typing step from that byte; `resolve_row_motion` drops the affinity.
+        let edited = |action| {
+            let mut field = FocusedTextField { selection: (end, end), upstream: true, ..draft(1, &text) };
+            field.edit(action, false, None, true);
+            (field.buffer, field.selection.1)
+        };
+        assert_eq!(edited(KeyAction::Move(Motion::Right)).1, end + 1, "Right: one character on, onto row 1");
+        assert_eq!(edited(KeyAction::Move(Motion::Left)).1, end - 1, "Left: one back on row 0");
+        let (typed, caret) = edited(KeyAction::Append("w"));
+        assert_eq!((typed.len(), caret), (41, end + 1), "typing inserts at that byte");
+        field_rows::with_rows(&typed, &face, 60.0, &shaping, |rows| {
+            let row = &rows[field_rows::row_of(rows, caret, false)];
+            assert_eq!(row.start, end, "the full row 0 sent the new \"w\" to row 1");
+            assert!(row.caret_x(caret) > 0.0, "and the caret follows it there");
         });
     }
 }

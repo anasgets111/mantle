@@ -54,10 +54,10 @@ pub enum Draw {
         align: TextAlign,
         /// Center a `textfield` line; ordinary text starts at the top of its content box.
         centered: bool,
-        /// A focused plain `textfield`'s `(anchor, caret)` byte offsets into `content` (ADR-0236).
+        /// A focused plain `textfield`'s `(anchor, caret, upstream)` as [`FieldFocus::Plain`] holds them (ADR-0236).
         /// Here rather than in a second command because the rects are glyph positions, and paint
         /// is where the glyphs are. `None` for every other node.
-        caret: Option<(usize, usize)>,
+        caret: Option<(usize, usize, bool)>,
         /// The blink's phase; see [`FieldFocus::Plain`].
         caret_on: bool,
         /// The caret bar, drawn only with `caret`.

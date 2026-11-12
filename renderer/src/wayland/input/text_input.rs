@@ -154,7 +154,7 @@ fn cursor_rect(
     root: &layout::ResolvedNode,
     id: layout::scene::NodeId,
     text: &str,
-    caret: usize,
+    (caret, upstream): (usize, bool),
     shaping: &ShapingHandle,
 ) -> Option<(i32, i32, i32, i32)> {
     let path = layout::hit::path_to_node(root, id)?;
@@ -168,7 +168,7 @@ fn cursor_rect(
     let (x, top) = if multiline.is_some() {
         let width = field_rows::wrap_width(rect.width, bar.width);
         field_rows::with_rows(text, face, width, shaping, |rows| {
-            let index = field_rows::row_of(rows, caret);
+            let index = field_rows::row_of(rows, caret, upstream);
             let row = rows.get(index)?;
             let scroll = field_rows::clamp_scroll(node.scrolled, rows.len(), face.line_height, rect.height);
             Some((
@@ -257,9 +257,9 @@ impl App {
         let (shown, caret) = if let Some(preedit) = self.text_input.composing(&field.surface_id, field.id) {
             let (shown, range, caret) =
                 layout::paint::compose_preedit(&field.buffer, field.selection, &preedit.text, preedit.cursor);
-            (shown, caret.map_or(range.end, |(_, caret)| caret))
+            (shown, (caret.map_or(range.end, |(_, caret)| caret), false))
         } else {
-            (field.buffer.clone(), field.selection.1)
+            (field.buffer.clone(), (field.selection.1, field.upstream))
         };
         let rect = self
             .client
@@ -473,12 +473,12 @@ mod tests {
         field.rect = LogicalRect { x: 10.0, y: 10.0, width: 100.0, height: 24.0 };
         let mut root = layout::ResolvedNode::test("panel", (0.0, 0.0, 200.0, 100.0), vec![field]);
         let shaping = ShapingHandle::spawn();
-        let base = cursor_rect(&root, id, "", 0, &shaping).unwrap();
+        let base = cursor_rect(&root, id, "", (0, false), &shaping).unwrap();
         root.transform.translate = (30.0, 40.0);
         root.children[0].transform.translate = (5.0, 7.0);
-        let moved = cursor_rect(&root, id, "", 0, &shaping).unwrap();
+        let moved = cursor_rect(&root, id, "", (0, false), &shaping).unwrap();
         assert_eq!((moved.0 - base.0, moved.1 - base.1), (35, 47));
-        assert_eq!(cursor_rect(&root, layout::scene::NodeId::test(2), "", 0, &shaping), None);
+        assert_eq!(cursor_rect(&root, layout::scene::NodeId::test(2), "", (0, false), &shaping), None);
     }
 
     /// The IME rectangle is the caret bar the field draws, in its own typeface and `caret` size, at a non-empty draft's caret.
@@ -503,6 +503,30 @@ mod tests {
         let line = layout::hit::field_line("ab", face, &shaping).unwrap();
         let cx = shaping::caret_x(&line.shaped[0], 2);
         // A 40px line in a 60px box starts 10 down, and the 20px bar centres in it: 10 + 10 + 10.
-        assert_eq!(cursor_rect(&root, id, "ab", 2, &shaping), Some(((10.0 + cx).round() as i32, 30, 3, 20)));
+        assert_eq!(cursor_rect(&root, id, "ab", (2, false), &shaping), Some(((10.0 + cx).round() as i32, 30, 3, 20)));
+    }
+
+    /// At a mid-word wrap the rectangle sits on the row the caret's affinity names, as its bar does.
+    #[test]
+    fn cursor_rectangle_follows_the_carets_affinity_at_a_mid_word_wrap() {
+        let id = layout::scene::NodeId::test(1);
+        let lua = mlua::Lua::new();
+        let mut field = super::keyboard::tests::textfield(&lua, None);
+        field = super::keyboard::tests::with_property(field, "multiline", mlua::Value::Boolean(true));
+        (field.id, field.rect) = (id, LogicalRect { x: 0.0, y: 0.0, width: 60.0, height: 100.0 });
+        let root = layout::ResolvedNode::test("panel", (0.0, 0.0, 200.0, 100.0), vec![field]);
+        let shaping = ShapingHandle::spawn();
+        let node::PaintStyle::TextField { face, caret: bar, .. } = root.children[0].paint.as_ref().unwrap() else {
+            unreachable!()
+        };
+        let text = "w".repeat(40);
+        let width = field_rows::wrap_width(root.children[0].content_box(root.children[0].rect).width, bar.width);
+        let end = field_rows::with_rows(&text, face, width, &shaping, |rows| rows[0].end);
+        let up = cursor_rect(&root, id, &text, (end, true), &shaping).unwrap();
+        let down = cursor_rect(&root, id, &text, (end, false), &shaping).unwrap();
+        assert!(
+            up.0 > down.0 && up.1 < down.1,
+            "upstream {up:?} ends the first row, downstream {down:?} starts the next"
+        );
     }
 }

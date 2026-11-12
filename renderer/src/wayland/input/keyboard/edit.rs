@@ -377,6 +377,7 @@ impl FocusedTextField {
         self.buffer.replace_range(start..from, "");
         let removed_before = from - start;
         self.selection = (self.selection.0 - removed_before, self.selection.1 - removed_before);
+        self.upstream = false;
         self.history.record(before, None);
         PlainEdit { changed: true, ..PlainEdit::NONE }
     }

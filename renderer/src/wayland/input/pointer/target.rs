@@ -154,7 +154,7 @@ pub(super) struct PointerHit {
     pub(super) control: Option<layout::scene::NodeId>,
     /// Byte offset under the point in the plain `textfield` it landed in (ADR-0236), decided on
     /// this same walk so one event cannot get two answers.
-    pub(super) caret: Option<usize>,
+    pub(super) caret: Option<(usize, bool)>,
     /// `on_drag` node under the press, with its rect (ADR-0116 decision 1).
     pub(super) drag: Option<PressTarget>,
     pub(super) press: Option<PressTarget>,

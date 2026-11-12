@@ -1288,7 +1288,7 @@ pub(crate) mod tests {
                     caret = { color = "#FF0000FF", width = 6, height = 0.5, radius = 3 } } }"##,
             LogicalSize { width: 80.0, height: 60.0 },
         );
-        let focus = FieldFocus::Plain { id: root.children[0].id, text: "", caret: Some((0, 0)), caret_on: true };
+        let focus = FieldFocus::Plain { id: root.children[0].id, text: "", caret: Some((0, 0, false)), caret_on: true };
         let whole = PhysicalRect { x0: 0, y0: 0, x1: 80, y1: 60 };
         let mut captures = CaptureCache::default();
         let list = build(&root, 1.0, Some(&focus));
@@ -1310,6 +1310,47 @@ pub(crate) mod tests {
         assert!(!red(22, 24), "above the half-height bar");
         assert!(!red(22, 40), "below it");
         assert!(!red(20, 26), "the corner is rounded off by `radius`");
+    }
+
+    /// At a mid-word wrap the caret's byte ends row 0 and starts row 1: the bar is drawn on the row
+    /// its affinity names, at that row's right edge or the next one's left.
+    #[test]
+    fn a_caret_at_a_mid_word_wrap_draws_on_the_row_its_affinity_names() {
+        use super::super::FieldFocus;
+        use crate::layout::field_rows;
+        let Some(instance) = init_headless_egl(80, 80) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 80, 80) else { return };
+        let root = resolved_surface(
+            &Lua::new(),
+            r##"return panel { id = "bar", width = 80, height = 80, child = textfield { width = 60, height = 60,
+                font_size = 20, multiline = true, on_change = function(text) end, caret = { color = "#FF0000FF", width = 4 } } }"##,
+            LogicalSize { width: 80.0, height: 80.0 },
+        );
+        let (field, text) = (&root.children[0], "w".repeat(12));
+        let Some(node::PaintStyle::TextField { face, caret: bar, .. }) = field.paint.as_ref() else { unreachable!() };
+        let width = field_rows::wrap_width(field.content_box(field.rect).width, bar.width);
+        let end = field_rows::with_rows(&text, face, width, &shaping, |rows| rows[0].end);
+        // The rightmost and topmost red pixel.
+        let mut bar_at = |upstream| {
+            let caret = Some((end, end, upstream));
+            let list = build(&root, 1.0, Some(&FieldFocus::Plain { id: field.id, text: &text, caret, caret_on: true }));
+            let (whole, mut captures) = (PhysicalRect { x0: 0, y0: 0, x1: 80, y1: 80 }, CaptureCache::default());
+            let images = &mut ImageCache::new();
+            let _ = execute("test", &mut painter, images, &mut captures, &list, 1.0, (80.0, 80.0), &[whole], None);
+            let mut corner = (0, 80);
+            for (x, y) in (0..80).flat_map(|y| (0..80).map(move |x| (x, y))) {
+                if pixel_at(painter.canvas_mut(), x, y) == (255, 0, 0, 255) {
+                    corner = (corner.0.max(x), corner.1.min(y));
+                }
+            }
+            corner
+        };
+        let (up, down) = (bar_at(true), bar_at(false));
+        assert!(
+            up.0 > down.0 + 20 && up.1 + 20 < down.1,
+            "upstream {up:?} on row 0's right, downstream {down:?} below"
+        );
     }
 
     #[test]
@@ -1685,7 +1726,7 @@ pub(crate) mod tests {
         let focus = selected.map(|text| super::super::FieldFocus::Plain {
             id: root.children[0].id,
             text,
-            caret: Some((0, text.len())),
+            caret: Some((0, text.len(), false)),
             caret_on: false,
         });
         let list = build(&root, 1.0, focus.as_ref());

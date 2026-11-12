@@ -97,6 +97,8 @@ pub(in crate::wayland) struct FocusedTextField {
     pub(super) click: Option<(std::time::Instant, (f64, f64))>,
     /// The x a run of Up and Down in a `multiline` field keeps to, field-local.
     pub(super) goal_x: Option<f32>,
+    /// A caret at a mid-word wrap belongs to the row it ends, not the next ([`crate::layout::field_rows::row_of`]).
+    pub(super) upstream: bool,
     pub(super) on_change: Option<Function>,
     pub(super) on_submit: Option<Function>,
     pub(super) on_cancel: Option<Function>,
@@ -480,10 +482,11 @@ impl App {
                 caret_on: self.caret_on(std::time::Instant::now()),
             });
         }
+        let (anchor, caret) = focused.selection;
         Some(layout::paint::FieldFocus::Plain {
             id: focused.id,
             text: &focused.buffer,
-            caret: self.text_field_takes_keys(focused).then_some(focused.selection),
+            caret: self.text_field_takes_keys(focused).then_some((anchor, caret, focused.upstream)),
             caret_on: self.caret_on(std::time::Instant::now()),
         })
     }
@@ -692,6 +695,7 @@ pub(in crate::wayland) mod tests {
             span: Default::default(),
             click: None,
             goal_x: None,
+            upstream: false,
             on_change: None,
             on_submit: None,
             on_cancel: None,
