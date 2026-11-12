@@ -559,9 +559,9 @@ mod tests {
         (probe(loader, setup, "is_rescue"), probe(loader, setup, "error_log"))
     }
 
-    /// Pushes `mantle.workspace`, which is off the roster, so any payload hydrates it.
-    pub(super) fn push_workspace(client: &mut RendererClient, revision: u32, payload: serde_json::Value) {
-        let snapshot = StateSnapshot { capability: "workspace".to_string(), revision, payload };
+    /// Pushes `payload` for `capability`; `workspace` is off the roster, so any payload hydrates it.
+    pub(super) fn push(client: &RendererClient, capability: &str, revision: u32, payload: serde_json::Value) {
+        let snapshot = StateSnapshot { capability: capability.to_string(), revision, payload };
         client.apply_state_snapshot(snapshot).unwrap();
     }
 
@@ -590,6 +590,16 @@ mod tests {
         )
         .unwrap();
         (client, outbound_rx)
+    }
+
+    /// A client over a fresh `shell.lua` holding `source`; the dir must outlive the test.
+    pub(super) fn client_for(
+        source: &str,
+    ) -> (tempfile::TempDir, std::path::PathBuf, RendererClient, mpsc::UnboundedReceiver<RendererFrame>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(dir.path(), source);
+        let (client, outbound_rx) = test_client(&path);
+        (dir, path, client, outbound_rx)
     }
 
     /// A client over a config path that does not exist, for tests that push state or run Lua directly.
@@ -778,8 +788,7 @@ mod tests {
             ("audio", serde_json::json!({ "app_name": "Zen" }), "mantle.audio:get().app_name", "Zen"),
             ("workspace", serde_json::json!({ "active": 2 }), "mantle.workspace:get().active", "2"),
         ] {
-            let snapshot = StateSnapshot { capability: capability.to_string(), revision: 1, payload };
-            client.apply_state_snapshot(snapshot).unwrap();
+            push(&client, capability, 1, payload);
             let read = probe::<mlua::Value>(&client.loader, &format!("seen = {probe_expr}"), "seen");
             assert_eq!(read.to_string().unwrap(), expected, "{capability}");
         }
@@ -790,9 +799,7 @@ mod tests {
         // The untested half of ADR-0062: a config-authored `hover` property remains a handle in the
         // resolved tree (decision 3), and writing it moves a second bound node. `pointer_frame`
         // needs a compositor, so drive `layout::hover` on a real resolved tree instead.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _outbound_rx) = client_for(
             r#"
             local hovered = hover("pill")
             return { panel {
@@ -804,7 +811,6 @@ mod tests {
             } }
             "#,
         );
-        let (mut client, _outbound_rx) = test_client(&path);
         assert!(run_startup(&mut client), "the config must resolve");
 
         let hover_row =
@@ -863,9 +869,7 @@ mod tests {
         //
         // Two slots, because the contract is that a point inside one region is outside the other:
         // one region alone could not tell "opens when hovered" from "always open".
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, path, mut client, _outbound_rx) = client_for(
             r##"
             local left, right = hover("left"), hover("right")
             return {
@@ -891,7 +895,6 @@ mod tests {
             }
             "##,
         );
-        let (mut client, _outbound_rx) = test_client(&path);
         assert!(run_startup(&mut client), "the fixture must resolve into a scene");
 
         let tip_is_up = |client: &RendererClient| client.scene.surface("tip").expect("the popup resolves").visible;
@@ -966,9 +969,7 @@ mod tests {
         // Regression: a card with no `visible` binding sat in the corner saying "no notifications"
         // for ever. The engine contract under it is that a surface's `visible` may be a signal over
         // a capability, and that a snapshot re-resolve moves the surface.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _outbound_rx) = client_for(
             r##"
             return { panel {
                 id = "notification_area", layer = "top", anchor = { top = true, right = true },
@@ -979,7 +980,6 @@ mod tests {
             } }
             "##,
         );
-        let (mut client, _outbound_rx) = test_client(&path);
         assert!(run_startup(&mut client), "the fixture must resolve into a scene");
 
         let card_is_up = |client: &RendererClient| {
@@ -987,25 +987,18 @@ mod tests {
         };
         assert!(!card_is_up(&client), "nothing has been received, so there is nothing to show");
 
-        client
-            .apply_state_snapshot(StateSnapshot {
-                capability: "notifications".to_string(),
-                revision: 1,
-                payload: serde_json::json!({ "feed": [{ "id": 7, "app_name": "Zen", "summary": "a thing happened" }] }),
-            })
-            .unwrap();
+        push(
+            &client,
+            "notifications",
+            1,
+            serde_json::json!({ "feed": [{ "id": 7, "app_name": "Zen", "summary": "a thing happened" }] }),
+        );
         assert!(client.re_resolve_if_dirty());
         assert!(card_is_up(&client), "a notification in the feed puts the card up");
 
         // The Supervisor expires it from the feed (ADR-0033); auto-hide is only this empty list,
         // with no timer here.
-        client
-            .apply_state_snapshot(StateSnapshot {
-                capability: "notifications".to_string(),
-                revision: 2,
-                payload: serde_json::json!({ "feed": [] }),
-            })
-            .unwrap();
+        push(&client, "notifications", 2, serde_json::json!({ "feed": [] }));
         assert!(client.re_resolve_if_dirty());
         assert!(!card_is_up(&client), "an expired feed takes the card with it");
     }
@@ -1100,9 +1093,7 @@ mod tests {
     /// order is the contract.
     #[test]
     fn a_full_generation_keeps_lock_as_the_node_constructor_and_puts_the_capability_on_mantle() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _outbound_rx) = client_for(
             r##"return {
                 panel { id = "bar", layer = "top" },
                 lock {
@@ -1111,14 +1102,12 @@ mod tests {
                 },
             }"##,
         );
-        let (mut client, _outbound_rx) = test_client(&path);
-        client
-            .apply_state_snapshot(StateSnapshot {
-                capability: "lock".to_string(),
-                revision: 1,
-                payload: serde_json::json!({ "active": false, "authenticating": false, "attempts": 2, "error": "authentication failed" }),
-            })
-            .unwrap();
+        push(
+            &client,
+            "lock",
+            1,
+            serde_json::json!({ "active": false, "authenticating": false, "attempts": 2, "error": "authentication failed" }),
+        );
 
         assert!(run_startup(&mut client), "a config declaring a lock screen must build a scene");
 
@@ -1170,15 +1159,14 @@ mod tests {
         let (client, _outbound_rx) = bare_client();
         client.loader.lua().load(r#"store = persistent_table { path = "/tmp/bar/state.json" }"#).exec().unwrap();
 
-        client
-            .apply_state_snapshot(StateSnapshot {
-                capability: "storage".to_string(),
-                revision: 1,
-                payload: serde_json::json!({
-                    "contents": { "/tmp/bar/state.json": { "theme": "latte", "wallpaper": { "fit": "cover" } } }
-                }),
-            })
-            .unwrap();
+        push(
+            &client,
+            "storage",
+            1,
+            serde_json::json!({
+                "contents": { "/tmp/bar/state.json": { "theme": "latte", "wallpaper": { "fit": "cover" } } }
+            }),
+        );
 
         let setup = r#"
             theme = store.theme:get()
@@ -1208,23 +1196,11 @@ mod tests {
         assert_eq!(probe::<String>(&client.loader, setup, "theme"), "mocha");
         assert_eq!(probe::<Option<String>>(&client.loader, setup, "other"), None, "no default, no value");
 
-        client
-            .apply_state_snapshot(StateSnapshot {
-                capability: "storage".to_string(),
-                revision: 1,
-                payload: serde_json::json!({ "contents": { "/tmp/bar/state.json": { "theme": "latte" } } }),
-            })
-            .unwrap();
+        push(&client, "storage", 1, serde_json::json!({ "contents": { "/tmp/bar/state.json": { "theme": "latte" } } }));
         assert_eq!(probe::<String>(&client.loader, setup, "theme"), "latte");
 
         // `set("theme", nil)` deletes the key; the next push lacks it and the default shows again.
-        client
-            .apply_state_snapshot(StateSnapshot {
-                capability: "storage".to_string(),
-                revision: 2,
-                payload: serde_json::json!({ "contents": { "/tmp/bar/state.json": {} } }),
-            })
-            .unwrap();
+        push(&client, "storage", 2, serde_json::json!({ "contents": { "/tmp/bar/state.json": {} } }));
         assert_eq!(probe::<String>(&client.loader, setup, "theme"), "mocha");
         assert_eq!(probe::<Option<String>>(&client.loader, setup, "other"), None);
     }
@@ -1243,8 +1219,7 @@ mod tests {
         .exec()
         .unwrap();
         let push = |revision, payload| {
-            let snapshot = StateSnapshot { capability: "storage".to_string(), revision, payload };
-            client.apply_state_snapshot(snapshot).unwrap();
+            push(&client, "storage", revision, payload);
             lua::signal::run_state_handlers(lua);
         };
 
@@ -1268,13 +1243,7 @@ mod tests {
             )
             .exec()
             .unwrap();
-        client
-            .apply_state_snapshot(StateSnapshot {
-                capability: "storage".to_string(),
-                revision: 1,
-                payload: serde_json::json!({ "contents": { "/tmp/bar/a.json": { "theme": "latte" } } }),
-            })
-            .unwrap();
+        push(&client, "storage", 1, serde_json::json!({ "contents": { "/tmp/bar/a.json": { "theme": "latte" } } }));
 
         let setup = r#"a_theme = a.theme:get() b_theme = b.theme:get() b_other = b.other:get()"#;
         assert_eq!(probe::<String>(&client.loader, setup, "a_theme"), "latte");
@@ -1372,18 +1341,17 @@ mod tests {
         let (client, _outbound_rx) = bare_client();
         client.loader.lua().load(r#"rec = session_process { name = "recorder" }"#).exec().unwrap();
 
-        client
-            .apply_state_snapshot(StateSnapshot {
-                capability: "processes".to_string(),
-                revision: 1,
-                payload: serde_json::json!({
-                    "sessions": {
-                        "recorder": { "running": true, "pid": 4321, "started_at": 1700000000,
-                                      "exit_code": null, "start_error": "" }
-                    }
-                }),
-            })
-            .unwrap();
+        push(
+            &client,
+            "processes",
+            1,
+            serde_json::json!({
+                "sessions": {
+                    "recorder": { "running": true, "pid": 4321, "started_at": 1700000000,
+                                  "exit_code": null, "start_error": "" }
+                }
+            }),
+        );
 
         let setup = r#"
             running = rec.running:get()
@@ -1406,13 +1374,7 @@ mod tests {
         let (client, _outbound_rx) = bare_client();
         client.loader.lua().load(r#"rec = session_process { name = "recorder" }"#).exec().unwrap();
 
-        client
-            .apply_state_snapshot(StateSnapshot {
-                capability: "processes".to_string(),
-                revision: 1,
-                payload: serde_json::json!({ "sessions": {} }),
-            })
-            .unwrap();
+        push(&client, "processes", 1, serde_json::json!({ "sessions": {} }));
 
         assert_eq!(
             probe::<Option<bool>>(&client.loader, "running = rec.running:get()", "running"),
@@ -1495,20 +1457,8 @@ mod tests {
     fn apply_state_snapshot_reuses_the_same_signal_across_repeated_pushes_for_one_capability() {
         let (client, _outbound_rx) = bare_client();
 
-        client
-            .apply_state_snapshot(StateSnapshot {
-                capability: "network".to_string(),
-                revision: 1,
-                payload: serde_json::json!({ "connected": true }),
-            })
-            .unwrap();
-        client
-            .apply_state_snapshot(StateSnapshot {
-                capability: "network".to_string(),
-                revision: 2,
-                payload: serde_json::json!({ "connected": false }),
-            })
-            .unwrap();
+        push(&client, "network", 1, serde_json::json!({ "connected": true }));
+        push(&client, "network", 2, serde_json::json!({ "connected": false }));
 
         assert!(
             !probe::<bool>(&client.loader, "connected = mantle.network:get().connected", "connected"),
@@ -1530,9 +1480,7 @@ mod tests {
     fn every_declared_role_comes_back_from_the_startup_evaluation_tagged_with_its_own_spec() {
         // All roles matter: `expand_instances` and `create_surfaces` branch on the variant; an
         // untagged role could bind only as a layer surface.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), three_roles_config());
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (_dir, _, mut client, _outbound_rx) = client_for(three_roles_config());
 
         let specs = client.run_startup_evaluation().expect("all three roles must evaluate");
 
@@ -1543,9 +1491,7 @@ mod tests {
 
     #[test]
     fn a_destroyed_surface_leaves_the_reconcile_set_with_its_tree() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (_dir, _, mut client, _outbound_rx) = client_for(r#"return panel { id = "bar", layer = "top" }"#);
         client.set_instances(instances_for(&["bar", "menu"]));
 
         client.forget_surface("bar@TEST");
@@ -1560,9 +1506,7 @@ mod tests {
     fn the_fingerprint_carries_every_role_so_adding_a_window_is_a_topology_change() {
         // ADR-0049 decision 3: a window object may come and go within a generation, but its
         // *declaration* is fixed, so adding one changes topology.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (dir, path, mut client, _outbound_rx) = client_for(r#"return panel { id = "bar", layer = "top" }"#);
         client.state.applied_specs = surface_specs(&client.loader.evaluate_file(&path).unwrap()).unwrap();
 
         write_shell_lua(dir.path(), three_roles_config());
@@ -1588,9 +1532,7 @@ mod tests {
     fn an_in_place_reload_may_restyle_a_live_lock_screen_but_not_remove_its_way_out() {
         // `SurfaceFingerprint::Lock` carries only `id`, so edits inside the lock rebuild nothing. Restyles must land (ADR-0052 decision 2), but
         // removing the way out must be refused; `Scene::apply` rollback preserves the live tree.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), &lock_config("#101010FF"));
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (dir, _, mut client, _outbound_rx) = client_for(&lock_config("#101010FF"));
         assert!(run_startup(&mut client));
         client.set_session_locked(true);
 
@@ -1628,9 +1570,7 @@ mod tests {
     #[test]
     fn an_unlocked_session_may_still_delete_its_lock_screens_password_field() {
         // With no lock held, the lock screen may become empty like any surface.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), &lock_config("#101010FF"));
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (dir, _, mut client, _outbound_rx) = client_for(&lock_config("#101010FF"));
         assert!(run_startup(&mut client));
 
         write_shell_lua(
@@ -1656,9 +1596,7 @@ mod tests {
         // a dock left the veto checking an unpaintable fossil while the live lock screen was open.
         // This apply mirrors `handle_output_change`: re-expand applied specs against current
         // outputs, store, resolve.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), &lock_config("#101010FF"));
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (dir, _, mut client, _outbound_rx) = client_for(&lock_config("#101010FF"));
         assert!(run_startup(&mut client));
         client.set_session_locked(true);
 
@@ -1749,9 +1687,7 @@ mod tests {
                 "`bar` is new; `other` goes because no fresh instance names it",
             ),
         ] {
-            let dir = tempfile::tempdir().unwrap();
-            let path = write_shell_lua(dir.path(), applied);
-            let (mut client, _outbound_rx) = test_client(&path);
+            let (dir, path, mut client, _outbound_rx) = client_for(applied);
             client.state.applied_specs = surface_specs(&client.loader.evaluate_file(&path).unwrap()).unwrap();
 
             write_shell_lua(dir.path(), edited);
@@ -1782,9 +1718,7 @@ mod tests {
                 "max_size",
             ),
         ] {
-            let dir = tempfile::tempdir().unwrap();
-            let path = write_shell_lua(dir.path(), src);
-            let (mut client, _outbound_rx) = test_client(&path);
+            let (_dir, _, mut client, _outbound_rx) = client_for(src);
 
             assert!(client.run_startup_evaluation().is_none(), "{property}: the whole evaluation must fail");
 
@@ -1828,12 +1762,8 @@ mod tests {
 
     #[test]
     fn a_removed_declaration_applies_in_place_once_its_instance_is_gone_too() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
-            r#"return { panel { id = "bar", layer = "top" }, panel { id = "dock", layer = "top" } }"#,
-        );
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (dir, _, mut client, _outbound_rx) =
+            client_for(r#"return { panel { id = "bar", layer = "top" }, panel { id = "dock", layer = "top" } }"#);
         assert!(run_startup(&mut client));
 
         write_shell_lua(dir.path(), r#"return { panel { id = "bar", layer = "top" } }"#);
@@ -1857,12 +1787,8 @@ mod tests {
         // does. Measured against 1000 this paragraph is one line wide; against 180 it is 180 wide
         // and two lines tall. Grant it the 342 it asked for, feed that back as the ceiling, and it
         // can never grow wider again -- it wraps taller inside the width it happened to open at.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
-            r#"return panel { id = "bar", layer = "top", width = "fill", height = "fill" }"#,
-        );
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (_dir, _, mut client, _outbound_rx) =
+            client_for(r#"return panel { id = "bar", layer = "top", width = "fill", height = "fill" }"#);
         assert!(run_startup(&mut client), "startup must have applied");
 
         let ceiling = client.instances.iter().find(|i| i.instance_id == "bar@TEST").unwrap().available;
@@ -1882,12 +1808,8 @@ mod tests {
         // `available` there afterwards -- `set_instance_size` declines a measured axis outright --
         // so without this the content would be solved against 200 for the rest of the generation
         // and no configure could ever widen it.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
-            r#"return panel { id = "bar", layer = "top", width = "fill", height = "fill" }"#,
-        );
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (_dir, _, mut client, _outbound_rx) =
+            client_for(r#"return panel { id = "bar", layer = "top", width = "fill", height = "fill" }"#);
         assert!(run_startup(&mut client), "startup must have applied");
         client.set_instance_size("bar@TEST", layout::LogicalSize { width: 200.0, height: 39.0 });
         client.dirty.take();
@@ -1906,12 +1828,8 @@ mod tests {
     fn recording_the_same_measurement_again_changes_nothing_and_names_no_instance_it_lacks() {
         // It runs on every resolved pass, so a pass that re-derived the same panel spec must not
         // cost a re-resolve of every surface in the scene.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
-            r#"return panel { id = "bar", layer = "top", width = "fill", height = "fill" }"#,
-        );
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (_dir, _, mut client, _outbound_rx) =
+            client_for(r#"return panel { id = "bar", layer = "top", width = "fill", height = "fill" }"#);
         assert!(run_startup(&mut client), "startup must have applied");
         assert!(!client.dirty.take(), "a clean startup leaves the flag clear");
         let ceiling = client.instances.iter().find(|i| i.instance_id == "bar@TEST").unwrap().available;
@@ -1926,12 +1844,8 @@ mod tests {
     #[test]
     fn set_instance_size_replaces_one_instances_available_size_and_marks_the_scene_dirty() {
         // `configure` reuses ADR-0044 decision 2's one dirty flag, not a second change mechanism.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
-            r#"return panel { id = "bar", layer = "top", width = "fill", height = "fill" }"#,
-        );
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (_dir, _, mut client, _outbound_rx) =
+            client_for(r#"return panel { id = "bar", layer = "top", width = "fill", height = "fill" }"#);
         assert!(run_startup(&mut client), "startup must have applied");
         assert!(!client.dirty.take(), "a clean startup leaves the flag clear");
         assert_eq!(
@@ -1952,9 +1866,7 @@ mod tests {
 
     #[test]
     fn a_configure_for_one_surface_re_resolves_only_that_instance() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _outbound_rx) = client_for(
             r#"return {
                 panel { id = "bar", layer = "top", width = "fill", height = "fill" },
                 panel { id = "b", layer = "top" },
@@ -1962,7 +1874,6 @@ mod tests {
                 panel { id = "d", layer = "top" },
             }"#,
         );
-        let (mut client, _outbound_rx) = test_client(&path);
         assert!(run_startup(&mut client));
         client.take_last_resolved();
 
@@ -1974,12 +1885,8 @@ mod tests {
 
     #[test]
     fn set_instance_size_repeating_the_current_size_does_not_mark_the_scene_dirty() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
-            r#"return panel { id = "bar", layer = "top", width = "fill", height = "fill" }"#,
-        );
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (_dir, _, mut client, _outbound_rx) =
+            client_for(r#"return panel { id = "bar", layer = "top", width = "fill", height = "fill" }"#);
         assert!(run_startup(&mut client));
 
         client.set_instance_size("bar@TEST", layout::LogicalSize { width: 1920.0, height: 1080.0 });
@@ -1996,12 +1903,8 @@ mod tests {
     fn one_surface_on_two_outputs_resolves_two_trees_against_two_different_sizes() {
         // `output = "all"` across laptop and 4K external means two configured sizes; one declared
         // surface tree cannot serve both.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
-            r#"return panel { id = "bar", layer = "top", width = "fill", height = "fill" }"#,
-        );
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (_dir, _, mut client, _outbound_rx) =
+            client_for(r#"return panel { id = "bar", layer = "top", width = "fill", height = "fill" }"#);
 
         let specs = client.run_startup_evaluation().expect("the fixture evaluates");
         let outputs = vec![
@@ -2017,9 +1920,8 @@ mod tests {
 
     #[test]
     fn a_panel_naming_an_unplugged_monitor_gets_no_instance_and_no_resolved_tree() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", output = "HDMI-A-9" }"#);
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (_dir, _, mut client, _outbound_rx) =
+            client_for(r#"return panel { id = "bar", layer = "top", output = "HDMI-A-9" }"#);
 
         assert!(
             run_startup(&mut client),
@@ -2031,9 +1933,7 @@ mod tests {
 
     #[test]
     fn a_failed_reevaluation_stages_nothing_and_sets_rescue() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), "this is not lua");
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (_dir, _, mut client, _outbound_rx) = client_for("this is not lua");
 
         assert!(!client.reevaluate());
         assert!(client.state.pending.is_none());
@@ -2046,10 +1946,8 @@ mod tests {
     fn a_topology_field_error_reads_distinctly_from_a_top_level_return_error() {
         // A topology-field type error such as `anchor.top` not boolean used to become
         // `InvalidTopLevelReturn`'s fixed "must be a `panel` node or an array of them" message.
-        let dir = tempfile::tempdir().unwrap();
-        let path =
-            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", anchor = { top = "yes" } }"#);
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (_dir, _, mut client, _outbound_rx) =
+            client_for(r#"return panel { id = "bar", layer = "top", anchor = { top = "yes" } }"#);
 
         assert!(!client.reevaluate());
         let (_, error) = rescue_state(&client.loader);
@@ -2065,8 +1963,7 @@ mod tests {
         let (mut client, _outbound_rx) = bare_client();
         run_startup(&mut client);
         assert!(client.state.applied_output.is_none(), "startup must have failed (no file)");
-        let push = StateSnapshot { capability: "audio".to_string(), revision: 1, payload: serde_json::json!(1) };
-        client.apply_state_snapshot(push).unwrap();
+        push(&client, "audio", 1, serde_json::json!(1));
         client.re_resolve_if_dirty();
         assert!(client.dirty.take(), "the push stays pending for whatever applies next");
     }
@@ -2079,13 +1976,7 @@ mod tests {
         assert!(!client.dirty.take(), "a fresh client must not start dirty");
 
         for revision in 1..=5 {
-            client
-                .apply_state_snapshot(StateSnapshot {
-                    capability: "audio".to_string(),
-                    revision,
-                    payload: serde_json::json!({ "n": revision }),
-                })
-                .unwrap();
+            push(&client, "audio", revision, serde_json::json!({ "n": revision }));
         }
 
         assert!(client.dirty.take(), "a burst of five pushes must have marked the flag");
@@ -2097,22 +1988,20 @@ mod tests {
 
     #[test]
     fn a_push_that_makes_a_property_invalid_drops_it_in_rescue_until_it_is_fixed() {
-        let dir = tempfile::tempdir().unwrap();
-        let path =
-            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", visible = mantle.workspace }"#);
-        let (mut client, _outbound_rx) = test_client(&path);
-        push_workspace(&mut client, 1, serde_json::json!(false));
+        let (_dir, _, mut client, _outbound_rx) =
+            client_for(r#"return panel { id = "bar", layer = "top", visible = mantle.workspace }"#);
+        push(&client, "workspace", 1, serde_json::json!(false));
         run_startup(&mut client);
         assert_eq!(rescue_state(&client.loader), (false, String::new()));
 
         // `visible` requires a boolean; a table is dropped for its default, `true`.
-        push_workspace(&mut client, 2, serde_json::json!({ "not": "a boolean" }));
+        push(&client, "workspace", 2, serde_json::json!({ "not": "a boolean" }));
         assert!(client.re_resolve_if_dirty());
         assert!(client.scene.surface("bar@TEST").unwrap().visible, "the default, not the prior tree");
         let (is_rescue, error_log) = rescue_state(&client.loader);
         assert!(is_rescue && error_log.contains("visible"), "a dropped value must reach rescue: {error_log}");
 
-        push_workspace(&mut client, 3, serde_json::json!(false));
+        push(&client, "workspace", 3, serde_json::json!(false));
         assert!(client.re_resolve_if_dirty());
         assert!(!client.scene.surface("bar@TEST").unwrap().visible);
         assert_eq!(rescue_state(&client.loader), (false, String::new()), "the fixed value clears it");
@@ -2123,12 +2012,9 @@ mod tests {
         // ADR-0044 decision 1: startup runs before an inbound frame drains, so rostered
         // capabilities read `nil`; bare bindings still apply using each parser's absent-property
         // default.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _outbound_rx) = client_for(
             r#"return panel { id = "bar", layer = "top", visible = mantle.audio, child = row { children = { rect { width = mantle.network, height = 10, children = mantle.tray }, text { content = mantle.audio } } } }"#,
         );
-        let (mut client, _outbound_rx) = test_client(&path);
 
         run_startup(&mut client);
 
@@ -2168,9 +2054,7 @@ mod tests {
     fn a_config_looping_over_screens_declares_one_panel_per_connected_output() {
         // ADR-0041 decision 1: no `variants`; Lua already has `for`. Without the pre-evaluation
         // seed, this loop would run zero times.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _outbound_rx) = client_for(
             r#"
             local panels = {}
             for _, screen in ipairs(mantle.screens:get()) do
@@ -2179,7 +2063,6 @@ mod tests {
             return panels
             "#,
         );
-        let (mut client, _outbound_rx) = test_client(&path);
 
         assert!(client.set_screens(screens_json(&["eDP-1", "DP-1"])));
         let specs = client.run_startup_evaluation().expect("the config must evaluate");
@@ -2191,12 +2074,9 @@ mod tests {
     #[test]
     fn a_config_reading_screens_before_any_output_is_known_sees_an_empty_list_not_a_nil() {
         // `nil` would make `ipairs` error and put an innocent config in rescue.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _outbound_rx) = client_for(
             r#"return panel { id = "bar", layer = "top", child = text { content = "screens: " .. #mantle.screens:get() } }"#,
         );
-        let (mut client, _outbound_rx) = test_client(&path);
 
         assert!(run_startup(&mut client), "an unseeded `screens` must not fail the evaluation");
         let tree = client.scene.surface("bar@TEST").unwrap();
@@ -2210,9 +2090,7 @@ mod tests {
     fn set_screens_repeating_the_same_list_reports_no_change_and_leaves_the_scene_clean() {
         // `update_output` handles changes absent from `screens`; an unchanged push buys neither
         // `Scene::apply` nor a re-evaluation.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (_dir, _, mut client, _outbound_rx) = client_for(r#"return panel { id = "bar", layer = "top" }"#);
         client.set_screens(screens_json(&["eDP-1"]));
         run_startup(&mut client);
 
@@ -2222,12 +2100,9 @@ mod tests {
 
     #[test]
     fn a_real_output_change_marks_the_scene_dirty_so_a_config_reading_screens_re_resolves() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _outbound_rx) = client_for(
             r#"return panel { id = "bar", layer = "top", child = text { content = computed({mantle.screens}, function(list) return "n=" .. #list end) } }"#,
         );
-        let (mut client, _outbound_rx) = test_client(&path);
         client.set_screens(screens_json(&["eDP-1"]));
         run_startup(&mut client);
         let content = |client: &RendererClient| {
@@ -2250,15 +2125,12 @@ mod tests {
     /// re-evaluation drops it like a capability's.
     #[test]
     fn screens_on_change_sees_both_lists_and_a_re_evaluation_drops_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, path, mut client, _outbound_rx) = client_for(
             r#"
             mantle.screens:on_change(function(now, before) seen = #before .. "->" .. #now end)
             return panel { id = "bar", layer = "top" }
             "#,
         );
-        let (mut client, _outbound_rx) = test_client(&path);
         client.set_screens(screens_json(&["eDP-1"]));
         run_startup(&mut client);
 
@@ -2275,9 +2147,7 @@ mod tests {
     /// re-evaluation, applied or failed, drops what the last one registered.
     #[test]
     fn a_state_write_over_the_socket_runs_on_change_before_the_pass_and_a_re_evaluation_drops_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, path, mut client, _outbound_rx) = client_for(
             r#"
             local open = state("open", false)
             local hint = state("hint", "idle")
@@ -2285,7 +2155,6 @@ mod tests {
             return panel { id = "bar", layer = "top", child = text { content = hint } }
             "#,
         );
-        let (mut client, _outbound_rx) = test_client(&path);
         assert!(run_startup(&mut client));
         let content = |client: &RendererClient| {
             client.scene.surface("bar@TEST").unwrap().children[0]
@@ -2316,12 +2185,8 @@ mod tests {
     fn seeding_screens_before_the_startup_apply_still_leaves_the_scene_flag_clear() {
         // The seed marks the flag, but the immediate apply resolves that value; entering the poll
         // loop dirty would add one redundant `Scene::apply` before drawing.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
-            r#"return panel { id = "bar", layer = "top", child = text { content = "hi" } }"#,
-        );
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (_dir, _, mut client, _outbound_rx) =
+            client_for(r#"return panel { id = "bar", layer = "top", child = text { content = "hi" } }"#);
 
         assert!(client.set_screens(screens_json(&["eDP-1"])));
         assert!(run_startup(&mut client));
@@ -2333,9 +2198,8 @@ mod tests {
     fn applied_surface_specs_returns_the_applied_declarations_without_reading_shell_lua_again_and_none_before_any_apply()
      {
         // Hotplug expansion source (ADR-0038 decision 3). Delete the file to prove it is untouched.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", output = "all" }"#);
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (_dir, path, mut client, _outbound_rx) =
+            client_for(r#"return panel { id = "bar", layer = "top", output = "all" }"#);
         run_startup(&mut client);
         std::fs::remove_file(&path).unwrap();
 
@@ -2392,14 +2256,11 @@ mod tests {
 
     #[test]
     fn a_due_timer_fires_through_the_client() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _outbound_rx) = client_for(
             r#"fired = false
             timer(1, function() fired = true end)
             return panel { id = "bar", layer = "top" }"#,
         );
-        let (mut client, _outbound_rx) = test_client(&path);
         assert!(run_startup(&mut client));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !client.loader.lua().globals().get::<bool>("fired").unwrap() {
@@ -2416,9 +2277,7 @@ mod tests {
             timer(1, function() error("boom") end)
             return panel { id = "bar", layer = "top" }
         "#;
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), SHELL);
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (_dir, path, mut client, _outbound_rx) = client_for(SHELL);
         assert!(run_startup(&mut client));
         let fire = |client: &RendererClient| {
             let day = std::time::Instant::now() + std::time::Duration::from_secs(86_400);

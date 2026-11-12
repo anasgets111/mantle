@@ -39,7 +39,7 @@ impl RendererClient {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{reload, rescue_state, run_startup, test_client, write_shell_lua};
+    use super::super::tests::{client_for, reload, rescue_state, run_startup, test_client, write_shell_lua};
     use super::super::*;
     use crate::layout::instance::{OutputGeometry, expand_instances};
 
@@ -73,9 +73,7 @@ mod tests {
 
     /// A client on `source` with every surface shown once, the query typed and the list scrolled.
     fn started(source: &str) -> (tempfile::TempDir, RendererClient) {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), source);
-        let (mut client, _rx) = test_client(&path);
+        let (dir, _, mut client, _rx) = client_for(source);
         assert!(run_startup(&mut client));
         client.reset_closed_surfaces(&["bar@TEST", "launcher@TEST", "menu"]);
         client.loader.lua().load(r#"query:set("fire")"#).exec().unwrap();
@@ -119,9 +117,7 @@ mod tests {
 
     #[test]
     fn a_surface_never_shown_resets_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), LAUNCHER);
-        let (mut client, _rx) = test_client(&path);
+        let (_dir, _, mut client, _rx) = client_for(LAUNCHER);
         assert!(run_startup(&mut client));
         client.reset_closed_surfaces(&["bar@TEST"]);
         client.loader.lua().load(r#"query:set("fire")"#).exec().unwrap();

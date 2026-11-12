@@ -124,14 +124,12 @@ impl RendererClient {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{test_client, write_shell_lua};
+    use super::super::tests::{client_for, write_shell_lua};
     use super::*;
 
     #[test]
     fn handle_frame_hands_a_successful_reevaluate_to_the_wayland_loop() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (dir, _, mut client, _outbound_rx) = client_for(r#"return panel { id = "bar", layer = "top" }"#);
 
         assert_eq!(
             client.handle_frame(SupervisorFrame::Reevaluate),
@@ -146,9 +144,7 @@ mod tests {
     fn handle_frame_hands_a_set_session_lock_back_to_the_wayland_loop_in_both_directions() {
         // Both directions matter: `locked = true` reaches Wayland for refusal without a `lock`
         // surface (ADR-0052 decision 3); `locked = false` is the only unlock path (ADR-0042).
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (_dir, _, mut client, _outbound_rx) = client_for(r#"return panel { id = "bar", layer = "top" }"#);
 
         assert_eq!(
             client.handle_frame(SupervisorFrame::SetSessionLock(SetSessionLock { locked: true })),
@@ -162,9 +158,7 @@ mod tests {
 
     #[test]
     fn an_input_frame_is_left_for_the_surfaces_that_can_deliver_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (_dir, _, mut client, _outbound_rx) = client_for(r#"return panel { id = "bar", layer = "top" }"#);
         let inject = shared::Inject { surface: "bar".into(), steps: vec![shared::InputStep::Text("a".into())] };
 
         assert_eq!(
@@ -175,9 +169,7 @@ mod tests {
 
     #[test]
     fn handle_frame_routes_process_output_and_exit_frames_to_the_registered_lua_callbacks() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (_dir, _, mut client, _outbound_rx) = client_for(r#"return panel { id = "bar", layer = "top" }"#);
         // Register real callbacks through `process.run`; fresh registry id 0 is what inbound frames
         // address.
         client

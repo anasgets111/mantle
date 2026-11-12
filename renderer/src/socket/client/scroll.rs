@@ -69,17 +69,14 @@ impl RendererClient {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{reload, run_startup, test_client, write_shell_lua};
+    use super::super::tests::{client_for, reload, run_startup, test_client, write_shell_lua};
     use super::super::*;
 
     /// Six 50 px tiles in a 100 px row (200 px of room) scrolled by `s`, and a getter of `s` beside it
     /// counting its runs. `animate` is the row's.
     fn scrolled_row(animate: &str) -> (RendererClient, crate::lua::signal::Signal, tempfile::TempDir) {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
-            &format!(
-                r#"
+        let (dir, _, mut client, _) = client_for(&format!(
+            r#"
                 s = scroll("s")
                 n = state("n", 6)
                 runs = 0
@@ -93,9 +90,7 @@ mod tests {
                     rect {{ height = 1, width = s:map(function(o) runs = runs + 1 return o + 1 end) }},
                 }} }} }}
                 "#
-            ),
-        );
-        let (mut client, _) = test_client(&path);
+        ));
         assert!(run_startup(&mut client));
         let signal = crate::lua::signal::from_userdata(&client.loader.lua().globals().get("s").unwrap()).unwrap();
         (client, signal, dir)
@@ -390,9 +385,7 @@ mod tests {
     /// for the pass that shows it instead of being dropped as orphaned.
     #[test]
     fn a_request_made_as_its_surface_opens_lands() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _) = client_for(
             r#"
             s = scroll("s")
             open = state("open", false)
@@ -405,7 +398,6 @@ mod tests {
             }
             "#,
         );
-        let (mut client, _) = test_client(&path);
         assert!(run_startup(&mut client));
         assert_eq!(then_offset(&mut client, "open:set(true) s:scroll_to(60)"), 60.0);
     }

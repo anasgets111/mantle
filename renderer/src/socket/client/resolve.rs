@@ -370,10 +370,9 @@ fn log_applied_surfaces(scene: &Scene, instances: &[SurfaceInstance]) {
 #[cfg(test)]
 mod tests {
     use super::super::tests::{
-        instances_for, push_workspace, queued_starts, reload, rescue_state, run_startup, test_client, write_shell_lua,
+        client_for, instances_for, push, queued_starts, reload, rescue_state, run_startup, test_client, write_shell_lua,
     };
     use super::super::*;
-    use shared::StateSnapshot;
 
     /// ADR-0070 decision 5: polkit has no roster entry or `mantle.polkit`, so only a
     /// `secure_submit` naming it can request the authentication agent.
@@ -418,13 +417,7 @@ mod tests {
             "nothing declares the field yet, so nothing has named polkit"
         );
 
-        client
-            .apply_state_snapshot(StateSnapshot {
-                capability: "network".to_string(),
-                revision: 1,
-                payload: serde_json::json!("home"),
-            })
-            .unwrap();
+        push(&client, "network", 1, serde_json::json!("home"));
         assert!(client.re_resolve_if_dirty(), "the push must have re-resolved");
 
         assert!(
@@ -468,17 +461,13 @@ mod tests {
     /// A boot apply failure is `applied_output`'s own, so the first pass that applies clears it.
     #[test]
     fn a_boot_apply_failure_clears_when_a_re_resolve_applies() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
-            r#"return panel { id = "bar", layer = "top", child = column { children = mantle.workspace } }"#,
-        );
-        let (mut client, _outbound_rx) = test_client(&path);
-        push_workspace(&mut client, 1, serde_json::json!("not a list"));
+        let (_dir, _, mut client, _outbound_rx) =
+            client_for(r#"return panel { id = "bar", layer = "top", child = column { children = mantle.workspace } }"#);
+        push(&client, "workspace", 1, serde_json::json!("not a list"));
         assert!(!run_startup(&mut client));
         assert!(rescue_state(&client.loader).0);
 
-        push_workspace(&mut client, 2, serde_json::json!([]));
+        push(&client, "workspace", 2, serde_json::json!([]));
         assert!(client.re_resolve_if_dirty());
         assert_eq!(rescue_state(&client.loader), (false, String::new()));
     }
@@ -487,10 +476,8 @@ mod tests {
     /// the prior scene says nothing about the new file.
     #[test]
     fn a_reload_apply_failure_stays_in_rescue_until_a_reload_applies() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
-        let (mut client, _outbound_rx) = test_client(&path);
-        push_workspace(&mut client, 1, serde_json::json!("not a boolean"));
+        let (dir, _, mut client, _outbound_rx) = client_for(r#"return panel { id = "bar", layer = "top" }"#);
+        push(&client, "workspace", 1, serde_json::json!("not a boolean"));
         assert!(run_startup(&mut client));
 
         write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", visible = mantle.workspace }"#);
@@ -510,13 +497,10 @@ mod tests {
     /// Evaluation success alone is not the truth: the banner clears only when the scene takes it.
     #[test]
     fn an_evaluation_rescue_survives_re_resolves_and_clears_on_an_applied_reload() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (dir, path, mut client, _outbound_rx) = client_for(
             r#"w = state("w", 1)
             return panel { id = "bar", layer = "top", child = rect { width = w, height = 1 } }"#,
         );
-        let (mut client, _outbound_rx) = test_client(&path);
         assert!(run_startup(&mut client));
 
         std::fs::write(&path, "this is not lua").unwrap();
@@ -534,9 +518,7 @@ mod tests {
 
     #[test]
     fn handle_apply_pending_reconciles_the_pending_evaluation_into_the_scene() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (_dir, path, mut client, _outbound_rx) = client_for(r#"return panel { id = "bar", layer = "top" }"#);
         let (output, specs) = evaluate_and_specs(&client.loader, &path).unwrap();
         client.set_instances(instances_for(&["bar"]));
         client.state.pending = Some((output, specs));
@@ -556,27 +538,13 @@ mod tests {
 
     #[test]
     fn re_resolve_if_dirty_applies_a_push_without_rereading_shell_lua_clears_the_flag_and_a_second_call_does_no_work() {
-        let dir = tempfile::tempdir().unwrap();
-        let path =
-            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", visible = mantle.workspace }"#);
-        let (mut client, _outbound_rx) = test_client(&path);
-        client
-            .apply_state_snapshot(StateSnapshot {
-                capability: "workspace".to_string(),
-                revision: 1,
-                payload: serde_json::json!(true),
-            })
-            .unwrap();
+        let (dir, path, mut client, _outbound_rx) =
+            client_for(r#"return panel { id = "bar", layer = "top", visible = mantle.workspace }"#);
+        push(&client, "workspace", 1, serde_json::json!(true));
         run_startup(&mut client);
         // Break the file: re-resolve must read the retained tree's live signal, never disk.
         std::fs::write(&path, "this is not lua").unwrap();
-        client
-            .apply_state_snapshot(StateSnapshot {
-                capability: "workspace".to_string(),
-                revision: 2,
-                payload: serde_json::json!(false),
-            })
-            .unwrap();
+        push(&client, "workspace", 2, serde_json::json!(false));
 
         client.re_resolve_if_dirty();
         assert!(!client.scene.surface("bar@TEST").unwrap().visible, "the first re-resolve must apply the pushed value");
@@ -599,9 +567,7 @@ mod tests {
 
     #[test]
     fn re_resolve_if_dirty_narrows_to_targeted_instances() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _outbound_rx) = client_for(
             r#"
             q = state("q", false)
             return {
@@ -610,7 +576,6 @@ mod tests {
             }
             "#,
         );
-        let (mut client, _outbound_rx) = test_client(&path);
         run_startup(&mut client);
         assert_eq!(client.take_last_resolved(), None);
 
@@ -624,9 +589,7 @@ mod tests {
     /// it, not the scene, and a follow-up nobody reads leaves the next move its own.
     #[test]
     fn a_moved_geometry_re_resolves_only_its_readers() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _outbound_rx) = client_for(
             r#"
             g = geometry("card")
             w = state("w", 30)
@@ -637,7 +600,6 @@ mod tests {
             }
             "#,
         );
-        let (mut client, _outbound_rx) = test_client(&path);
         assert!(run_startup(&mut client));
 
         assert!(!client.re_resolve_if_dirty(), "the reader, laid out after the card, mapped its first measurement");
@@ -655,9 +617,7 @@ mod tests {
 
     #[test]
     fn changed_elision_re_resolves_its_readers_without_re_resolving_the_writer() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _) = client_for(
             r#"cut = elided("body")
             w = state("w", 40)
             return {
@@ -667,7 +627,6 @@ mod tests {
                 panel { id = "other", layer = "top" },
             }"#,
         );
-        let (mut client, _) = test_client(&path);
         assert!(run_startup(&mut client));
         assert!(client.re_resolve_if_dirty());
         assert_eq!(client.take_last_resolved(), Some(vec!["reader@TEST".to_string()]));
@@ -684,16 +643,13 @@ mod tests {
 
     #[test]
     fn elision_that_changes_its_own_width_gets_only_one_follow_up() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _) = client_for(
             r#"local cut = elided("body")
             return panel { id = "bar", layer = "top", child = text {
                 width = cut:map(function(v) return v and 500 or 40 end),
                 content = "A label too long for its box", elide = "end", elided = cut
             } }"#,
         );
-        let (mut client, _) = test_client(&path);
         assert!(run_startup(&mut client));
         assert!(client.re_resolve_if_dirty());
         assert_eq!(client.scene.surface("bar@TEST").unwrap().children[0].rect.width, 500.0);
@@ -702,9 +658,7 @@ mod tests {
 
     #[test]
     fn elision_changes_during_a_width_tween_update_readers_and_clear_on_removal() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _) = client_for(
             r#"cut = elided("body")
             w = state("w", 40)
             return {
@@ -714,7 +668,6 @@ mod tests {
                 panel { id = "reader", layer = "top", visible = cut },
             }"#,
         );
-        let (mut client, _) = test_client(&path);
         assert!(run_startup(&mut client));
         assert!(client.re_resolve_if_dirty());
         client.loader.lua().load("w:set(500)").exec().unwrap();
@@ -738,9 +691,7 @@ mod tests {
     /// it comes due.
     #[test]
     fn a_lingering_width_collapses_on_the_turn_its_delay_comes_due() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _outbound_rx) = client_for(
             r#"
             h = state("h", false)
             local linger = computed({ h, delay(h, 150) }, function(now, was) return now == true or was == true end)
@@ -756,7 +707,6 @@ mod tests {
                     children = { cell(state("s1", false)), cell(state("s2", true)) } } } } } }
             "#,
         );
-        let (mut client, _outbound_rx) = test_client(&path);
         assert!(run_startup(&mut client));
         let widths = |client: &RendererClient| -> Vec<f32> {
             client.scene.surface("bar@TEST").unwrap().children[0].children[0]
@@ -790,9 +740,7 @@ mod tests {
     /// surface resolved earlier in the pass, which read the old value, still resolves again.
     #[test]
     fn a_computed_changed_by_a_mid_pass_write_reaches_the_surfaces_resolved_before_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _outbound_rx) = client_for(
             r#"
             wide = state("wide", false)
             local g = geometry("g")
@@ -806,7 +754,6 @@ mod tests {
             }
             "#,
         );
-        let (mut client, _outbound_rx) = test_client(&path);
         assert!(run_startup(&mut client));
         let width = |client: &RendererClient, id: &str| {
             client.scene.surface(&format!("{id}@TEST")).unwrap().children[0].children[0].rect.width
@@ -844,16 +791,13 @@ mod tests {
     /// callbacks, and none of them can change what failed. The next change retries.
     #[test]
     fn a_failed_pass_waits_for_a_change_before_it_retries() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _outbound_rx) = client_for(
             r#"
             armed = state("armed", false)
             return panel { id = "bar", layer = "top", child = text { content = "m",
                 opacity = computed({armed}, function(a) if a then error("broken") else return 1.0 end end) } }
             "#,
         );
-        let (mut client, _outbound_rx) = test_client(&path);
         assert!(run_startup(&mut client));
 
         client.loader.lua().load("armed:set(true)").exec().unwrap();
@@ -871,16 +815,13 @@ mod tests {
     /// counting as a repeat of one the scene has since recovered from.
     #[test]
     fn an_applied_startup_pass_ends_a_re_resolve_failure_run() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _outbound_rx) = client_for(
             r#"
             armed = state("armed", false)
             return panel { id = "bar", layer = "top", child = text { content = "m",
                 opacity = computed({armed}, function(a) if a then error("broken") else return 1.0 end end) } }
             "#,
         );
-        let (mut client, _outbound_rx) = test_client(&path);
         assert!(run_startup(&mut client));
         client.loader.lua().load("armed:set(true)").exec().unwrap();
         assert!(!client.re_resolve_if_dirty());
@@ -894,9 +835,7 @@ mod tests {
 
     #[test]
     fn failed_narrowed_pass_does_not_freeze_retained_readers() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _outbound_rx) = client_for(
             r#"
             q = state("q", true)
             armed = state("armed", false)
@@ -909,7 +848,6 @@ mod tests {
             }
             "#,
         );
-        let (mut client, _outbound_rx) = test_client(&path);
         run_startup(&mut client);
         assert!(client.scene.surface("bar@TEST").unwrap().visible);
 
@@ -932,9 +870,7 @@ mod tests {
     /// One broken getter froze every surface, the rescue banner included, until it was fixed.
     #[test]
     fn a_broken_surface_keeps_its_prior_tree_while_the_others_and_the_banner_update() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _outbound_rx) = client_for(
             r#"
             q = state("q", true)
             armed = state("armed", false)
@@ -949,7 +885,6 @@ mod tests {
             }
             "#,
         );
-        let (mut client, _outbound_rx) = test_client(&path);
         assert!(run_startup(&mut client));
         assert!(!client.scene.surface("banner@TEST").unwrap().visible);
 
@@ -976,9 +911,7 @@ mod tests {
     /// surface, a sibling's text and handlers included.
     #[test]
     fn a_bad_value_applies_its_default_while_its_siblings_update_and_rescue_holds() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _outbound_rx) = client_for(
             r#"
             op = state("op", 0.5)
             label = state("label", "a")
@@ -995,7 +928,6 @@ mod tests {
             }
             "#,
         );
-        let (mut client, _outbound_rx) = test_client(&path);
         assert!(run_startup(&mut client));
         let menu = |client: &RendererClient| client.scene.surface("menu@TEST").unwrap().children[0].clone();
         let lua = client.loader.lua().clone();
@@ -1033,9 +965,7 @@ mod tests {
             ),
             (serde_json::Value::Null, false, None, "unmodified state does not re-resolve"),
         ] {
-            let dir = tempfile::tempdir().unwrap();
-            let path = write_shell_lua(
-                dir.path(),
+            let (_dir, _, mut client, _) = client_for(
                 r#"
                 runs = 0
                 local sig = computed({mantle.network}, function(net)
@@ -1045,7 +975,6 @@ mod tests {
                 return panel { id = "status", layer = "top", child = text { content = sig } }
                 "#,
             );
-            let (mut client, _) = test_client(&path);
             run_startup(&mut client);
             assert_eq!(
                 client.loader.lua().globals().get::<i64>("runs").unwrap(),
@@ -1053,9 +982,7 @@ mod tests {
                 "the pre-push nil never reaches the body"
             );
 
-            client
-                .apply_state_snapshot(StateSnapshot { capability: "network".to_string(), revision: 1, payload })
-                .unwrap();
+            push(&client, "network", 1, payload);
 
             assert_eq!(client.re_resolve_if_dirty(), resolves, "{case}");
             if let Some(runs) = runs {
@@ -1072,9 +999,7 @@ mod tests {
     /// re-resolves that surface, and the computed, none of its inputs written, must not run again.
     #[test]
     fn a_layout_follow_up_does_not_run_an_unchanged_computed_again() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _) = client_for(
             r#"
             runs = 0
             s = state("s", "a")
@@ -1087,7 +1012,6 @@ mod tests {
             } } }
             "#,
         );
-        let (mut client, _) = test_client(&path);
         assert!(run_startup(&mut client));
         while client.re_resolve_if_dirty() {}
         let lua = client.loader.lua().clone();
@@ -1112,9 +1036,7 @@ mod tests {
     /// ADR-0374: a windowed list whose viewport outgrew its window builds again in the same turn.
     #[test]
     fn a_windowed_list_short_of_a_grown_viewport_builds_again_in_the_same_turn() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _rx) = client_for(
             r#"
             h = state("h", 100)
             local rows = {}
@@ -1125,7 +1047,6 @@ mod tests {
             } } }
             "#,
         );
-        let (mut client, _rx) = test_client(&path);
         assert!(run_startup(&mut client));
         let built = |client: &RendererClient| {
             let list = &client.scene.surface("bar@TEST").unwrap().children[0].children[0];
@@ -1141,9 +1062,7 @@ mod tests {
     /// The same hint when a tween, not a pass, grows the viewport: the next pass builds the rows.
     #[test]
     fn a_windowed_list_a_tween_outgrew_builds_again_on_the_next_pass() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _rx) = client_for(
             r#"
             h = state("h", 100)
             local rows = {}
@@ -1155,7 +1074,6 @@ mod tests {
             } } }
             "#,
         );
-        let (mut client, _rx) = test_client(&path);
         assert!(run_startup(&mut client));
         let built = |client: &RendererClient| {
             let list = &client.scene.surface("bar@TEST").unwrap().children[0].children[0];
@@ -1176,9 +1094,7 @@ mod tests {
     /// so the getter re-resolves in the same call and lays out from the offset on screen.
     #[test]
     fn a_getter_reads_the_clamped_scroll_offset_in_the_same_turn() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _rx) = client_for(
             r#"
             s = scroll("s")
             runs = 0
@@ -1191,7 +1107,6 @@ mod tests {
             } } }
             "#,
         );
-        let (mut client, _rx) = test_client(&path);
         assert!(run_startup(&mut client));
         let signal = crate::lua::signal::from_userdata(&client.loader.lua().globals().get("s").unwrap()).unwrap();
         let readout =
