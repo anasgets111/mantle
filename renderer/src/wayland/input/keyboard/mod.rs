@@ -152,13 +152,16 @@ pub(super) enum Motion {
 }
 
 /// Whether `event` is the chord key for the lowercase `letter`: by what it types, or by where it
-/// sits, evdev `raw_code`, when it types no Latin letter (ADR-0238 decision 2). Under an Arabic or
-/// Cyrillic layout the keysym is that layout's own letter, and asking only what it types loses the
-/// chord to exactly the people most likely to be using one.
+/// sits, evdev `raw_code`, when it types a non-Latin letter (ADR-0238 decision 2). Under an Arabic
+/// or Cyrillic layout the keysym is that layout's own letter, and asking only what it types loses
+/// the chord to exactly the people most likely to be using one. Punctuation, digits, dead keys and
+/// accented Latin letters take none. ponytail: Latin is U+0000-024F and U+1E00-1EFF, so IPA and
+/// Latin Extended-C/D/E count as other scripts. Upgrade: a script lookup if a layout types those.
 fn chord_letter(event: &KeyEvent, letter: char, raw_code: u32) -> bool {
     match event.keysym.key_char() {
         Some(typed) if typed.is_ascii_alphabetic() => typed.eq_ignore_ascii_case(&letter),
-        _ => event.raw_code == raw_code,
+        Some('\0'..='\u{24F}' | '\u{1E00}'..='\u{1EFF}') | None => false,
+        Some(typed) => typed.is_alphabetic() && event.raw_code == raw_code,
     }
 }
 
@@ -874,5 +877,42 @@ pub(in crate::wayland) mod tests {
         let mut qwertz_z = key(Keysym::z, Some("z"));
         qwertz_z.raw_code = 21;
         assert_eq!(key_action(&qwertz_z, false, true, false), KeyAction::Undo);
+    }
+
+    /// ADR-0238 decision 2: only a letter outside the Latin script falls back to the physical key.
+    /// Punctuation, dead keys and accented Latin letters are what that position types, not a chord.
+    #[test]
+    fn only_a_non_latin_letter_takes_the_chord_of_its_physical_key() {
+        use crate::lua::focus::FieldAction::{Copy, Cut, Paste};
+        let check = |name: &str, keysym: Keysym, raw_code, want: (KeyAction<'static>, Option<_>)| {
+            let event = KeyEvent { raw_code, ..key(keysym, None) };
+            assert_eq!((key_action(&event, false, true, false), clipboard_chord(&event, false)), want, "{name}");
+        };
+        // QWERTY's A, Z, Y, X, C, V positions.
+        let want = [
+            (KeyAction::SelectAll, None),
+            (KeyAction::Undo, None),
+            (KeyAction::Redo, None),
+            (KeyAction::Ignore, Some(Cut)),
+            (KeyAction::Ignore, Some(Copy)),
+            (KeyAction::Ignore, Some(Paste)),
+        ];
+        let codes = [30, 44, 21, 45, 46, 47];
+        for (layout, letters) in [("russian", "фянчсм"), ("greek", "αζυχψω"), ("arabic", "شئغءؤر")] {
+            for ((letter, raw_code), want) in letters.chars().zip(codes).zip(want) {
+                check(&format!("{layout} {letter}"), Keysym::from_char(letter), raw_code, want);
+            }
+        }
+        let none = (KeyAction::Ignore, None);
+        for (name, keysym, raw_code) in [
+            ("Bépo .", Keysym::period, 47),
+            ("Dvorak ;", Keysym::semicolon, 44),
+            ("Bépo à", Keysym::agrave, 44),
+            ("Bépo dead ^", Keysym::dead_circumflex, 21),
+            ("Bépo é", Keysym::eacute, 30),
+            ("digit", Keysym::_1, 46),
+        ] {
+            check(name, keysym, raw_code, none);
+        }
     }
 }
