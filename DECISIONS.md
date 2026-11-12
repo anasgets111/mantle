@@ -1070,6 +1070,30 @@ handoff, exceeding the target. Renderer PSS was 137.0 MiB with declared fonts ve
 remained a hazard. Atlas growth was not tested by this short run. Whether to exclude driver
 libraries from the target remained undecided.
 
+Correction (2026-11-12, decision 3): the renderer never clears or evicts the glyph atlas. `App` keeps
+one `TextPainter` and `femtovg::Canvas` for the process lifetime; `femtovg` 0.27.0 keeps
+`GlyphAtlas::clear` crate-private with no public atlas-clear API and gates page counts behind
+`debug_inspector`, which `renderer` disables. Dropping the canvas frees the atlas but drops kept
+layers, scratch targets, and image textures. The upgrade path is an upstream `femtovg` atlas-clear API.
+
+Data below is from the 2026-11-12 historical audit in issue #72, not revalidated here, on a headless
+release build pinned to one core with no compositor and no GPU. No real-hardware A/B was done, and
+variable-font weight tweens were not measured. Each `512×512` RGBA8 page is 1 MiB and the atlas
+appends pages without an internal cap, so 12 pages in the 600-frame `font_size` tween is an
+observation, not a hard global memory ceiling. Rasters key by 0.1 px steps at about 2.5 ms/frame in
+a `font_size` tween; dropping the canvas cost 2.5 ms plus a 33.5 to 35.1 ms first paint versus
+0.109 ms warm.
+
+| Workload | Atlas pages, 1 MiB each |
+| --- | --- |
+| Bar and panel, 65 labels at 3 sizes | 1 |
+| 10,000 distinct 40-char titles | 1 |
+| 2,000 wrapped 200-char bodies | 1 |
+| A day's mix, 4 sizes × 2 weights | 5 |
+| Uniform `scale` tween, 600 frames | 1 |
+| `font_size` tween 14 to 28, 120 frames | 3 |
+| `font_size` tween 14 to 28, 600 frames | 12 |
+
 ## 0044. Signals resolve at layout time, and a push marks the scene dirty
 
 1. Resolve property signals at layout time; passing a handle is reactive, calling get during
