@@ -23,20 +23,18 @@ pub(super) fn named_selector(name: &str) -> String {
     format!("\"name:{}\"", lua_escape(name))
 }
 
-/// Sends `build(selector)`: a number as [`number_selector`] writes it, a named workspace's name from a
-/// fresh `j/workspaces`.
+/// Sends `build(selector)`: a number as [`workspace_selector`] writes it, a named workspace's name
+/// from a fresh `j/workspaces`.
 pub(super) fn dispatch_to_workspace(
     id: &str,
     capability: &'static str,
     build: impl FnOnce(&str) -> String + Send + 'static,
 ) {
-    let Ok(parsed) = id.parse::<i64>() else {
-        warn!("{id:?} is not a Hyprland workspace id; ignored");
-        return;
+    let parsed = match workspace_selector(id) {
+        Some(Ok(selector)) => return dispatch(build(&selector), capability),
+        Some(Err(parsed)) => parsed,
+        None => return warn!("{id:?} is not a Hyprland workspace id; ignored"),
     };
-    if let Some(selector) = number_selector(id) {
-        return dispatch(build(&selector), capability);
-    }
     on_command_socket(move |socket_path| {
         let Some(workspaces) = read::<Vec<HyprlandWorkspace>>(socket_path, "workspaces") else { return };
         let Some(workspace) = workspaces.iter().find(|workspace| workspace.id == Some(parsed)) else {
@@ -46,10 +44,12 @@ pub(super) fn dispatch_to_workspace(
     });
 }
 
-/// A positive id's selector, the number Hyprland focuses or creates, written as Lua reads it: `+3`
-/// is a syntax error. `None` for anything else: a named workspace's id is negative.
-fn number_selector(id: &str) -> Option<String> {
-    id.parse::<i64>().ok().filter(|number| *number > 0).map(|number| number.to_string())
+/// A positive id's selector, the number Hyprland focuses or creates, written as Lua reads it (`+3`
+/// is a syntax error); `Err(id)` for a non-positive id (a named workspace's is negative), or `None`
+/// when `id` is not an `i64`.
+fn workspace_selector(id: &str) -> Option<Result<String, i64>> {
+    let parsed = id.parse::<i64>().ok()?;
+    Some(if parsed > 0 { Ok(parsed.to_string()) } else { Err(parsed) })
 }
 
 /// The table form, not `hl.dsp.focus(N)`: `focus` takes one table and reads the field, the same
@@ -139,12 +139,13 @@ mod tests {
     /// Lua has no unary `+`, so `workspace = +3` is a syntax error; a number goes as Lua reads it.
     #[test]
     fn a_workspace_number_is_sent_as_a_plain_lua_number() {
-        for (id, selector) in [("3", Some("3")), ("+3", Some("3")), ("007", Some("7")), ("-98", None), ("0", None)] {
-            assert_eq!(number_selector(id).as_deref(), selector, "{id:?}");
+        for (id, want) in [("3", Ok("3")), ("+3", Ok("3")), ("007", Ok("7")), ("-98", Err(-98)), ("0", Err(0))] {
+            assert_eq!(workspace_selector(id), Some(want.map(str::to_owned)), "{id:?}");
         }
-        let named = number_selector("-98").unwrap_or_else(|| named_selector("chat"));
+        assert_eq!(workspace_selector("bad"), None);
+        let named = workspace_selector("-98").and_then(Result::ok).unwrap_or_else(|| named_selector("chat"));
         assert_eq!(focus_command(&named), r#"hl.dsp.focus({ workspace = "name:chat" })"#);
-        assert_eq!(focus_command(&number_selector("+3").unwrap()), "hl.dsp.focus({ workspace = 3 })");
+        assert_eq!(focus_command(&workspace_selector("+3").unwrap().unwrap()), "hl.dsp.focus({ workspace = 3 })");
     }
 
     #[test]

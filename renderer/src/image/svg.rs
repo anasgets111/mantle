@@ -581,10 +581,7 @@ pub(super) mod tests {
     }
 
     fn rasterize_doc(doc: &str) -> Vec<u8> {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("doc.svg");
-        std::fs::write(&path, doc).unwrap();
-        rasterize_svg(&path, 4, None, &FontDatabase::default()).unwrap().0
+        rasterize_at(doc, 4).unwrap()
     }
 
     const RED: [u8; 4] = [255, 0, 0, 255];

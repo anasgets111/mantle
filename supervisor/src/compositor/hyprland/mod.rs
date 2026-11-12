@@ -16,7 +16,7 @@
 //! How Hyprland's model lands on `WorkspaceRow`:
 //!
 //! - `id` is Hyprland's workspace id in decimal, opaque to configs. A positive id is the workspace's
-//!   number, also `number`, and goes into [`focus_command`] as the plain decimal `number_selector`
+//!   number, also `number`, and goes into [`focus_command`] as the plain decimal `workspace_selector`
 //!   writes, so focusing a new number creates it. Named workspaces have negative ids and no `number`; Hyprland reads a negative number as a
 //!   relative move, so [`named_selector`] swaps in `"name:<name>"`. `name` is set only when it
 //!   differs from the number.

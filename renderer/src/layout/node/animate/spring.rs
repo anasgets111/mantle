@@ -442,10 +442,8 @@ mod tests {
 
         // Only the spring is carried, not the entry around it: an edited `delay` beside untouched
         // constants still lands, where taking the running spec whole would have swallowed it.
-        let waiting = [Tween {
-            spec: AnimationSpec { motion: Motion::Spring(carried), delay: Duration::from_millis(1000), from: None },
-            ..running[0].clone()
-        }];
+        let mut waiting = running.clone();
+        waiting[0].spec.delay = Duration::from_millis(1000);
         let mut properties = rect_props(&lua, source);
         let tweens = retarget("rect", Some((&waiting[..], &shown)), &mut properties, now, &lua, false).unwrap().0;
         let Motion::Spring(kept) = tweens[0].spec.motion else { panic!("still a spring") };
