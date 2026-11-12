@@ -813,6 +813,11 @@ pub(crate) fn range(property: &str) -> Option<(f32, f32)> {
     rows_named(property).iter().find_map(|row| row.range)
 }
 
+/// What a number `property` reads when unset: the first row that gives one.
+pub(crate) fn absent_number(property: &str) -> Option<f32> {
+    rows_named(property).iter().find_map(|row| if let Number(value) = row.absent { Some(value) } else { None })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

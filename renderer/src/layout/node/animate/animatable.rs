@@ -115,16 +115,14 @@ spelled!(Animatable => format!(
 ));
 
 impl Animatable {
-    /// `property`'s value when it is not set, in this value's shape: `1` for `opacity`, `trim_end`
-    /// and `scale`, `0` otherwise, per axis or edge for a table. A percent or a colour has no identity
-    /// to speak of and stays where it is.
+    /// `property`'s value when it is not set, in this value's shape: what the row reads unset, else
+    /// `0`, per axis or edge for a table. A percent or a colour has no identity to speak of and stays
+    /// where it is.
     pub(super) fn identity(&self, property: &str) -> Self {
         match *self {
             // No empty drawing has this one's ops to tween from.
             Self::Path(_) | Self::Shape(_) => self.clone(),
-            Self::Number(_) => {
-                Self::Number(if matches!(property, "opacity" | "trim_end") { 1.0 } else { axis_default(property) })
-            }
+            Self::Number(_) => Self::Number(fields::absent_number(property).unwrap_or(axis_default(property))),
             Self::Fields { keys, .. } => Self::Fields { keys, values: [axis_default(property); 4] },
             Self::Shadows(ref layers) => Self::Shadows(layers.iter().map(faded).collect()),
             Self::Ring(ring) => Self::Ring(Ring { width: 0.0, color: clear(ring.color), ..ring }),
@@ -526,6 +524,13 @@ mod tests {
             Animatable::from_value("commands", Some(&Value::Integer(1))).is_err(),
             "a bad target fails as the property would"
         );
+    }
+
+    #[test]
+    fn an_unset_number_is_the_rows_default_in_an_exit() {
+        for (property, unset) in [("font_size", 12.0), ("stroke_width", 1.0), ("opacity", 1.0), ("rotate", 0.0)] {
+            assert_eq!(Animatable::Number(5.0).identity(property), Animatable::Number(unset), "{property}");
+        }
     }
 
     #[test]
