@@ -586,8 +586,12 @@ fn finish(
     // Frozen children come back as they were (see `prepare`): no scroll offset applied again to
     // rects that already carry one, no text refitted to a box that was not laid out.
     let (children, scrolled) = if style.visible {
-        let mut children: Vec<ResolvedNode> =
-            children.into_iter().map(|child| finish(tree, child, shaping, now)).collect::<Result<_, _>>()?;
+        // Sized up front: a `Result` collect cannot, and grows by doubling, moving every node again.
+        let mut built = Vec::with_capacity(children.len() + leaving.len());
+        for child in children {
+            built.push(finish(tree, child, shaping, now)?);
+        }
+        let mut children: Vec<ResolvedNode> = built;
         if let Some(memo) = list_memo.as_deref_mut()
             && let Some(axis) = main_axis_of(kind, &properties)?
         {
