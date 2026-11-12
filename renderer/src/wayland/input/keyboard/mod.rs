@@ -408,8 +408,9 @@ impl App {
     /// For `leave`, a destroyed focused surface and a removed keyboard. A Shift released while
     /// someone else holds the keyboard sends no `modifiers` here, and a stale one turns the next
     /// press into a selection the user never made (ADR-0236). The release that would stop a repeat
-    /// or reach `on_key_release` does not arrive either.
+    /// or reach `on_key_release` does not arrive either. A paste's target lost focus with it.
     pub(in crate::wayland) fn keyboard_lost(&mut self) {
+        self.paste = None;
         self.held = Held::default();
         self.repeating = None;
         self.pressed_keys.clear();

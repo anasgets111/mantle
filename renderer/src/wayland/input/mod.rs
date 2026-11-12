@@ -109,7 +109,6 @@ impl SeatHandler for App {
                 self.set_control_focus(None);
                 self.focus_secure_submit(None);
                 self.data_device = None;
-                self.paste = None;
                 self.text_input.detach();
                 if let Some(field) = self.focused_text_field.as_mut() {
                     field.history.clear();
