@@ -517,6 +517,27 @@ mod tests {
         assert_eq!(*player.seeks.lock().unwrap(), [55_000_000, -1], "the seek was dispatched first");
     }
 
+    /// The abort handle of `id`'s command queue task, which ends only by being aborted.
+    fn queue_task(controller: &MprisController, id: &str) -> tokio::task::AbortHandle {
+        let registry = controller.registry.lock().unwrap();
+        registry[&format!("org.mpris.MediaPlayer2.{id}")]
+            .commands
+            .as_ref()
+            .expect("a command was queued")
+            .1
+            .abort_handle()
+    }
+
+    /// Well inside the five-second call timeout that would otherwise end a hung call.
+    async fn ends_promptly(task: &tokio::task::AbortHandle) {
+        let ended = async {
+            while !task.is_finished() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(1), ended).await.expect("the hung player's queue ended");
+    }
+
     /// Each player has its own queue: one that never answers holds up only its own commands, and
     /// leaving drops them, the one in flight included.
     #[tokio::test]
@@ -525,25 +546,34 @@ mod tests {
         let (hung, _hung_peer) = tracked_player(&controller, "hung").await;
         let (other, _other_peer) = tracked_player(&controller, "other").await;
         hung.hung.store(true, Ordering::Relaxed);
-        let holders = Arc::strong_count(&controller.registry);
         for id in ["hung", "hung", "other"] {
             super::super::dispatch(&controller, &command("control", serde_json::json!([id, "next"])));
         }
         poll_until(|| (other.seeks.lock().unwrap().len() == 1).then_some(())).await;
         assert_eq!(*hung.seeks.lock().unwrap(), [-1], "the second waits behind the first");
+        let queue = queue_task(&controller, "hung");
 
         super::super::player::unregister_player(
             &controller.registry,
             "org.mpris.MediaPlayer2.hung",
             &controller.events,
         );
-        // Well inside the five-second call timeout that would otherwise end the hung call.
-        let ended = async {
-            while Arc::strong_count(&controller.registry) > holders {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        };
-        tokio::time::timeout(std::time::Duration::from_secs(1), ended).await.expect("the hung player's queue ended");
+        ends_promptly(&queue).await;
+    }
+
+    /// A player that restarts under the same name is a new registration: the old queue, and the
+    /// command it is stuck on, end with the old entry.
+    #[tokio::test]
+    async fn a_re_registered_player_drops_its_old_queue() {
+        let controller = MprisController::inert();
+        let (hung, _peer) = tracked_player(&controller, "hung").await;
+        hung.hung.store(true, Ordering::Relaxed);
+        super::super::dispatch(&controller, &command("control", serde_json::json!(["hung", "next"])));
+        poll_until(|| (hung.seeks.lock().unwrap().len() == 1).then_some(())).await;
+        let queue = queue_task(&controller, "hung");
+
+        let _again = tracked_player(&controller, "hung").await;
+        ends_promptly(&queue).await;
     }
 
     /// One command in flight and 32 waiting fit without a warning; the next is refused, and warns.
