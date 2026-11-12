@@ -195,6 +195,12 @@ fn json_or_string(raw: String) -> serde_json::Value {
     serde_json::from_str(&raw).unwrap_or(serde_json::Value::String(raw))
 }
 
+/// `argv` as strings, or an error naming the first argument that is not UTF-8, where
+/// `std::env::args` would panic.
+pub fn utf8_args(argv: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Vec<String>, String> {
+    argv.into_iter().map(|arg| arg.into_string().map_err(|bad| format!("{bad:?} is not valid UTF-8"))).collect()
+}
+
 pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
     let mut args = argv.into_iter().skip(1);
     let mut command = None;
@@ -387,6 +393,14 @@ fn pid_from(raw: &str) -> Result<u32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_argument_that_is_not_utf8_is_an_error_not_a_panic() {
+        use std::os::unix::ffi::OsStringExt;
+        let argv = ["mantle".into(), std::ffi::OsString::from_vec(vec![b'-', 0xff])];
+        assert_eq!(utf8_args(argv).unwrap_err(), r#""-\xFF" is not valid UTF-8"#);
+        assert_eq!(utf8_args(["mantle".into(), "log".into()]).unwrap(), ["mantle", "log"]);
+    }
 
     fn parse_args(args: &[&str]) -> Result<Args, String> {
         parse(std::iter::once("mantle".to_string()).chain(args.iter().map(|a| (*a).to_string())))

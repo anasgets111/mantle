@@ -155,7 +155,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    let args = match cli::parse(std::env::args()) {
+    let args = match cli::utf8_args(std::env::args_os()).and_then(cli::parse) {
         Ok(args) => args,
         Err(message) => {
             eprintln!("mantle: {message}\n\n{}", cli::HELP);
