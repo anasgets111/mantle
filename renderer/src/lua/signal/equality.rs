@@ -28,32 +28,38 @@ pub(super) const SAME_TABLE_ENTRIES: usize = 256;
 /// plain-table values) equal entry for entry. The same table, anywhere in either, is a change: a
 /// writer that mutated it in place and wrote it again is signalling one.
 pub(crate) fn same_value(a: &Value, b: &Value) -> bool {
-    fn same_table(a: &mlua::Table, b: &mlua::Table, budget: &mut usize) -> bool {
+    compare(a, b) == Some(true)
+}
+
+/// [`same_value`], `None` where it gives up: a metatable, a shared table, a key that is not a
+/// literal, or past [`SAME_TABLE_ENTRIES`].
+pub(super) fn compare(a: &Value, b: &Value) -> Option<bool> {
+    fn same_table(a: &mlua::Table, b: &mlua::Table, budget: &mut usize) -> Option<bool> {
         if a == b || a.metatable().is_some() || b.metatable().is_some() {
-            return false;
+            return None;
         }
         let mut entries = 0;
         for pair in a.pairs::<Value, Value>() {
-            let Ok((key, value)) = pair else { return false };
+            let (key, value) = pair.ok()?;
             if *budget == 0 || !is_comparable_literal(&key) {
-                return false;
+                return None;
             }
             *budget -= 1;
             entries += 1;
-            let Ok(other) = b.raw_get::<Value>(key) else { return false };
+            let other = b.raw_get::<Value>(key).ok()?;
             let same = match (&value, &other) {
-                (Value::Table(value), Value::Table(other)) => same_table(value, other, budget),
+                (Value::Table(value), Value::Table(other)) => same_table(value, other, budget)?,
                 _ => same_scalar(&value, &other),
             };
             if !same {
-                return false;
+                return Some(false);
             }
         }
-        b.pairs::<Value, Value>().count() == entries
+        Some(b.pairs::<Value, Value>().count() == entries)
     }
     match (a, b) {
         (Value::Table(a), Value::Table(b)) => same_table(a, b, &mut { SAME_TABLE_ENTRIES }),
-        _ => same_scalar(a, b),
+        _ => Some(same_scalar(a, b)),
     }
 }
 
@@ -66,4 +72,28 @@ pub(super) fn literal_was_edited(current: &Value, seeded: &Value) -> Option<bool
         return None;
     }
     Some(current != seeded)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each case `compare` gives up on, beside a difference it can tell.
+    #[test]
+    fn compare_answers_none_only_where_it_gives_up() {
+        let lua = mlua::Lua::new();
+        let pair = |chunk: &str| -> (Value, Value) { lua.load(chunk).eval().unwrap() };
+        for (chunk, expected) in [
+            ("return { 1, { 2 } }, { 1, { 2 } }", Some(true)),
+            ("return { 1, 2 }, { 1, 3 }", Some(false)),
+            ("return setmetatable({ 1 }, {}), { 1 }", None),
+            ("return { 1 }, setmetatable({ 1 }, {})", None),
+            ("local s = { 1 } return { s }, { s }", None),
+            ("local k = {} return { [k] = 1 }, { [k] = 1 }", None),
+            ("local a, b = {}, {} for i = 1, 257 do a[i], b[i] = i, i end return a, b", None),
+        ] {
+            let (a, b) = pair(chunk);
+            assert_eq!(compare(&a, &b), expected, "{chunk}");
+        }
+    }
 }

@@ -7,11 +7,13 @@ use std::time::{Duration, Instant};
 
 use mlua::{Lua, Value};
 
-use super::{CellId, CpuBudget, FIRST_SOURCE_SLOT, HELD_SLOT, PENDING_SLOT, note_read, same_value, source_at};
+use super::{CellId, CpuBudget, FIRST_SOURCE_SLOT, HELD_SLOT, PENDING_SLOT, equality::compare, note_read, source_at};
 
 /// The same table or an equal one: a source that builds its table anew each read has not changed.
-fn same(a: &Value, b: &Value) -> bool {
-    a == b || same_value(a, b)
+/// Tables [`compare`] gives up on count as a change until the hold is `due`, then as the same, so a
+/// hold over them ends, though it ends once per change upstream even when nothing in them changed.
+fn same(a: &Value, b: &Value, due: bool) -> bool {
+    a == b || compare(a, b).unwrap_or(due)
 }
 
 struct DelayCell {
@@ -100,12 +102,12 @@ impl DelayCell {
     /// One read: the value to answer now, and whether to arm a wake for later. Split from the
     /// signal so the clock is a parameter.
     fn follow(&mut self, fresh: Value, hold: Duration, now: Instant, arm: impl FnOnce(Instant)) -> Value {
-        if same(&fresh, &self.held) {
+        if same(&fresh, &self.held, false) {
             self.pending = None;
             return self.held.clone();
         }
         let due = match &self.pending {
-            Some((pending, due)) if same(pending, &fresh) => *due,
+            Some((pending, due)) if same(pending, &fresh, now >= *due) => *due,
             _ => now + hold,
         };
         if now >= due {
@@ -127,7 +129,7 @@ impl PulseCell {
     /// which is what `restart()` does to a running `SequentialAnimation`. The window is not
     /// re-armed once it has closed, so a source that holds its new value pulses once.
     fn fire(&mut self, fresh: Value, hold: Duration, now: Instant, arm: impl FnOnce(Instant)) -> bool {
-        if !same(&fresh, &self.seen) {
+        if !same(&fresh, &self.seen, self.until.is_some_and(|until| now >= until)) {
             self.seen = fresh;
             self.until = Some(now + hold);
         }
@@ -187,6 +189,30 @@ mod tests {
         );
         let mut pulse = PulseCell { seen: table(), until: None };
         assert!(!pulse.fire(table(), hold, now, |_| armed = true) && !armed, "and opens no window");
+    }
+
+    /// Fresh tables sharing a subtable, which `same_value` cannot compare, settle after one hold.
+    #[test]
+    fn a_delay_over_tables_it_cannot_compare_adopts_the_value_and_stops_waking() {
+        let (lua, _dirty) = lua_with_state();
+        let t0 = Instant::now();
+        lua.set_app_data(crate::lua::timer::SimClock(t0));
+        lua.load(
+            r#"src = state("src", { items = { 1, 2 } })
+            local copy = src:map(function(v) return { items = v.items, n = #v.items } end)
+            held, flash = delay(copy, 100), pulse(copy, 100)
+            src:set({ items = { 1, 2, 3 } })"#,
+        )
+        .exec()
+        .unwrap();
+        assert_eq!(lua.load("return held:get().n").eval::<i64>().unwrap(), 2, "held until the hold elapses");
+        assert!(lua.load("return flash:get()").eval::<bool>().unwrap(), "the change opens a window");
+        let deadline = next_wake_deadline(&lua).expect("a change arms a wake");
+        lua.set_app_data(crate::lua::timer::SimClock(deadline));
+        assert_eq!(take_due_wake(&lua, deadline).len(), 2);
+        assert_eq!(lua.load("return held:get().n").eval::<i64>().unwrap(), 3, "the new value is adopted");
+        assert!(!lua.load("return flash:get()").eval::<bool>().unwrap(), "the window closes");
+        assert!(next_wake_deadline(&lua).is_none(), "and nothing is armed again");
     }
 
     #[test]
