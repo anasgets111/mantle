@@ -165,11 +165,21 @@ fn gtk_theme() -> String {
 /// `hicolor`, drawing app icons but almost no status icons. Upgrade: another `find_map` arm; not
 /// built because Plasma is untested and a second untested parser is worse than this gap.
 pub(crate) fn gtk_setting(key: &str) -> Option<String> {
-    let config = shared::xdg_dir("XDG_CONFIG_HOME", ".config")?;
+    gtk_setting_in(&shared::xdg_dir("XDG_CONFIG_HOME", ".config")?, key)
+}
+
+/// [`gtk_setting`] under the config directory `config`, so a test needs no environment.
+fn gtk_setting_in(config: &Path, key: &str) -> Option<String> {
     ["gtk-4.0", "gtk-3.0"].into_iter().find_map(|version| {
-        let text = std::fs::read_to_string(config.join(version).join("settings.ini")).ok()?;
+        let text = read_text(&config.join(version).join("settings.ini"))?;
         setting_from_ini(&text, key)
     })
+}
+
+/// A config or theme file's text: a regular file of at most 1 MiB, which these never come near.
+// ponytail: past 1 MiB a file reads as absent; raise the cap if a real index.theme ever outgrows it.
+fn read_text(path: &Path) -> Option<String> {
+    String::from_utf8(super::decode::read_capped(path, 1 << 20).ok()??).ok()
 }
 
 /// `key`'s value in `settings.ini`, split out so parsing needs no home dir.
@@ -286,7 +296,7 @@ fn load_index(path: &Path) -> Option<Arc<super::icon_index::ThemeIndex>> {
     if let Some(cached) = cached {
         return Some(cached);
     }
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = read_text(path)?;
     let parsed = Arc::new(super::icon_index::parse(&text));
     indexes().lock().expect("icon index cache poisoned").insert(path.to_path_buf(), Arc::clone(&parsed));
     Some(parsed)
@@ -611,6 +621,30 @@ mod tests {
         assert_eq!(find("mark", 16, "Child", &roots), Some(pixmaps.join("mark.png")));
         assert_eq!(find("app", 16, "Child", &roots), Some(pixmaps.join("app.ico")), "an ico-only app still resolves");
         assert_eq!(find("both", 16, "Child", &roots), Some(icons.join("both.svg")));
+    }
+
+    #[test]
+    fn a_config_file_that_is_a_fifo_or_huge_reads_as_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("settings.ini");
+        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU).expect("the test needs a real FIFO");
+        assert_eq!(read_text(&fifo), None, "a FIFO is refused, not opened");
+        assert!(load_index(&fifo).is_none());
+        let huge = dir.path().join("index.theme");
+        std::fs::write(&huge, vec![b'#'; (1 << 20) + 1]).unwrap();
+        assert_eq!(read_text(&huge), None);
+        std::fs::write(&huge, "[Icon Theme]\n").unwrap();
+        assert_eq!(read_text(&huge).as_deref(), Some("[Icon Theme]\n"));
+        // GTK 4 wins when both name the key; one that is a FIFO falls through to GTK 3.
+        std::fs::create_dir_all(dir.path().join("gtk-4.0")).unwrap();
+        std::fs::create_dir_all(dir.path().join("gtk-3.0")).unwrap();
+        std::fs::write(dir.path().join("gtk-3.0/settings.ini"), "gtk-icon-theme-name=Three\n").unwrap();
+        std::fs::write(dir.path().join("gtk-4.0/settings.ini"), "gtk-icon-theme-name=\"Four\"\n").unwrap();
+        assert_eq!(gtk_setting_in(dir.path(), "gtk-icon-theme-name").as_deref(), Some("Four"));
+        std::fs::remove_file(dir.path().join("gtk-4.0/settings.ini")).unwrap();
+        nix::unistd::mkfifo(&dir.path().join("gtk-4.0/settings.ini"), nix::sys::stat::Mode::S_IRWXU).unwrap();
+        assert_eq!(gtk_setting_in(dir.path(), "gtk-icon-theme-name").as_deref(), Some("Three"));
+        assert_eq!(gtk_setting_in(dir.path(), "gtk-other"), None);
     }
 
     #[test]

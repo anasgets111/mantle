@@ -41,6 +41,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 - Fixed: a `mantle call` action that returns a table holding the same subtable many times over, such as 40 levels of `{ t, t }`, fails with the answer size limit. It used to exhaust memory and abort the shell.
 - Fixed: a `persistent_table` whose `defaults` change in `shell.lua` reads the new defaults after the reload for the keys the file lacks. A key already read once kept the first defaults until the shell restarted.
 - Fixed: the type stubs accept a popup `anchor_rect` without `x` or `y`, as the engine does. LuaLS used to flag `{ width = 24, height = 24 }`.
+- Fixed: an icon theme's `index.theme` or GTK's `settings.ini` that is a FIFO or over 1 MiB reads as absent. A FIFO there used to freeze the shell.
 - Fixed: a content-sized `text` with `elide` and left or right `padding` shows its whole content. At about one width in twenty it lost its last character to an ellipsis.
 - Fixed: a `text` without `wrap = "word"` ignores `max_lines`, as documented. Its box used to stop at `max_lines` lines while every line of a multi-line `content` still drew, over whatever sat below.
 - Fixed: a `text` with `wrap = "word"` and left or right `padding` is as tall as the lines it draws. It used to wrap its measured height at the width outside its padding, so it came out lines short and its last lines drew over whatever sat below. A multiline `textfield` with padding grows the same way.
