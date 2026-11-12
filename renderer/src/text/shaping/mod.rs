@@ -351,7 +351,7 @@ impl ShapingHandle {
     /// ends them, so paint draws the rows measurement counted.
     ///
     /// ponytail: hit-testing asks per pointer event -- a memo hit that still allocates each line's
-    /// key. Paint reads `TextPainter`'s own lines cache. Upgrade path: carry the glyphs in the display list.
+    /// key. Upgrade path: carry the glyphs in the display list.
     pub fn shape_lines(
         &self,
         text: &str,

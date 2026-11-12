@@ -9,7 +9,6 @@
 use rustc_hash::FxHashMap as HashMap;
 use std::error::Error;
 use std::ffi::c_void;
-use std::sync::Arc;
 
 use femtovg::renderer::OpenGl;
 use femtovg::{Canvas, FontId, ImageId, Paint, Path, PositionedGlyph, TextContext};
@@ -18,9 +17,7 @@ use shared::debug;
 use crate::layout::field_rows;
 use crate::layout::node::{CaretStyle, Rgba, StyleRun, TextAlign, Typeface, font_runs};
 use crate::layout::paint::DrawCmd;
-use crate::text::shaping::{
-    FontFace, FontRun, Glyph, ShapeResult, ShapingHandle, caret_thickness, caret_x, cluster_span,
-};
+use crate::text::shaping::{FontFace, Glyph, ShapingHandle, caret_thickness, caret_x, cluster_span};
 
 use super::snap::{LogicalRect, snap_to_physical};
 
@@ -39,27 +36,6 @@ const LAYER_BYTES: usize = 64 << 20;
 /// A layer's shadows, one image per layer it casts, and content, finished on one surface for the
 /// command that drew them, with the paint that last held it.
 type KeptLayer = (String, DrawCmd, (Vec<ImageId>, ImageId), u64);
-
-/// Cache key for shaped lines in [`TextPainter`].
-struct TextLineKey {
-    text: String,
-    runs: Vec<FontRun>,
-    face: Typeface,
-    wrap: Option<u32>,
-}
-
-impl TextLineKey {
-    fn matches(&self, text: &str, runs: &[FontRun], style: &TextDraw<'_>) -> bool {
-        self.face == *style.face && self.text == text && self.runs == runs && self.wrap == wrap_bits(style)
-    }
-}
-
-/// A multiline field's wrap width as a key.
-fn wrap_bits(style: &TextDraw<'_>) -> Option<u32> {
-    style.wrap.map(|(width, _)| width.to_bits())
-}
-
-type CachedLineEntry = (TextLineKey, Arc<Vec<(usize, ShapeResult)>>);
 
 /// A FemtoVG canvas bound to the calling thread's current EGL/GL context, with every face the
 /// shaping worker can place a glyph in registered and ready to draw with.
@@ -93,9 +69,6 @@ pub struct TextPainter {
     /// `layout::paint::canvas::draw_layer`'s finished images, kept here beside `scratch` for the
     /// same reason (ADR-0258).
     layers: Vec<KeptLayer>,
-    /// Warm cache of shaped lines to bypass re-shaping and glyph vector clones on static text frames.
-    lines_cache: HashMap<u64, Vec<CachedLineEntry>>,
-    lines_cache_len: usize,
 }
 
 /// A pooled offscreen's owner and allocated size. Owned, so a released surface frees its own and no
@@ -225,8 +198,6 @@ impl TextPainter {
             scratch: HashMap::default(),
             paints: 0,
             layers: Vec::new(),
-            lines_cache: HashMap::default(),
-            lines_cache_len: 0,
         })
     }
 
@@ -350,8 +321,6 @@ impl TextPainter {
         debug!("syncing fonts to generation {generation}");
         self.faces = register(&self.text_context, &mut self.registered, font_chain);
         self.generation = generation;
-        self.lines_cache.clear();
-        self.lines_cache_len = 0;
     }
 
     /// Updates the canvas's viewport to match the surface's current size. Cheap and idempotent --
@@ -383,48 +352,14 @@ impl TextPainter {
     /// one shaper (ADR-0211); `runs` (ADR-0104) colour and underline by the byte each glyph came from.
     pub fn draw_text(&mut self, line: TextDraw<'_>, rect: LogicalRect, scale: f32) {
         let TextDraw { text, runs, face, color, align, caret, caret_on, caret_style, wrap } = line;
-        let Typeface { font_size, line_height, letter_spacing, font_weight, italic, ref variations, ref font } = *face;
+        let Typeface { font_size, line_height, ref font, .. } = *face;
         let physical = snap_to_physical(rect, 1.0);
         let step = line_height * scale;
         let thickness = caret_thickness(font_size) * scale;
         let bar_width = caret_style.width * scale;
 
-        let runs_key = font_runs(runs);
-        let hash = {
-            use std::hash::{Hash, Hasher};
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            text.hash(&mut hasher);
-            font_size.to_bits().hash(&mut hasher);
-            line_height.to_bits().hash(&mut hasher);
-            letter_spacing.to_bits().hash(&mut hasher);
-            font_weight.to_bits().hash(&mut hasher);
-            italic.hash(&mut hasher);
-            variations.hash(&mut hasher);
-            font.hash(&mut hasher);
-            runs_key.hash(&mut hasher);
-            wrap_bits(&line).hash(&mut hasher);
-            hasher.finish()
-        };
-
-        let shaped_lines = if let Some(bucket) = self.lines_cache.get(&hash)
-            && let Some((_, lines)) = bucket.iter().find(|(k, _)| k.matches(text, &runs_key, &line))
-        {
-            Arc::clone(lines)
-        } else {
-            let width = wrap.map(|(width, _)| width);
-            let lines = Arc::new(self.shaping.shape_lines(text, &runs_key, face.shaping_style(), font.as_ref(), width));
-            // ponytail: 1024 entries bounds lines cache memory. Clears wholesale at cap like shaping cache. Upgrade path: per-frame generational epoch.
-            if self.lines_cache_len >= 1024 {
-                self.lines_cache.clear();
-                self.lines_cache_len = 0;
-            }
-            self.lines_cache.entry(hash).or_default().push((
-                TextLineKey { text: text.to_string(), runs: runs_key, face: face.clone(), wrap: wrap_bits(&line) },
-                Arc::clone(&lines),
-            ));
-            self.lines_cache_len += 1;
-            lines
-        };
+        let width = wrap.map(|(width, _)| width);
+        let shaped_lines = self.shaping.shape_lines(text, &font_runs(runs), face.shaping_style(), font.as_ref(), width);
 
         // A multiline field's rows: which one the caret is on, and how far they scroll up.
         let (caret_row, top) = match wrap {
