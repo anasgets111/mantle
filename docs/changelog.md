@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: a `mantle.processes` program paused with `SIGSTOP` is continued when it is stopped, so it handles its stop signal, such as a recorder finishing its file. It used to be killed outright after the grace period. At shutdown the programs now stop together, not one after another.
 - Fixed: `mantle.applications` skips a FIFO or device named `*.desktop` in an applications directory. Scanning it used to block forever, so the list never loaded.
 - Fixed: `mantle.applications` reads the `\s`, `\n`, `\t`, `\r` and `\\` escapes in a `.desktop` file's values, so a Wine launcher's `Exec` with `\\\\` in its Windows path starts the program with one backslash per `\\`, not two.
 - Fixed: a focused `textfield` calls the `on_change`, `on_submit` and `on_cancel` its node declares now, and follows its current `escape`. After a rebuild or a config reload that replaced them while it kept focus, it used to call the ones it had when it was focused.

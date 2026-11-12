@@ -175,12 +175,18 @@ impl ProcessesController {
             let mut guard = self.entries.lock().expect("processes entries mutex poisoned");
             guard.iter_mut().filter_map(|(name, entry)| entry.live.take().map(|live| (name.clone(), live))).collect()
         };
-        for (name, live) in live {
-            let _ = live.requests.send(Request::Stop);
-            // Dropping `live.requests` also reads as a stop to `supervise`; the explicit request
-            // above covers the ordinary case where it is still selecting.
-            drop(live.requests);
-            if let Err(err) = live.task.await {
+        // Every stop goes out before any wait, so the grace periods overlap.
+        let tasks: Vec<_> = live
+            .into_iter()
+            .map(|(name, live)| {
+                let _ = live.requests.send(Request::Stop);
+                // Dropping `live.requests` also reads as a stop to `supervise`; the explicit
+                // request above covers the ordinary case where it is still selecting.
+                (name, live.task)
+            })
+            .collect();
+        for (name, task) in tasks {
+            if let Err(err) = task.await {
                 warn!("{name:?}'s supervising task did not finish cleanly on shutdown: {err}");
             }
         }
@@ -493,6 +499,43 @@ mod tests {
         // What a panic's unwind does; `reap_all` never runs.
         drop(controller);
         assert!(crate::process::exited(&[pid]).await, "pid {pid} outlived its test");
+    }
+
+    /// A stopped program holds the stop signal pending, so without a `SIGCONT` it only dies to the
+    /// `SIGKILL` after `STOP_GRACE`, with no chance to finish its output.
+    #[tokio::test]
+    async fn a_paused_program_still_handles_its_stop_signal() {
+        let controller = controller();
+        let ready = tempfile::tempdir().expect("tempdir");
+        let marker = ready.path().join("armed");
+        controller.declare("t", Signal::SIGTERM);
+        let (cmd, args) = trapping_shell("trap 'exit 9' TERM", &marker);
+        controller.start("t", &cmd, &args);
+        until_ready(&marker).await;
+
+        controller.signal("t", Signal::SIGSTOP);
+        controller.stop("t");
+        until(&controller, "t", |s| !s.running).await;
+        assert_eq!(session(&controller, "t").exit_code, Some(9));
+    }
+
+    /// Each program gets its own `STOP_GRACE`, all running at once.
+    #[tokio::test]
+    async fn the_shutdown_reap_stops_programs_together_not_one_after_another() {
+        let controller = controller();
+        let ready = tempfile::tempdir().expect("tempdir");
+        let markers = [ready.path().join("a"), ready.path().join("b")];
+        for (name, marker) in ["a", "b"].into_iter().zip(&markers) {
+            controller.declare(name, Signal::SIGTERM);
+            let (cmd, args) = trapping_shell("trap '' TERM", marker);
+            controller.start(name, &cmd, &args);
+        }
+        until_ready(&markers[0]).await;
+        until_ready(&markers[1]).await;
+
+        let began = tokio::time::Instant::now();
+        controller.reap_all().await;
+        assert!(began.elapsed() < STOP_GRACE * 3 / 2, "two stubborn programs took {:?}", began.elapsed());
     }
 
     #[tokio::test]

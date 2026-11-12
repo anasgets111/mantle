@@ -165,6 +165,8 @@ pub(crate) async fn stop_process_group(child: &mut Child, signal: Signal, grace:
     let pgid = Pid::from_raw(pid as i32);
 
     signal_group_best_effort(pgid, signal)?;
+    // A stopped member holds the signal pending until it runs again.
+    signal_group_best_effort(pgid, Signal::SIGCONT)?;
     let deadline = tokio::time::Instant::now() + grace;
     let status = wait_or_classify(child, grace).await?;
     if let Some(status) = status
