@@ -588,8 +588,8 @@
 ---@field focused boolean Whether the window has keyboard focus.
 ---@field fullscreen? boolean Whether the window is fullscreen; `nil` on niri.
 ---@field id string Opaque, backend-shaped id for the `windows` actions; compare it, never parse it.
----@field maximized? boolean Whether the window is maximized; `nil` on niri.
----@field minimized? boolean Whether the window is minimized; `nil` except on wlr.
+---@field maximized? boolean Whether the window is maximized; `nil` on niri and sway.
+---@field minimized? boolean Whether the window is minimized; `nil` on niri, Hyprland and sway.
 ---@field output? string Connector name; `nil` when unknown. On wlr, the earliest-entered output the window is still on.
 ---@field title string Window title; empty when unset.
 ---@field urgent boolean Whether the window is asking for attention; always `false` on wlr, which has no such state.

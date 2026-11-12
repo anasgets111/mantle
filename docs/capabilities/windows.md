@@ -44,8 +44,8 @@ One toplevel window. `nil` optional fields are ones the backend does not report.
 | `focused` | `boolean` | Whether the window has keyboard focus. |
 | `fullscreen?` | `boolean` | Whether the window is fullscreen; `nil` on niri. |
 | `id` | `string` | Opaque, backend-shaped id for the `windows` actions; compare it, never parse it. |
-| `maximized?` | `boolean` | Whether the window is maximized; `nil` on niri. |
-| `minimized?` | `boolean` | Whether the window is minimized; `nil` except on wlr. |
+| `maximized?` | `boolean` | Whether the window is maximized; `nil` on niri and sway. |
+| `minimized?` | `boolean` | Whether the window is minimized; `nil` on niri, Hyprland and sway. |
 | `output?` | `string` | Connector name; `nil` when unknown. On wlr, the earliest-entered output the window is still on. |
 | `title` | `string` | Window title; empty when unset. |
 | `urgent` | `boolean` | Whether the window is asking for attention; always `false` on wlr, which has no such state. |

@@ -38,10 +38,10 @@ pub struct WindowEntry {
     /// Whether the window is fullscreen; `nil` on niri.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fullscreen: Option<bool>,
-    /// Whether the window is minimized; `nil` except on wlr.
+    /// Whether the window is minimized; `nil` on niri, Hyprland and sway.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub minimized: Option<bool>,
-    /// Whether the window is maximized; `nil` on niri.
+    /// Whether the window is maximized; `nil` on niri and sway.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub maximized: Option<bool>,
     /// Whether the window is asking for attention; always `false` on wlr, which has no such state.
