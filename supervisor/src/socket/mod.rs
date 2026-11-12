@@ -44,7 +44,8 @@ const CLAIM_POLL_INTERVAL: Duration = Duration::from_millis(5);
 /// Connections handled at once, across Renderers and control clients.
 ///
 /// The working set is single digits (one Renderer, one short-lived `mantle set`). Past this,
-/// `accept` still runs -- the listener must not wedge -- but the new connection is closed at once.
+/// `accept` still runs -- the listener must not wedge -- but the new connection is closed at once,
+/// unless its peer is a Renderer Supervisor spawned.
 const MAX_CONNECTIONS: usize = 64;
 
 /// Decoded frames queued from all peers toward `main`'s loop.
@@ -185,6 +186,11 @@ impl GenerationRegistry {
         self.expected_pids.lock().expect("mutex poisoned").get(&generation_id).map(|expected| *expected == pid)
     }
 
+    /// Whether `pid` is a Renderer Supervisor spawned and has not yet seen leave.
+    fn is_expected(&self, pid: Pid) -> bool {
+        self.expected_pids.lock().expect("mutex poisoned").values().any(|expected| *expected == pid)
+    }
+
     /// [`Self::may_claim`], waiting for the expectation to appear if it has not yet.
     ///
     /// The child is runnable from the moment `spawn` returns, before its pid is recorded, so a fast
@@ -264,7 +270,11 @@ pub fn spawn_listener(
                     // Keep accepting past the cap and close immediately: a listener that stops
                     // accepting cannot be recovered, and leaving connections queued in the kernel
                     // backlog would make a legitimate Renderer wait behind the flood.
-                    if live_connections.fetch_add(1, Ordering::Relaxed) >= MAX_CONNECTIONS {
+                    // A spawned Renderer is exempt: control clients must not be able to fill the cap
+                    // and refuse the respawn.
+                    let spawned = stream.peer_cred().ok().and_then(|cred| cred.pid()).map(Pid::from_raw);
+                    let exempt = spawned.is_some_and(|pid| accept_registry.is_expected(pid));
+                    if live_connections.fetch_add(1, Ordering::Relaxed) >= MAX_CONNECTIONS && !exempt {
                         live_connections.fetch_sub(1, Ordering::Relaxed);
                         warn!(
                             "{MAX_CONNECTIONS} connections are already open, so this one was closed \
@@ -693,6 +703,25 @@ mod tests {
             tokio::time::timeout(Duration::from_millis(100), peers.last().unwrap().readable()).await.is_err(),
             "a connection within the limit was closed"
         );
+    }
+
+    #[tokio::test]
+    async fn a_spawned_renderer_connects_past_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("control.sock");
+        let (registry, _routes, _inbound, _connected) = spawn_listener(&path).unwrap();
+        let mut peers = Vec::new();
+        for _ in 0..MAX_CONNECTIONS {
+            peers.push(UnixStream::connect(&path).await.unwrap());
+            tokio::task::yield_now().await;
+        }
+        // Every test peer is this process, so the claim only turns on the cap being waived.
+        expect_this_process(&registry, &[1]);
+
+        let mut renderer = UnixStream::connect(&path).await.unwrap();
+        framing::write_json_frame(&mut renderer, &ConnectionHandshake { generation_id: 1 }).await.unwrap();
+
+        crate::capabilities::test_support::poll_until(|| registry.is_registered(1).then_some(())).await;
     }
 
     #[tokio::test(start_paused = true)]
