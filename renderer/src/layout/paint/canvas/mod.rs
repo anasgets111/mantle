@@ -6,7 +6,7 @@ mod offscreen;
 mod shape;
 mod vector_path;
 
-use offscreen::{draw_clipped, draw_node_mask, scratch};
+use offscreen::{draw_clipped, draw_into, draw_node_mask, scratch};
 
 use std::time::{Duration, Instant};
 
@@ -538,11 +538,7 @@ fn raster(
     (image, area, scale, size): (ImageId, LogicalRect, f32, (usize, usize)),
 ) {
     let canvas = painter.canvas_mut();
-    canvas.save();
-    canvas.set_render_target(RenderTarget::Image(image));
-    canvas.reset_scissor();
-    canvas.clear_rect(0, 0, size.0 as u32, size.1 as u32, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
-    canvas.reset_transform();
+    draw_into(canvas, image, Some(size));
     canvas.set_transform(&femtovg::Transform2D([scale, 0.0, 0.0, scale, -area.x * scale, -area.y * scale]));
     painter.draw_text(draw, rect, walk.scale);
     painter.canvas_mut().restore();

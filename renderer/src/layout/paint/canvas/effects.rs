@@ -11,7 +11,7 @@ use crate::text::atlas::TextPainter;
 use crate::text::snap::{LogicalRect, PhysicalRect};
 
 use super::super::{LayerShader, UNCLIPPED, any_draw_matches, grow, reads_under, shadow_rect, transformed, volatile};
-use super::offscreen::{aligned, apply_mask, fill_pooled, offscreen, pooled_paint, scratch};
+use super::offscreen::{aligned, apply_mask, draw_into, fill_pooled, offscreen, pooled_paint, scratch};
 use super::shape::box_path;
 use super::vector_path::femtovg_path;
 use super::{Draw, DrawCmd, Frame, Shaders, Walk, fill_image, flush};
@@ -114,11 +114,7 @@ pub(super) fn paint_shape_inset(
     let snug = !aligned(painter.canvas_mut());
     let Some(content) = scratch(painter, walk, size, false) else { return };
     let canvas = painter.canvas_mut();
-    canvas.save();
-    canvas.reset_transform();
-    canvas.reset_scissor();
-    canvas.set_render_target(RenderTarget::Image(content));
-    canvas.clear_rect(0, 0, size.0 as u32, size.1 as u32, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
+    draw_into(canvas, content, Some(size));
     canvas.translate(-x0 as f32, -y0 as f32);
     let mut outside =
         kurbo::Rect::new(f64::from(x0), f64::from(y0), f64::from(x0) + size.0 as f64, f64::from(y0) + size.1 as f64)
@@ -440,10 +436,7 @@ fn cast_shadow(
     let mut whole = Path::new();
     whole.rect(0.0, 0.0, width, height);
     let canvas = painter.canvas_mut();
-    canvas.save();
-    canvas.reset_transform();
-    canvas.reset_scissor();
-    canvas.set_render_target(RenderTarget::Image(cast));
+    draw_into(canvas, cast, None);
     if blurred.is_none() {
         canvas.clear_rect(0, 0, size.0 as u32, size.1 as u32, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
         fill_pooled(canvas, content, size);
@@ -477,10 +470,7 @@ pub(super) fn draw_backdrop(
     if let Some(image) = desktop {
         // The capture covers the read area: stretched under the surface's own pixels there.
         let canvas = painter.canvas_mut();
-        canvas.save();
-        canvas.set_render_target(RenderTarget::Image(read.copy));
-        canvas.reset_transform();
-        canvas.reset_scissor();
+        draw_into(canvas, read.copy, None);
         canvas.global_composite_operation(CompositeOperation::DestinationOver);
         let (width, height) = (read.size.0 as f32, read.size.1 as f32);
         fill_image(canvas, image, LogicalRect { x: 0.0, y: 0.0, width, height }, 1.0);
@@ -558,11 +548,7 @@ fn faded(
     let faded = scratch(painter, walk, read.size, read.snug)?;
     let (width, height) = (read.size.0 as f32, read.size.1 as f32);
     let canvas = painter.canvas_mut();
-    canvas.save();
-    canvas.set_render_target(RenderTarget::Image(faded));
-    canvas.reset_transform();
-    canvas.reset_scissor();
-    canvas.clear_rect(0, 0, read.size.0 as u32, read.size.1 as u32, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
+    draw_into(canvas, faded, Some(read.size));
     fill_pooled(canvas, image, read.size);
     // The mask is placed in the box's coordinates, so draw it under the read's own transform.
     canvas.set_transform(&read.view);

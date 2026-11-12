@@ -81,10 +81,7 @@ pub(super) fn draw_node_mask(
     let (width, height) = (used.0 as f32, used.1 as f32);
     let canvas = painter.canvas_mut();
     let cut = pooled_paint(canvas, alpha, used, LogicalRect { x: 0.0, y: 0.0, width, height }, 1.0);
-    canvas.save();
-    canvas.set_render_target(RenderTarget::Image(content));
-    canvas.reset_transform();
-    canvas.reset_scissor();
+    draw_into(canvas, content, None);
     canvas.global_composite_operation(if invert {
         CompositeOperation::DestinationOut
     } else {
@@ -119,6 +116,18 @@ pub(super) fn scratch(
     };
     walk.scratch.push((image, size));
     Some(image)
+}
+
+/// Saves the canvas and points it at `image` with no transform or scissor, cleared to transparent
+/// over its top-left `clear` when given. The caller restores.
+pub(super) fn draw_into(canvas: &mut Canvas<OpenGl>, image: ImageId, clear: Option<(usize, usize)>) {
+    canvas.save();
+    canvas.set_render_target(RenderTarget::Image(image));
+    canvas.reset_transform();
+    canvas.reset_scissor();
+    if let Some((width, height)) = clear {
+        canvas.clear_rect(0, 0, width as u32, height as u32, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
+    }
 }
 
 /// Whether femtovg's image paints placed on whole pixels land texel on pixel under the canvas
