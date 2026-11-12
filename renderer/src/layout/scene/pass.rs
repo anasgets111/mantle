@@ -402,7 +402,12 @@ fn keep_item(
     thawing: bool,
 ) -> Result<(), LayoutError> {
     let kept = kept.take().expect("a kept item is paired with itself");
-    node.children.push(prepare_retained(tree, kept, parent_flow, lua, now, true, thawing)?);
+    let item = prepare_retained(tree, kept, parent_flow, lua, now, true, thawing)?;
+    // The list's direction can flip with no change of the item's own. Below it, a parent's axis
+    // changes only with that parent's properties, which already refresh it.
+    let measure = measure_for(item.id, item.kind, item.paint.as_ref(), &item.properties, &item.style)?;
+    update_solver_node(tree, item.taffy, item.kind, &item.properties, &item.style, parent_flow.0, measure)?;
+    node.children.push(item);
     Ok(())
 }
 
