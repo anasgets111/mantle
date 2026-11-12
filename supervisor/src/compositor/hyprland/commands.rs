@@ -23,7 +23,8 @@ pub(super) fn named_selector(name: &str) -> String {
     format!("\"name:{}\"", lua_escape(name))
 }
 
-/// Sends `build(selector)`: a number as is, a named workspace's name from a fresh `j/workspaces`.
+/// Sends `build(selector)`: a number as [`number_selector`] writes it, a named workspace's name from a
+/// fresh `j/workspaces`.
 pub(super) fn dispatch_to_workspace(
     id: &str,
     capability: &'static str,
