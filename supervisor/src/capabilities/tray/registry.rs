@@ -72,7 +72,8 @@ pub(super) async fn register_item(
     let (signals, new_menu) = (item_signals(&item).await, item.receive_new_menu().await);
     let mut tray_item = fetch_tray_item_base(&item, &unique_name, &object_path, &TrayItem::default(), false).await;
 
-    let menu = bind_item_menu(&item).await;
+    let menu = bind_item_menu(&item).await.inspect_err(|err| debug!("no DBusMenu for {unique_name}: {err}"));
+    let menu = menu.ok().flatten();
     let updates = menu_updates(menu.as_ref()).await;
     if let Some(menu) = &menu {
         match fetch_menu_via(menu, &icon_filename_stem(&tray_item.id)).await {
@@ -245,12 +246,14 @@ fn reap_menu_icons(item_id: &str, old: &[MenuItem], kept: &[MenuItem]) {
 /// is a whole `GetLayout`.
 const MENU_SETTLE: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// The item's `Menu`, bound; `None` for none, including the `/NO_DBUSMENU` Qt names until the app sets one.
-async fn bind_item_menu(item: &StatusNotifierItemProxy<'static>) -> Option<DBusMenuProxy<'static>> {
-    let path = item.menu().await.ok().filter(|path| !matches!(path.as_str(), "/" | "/NO_DBUSMENU"))?;
+/// The item's `Menu`, bound; `Ok(None)` for none, including the `/NO_DBUSMENU` Qt names until the app sets one.
+async fn bind_item_menu(item: &StatusNotifierItemProxy<'static>) -> zbus::Result<Option<DBusMenuProxy<'static>>> {
+    let path = item.menu().await?;
+    if matches!(path.as_str(), "/" | "/NO_DBUSMENU") {
+        return Ok(None);
+    }
     let destination = item.inner().destination().to_owned().into();
-    let bound = bind_dbusmenu(item.inner().connection(), &destination, &path).await;
-    bound.inspect_err(|err| debug!("failed to bind DBusMenu for {destination} at {path}: {err}")).ok()
+    bind_dbusmenu(item.inner().connection(), &destination, &path).await.map(Some)
 }
 
 /// `LayoutUpdated` and `ItemsPropertiesUpdated` from `menu`; none without one.
@@ -284,13 +287,19 @@ fn spawn_menu_signal_forwarder(
             while let Ok(Some(next)) = tokio::time::timeout(MENU_SETTLE, changes.next()).await {
                 rebind |= next;
             }
-            if rebind {
-                menu = bind_item_menu(&item).await;
+            // A failed read is no `Menu` change: keep the bound menu rather than wipe a working one.
+            if rebind && let Some(bound) = bind_item_menu(&item).await.inspect_err(|err| debug!("NewMenu: {err}")).ok()
+            {
+                menu = bound;
                 updates = menu_updates(menu.as_ref()).await;
                 let mut guard = registry.lock().expect("mutex poisoned");
                 let Some(entry) = guard.get_mut(&key) else { break };
                 entry.menu = menu.clone();
-                let cleared = menu.is_none() && store_menu(entry, Vec::new());
+                let cleared = menu.is_none()
+                    && entry.last_known.menu.take().is_some_and(|old| {
+                        reap_menu_icons(&entry.last_known.id, &old, &[]);
+                        true
+                    });
                 drop(guard);
                 if cleared && events.send(()).is_err() {
                     break;
@@ -374,14 +383,14 @@ pub(super) fn spawn_name_owner_changed_forwarder(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::capabilities::test_support::p2p_pair;
     use zbus::object_server::SignalEmitter;
 
     /// Minimal entry for ordering tests. A p2p proxy bind makes no call, so no answering peer is
     /// needed.
-    async fn entry(connection: &zbus::Connection, id: &str, registered: u64) -> ItemEntry {
+    pub(in super::super) async fn entry(connection: &zbus::Connection, id: &str, registered: u64) -> ItemEntry {
         let destination = zbus::names::OwnedBusName::try_from("org.example.Item").expect("a valid bus name");
         let path = OwnedObjectPath::try_from("/StatusNotifierItem").expect("a valid object path");
         ItemEntry {
@@ -404,7 +413,7 @@ mod tests {
         assert_eq!(next_burst(&mut stream::empty()).await, None);
     }
 
-    fn key(unique: &str) -> ItemKey {
+    pub(in super::super) fn key(unique: &str) -> ItemKey {
         (
             OwnedUniqueName::try_from(unique).expect("a valid unique name"),
             OwnedObjectPath::try_from("/StatusNotifierItem").expect("a valid object path"),
@@ -462,9 +471,9 @@ mod tests {
     }
 
     /// Counts `GetLayout` calls, each held until the test adds a permit to `gate`.
-    struct CountingMenu {
-        fetches: Arc<std::sync::atomic::AtomicUsize>,
-        gate: Arc<tokio::sync::Semaphore>,
+    pub(in super::super) struct CountingMenu {
+        pub(in super::super) fetches: Arc<std::sync::atomic::AtomicUsize>,
+        pub(in super::super) gate: Arc<tokio::sync::Semaphore>,
     }
 
     #[zbus::interface(name = "com.canonical.dbusmenu")]
@@ -615,9 +624,15 @@ mod tests {
         fn status(&self) -> String {
             "Active".to_string()
         }
+        /// `""` fails the read, as an app answering late or erroring once does.
         #[zbus(property, name = "Menu")]
-        fn menu(&self) -> OwnedObjectPath {
-            OwnedObjectPath::try_from(*self.menu.lock().unwrap()).unwrap()
+        fn menu(&self) -> zbus::fdo::Result<OwnedObjectPath> {
+            let path = *self.menu.lock().unwrap();
+            if path.is_empty() {
+                *self.menu.lock().unwrap() = "/MenuBar2";
+                return Err(zbus::fdo::Error::Failed("not now".into()));
+            }
+            Ok(OwnedObjectPath::try_from(path).unwrap())
         }
         #[zbus(signal)]
         async fn new_menu(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
@@ -678,13 +693,28 @@ mod tests {
         })
         .await;
 
-        // A menu taken away is no menu: its entries would click a proxy that is gone.
+        // A failed `Menu` read is no menu change: the bound menu and its entries stay.
+        *menu_path.lock().unwrap() = "";
+        LateMenuItem::new_menu(&emitter).await.unwrap();
+        crate::capabilities::test_support::poll_until(|| (*menu_path.lock().unwrap() == "/MenuBar2").then_some(()))
+            .await;
+        tokio::time::sleep(MENU_SETTLE * 2).await;
+        {
+            let guard = registry.lock().unwrap();
+            assert_eq!(guard[&key].menu.as_ref().map(|menu| menu.inner().path().as_str()), Some("/MenuBar2"));
+            assert!(
+                guard[&key].last_known.menu.as_ref().is_some_and(|menu| !menu.is_empty()),
+                "a failed read wiped the menu"
+            );
+        }
+
+        // A menu taken away is no menu, `nil` like one never set: its entries would click a proxy that is gone.
         *menu_path.lock().unwrap() = "/";
         crate::capabilities::test_support::within(async {
             loop {
                 LateMenuItem::new_menu(&emitter).await.unwrap();
                 tokio::time::sleep(MENU_SETTLE * 2).await;
-                if ordered_items(&registry)[0].menu.as_ref().is_some_and(Vec::is_empty) {
+                if ordered_items(&registry)[0].menu.is_none() {
                     break;
                 }
             }

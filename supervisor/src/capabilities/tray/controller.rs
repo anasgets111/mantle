@@ -210,7 +210,11 @@ impl TrayController {
         match fetch_menu_via(&menu, &icon_filename_stem(id)).await {
             Ok(items) => {
                 let mut guard = self.registry.lock().expect("mutex poisoned");
-                let changed = guard.get_mut(&key).is_some_and(|entry| store_menu(entry, items));
+                // A `NewMenu` rebind during the fetch made this menu stale.
+                let current = |entry: &&mut ItemEntry| {
+                    entry.menu.as_ref().map(|bound| bound.inner().path()) == Some(menu.inner().path())
+                };
+                let changed = guard.get_mut(&key).filter(current).is_some_and(|entry| store_menu(entry, items));
                 drop(guard);
                 if changed {
                     let _ = self.events.send(());
@@ -335,6 +339,48 @@ mod tests {
         let paths: Vec<String> =
             registry.lock().unwrap().keys().map(|(_, object_path)| object_path.to_string()).collect();
         assert_eq!(paths, vec!["/StatusNotifierItem/1".to_string()]);
+    }
+
+    /// A `NewMenu` rebind while `menu_will_show` fetches makes that fetch stale: it is not stored.
+    #[tokio::test]
+    async fn menu_will_show_stores_a_fetch_only_from_the_menu_still_bound() {
+        use super::super::proxies::bind_dbusmenu;
+        use super::super::registry::tests::{CountingMenu, entry, key};
+        use crate::capabilities::test_support::{poll_until, private_bus, within};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let bus = private_bus().await;
+        let (fetches, gate) = (Arc::new(AtomicUsize::new(0)), Arc::new(tokio::sync::Semaphore::new(1)));
+        let menu = || CountingMenu { fetches: fetches.clone(), gate: gate.clone() };
+        let app = bus.builder().serve_at("/MenuBar", menu()).unwrap().serve_at("/MenuBar2", menu()).unwrap();
+        let app = app.build().await.unwrap();
+        let connection = bus.connection().await;
+        let destination: zbus::names::OwnedBusName =
+            zbus::names::BusName::from(app.unique_name().unwrap().clone()).into();
+        let bind = |path: &'static str| {
+            let (connection, destination) = (connection.clone(), destination.clone());
+            async move { bind_dbusmenu(&connection, &destination, &path.try_into().unwrap()).await.unwrap() }
+        };
+        let mut item = entry(&connection, "item", 0).await;
+        item.menu = Some(bind("/MenuBar").await);
+        let registry: ItemRegistry = Arc::new(Mutex::new(HashMap::from([(key(":1.10"), item)])));
+        let (events, _pushed) = tokio::sync::mpsc::unbounded_channel();
+        let controller = TrayController { registry: registry.clone(), events };
+        let id = item_id(":1.10", "/StatusNotifierItem");
+        let stored = || registry.lock().unwrap().get_mut(&key(":1.10")).unwrap().last_known.menu.take().is_some();
+
+        controller.menu_will_show(&id, 0).await;
+        assert!(stored(), "a fetch from the bound menu is stored");
+
+        let pending = tokio::spawn({
+            let (controller, id) = (controller.clone(), id.clone());
+            async move { controller.menu_will_show(&id, 0).await }
+        });
+        poll_until(|| (fetches.load(Ordering::Relaxed) == 2).then_some(())).await;
+        let rebound = bind("/MenuBar2").await;
+        registry.lock().unwrap().get_mut(&key(":1.10")).unwrap().menu = Some(rebound);
+        gate.add_permits(1);
+        within(pending).await.unwrap();
+        assert!(!stored(), "the replaced menu's reply must not be stored");
     }
 
     /// Another watcher, counting the hosts that register with it.
