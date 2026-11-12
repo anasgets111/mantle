@@ -7,7 +7,12 @@ use std::time::{Duration, Instant};
 
 use mlua::{Lua, Value};
 
-use super::{CellId, CpuBudget, FIRST_SOURCE_SLOT, HELD_SLOT, PENDING_SLOT, note_read, source_at};
+use super::{CellId, CpuBudget, FIRST_SOURCE_SLOT, HELD_SLOT, PENDING_SLOT, note_read, same_value, source_at};
+
+/// The same table or an equal one: a source that builds its table anew each read has not changed.
+fn same(a: &Value, b: &Value) -> bool {
+    a == b || same_value(a, b)
+}
 
 struct DelayCell {
     held: Value,
@@ -95,12 +100,12 @@ impl DelayCell {
     /// One read: the value to answer now, and whether to arm a wake for later. Split from the
     /// signal so the clock is a parameter.
     fn follow(&mut self, fresh: Value, hold: Duration, now: Instant, arm: impl FnOnce(Instant)) -> Value {
-        if fresh == self.held {
+        if same(&fresh, &self.held) {
             self.pending = None;
             return self.held.clone();
         }
         let due = match &self.pending {
-            Some((pending, due)) if *pending == fresh => *due,
+            Some((pending, due)) if same(pending, &fresh) => *due,
             _ => now + hold,
         };
         if now >= due {
@@ -122,7 +127,7 @@ impl PulseCell {
     /// which is what `restart()` does to a running `SequentialAnimation`. The window is not
     /// re-armed once it has closed, so a source that holds its new value pulses once.
     fn fire(&mut self, fresh: Value, hold: Duration, now: Instant, arm: impl FnOnce(Instant)) -> bool {
-        if fresh != self.seen {
+        if !same(&fresh, &self.seen) {
             self.seen = fresh;
             self.until = Some(now + hold);
         }
@@ -160,6 +165,28 @@ mod tests {
         );
         assert!(cell.pending.is_none());
         assert_eq!(cell.follow(Value::Boolean(false), hold, later + hold, |_| ()), Value::Boolean(false));
+    }
+
+    /// A source that builds a table of the same entries on every read has not changed.
+    #[test]
+    fn delay_and_pulse_see_an_equal_fresh_table_as_unchanged() {
+        let lua = mlua::Lua::new();
+        let table = || Value::Table(lua.load("return { 1, 2, kind = 'x' }").eval().unwrap());
+        let (now, hold) = (Instant::now(), Duration::from_millis(100));
+        let mut cell = DelayCell { held: table(), pending: None };
+        let mut armed = false;
+        cell.follow(table(), hold, now, |_| armed = true);
+        assert!(!armed && cell.pending.is_none(), "an equal table arms nothing");
+        let mut other = DelayCell { held: Value::Integer(0), pending: None };
+        other.follow(Value::Integer(1), hold, now, |_| ());
+        other.follow(Value::Integer(2), hold, now + hold / 2, |_| ());
+        assert_eq!(
+            other.follow(Value::Integer(2), hold, now + hold, |_| ()),
+            Value::Integer(0),
+            "a new value restarts the hold"
+        );
+        let mut pulse = PulseCell { seen: table(), until: None };
+        assert!(!pulse.fire(table(), hold, now, |_| armed = true) && !armed, "and opens no window");
     }
 
     #[test]
