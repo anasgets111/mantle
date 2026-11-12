@@ -28,6 +28,15 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 - Fixed: an `image` that decodes on a worker (`async = true`) into a box of another shape than its picture, such as a 16:9 photo with `fit = "cover"` in a square, draws as sharp and cropped the same on every open. Later opens used to draw a smaller cached thumbnail scaled up, blurrier and cropped wider.
 - Fixed: a `text` whose content holds `\n\r` draws the empty line between them, as its box already counted. It used to draw one line fewer than it was tall.
 - Fixed: a content-sized `text` with `wrap = "word"` and `max_lines` is as wide as the lines it shows, plus the ellipsis an `elide` adds to the last one. It used to be as wide as its widest line, dropped ones included.
+- Fixed: a `geometry()` reader hears a rect that settled while an endless `opacity` or other paint-only loop on the same node still ran. It used to keep the rect from before the tween.
+- Fixed: a `row` or `column` with a `homogeneous` signal flipped to `true` and a set `width` or `height` gives its children equal shares. They used to keep the sizes they had before the flip.
+- Fixed: the items a `list` keeps follow a `direction` signal that flips. A `"fill"` item used to keep the old axis, 0 px wide after a flip to `"horizontal"`.
+- Fixed: a `list` with `scroll` and a `height` that a tween grows past its built rows builds the missing rows on the next pass. They used to show blank until another pass.
+- Fixed: `animate` on `spacing` and `line_spacing` eases between negative values. It used to clamp them to 0.
+- Fixed: a `font_size`, `stroke_width` or other number in an `animate.exit` that the node never set starts from the property's default, not from 0.
+- Fixed: an `effect` whose `shader` table a getter rebuilds each pass no longer restarts its running tween.
+- Fixed: a `width` or `height` signal that resolves to nothing on a reused `list` item follows the content again once its tween settles. It used to keep the last measured size.
+- Fixed: a node with an `effect` layer, such as `blur`, and a backdrop `shader` with `padding` draws the shader's reach into a clipped region. It used to draw nothing when the box itself was clipped out.
 - Fixed: a content-sized `text` with `elide` and left or right `padding` shows its whole content. At about one width in twenty it lost its last character to an ellipsis.
 - Fixed: a `text` without `wrap = "word"` ignores `max_lines`, as documented. Its box used to stop at `max_lines` lines while every line of a multi-line `content` still drew, over whatever sat below.
 - Fixed: a `text` with `wrap = "word"` and left or right `padding` is as tall as the lines it draws. It used to wrap its measured height at the width outside its padding, so it came out lines short and its last lines drew over whatever sat below. A multiline `textfield` with padding grows the same way.
