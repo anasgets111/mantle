@@ -78,7 +78,8 @@ fn tee(file: &File, target: BorrowedFd, redirect: Redirect) -> io::Result<()> {
 }
 
 /// Writes `bytes` to the log verbatim and onward as `mantle log` would show them, holding a line
-/// split across two reads in `pending`.
+/// split across two reads in `pending`. Fails only when neither takes them: a closed terminal must
+/// not stop the log, nor a full disk the terminal.
 fn pump(
     bytes: &[u8],
     file: &mut impl Write,
@@ -86,11 +87,12 @@ fn pump(
     colour: bool,
     pending: &mut Vec<u8>,
 ) -> io::Result<()> {
-    file.write_all(bytes)?;
-    match colour {
+    let logged = file.write_all(bytes);
+    let shown = match colour {
         true => paint(&mut { bytes }, original, pending),
         false => original.write_all(bytes),
-    }
+    };
+    logged.or(shown)
 }
 
 /// `mantle log [--follow]`: `dir`'s log, until its Supervisor exits.
@@ -174,6 +176,26 @@ mod tests {
 
         assert_eq!(String::from_utf8(log).unwrap(), line, "ADR-0229: the file holds no colour");
         assert_eq!(String::from_utf8(terminal).unwrap(), shared::log::colourise(line));
+    }
+
+    struct Refuses;
+
+    impl Write for Refuses {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::other("closed"))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_copy_that_fails_does_not_stop_the_other() {
+        let (mut log, mut terminal) = (Vec::new(), Vec::new());
+        pump(b"a\n", &mut log, &mut Refuses, false, &mut Vec::new()).expect("the log took it");
+        pump(b"b\n", &mut Refuses, &mut terminal, false, &mut Vec::new()).expect("the terminal took it");
+        assert_eq!((log, terminal), (b"a\n".to_vec(), b"b\n".to_vec()));
+        assert!(pump(b"c\n", &mut Refuses, &mut Refuses, false, &mut Vec::new()).is_err(), "neither took it");
     }
 
     #[test]
