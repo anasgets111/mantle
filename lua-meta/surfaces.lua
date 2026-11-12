@@ -71,7 +71,7 @@
 ---@field animate? PopupAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). `move` eases a matched node to its new parent-relative layout position; an ancestor that shifts needs its own `move`. `exit` runs after removal. Only a node already on screen animates, unless an entry has `from`.
 ---@field id string Required. The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `output = "active"` keeps the bare `id`.
 ---@field parent string Required. The `id` of a shown `panel`, `window` or `popup`; hiding the parent closes this popup. On a per-output panel it opens on the clicked instance, else the first. A change applies at the next open; a `lock` cannot be a parent.
----@field anchor_rect Rect|Bound Required. In the parent's surface coordinates; `width`/`height` in `(0, 8192]`, `x`/`y` default `0`. Usually the rect `on_click` passes.
+---@field anchor_rect { x?: number, y?: number, width: number, height: number, [string]: "no such property" }|Bound Required. In the parent's surface coordinates; `width`/`height` in `(0, 8192]`, `x`/`y` default `0`. Usually the rect `on_click` passes.
 ---@field anchor? PopupAnchor|Bound Default `"center"`. The point on `anchor_rect` the popup hangs from.
 ---@field gravity? PopupAnchor|Bound Default `"center"`. The direction it extends from that point: `"bottom"` hangs it below, `"bottom_right"` below and to the right.
 ---@field constraint_adjustment? ("slide_x"|"slide_y"|"flip_x"|"flip_y"|"resize_x"|"resize_y")[]|Bound Default `{ "flip_y", "slide_x" }`. How the compositor may keep it on screen; `{}` for none, order is ignored.

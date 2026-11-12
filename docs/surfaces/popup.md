@@ -83,7 +83,7 @@ Beyond the [shared properties](index.md#properties-every-role-takes). Every fiel
 | :--- | :--- | :--- | :--- |
 | `id` | `string` | Required | The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `output = "active"` keeps the bare `id` |
 | `parent` | `string` | Required | The `id` of a shown `panel`, `window` or `popup`; hiding the parent closes this popup. On a per-output panel it opens on the clicked instance, else the first. A change applies at the next open; a `lock` cannot be a parent |
-| `anchor_rect` | `Rect\|Bound` | Required | In the parent's surface coordinates; `width`/`height` in `(0, 8192]`, `x`/`y` default `0`. Usually the rect `on_click` passes |
+| `anchor_rect` | `{ x?: number, y?: number, width: number, height: number }\|Bound` | Required | In the parent's surface coordinates; `width`/`height` in `(0, 8192]`, `x`/`y` default `0`. Usually the rect `on_click` passes |
 | `anchor` | `"top"\|"bottom"\|"left"\|"right"\|"top_left"\|"top_right"\|"bottom_left"\|"bottom_right"\|"center"\|Bound` | `"center"` | The point on `anchor_rect` the popup hangs from |
 | `gravity` | `"top"\|"bottom"\|"left"\|"right"\|"top_left"\|"top_right"\|"bottom_left"\|"bottom_right"\|"center"\|Bound` | `"center"` | The direction it extends from that point: `"bottom"` hangs it below, `"bottom_right"` below and to the right |
 | `constraint_adjustment` | `("slide_x"\|"slide_y"\|"flip_x"\|"flip_y"\|"resize_x"\|"resize_y")[]\|Bound` | `{ "flip_y", "slide_x" }` | How the compositor may keep it on screen; `{}` for none, order is ignored |

@@ -611,6 +611,8 @@ mod meta_stub_tests {
             }
             // Inline table shapes have no alias.
             ("anchor", shape) if shape.starts_with('{') => return Some("{ top = true, left = true }".to_string()),
+            // Only `width`: the optional `x`/`y` are the point of the inline shape.
+            ("anchor_rect", shape) if shape.starts_with('{') => return Some("{ width = 1, height = 1 }".to_string()),
             ("min_size" | "max_size", _) => return Some("{ width = 8.5, height = 8.5 }".to_string()),
             ("offset", _) => return Some("{ x = 1.5, y = 1 }".to_string()),
             // `shader.source` refuses a relative path; `image.source` takes either.

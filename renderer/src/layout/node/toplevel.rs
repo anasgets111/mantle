@@ -272,7 +272,7 @@ fn popup_extent(property: &str, subject: &str, n: f32, bad: &str) -> Result<f32,
     Ok(n)
 }
 
-spelled!(AnchorRect => LogicalRect::lua());
+spelled!(AnchorRect => r#"{ x?: number, y?: number, width: number, height: number, [string]: "no such property" }"#);
 
 impl Prop for AnchorRect {
     type Out = LogicalRect;
@@ -394,6 +394,13 @@ pub fn popup_spec(properties: &PropMap) -> Result<PopupSpec, LayoutError> {
 
 #[cfg(test)]
 mod tests {
+    /// The engine defaults `x` and `y`, so the stub the config is checked against must too.
+    #[test]
+    fn the_anchor_rect_stub_leaves_x_and_y_optional() {
+        let stub = AnchorRect::lua();
+        assert!(stub.contains("x?: number") && stub.contains("y?: number"), "{stub}");
+    }
+
     use super::*;
     use crate::layout::node::signal_lua;
 
