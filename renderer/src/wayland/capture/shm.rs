@@ -43,10 +43,12 @@ fn flip_damage(damage: &mut [DamageRect], height: u32) {
     }
 }
 
-/// `create_buffer`'s arguments for a compositor-chosen size, `None` for an empty one or past the
-/// protocol's `i32`, pool size included.
+/// `create_buffer`'s arguments for a compositor-chosen size, `None` for an empty one, a stride
+/// narrower than 4 bytes per pixel, or anything past the protocol's `i32`, pool size included.
 fn buffer_layout(width: u32, height: u32, stride: u32) -> Option<(i32, i32, i32, usize)> {
-    let len = i32::try_from(u64::from(stride) * u64::from(height)).ok().filter(|&len| len > 0 && width > 0)?;
+    let len = i32::try_from(u64::from(stride) * u64::from(height))
+        .ok()
+        .filter(|&len| len > 0 && width > 0 && u64::from(stride) >= u64::from(width) * 4)?;
     Some((i32::try_from(width).ok()?, i32::try_from(height).ok()?, i32::try_from(stride).ok()?, len as usize))
 }
 
@@ -138,6 +140,15 @@ mod tests {
     #[test]
     fn buffer_layout_refuses_sizes_the_protocol_cannot_carry() {
         assert_eq!(buffer_layout(1920, 1080, 7680), Some((1920, 1080, 7680, 7680 * 1080)));
+        assert_eq!(buffer_layout(1920, 1080, 7744), Some((1920, 1080, 7744, 7744 * 1080)), "padded stride");
+        let max_exact = (i32::MAX as u32) / 4;
+        assert_eq!(
+            buffer_layout(max_exact, 1, max_exact * 4),
+            Some((max_exact as i32, 1, (max_exact * 4) as i32, (max_exact * 4) as usize)),
+        );
+        assert_eq!(buffer_layout(1920, 1080, 7679), None, "stride narrower than width * 4");
+        assert_eq!(buffer_layout((1 << 30) + 1, 1, 4), None, "width * 4 wraps u32 to stride");
+        assert_eq!(buffer_layout(1 << 29, 1, i32::MAX as u32), None, "i32::MAX stride is short for 1 << 29 px");
         assert_eq!(buffer_layout(1 << 30, 1, (1u32 << 30).saturating_mul(4)), None, "stride past i32");
         assert_eq!(buffer_layout(1 << 31, 1, u32::MAX), None, "width past i32");
         assert_eq!(buffer_layout(16, 1 << 31, 64), None, "height past i32");
