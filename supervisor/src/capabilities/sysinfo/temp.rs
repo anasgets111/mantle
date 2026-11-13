@@ -12,13 +12,22 @@ fn round_milli_c(milli_c: i64) -> i64 {
 }
 
 /// Resolves the first `hwmon_root` chip whose `name` matches `preference`, trying that list in
-/// order (ADR-0035); preference order beats directory order.
+/// order (ADR-0035); preference order beats directory order. Each chip's `name` is read at most
+/// once.
 pub fn resolve_chip(hwmon_root: &Path, preference: &[&str]) -> Option<PathBuf> {
-    let entries: Vec<PathBuf> =
-        std::fs::read_dir(hwmon_root).ok()?.filter_map(|entry| entry.ok().map(|entry| entry.path())).collect();
-    preference.iter().find_map(|wanted| {
-        entries.iter().find_map(|dir| (read_attr(dir, "name").as_deref() == Some(*wanted)).then(|| dir.clone()))
-    })
+    let mut best: Option<(usize, PathBuf)> = None;
+    for entry in std::fs::read_dir(hwmon_root).ok()?.flatten() {
+        let dir = entry.path();
+        let Some(name) = read_attr(&dir, "name") else { continue };
+        let Some(rank) = preference.iter().position(|wanted| *wanted == name) else { continue };
+        if rank == 0 {
+            return Some(dir);
+        }
+        if best.as_ref().is_none_or(|(best_rank, _)| rank < *best_rank) {
+            best = Some((rank, dir));
+        }
+    }
+    best.map(|(_, dir)| dir)
 }
 
 /// `tempN_input` paths whose paired `tempN_label` matches `Core \d+` (coretemp) or `Tccd\d+`
@@ -292,5 +301,64 @@ mod tests {
         assert_eq!(resolve_chip(dir.path(), &["k10temp", "coretemp"]), Some(dir.path().join("hwmon1")));
         assert_eq!(resolve_chip(dir.path(), &["acpitz"]), Some(dir.path().join("hwmon5")));
         assert_eq!(resolve_chip(dir.path(), &["amdgpu", "nouveau", "nvidia"]), None);
+
+        // Regardless of filesystem read_dir order, leading with an absent chip exercises non-zero
+        // preference ranks (1 vs 2) without triggering the rank-0 early return.
+        let ordered: Vec<(String, PathBuf)> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter_map(|e| Some((read_attr(&e.path(), "name")?, e.path())))
+            .collect();
+        let first_name = ordered[0].0.as_str();
+        let last_name = ordered.last().unwrap().0.as_str();
+        assert_eq!(resolve_chip(dir.path(), &[last_name, first_name]), Some(ordered.last().unwrap().1.clone()));
+        assert_eq!(
+            resolve_chip(dir.path(), &["absent", last_name, first_name]),
+            Some(ordered.last().unwrap().1.clone())
+        );
+        assert_eq!(resolve_chip(dir.path(), &["absent", first_name, last_name]), Some(ordered[0].1.clone()));
+    }
+
+    #[test]
+    fn resolve_chip_breaks_same_name_ties_by_directory_order_and_skips_unreadable_names() {
+        let dir = tempfile::tempdir().unwrap();
+        // Missing `name`, directory named `name`, and a stray regular file under hwmon_root.
+        std::fs::create_dir(dir.path().join("hwmon_missing")).unwrap();
+        std::fs::create_dir_all(dir.path().join("hwmon_isdir/name")).unwrap();
+        std::fs::write(dir.path().join("not_a_dir"), "jc42\n").unwrap();
+
+        write_chip(dir.path(), "hwmon4", "jc42");
+        write_chip(dir.path(), "hwmon5", "jc42");
+        let first_jc42 = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| read_attr(p, "name").as_deref() == Some("jc42"))
+            .unwrap();
+        assert_eq!(resolve_chip(dir.path(), &["jc42"]), Some(first_jc42.clone()));
+        assert_eq!(resolve_chip(dir.path(), &["absent", "jc42"]), Some(first_jc42));
+        assert_eq!(resolve_chip(dir.path(), &["absent"]), None);
+    }
+
+    #[test]
+    fn resolve_chip_opens_each_chip_name_at_most_once() {
+        let dir = tempfile::tempdir().unwrap();
+        write_chip(dir.path(), "hwmon0", "nvme");
+        write_chip(dir.path(), "hwmon1", "iwlwifi_1");
+        write_chip(dir.path(), "hwmon2", "xe");
+        std::fs::create_dir(dir.path().join("hwmon3")).unwrap(); // missing `name`
+
+        let mut inotify = inotify::Inotify::init().unwrap();
+        let wds = ["hwmon0", "hwmon1", "hwmon2"]
+            .map(|chip| inotify.watches().add(dir.path().join(chip).join("name"), inotify::WatchMask::OPEN).unwrap());
+
+        assert_eq!(resolve_chip(dir.path(), GPU_TEMP_PREFERENCE), Some(dir.path().join("hwmon2")));
+
+        let mut buf = [0u8; 1024];
+        let opened: Vec<_> = inotify.read_events(&mut buf).unwrap().map(|e| e.wd).collect();
+        for wd in wds {
+            assert_eq!(opened.iter().filter(|seen| **seen == wd).count(), 1, "each name file opened once");
+        }
+        assert!(matches!(inotify.read_events(&mut buf), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock));
     }
 }

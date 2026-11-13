@@ -19,7 +19,7 @@ text {
 | `temp_cores` | hwmon `k10temp` `Tccd*` or `coretemp` `Core *` sensors, else that chip's first sensor, else `acpitz`'s | `temp_interval` |
 | `temp_gpu` | The first sensor of hwmon `amdgpu`, `nouveau`, `nvidia`, `i915` or `xe` | `temp_interval` |
 | `disks` | `lsblk --json --bytes` block devices and mounted partitions (`FSUSED` and `FSSIZE`) | `disk_interval` |
-| `gpu` | `nvtop -s`, `nvidia-smi` or DRM sysfs | `gpu_interval` |
+| `gpu` | `nvidia-smi`, `nvtop -s` or DRM sysfs | `gpu_interval` |
 | `net_rx_bytes_sec`, `net_tx_bytes_sec` | `/proc/net/dev` non-loopback interface counter deltas | `net_interval` |
 
 The chips are picked once, when `sysinfo` starts; a driver loaded later needs a Supervisor
@@ -54,7 +54,7 @@ text {
 | :--- | :--- |
 | `sysinfo` stays `nil` | Nothing is read until `configure`. With only `temp_interval` set on a machine without sensors, every reading equals the defaults and nothing pushes |
 | `ram_percent` stays `0` while `cpu_percent` moves | Each field updates on its own interval, and an unset one is `0` (off). Set `ram_interval` too |
-| `gpu` stays `nil` | No supported GPU tool (`nvtop`, `nvidia-smi`) or DRM sysfs was found, or `gpu_interval` is unset |
+| `gpu` stays `nil` | No supported GPU tool (`nvidia-smi`, `nvtop`) or DRM sysfs was found, or `gpu_interval` is unset |
 | `disks` stays empty | `lsblk` is missing or returned no mounted partitions, or `disk_interval` is unset |
 | `net_rx_bytes_sec` stays `0` | Rate calculation needs two consecutive samples. Set `net_interval` to `1` or higher |
 | Network rates look high with bridges or tunnels | The counters include every non-loopback interface, including virtual ones; the same traffic may cross more than one |
