@@ -1027,6 +1027,59 @@ mod tests {
     }
 
     #[test]
+    fn a_content_measured_reversal_runs_the_full_duration_from_the_shown_size() {
+        let lua = Lua::new();
+        let props = rect_props(&lua, "return { animate = { height = { duration = 300, easing = \"linear\" } } }");
+        let start = Instant::now();
+        let ms = Duration::from_millis;
+        let at = |tween: &Tween, now| match tween.at(now) {
+            Animatable::Number(value) => value,
+            other => panic!("expected a number, got {other:?}"),
+        };
+        let mut tweens = Vec::new();
+        assert_eq!(retarget_measured("rect", &props, &mut tweens, "height", 40.0, 100.0, start).unwrap(), Some(40.0));
+        let turn = start + ms(270);
+        assert_eq!(at(&tweens[0], turn), 94.0);
+
+        // Policy: a measured reversal starts from `shown` and does not shorten its run.
+        assert_eq!(retarget_measured("rect", &props, &mut tweens, "height", 94.0, 40.0, turn).unwrap(), Some(94.0));
+        assert_eq!(tweens.len(), 1);
+        assert_eq!(at(&tweens[0], turn + ms(150)), 67.0);
+        assert!(!tweens[0].done(turn + ms(299)));
+        assert!(tweens[0].done(turn + ms(300)));
+        assert_eq!(at(&tweens[0], turn + ms(300)), 40.0);
+    }
+
+    #[test]
+    fn an_explicit_size_returning_to_a_measured_tweens_origin_shortens() {
+        let lua = Lua::new();
+        let measured_props =
+            rect_props(&lua, "return { animate = { width = { duration = 300, easing = \"linear\" } } }");
+        let start = Instant::now();
+        let ms = Duration::from_millis;
+        let at = |tween: &Tween, now| match tween.at(now) {
+            Animatable::Number(value) => value,
+            other => panic!("expected a number, got {other:?}"),
+        };
+        let mut tweens = Vec::new();
+        assert_eq!(
+            retarget_measured("rect", &measured_props, &mut tweens, "width", 40.0, 100.0, start).unwrap(),
+            Some(40.0)
+        );
+        let turn = start + ms(270);
+        assert_eq!(at(&tweens[0], turn), 94.0);
+
+        let shown = PropMap::from_iter([("width", tweens[0].at(turn).to_value(&lua).unwrap())]);
+        let mut explicit_props =
+            rect_props(&lua, "return { width = 40, animate = { width = { duration = 300, easing = \"linear\" } } }");
+        let back = retarget("rect", Some((&tweens, &shown)), &mut explicit_props, turn, &lua, false).unwrap().0;
+        assert_eq!(at(&back[0], turn + ms(135)), 67.0);
+        assert!(!back[0].done(turn + ms(269)));
+        assert!(back[0].done(turn + ms(270)));
+        assert_eq!(at(&back[0], turn + ms(270)), 40.0);
+    }
+
+    #[test]
     fn a_delay_is_a_whole_number_of_milliseconds_within_a_minute() {
         let lua = Lua::new();
         let specs =

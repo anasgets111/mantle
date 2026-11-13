@@ -569,11 +569,25 @@ mod tests {
         assert_eq!(layout(&scene), (140.0, 65.0, 140.0, 30.0));
         assert!(!scene.surface("bar@TEST").unwrap().animating());
 
-        // Settled, the pill follows its content again instead of holding the last eased size.
-        lua.load(r#"state("w", 40):set(60)"#).exec().unwrap();
+        // Settled, the pill follows its content again instead of holding the last eased size,
+        // and reversing mid-flight eases both axes from their sizes on screen to the new target.
+        lua.load(r#"state("w", 40):set(60) state("h", 20):set(20)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         assert_eq!(layout(&scene), (140.0, 65.0, 140.0, 30.0));
         assert!(scene.surface("bar@TEST").unwrap().animating());
+        let started = child_tween(&scene).started;
+        scene.tick(&instances, &shaping, &lua, started + ms(50));
+        assert_eq!(layout(&scene), (100.0, 45.0, 100.0, 30.0));
+
+        lua.load(r#"state("w", 40):set(140) state("h", 20):set(60)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(layout(&scene), (100.0, 45.0, 100.0, 30.0));
+        let reversed = child_tween(&scene).started;
+        scene.tick(&instances, &shaping, &lua, reversed + ms(50));
+        assert_eq!(layout(&scene), (120.0, 55.0, 120.0, 30.0));
+        scene.tick(&instances, &shaping, &lua, reversed + ms(100));
+        assert_eq!(layout(&scene), (140.0, 65.0, 140.0, 30.0));
+        assert!(!scene.surface("bar@TEST").unwrap().animating());
     }
 
     /// Found live: a pass landing between two frames of a child's height tween measured the child
