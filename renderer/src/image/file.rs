@@ -47,8 +47,7 @@ impl FileVersion {
 }
 
 /// How long the stat of a path inotify cannot watch is trusted (ADR-0371).
-/// ponytail: each polled path keeps two wakes a second; watching a symlink's target directory too
-/// is the upgrade for the common case.
+/// ponytail: each polled path keeps two wakes a second.
 const STALE_AFTER: Duration = Duration::from_millis(500);
 
 /// A remembered stat and its directory watch, `None` while polled.
@@ -99,12 +98,12 @@ impl VersionCache {
         self.stats.keys()
     }
 
-    /// Drops `path`, releasing its share of its directory's watch.
+    /// Drops `path`, releasing its share of each directory watch.
     pub(super) fn forget(&mut self, path: &Path) {
-        if let Some(Stat { watch: Some(wd), .. }) = self.stats.remove(path)
+        if let Some(Stat { watch: Some(_), .. }) = self.stats.remove(path)
             && let Some(watcher) = self.watcher.as_mut()
         {
-            watcher.unwatch(wd, path);
+            watcher.unwatch(path);
         }
     }
 
@@ -139,10 +138,9 @@ impl VersionCache {
         let mut changed = Vec::new();
         for path in suspects {
             let Some(stat) = self.stats.get_mut(&path) else { continue };
-            if stat.watch.is_none() {
-                // A directory that has appeared since, or a watch slot freed since.
-                stat.watch = self.watcher.as_mut().and_then(|watcher| watcher.watch(&path));
-            }
+            // Re-watch polled/lost paths and touched paths (a touched symlink may have re-pointed,
+            // become dangling, or replaced a regular file).
+            stat.watch = self.watcher.as_mut().and_then(|watcher| watcher.watch(&path));
             let fresh = FileVersion::read(&path);
             stat.at = now;
             if fresh != stat.version {
@@ -223,6 +221,104 @@ mod tests {
         std::fs::write(&path, "back").unwrap();
         assert_eq!(cache.changed(t0 + STALE_AFTER), [path], "the poll sees it return");
         assert_eq!(cache.due(), None, "and watches its directory again");
+    }
+
+    #[test]
+    fn a_symlinked_file_owes_no_wake_and_its_targets_edit_is_the_cue() {
+        let (link_dir, dir1, dir2) =
+            (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let target1 = dir1.path().join("a.png");
+        let target2 = dir2.path().join("b.png");
+        let link = link_dir.path().join("wall.png");
+        std::fs::write(&target1, "one").unwrap();
+        std::fs::write(&target2, "fourteen").unwrap();
+        std::os::unix::fs::symlink(&target1, &link).unwrap();
+
+        let (mut cache, t0) = (VersionCache::default(), Instant::now());
+        cache.read(&link, t0);
+        assert_eq!(cache.due(), None, "a watched symlink owes no poll wake");
+
+        std::fs::write(&target1, "three").unwrap();
+        assert_eq!(cache.changed(t0), std::slice::from_ref(&link), "editing the target cues the link");
+        assert_eq!(cache.due(), None);
+
+        // Re-pointing to another directory updates the target watch and releases the old one.
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(&target2, &link).unwrap();
+        assert_eq!(cache.changed(t0), std::slice::from_ref(&link), "re-pointing cues the link");
+        assert_eq!(cache.due(), None);
+
+        std::fs::write(&target1, "ignored-old").unwrap();
+        assert!(cache.changed(t0).is_empty(), "the old target is no longer watched");
+
+        std::fs::write(&target2, "new-target-edit").unwrap();
+        assert_eq!(cache.changed(t0), std::slice::from_ref(&link), "editing the new target cues the link");
+        assert_eq!(cache.due(), None);
+
+        // Re-pointing to a dangling target falls back to polling, then re-watches when it appears.
+        let missing = dir2.path().join("missing.png");
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(&missing, &link).unwrap();
+        assert_eq!(cache.changed(t0), std::slice::from_ref(&link));
+        assert_eq!(cache.due(), Some(t0 + STALE_AFTER), "dangling symlink is polled");
+
+        std::fs::write(&missing, "appeared").unwrap();
+        assert_eq!(cache.changed(t0 + STALE_AFTER), std::slice::from_ref(&link));
+        assert_eq!(cache.due(), None, "re-watched once the target exists");
+    }
+
+    #[test]
+    fn an_intermediate_symlink_is_polled_and_repointing_it_cues_a_repaint() {
+        let root = tempfile::tempdir().unwrap();
+        for dir in ["links", "middle", "targets"] {
+            std::fs::create_dir(root.path().join(dir)).unwrap();
+        }
+        let link = root.path().join("links/wall.png");
+        let middle = root.path().join("middle/current.png");
+        std::fs::write(root.path().join("targets/one.png"), "one").unwrap();
+        std::fs::write(root.path().join("targets/two.png"), "second").unwrap();
+        std::os::unix::fs::symlink("../middle/current.png", &link).unwrap();
+        std::os::unix::fs::symlink("../targets/one.png", &middle).unwrap();
+
+        let (mut cache, now) = (VersionCache::default(), Instant::now());
+        assert_eq!(cache.read(&link, now).len, 3);
+        assert_eq!(cache.due(), Some(now + STALE_AFTER), "a chain retains polling");
+        assert!(cache.watcher.as_mut().unwrap().drain().touched.is_empty());
+        std::fs::remove_file(&middle).unwrap();
+        std::os::unix::fs::symlink("../targets/two.png", &middle).unwrap();
+        assert_eq!(cache.changed(now + STALE_AFTER), std::slice::from_ref(&link));
+        assert_eq!(cache.read(&link, now + STALE_AFTER).len, 6);
+        assert_eq!(cache.due(), Some(now + STALE_AFTER * 2));
+    }
+
+    #[test]
+    fn a_symlink_whose_target_directory_goes_is_polled_and_rewatched_on_return() {
+        let root = tempfile::tempdir().unwrap();
+        let link_dir = root.path().join("links");
+        let target_dir = root.path().join("targets");
+        std::fs::create_dir(&link_dir).unwrap();
+        std::fs::create_dir(&target_dir).unwrap();
+        let target = target_dir.join("wall.png");
+        let link = link_dir.join("wall.png");
+        std::fs::write(&target, "one").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let (mut cache, t0) = (VersionCache::default(), Instant::now());
+        cache.read(&link, t0);
+        assert_eq!(cache.due(), None);
+
+        std::fs::remove_file(&target).unwrap();
+        std::fs::remove_dir(&target_dir).unwrap();
+        assert_eq!(cache.changed(t0), std::slice::from_ref(&link));
+        assert_eq!(cache.due(), Some(t0 + STALE_AFTER), "losing target dir falls back to polling");
+
+        std::fs::create_dir(&target_dir).unwrap();
+        std::fs::write(&target, "back").unwrap();
+        assert_eq!(cache.changed(t0 + STALE_AFTER), std::slice::from_ref(&link));
+        assert_eq!(cache.due(), None, "and re-watches both directories cleanly");
+
+        std::fs::write(&target, "edited-again").unwrap();
+        assert_eq!(cache.changed(t0 + STALE_AFTER), [link]);
     }
 
     #[test]
