@@ -651,19 +651,7 @@ pub(crate) mod tests {
             .collect()
     }
 
-    /// Next queued non-start frame, or a panic naming what was missing. Reading `mantle.lock`
-    /// queues a start (ADR-0070 decision 1), so tests would otherwise step over it; the dedicated
-    /// `capability_reads_start_only_rostered_names_once` test accounts for starts.
-    pub(crate) fn queued_frame(outbound_rx: &mut mpsc::UnboundedReceiver<RendererFrame>) -> RendererFrame {
-        loop {
-            match outbound_rx.try_recv().expect("a frame must have been queued for the socket thread") {
-                RendererFrame::StartCapability { .. } => continue,
-                frame => return frame,
-            }
-        }
-    }
-
-    /// All queued capability starts that `queued_frame` skips.
+    /// All queued capability starts that `queued_command` skips.
     pub(super) fn queued_starts(outbound_rx: &mut mpsc::UnboundedReceiver<RendererFrame>) -> Vec<String> {
         let mut started = Vec::new();
         while let Ok(frame) = outbound_rx.try_recv() {
@@ -1050,9 +1038,8 @@ pub(crate) mod tests {
 
         client.loader.lua().load(r#"mantle.lock:lock()"#).exec().unwrap();
 
-        let RendererFrame::Command(envelope) = queued_frame(&mut outbound_rx) else {
-            panic!("a capability write must be queued as RendererFrame::Command");
-        };
+        let envelope = crate::lua::capability::tests::queued_command(&mut outbound_rx)
+            .expect("a capability write must be queued as RendererFrame::Command");
         assert_eq!(envelope.params.capability, "lock");
         assert_eq!(
             envelope.params.action, "lock",

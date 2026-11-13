@@ -157,9 +157,9 @@ fn build_handle(lua: &Lua, name: &str, processes: mlua::AnyUserData) -> mlua::Re
 
 #[cfg(test)]
 mod tests {
+    use crate::lua::capability::tests::queued_command;
     use crate::lua::tests::probe;
-    use crate::socket::client::tests::{bare_client, push, queued_frame};
-    use shared::RendererFrame;
+    use crate::socket::client::tests::{bare_client, push};
 
     #[test]
     fn a_declared_session_process_declares_the_name_and_the_stop_signal_the_config_chose() {
@@ -172,9 +172,8 @@ mod tests {
             .exec()
             .unwrap();
 
-        let RendererFrame::Command(envelope) = queued_frame(&mut outbound_rx) else {
-            panic!("declaring a session process must queue a RendererFrame::Command");
-        };
+        let envelope =
+            queued_command(&mut outbound_rx).expect("declaring a session process must queue a RendererFrame::Command");
         assert_eq!(envelope.params.capability, "processes");
         assert_eq!(envelope.params.action, "declare");
         assert_eq!(envelope.params.arguments, vec![serde_json::json!("screen-recorder"), serde_json::json!("INT")]);
@@ -194,10 +193,7 @@ mod tests {
             ),
             "got {err}"
         );
-        assert!(
-            crate::lua::capability::tests::queued_command(&mut outbound_rx).is_none(),
-            "the invalid declaration must not reach the Supervisor"
-        );
+        assert!(queued_command(&mut outbound_rx).is_none(), "the invalid declaration must not reach the Supervisor");
     }
 
     #[test]
@@ -251,7 +247,8 @@ mod tests {
     fn a_session_processs_methods_name_the_program_the_declaration_did() {
         let (client, mut outbound_rx) = bare_client();
         client.loader().lua().load(r#"rec = session_process { name = "recorder" }"#).exec().unwrap();
-        let _declare = queued_frame(&mut outbound_rx);
+        let _declare =
+            queued_command(&mut outbound_rx).expect("declaring a session process must queue a RendererFrame::Command");
 
         client
             .loader()
@@ -267,9 +264,9 @@ mod tests {
             .unwrap();
 
         let actions: Vec<(String, Vec<serde_json::Value>)> = (0..3)
-            .map(|_| match queued_frame(&mut outbound_rx) {
-                RendererFrame::Command(envelope) => (envelope.params.action, envelope.params.arguments),
-                other => panic!("a session-process method must queue a Command, got {other:?}"),
+            .map(|_| {
+                let envelope = queued_command(&mut outbound_rx).expect("a session-process method must queue a Command");
+                (envelope.params.action, envelope.params.arguments)
             })
             .collect();
         assert_eq!(actions[0].0, "start");

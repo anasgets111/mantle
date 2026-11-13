@@ -205,9 +205,9 @@ fn build_store(lua: &Lua, file: &str, storage: mlua::AnyUserData, defaults: Tabl
 mod tests {
     use super::*;
     use crate::lua;
+    use crate::lua::capability::tests::queued_command;
     use crate::lua::tests::probe;
-    use crate::socket::client::tests::{bare_client, push, queued_frame};
-    use shared::RendererFrame;
+    use crate::socket::client::tests::{bare_client, push};
 
     /// A reload's `persistent_table` call hands back the same table, so its edited defaults have to reach it.
     #[test]
@@ -271,9 +271,7 @@ mod tests {
             .exec()
             .unwrap();
 
-        let RendererFrame::Command(envelope) = queued_frame(&mut outbound_rx) else {
-            panic!("declaring a store must queue a RendererFrame::Command");
-        };
+        let envelope = queued_command(&mut outbound_rx).expect("declaring a store must queue a RendererFrame::Command");
         assert_eq!(envelope.params.capability, "storage");
         assert_eq!(envelope.params.action, "open");
         assert_eq!(
@@ -384,13 +382,12 @@ mod tests {
     fn a_stores_write_names_the_same_file_the_declaration_did() {
         let (client, mut outbound_rx) = bare_client();
         client.loader().lua().load(r#"store = persistent_table { path = "/tmp/bar/state.json" }"#).exec().unwrap();
-        let _open = queued_frame(&mut outbound_rx);
+        let _open = queued_command(&mut outbound_rx).expect("declaring a store must queue a RendererFrame::Command");
 
         client.loader().lua().load(r#"store:set("theme", "latte")"#).exec().unwrap();
 
-        let RendererFrame::Command(envelope) = queued_frame(&mut outbound_rx) else {
-            panic!("a store write must be queued as RendererFrame::Command");
-        };
+        let envelope =
+            queued_command(&mut outbound_rx).expect("a store write must be queued as RendererFrame::Command");
         assert_eq!(envelope.params.action, "set");
         assert_eq!(
             envelope.params.arguments,
