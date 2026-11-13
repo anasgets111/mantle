@@ -37,6 +37,14 @@ impl MoveTween {
         self.offset = (self.from.0 * (1.0 - progress), self.from.1 * (1.0 - progress));
         true
     }
+
+    pub(crate) fn holds_until(&self, now: Instant) -> Option<Instant> {
+        if self.spec.duration.is_zero() {
+            return None;
+        }
+        let lead = self.spec.delay.saturating_sub(now.saturating_duration_since(self.started));
+        (!lead.is_zero()).then_some(self.started + self.spec.delay)
+    }
 }
 
 #[cfg(test)]
@@ -48,16 +56,19 @@ mod tests {
 
     #[test]
     fn move_holds_through_delay_eases_then_finishes() {
-        let start = Instant::now();
-        let mut movement = MoveTween::new(
-            (-20.0, 10.0),
-            MoveSpec { duration: Duration::from_millis(100), delay: Duration::from_millis(50), easing: Easing::InQuad },
-            start,
-        );
-        assert!(movement.advance(start + Duration::from_millis(49)));
-        assert_eq!(movement.offset, (-20.0, 10.0));
-        assert!(movement.advance(start + Duration::from_millis(100)));
+        let ms = Duration::from_millis;
+        let start = Instant::now() + ms(10);
+        let spec = |duration, delay, easing| MoveSpec { duration: ms(duration), delay: ms(delay), easing };
+        let mut movement = MoveTween::new((-20.0, 10.0), spec(100, 50, Easing::InQuad), start);
+        let dl = start + ms(50);
+        assert!([start - ms(1), start, start + ms(49)].iter().all(|&t| movement.holds_until(t) == Some(dl)));
+        assert!(movement.advance(start + ms(49)) && movement.offset == (-20.0, 10.0));
+        assert!(movement.holds_until(dl).is_none() && movement.advance(dl) && movement.offset == (-20.0, 10.0));
+        assert!(movement.holds_until(start + ms(100)).is_none() && movement.advance(start + ms(100)));
         assert_eq!(movement.offset, (-15.0, 7.5));
-        assert!(!movement.advance(start + Duration::from_millis(150)));
+        assert!(movement.holds_until(start + ms(150)).is_none() && !movement.advance(start + ms(150)));
+        let no_delay = MoveTween::new((-20.0, 10.0), spec(100, 0, Easing::Linear), start);
+        let mut no_dur = MoveTween::new((-20.0, 10.0), spec(0, 50, Easing::Linear), start);
+        assert!(no_delay.holds_until(start).is_none() && no_dur.holds_until(start).is_none() && !no_dur.advance(start));
     }
 }

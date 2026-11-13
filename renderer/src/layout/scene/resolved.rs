@@ -375,16 +375,17 @@ impl ResolvedNode {
     /// ask for frame callbacks. `hold` takes the earliest instant a holding tween moves again, which
     /// is meaningful only when this answers `false`.
     pub fn needs_frames(&self, now: std::time::Instant, hold: &mut Option<std::time::Instant>) -> bool {
+        let mut wants = |until: Option<std::time::Instant>| match until {
+            Some(at) => {
+                *hold = Some(hold.map_or(at, |held| held.min(at)));
+                false
+            }
+            None => true,
+        };
         self.visible
-            && (self.movement.is_some()
+            && (self.movement.as_ref().is_some_and(|movement| wants(movement.holds_until(now)))
                 || self.dissolve.is_some()
-                || self.tweens.iter().filter(|tween| !tween.resting).any(|tween| match tween.holds_until(now) {
-                    Some(at) => {
-                        *hold = Some(hold.map_or(at, |held| held.min(at)));
-                        false
-                    }
-                    None => true,
-                })
+                || self.tweens.iter().filter(|tween| !tween.resting).any(|tween| wants(tween.holds_until(now)))
                 || self.children.iter().any(|child| child.needs_frames(now, hold)))
     }
 

@@ -2400,4 +2400,69 @@ mod tests {
         assert_eq!(second.to, node::Animatable::Number(40.0));
         assert_eq!(second.from, node::Animatable::Number(65.0), "from is the value the last tick displayed");
     }
+
+    #[test]
+    fn a_delayed_move_holds_until_its_deadline_then_animates_and_settles() {
+        let ms = Duration::from_millis;
+        let (mut scene, lua, shaping, surface) = applied(
+            r#"local a = rect { id = "a", width = 10, height = 10 }
+               local b = rect { id = "b", width = 10, height = 10, visible = state("shown", true),
+                   animate = { move = { duration = 100, delay = 50, easing = "linear" } } }
+               return panel { id = "bar", child = row { width = 100, children = state("kids", { a, b }) } }"#,
+        );
+        let instances = [instance_at(&surface, full())];
+        let moved = |s: &Scene| s.surface("bar@TEST").unwrap().children[0].children[0].movement.clone();
+        let step = |s: &mut Scene, cmd: &str| {
+            lua.load(cmd).exec().unwrap();
+            apply_at(s, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        };
+        step(&mut scene, "local k=state('kids',{}):get(); state('kids',{}):set({k[2],k[1]})");
+        let started = moved(&scene).unwrap().started;
+        let (root, mut hold, mut h2) = (scene.surface("bar@TEST").unwrap(), None, None);
+        assert!(root.animating() && !root.needs_frames(started + ms(49), &mut hold) && hold == Some(started + ms(50)));
+        assert!(root.needs_frames(started + ms(50), &mut h2) && h2.is_none());
+        assert_eq!(scene.tick(&instances, &shaping, &lua, started + ms(50)), ["bar@TEST"]);
+        assert_eq!(moved(&scene).unwrap().offset.0, 10.0);
+        assert!(scene.surface("bar@TEST").unwrap().needs_frames(started + ms(50), &mut None));
+        scene.tick(&instances, &shaping, &lua, started + ms(100));
+        assert_eq!(moved(&scene).unwrap().offset.0, 5.0);
+        scene.tick(&instances, &shaping, &lua, started + ms(150));
+        let root = scene.surface("bar@TEST").unwrap();
+        assert!(moved(&scene).is_none() && !root.animating() && !root.needs_frames(started + ms(150), &mut None));
+        step(&mut scene, "local k=state('kids',{}):get(); state('kids',{}):set({k[2],k[1]})");
+        step(&mut scene, "state('shown',true):set(false)");
+        let (root, mut hold) = (scene.surface("bar@TEST").unwrap(), None);
+        assert!(!root.animating() && !root.needs_frames(Instant::now(), &mut hold) && hold.is_none());
+    }
+
+    #[test]
+    fn needs_frames_picks_earliest_hold_and_wakes_beside_active_animations() {
+        use node::{Dissolve, Easing, MoveSpec, MoveTween, TransitionSpec as Ts};
+        let (ms, now) = (Duration::from_millis, Instant::now());
+        let sp = |d| MoveSpec { duration: ms(100), delay: ms(d), easing: Easing::Linear };
+        let mv = |d, at| Some(Box::new(MoveTween::new((10.0, 0.0), sp(d), at)));
+        let (mut scene, lua, shaping, surface) = applied(
+            r#"return panel { id = "bar", child = rect { id = "card", width = 20, height = 20, opacity = state("o", 1),
+                animate = { opacity = { duration = 100 } }, children = { rect { width = 10, height = 10 } } } }"#,
+        );
+        let base = scene.surface("bar@TEST").unwrap().children[0].clone();
+        lua.load(r#"state("o", 1):set(0)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let active = scene.surface("bar@TEST").unwrap().children[0].clone();
+        let t0 = active.tweens[0].started;
+        for (da, db) in [(80, 30), (30, 80)] {
+            let (mut n_kid, mut n_tw) = (base.clone(), active.clone());
+            (n_kid.movement, n_kid.children[0].movement) = (mv(da, now), mv(db, now));
+            (n_tw.movement, n_tw.tweens[0].spec.delay) = (mv(da, t0), ms(db));
+            let (mut h1, mut h2) = (None, None);
+            assert!(!n_kid.needs_frames(now, &mut h1) && h1 == Some(now + ms(30)));
+            assert!(!n_tw.needs_frames(t0, &mut h2) && h2 == Some(t0 + ms(30)));
+        }
+        let (mut w_tw, mut w_dis, mut w_kid) = (active.clone(), base.clone(), base);
+        (w_tw.movement, w_dis.movement, w_kid.movement) = (mv(50, t0), mv(50, t0), mv(50, t0));
+        let ts = Ts { duration: ms(100), easing: Easing::Linear, shader: None, params: vec![], images: vec![] };
+        w_dis.dissolve = Some(Box::new(Dissolve::start("a".into(), "b".into(), ts, t0)));
+        w_kid.children = vec![active];
+        assert!([w_tw, w_dis, w_kid].iter().all(|n| n.needs_frames(t0, &mut None)));
+    }
 }
