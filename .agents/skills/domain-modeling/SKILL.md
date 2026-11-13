@@ -7,32 +7,26 @@ description: Build and sharpen a project's domain model. Use when discussing cod
 
 Build and sharpen Mantle's domain model while designing. Challenge terms, test them against edge cases, and record resolved language and decisions immediately. Reading `CONTEXT.md` is not enough. Use this skill when the model changes.
 
-## File structure
-
-Most repos have a single context:
+## Where terms live
 
 ```
 /
-├── CONTEXT.md
-├── DECISIONS.md
+├── CONTEXT.md         # Engine-internal terms and engine notes on glossary terms
+├── DECISIONS.md       # Architectural decisions (ADR-NNNN)
 └── docs/
+    ├── glossary.md    # Terms a config author meets
     └── roadmap.md
 ```
-
-If a `CONTEXT-MAP.md` exists at the root, read it before choosing a context.
-The map names each context and its relationships.
-
-Create files lazily: only when you have something to write. If no `CONTEXT.md` exists, create one when the first term is resolved. If no `DECISIONS.md` exists, create it when the first decision is worth recording.
 
 ## During the session
 
 ### Challenge against the glossary
 
-When the user uses a term that conflicts with `CONTEXT.md`, call it out immediately. "`CONTEXT.md` defines 'Candidate' as a generation being prepared, but you used 'candidate' for the authoritative generation. Which one do you mean?"
+When the user uses a term that conflicts with `CONTEXT.md`, call it out immediately. "`CONTEXT.md` defines 'Surface instance' as one mapped copy keyed `{id}@{output}`, but you used 'surface' for both the declaration and each output's copy. Which one do you mean?"
 
 ### Sharpen fuzzy language
 
-When the user uses vague or overloaded terms, propose a precise canonical term. "You're saying 'ready': do you mean renderer preparation, configure completion, or presentation evidence? Those are different states."
+When the user uses vague or overloaded terms, propose a precise canonical term. "You're saying 'reload': do you mean the Watcher sending `Reevaluate`, the `Loader` evaluating `shell.lua`, or the retained-scene transaction applying the result? Those are different steps."
 
 ### Discuss concrete scenarios
 
@@ -46,7 +40,7 @@ When the user states how something works, check whether the code agrees. If you 
 
 When a term is resolved, update `CONTEXT.md` right there. Don't batch these up: capture them as they happen. Use the format in [CONTEXT-FORMAT.md](./CONTEXT-FORMAT.md).
 
-`CONTEXT.md` should be totally devoid of implementation details. Do not treat `CONTEXT.md` as a spec, a scratch pad, or a repository for implementation decisions. It is a glossary and nothing else. Terms name framework concepts; a config module name is not a term.
+`CONTEXT.md` holds engine-internal terms and engine notes on user-facing ones; terms a config author meets go in `docs/glossary.md`. Do not treat `CONTEXT.md` as a spec, a scratch pad, or a repository for implementation decisions. Terms name engine concepts; a config module name is not a term.
 
 ### Offer ADRs sparingly
 

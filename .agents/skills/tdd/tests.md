@@ -7,14 +7,13 @@
 ```rust
 // GOOD: Tests observable reload behavior
 #[test]
-fn candidate_needs_presentation_evidence_from_every_targeted_output() {
-    let mut transaction = ReloadTransaction::new(configured_outputs());
-    transaction.accept(candidate_ready());
-    transaction.presented(output_a());
-    assert_eq!(transaction.authority(), Authority::Authoritative(old_generation()));
+fn atomic_reload_keeps_prior_scene_when_any_surface_fails() {
+    let mut scene = Scene::default();
+    scene.apply_locked(&valid_surfaces(), &instances, &shaping, &lua, false, true).unwrap();
 
-    transaction.presented(output_b());
-    assert_eq!(transaction.authority(), Authority::Authoritative(candidate_generation()));
+    let err = scene.apply_locked(&broken_surfaces(), &instances, &shaping, &lua, false, true);
+    assert!(err.is_err());
+    assert_eq!(scene.surface_ids(), ["bar@eDP-1"]);
 }
 ```
 
@@ -31,12 +30,12 @@ Characteristics:
 **Implementation-detail tests**: Coupled to internal structure.
 
 ```rust
-// BAD: Tests an internal call instead of the capability contract
+// BAD: Tests an internal call instead of the reload contract
 #[test]
-fn reload_calls_supervisor_activate_candidate() {
-    let mock_supervisor = mock_supervisor();
-    reload_candidate(mock_supervisor);
-    assert!(mock_supervisor.activate_candidate_called());
+fn reevaluate_calls_loader_drop_package_loaded() {
+    let mock_loader = mock_loader();
+    reevaluate(&mock_loader);
+    assert!(mock_loader.dropped_package_loaded());
 }
 ```
 
@@ -77,9 +76,12 @@ fn reload_emits_expected_events() {
     assert_eq!(events, expected);
 }
 
-// GOOD: Expected trace comes from the reload contract
+// GOOD: Expected order comes from the ADR-0216 reload contract
 #[test]
-fn reload_keeps_old_authority_until_presentation() {
-    assert_eq!(run_reload_trace(), ["stage", "present", "activate", "freeze"]);
+fn topology_reload_applies_scene_before_updating_protocol_objects() {
+    assert_eq!(
+        run_reload_trace(),
+        ["reconcile_instances", "apply_scene", "destroy_removed", "create_added"]
+    );
 }
 ```

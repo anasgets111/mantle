@@ -17,8 +17,7 @@ No signal that goes red on this bug, no diagnosis. Cheapest first:
 
 1. A failing `cargo test -p <crate> <filter>` at the seam.
 2. `mantle check -c <dir>`: evaluates a config with no display.
-3. The live session: `cargo build --workspace --release`, stop the running `mantle`, copy both binaries over
-   `$CARGOBIN`, restart with `mantle -d`, read `mantle log -f`.
+3. The live session: `just swap` (or `just profile=release swap` for full LTO), then read `mantle log -f`.
 4. Probes: `MANTLE_DUMP_LAYOUT=<surface@output>` for geometry, `WAYLAND_DEBUG=1` for protocol traffic,
    `busctl`/`dbus-monitor` for backends, `mantle call <action>` for Lua state.
 5. Only a human can see it (a frame, a flicker): numbered steps for the user, one y/n question each.

@@ -6,9 +6,9 @@ Decisions live in one file, `DECISIONS.md`, one entry each, numbered sequentiall
 
     ## NNNN. Short title of the decision
 
-    One to three sentences: the context, what was decided, and why.
+    About 10 lines: the context, the decision, the key measurement, and the rejected alternative.
 
-That is it. The value is *that* a decision was made and *why*; essays bury it.
+History, not a tutorial. Essays bury the decision and its trade-off.
 
 ## Optional structure
 
@@ -16,8 +16,6 @@ Only when it adds value. Most entries need none.
 
 - A numbered list of decisions, when one entry settles several things at once. Code cites these
   as `ADR-0044 decision 2`, so the numbers are permanent once written.
-- `Rejected: <alternative>, because <reason>.` Only when a future maintainer would otherwise
-  propose it again.
 - `Not built: <list>.` The explicit no-s are as valuable as the yes-s.
 
 ## Numbering

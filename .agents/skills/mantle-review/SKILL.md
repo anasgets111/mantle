@@ -50,17 +50,17 @@ Combine `AGENTS.md` with the **Baseline Smells**.
 **Agent A: Standards Review**
 *   **Input:** Diff, commit list, `AGENTS.md`, Baseline Smells.
 *   **Task:** Flag standards violations and code smells. Distinguish hard repo violations from baseline judgment calls. Ignore tooling-enforced formatting.
-*   **Limit:** < 400 words.
+*   **Format:** Findings only, each with its location; no restating the diff.
 
 **Agent B: Spec Review**
 *   **Input:** Diff, commit list, Spec document.
 *   **Task:** Flag missing requirements, incorrect implementations, and **scope creep** (code written that was not requested). Quote the spec directly.
-*   **Limit:** < 400 words.
+*   **Format:** Findings only, each with its location; no restating the diff.
 
 **Agent C: Correctness Review**
 *   **Input:** The raw diff only. No commit list, no spec, no standards doc, no summary of what the implementer was trying to do.
-*   **Task:** Assume the diff is wrong. Hunt for it: memory-safety and lifetime bugs (use-after-free, dangling pointers handed to FFI/callbacks, double-free), concurrency bugs (races, deadlocks, a lock dropped before the section it guards ends), logic errors, and edge cases the diff's own control flow doesn't handle (empty input, zero, negative, the last iteration of a loop, an error path that isn't tested because it isn't hit by the happy path). Report each with `ReportFindings`: a verdict (`CONFIRMED` if you traced the exact failing execution, `PLAUSIBLE` if the shape is suspicious but you couldn't fully trace it) and a concrete failure scenario, not a vague concern.
-*   **Limit:** < 400 words, excluding the `ReportFindings` payload.
+*   **Task:** Assume the diff is wrong. Hunt for it: memory-safety and lifetime bugs (use-after-free, dangling pointers handed to FFI/callbacks, double-free), concurrency bugs (races, deadlocks, a lock dropped before the section it guards ends), logic errors, and edge cases the diff's own control flow doesn't handle (empty input, zero, negative, the last iteration of a loop, an error path that isn't tested because it isn't hit by the happy path). For each finding, give a verdict (`CONFIRMED` if you traced the exact failing execution, `PLAUSIBLE` if the shape is suspicious but you couldn't fully trace it), its location, and a concrete failure scenario, not a vague concern.
+*   **Format:** Findings only, each with its location; no restating the diff.
 
 ## 5. Aggregate Report
 Output all three reports verbatim under `## Standards`, `## Spec`, and `## Correctness`. Do not merge them. A feature can flawlessly execute the spec while introducing architectural garbage, or pass every standards check while use-after-freeing a pointer three functions away from where it looks fine.

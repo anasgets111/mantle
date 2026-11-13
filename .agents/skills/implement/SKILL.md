@@ -10,7 +10,7 @@ terms. `docs/roadmap.md` lists what is not built.
   composition, appearance and policy stay in Lua. Nothing in Rust depends on a particular config.
 - Smallest diff. Delete what the change makes redundant.
 - `/tdd` at agreed seams.
-- `cargo check` while working, focused `cargo test`, then `just check` before done (fmt, tests, clippy,
-  doc-link baselines, Lua types).
+- `cargo check` while working, focused `cargo test`, then the `AGENTS.md` checks for the changed paths (as
+  a delegate, only the rows the commit hook skips; never `just check`).
 - Crossing a Wayland or capability seam: verify on the live session (`diagnosing-bugs` step 1).
 - Review with `/mantle-review`. Commit only when asked.

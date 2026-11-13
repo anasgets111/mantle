@@ -185,6 +185,6 @@ Any agent may coordinate others. The coordinator owns the result: it reviews, la
 ## Skills
 
 This file owns repository rules and check selection; skills own task workflows. They live in
-`.agents/skills/` (symlinked as `.claude/skills`, `.gemini/skills`): `implement`, `tdd`,
+`.agents/skills/` (symlinked as `.claude/skills`): `implement`, `tdd`,
 `diagnosing-bugs`, `mantle-review`, `domain-modeling` (ADRs, `CONTEXT.md`), `grill-with-docs`,
 `grill-me`, `project-design`, `unslop`. `architecture-review` runs only when invoked by name.

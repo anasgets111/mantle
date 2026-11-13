@@ -11,15 +11,15 @@ When exploring the codebase, read `CONTEXT.md` (if it exists) so test names and 
 
 ## What a good test is
 
-Tests verify behavior through public interfaces, not implementation details. Code can change entirely; tests should not. A good test reads like a specification: "candidate becomes authoritative after every targeted output provides presentation evidence" names the contract and survives internal refactors.
+Tests verify behavior through public interfaces, not implementation details. Code can change entirely; tests should not. A good test reads like a specification: "atomic reload rolls back every surface instance when a property value fails validation" names the contract and survives internal refactors.
 
 See [tests.md](tests.md) for examples and [mocking.md](mocking.md) for mocking guidelines.
 
 ## Seams: where tests go
 
-A **seam** is the module interface where you observe behavior without reaching inside. Tests live at seams, never against internals. In Mantle, likely seams include the generation swap, the retained-scene transaction, a capability controller and the wire types in `shared`. Framework tests use inline fixtures, never a user config.
+A **seam** is the module interface where you observe behavior without reaching inside. Tests live at seams, never against internals. In Mantle, likely seams include instance reconciliation, the retained-scene transaction, a capability controller and the wire types in `shared`. Framework tests use inline fixtures, never a user config.
 
-**Test only at pre-agreed seams.** Before writing any test, write down the seams under test and confirm them with the user. No test is written at an unconfirmed seam. You can't test everything, so agreeing the seams up front is how testing effort lands on the critical paths and complex logic instead of every edge case.
+**Test only at pre-agreed seams.** Before writing any test, write down the seams under test and confirm them with the user (or use the seams specified in your brief when running as a delegate). No test is written at an unconfirmed seam. You can't test everything, so agreeing the seams up front is how testing effort lands on the critical paths and complex logic instead of every edge case.
 
 Ask: "What is the public interface, and which Mantle seams should we test?"
 
