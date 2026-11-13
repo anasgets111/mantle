@@ -269,7 +269,10 @@ fn scan_theme_dir(
 ) -> Option<(u32, PathBuf)> {
     let mut closest: Option<(u32, PathBuf)> = None;
     for dir in &index.dirs {
-        let Some(path) = existing_icon(&theme_dir.join(&dir.subdir), name) else { continue };
+        // One `stat` for a listed directory this copy lacks, not one per extension: a
+        // per-user theme copy holds few of the directories its index lists.
+        let subdir = theme_dir.join(&dir.subdir);
+        let Some(path) = subdir.is_dir().then(|| existing_icon(&subdir, name)).flatten() else { continue };
         let distance = dir.distance(px);
         if distance == 0 {
             return Some((0, path));
@@ -577,6 +580,38 @@ mod tests {
             find("steam_icon", 16, "hicolor", &[home.path(), system.path()]),
             Some(home.path().join("icons/hicolor/16x16/apps/steam_icon.png"))
         );
+    }
+
+    #[test]
+    fn symlink_and_non_directory_subdirs_preserve_overlay_and_closest_size() {
+        let home = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        let target = home.path().join("target-16");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("linked.svg"), b"<svg/>").unwrap();
+        write_index(
+            system.path(),
+            "Overlay",
+            "[Icon Theme]\nDirectories=16x16/apps,24x24/apps,32x32/apps,48x48/apps\n\
+             \n[16x16/apps]\nSize=16\nType=Fixed\n\
+             \n[24x24/apps]\nSize=24\nType=Fixed\n\
+             \n[32x32/apps]\nSize=32\nType=Fixed\n\
+             \n[48x48/apps]\nSize=48\nType=Fixed\n",
+        );
+        write_icon(system.path(), "Overlay", "24x24/apps", "both");
+        write_icon(home.path(), "Overlay", "48x48/apps", "both");
+        let home_theme = home.path().join("icons/Overlay");
+        std::fs::create_dir_all(home_theme.join("16x16")).unwrap();
+        std::os::unix::fs::symlink(&target, home_theme.join("16x16/apps")).unwrap();
+        std::fs::create_dir_all(home_theme.join("24x24")).unwrap();
+        std::fs::write(home_theme.join("24x24/apps"), b"not a dir").unwrap();
+        std::fs::create_dir_all(home_theme.join("32x32")).unwrap();
+        std::os::unix::fs::symlink(home.path().join("missing"), home_theme.join("32x32/apps")).unwrap();
+        let roots = [home.path(), system.path()];
+        assert_eq!(find("linked", 16, "Overlay", &roots), Some(home_theme.join("16x16/apps/linked.svg")));
+        assert_eq!(find("both", 24, "Overlay", &roots), Some(system.path().join("icons/Overlay/24x24/apps/both.png")));
+        assert_eq!(find("both", 48, "Overlay", &roots), Some(home_theme.join("48x48/apps/both.png")));
+        assert_eq!(find("absent", 16, "Overlay", &roots), None);
     }
 
     #[test]
