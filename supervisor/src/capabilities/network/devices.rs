@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use futures_util::{FutureExt, Stream, StreamExt, stream, stream_select};
 use tokio::sync::mpsc::UnboundedSender;
+use zbus::proxy::CacheProperties;
 use zbus::zvariant::OwnedObjectPath;
 
 use super::proxies::{
@@ -53,14 +54,20 @@ pub(super) async fn resolve_devices(
     let mut wifi = Vec::new();
     let mut ethernet = Vec::new();
     for path in nm.get_all_devices().await? {
-        let device = match bind::<DeviceProxy>(connection, path.clone()).await {
-            Ok(device) => device,
+        // Probe uncached: a cached proxy's first read triggers `GetAll`, match rules and
+        // `GetNameOwner`, paid for every unrelated device on each `DevicesChanged`.
+        let probe = match DeviceProxy::builder(connection).path(path.clone()) {
+            Ok(builder) => builder.cache_properties(CacheProperties::No).build().await,
+            Err(err) => Err(err),
+        };
+        let probe = match probe {
+            Ok(probe) => probe,
             Err(err) => {
                 debug!("failed to bind device {path}: {err}");
                 continue;
             }
         };
-        let device_type = match device.device_type().await {
+        let device_type = match probe.device_type().await {
             Ok(device_type) => device_type,
             Err(err) => {
                 debug!("failed to read device_type for {path}: {err}");
@@ -68,12 +75,17 @@ pub(super) async fn resolve_devices(
             }
         };
         match device_type {
-            DEVICE_TYPE_ETHERNET => match bind::<WiredProxy>(connection, path.clone()).await {
-                Ok(wired) => ethernet.push(EthernetDevice { path, device, wired }),
-                Err(err) => debug!("failed to bind wired device {path}: {err}"),
-            },
+            DEVICE_TYPE_ETHERNET => {
+                match tokio::try_join!(
+                    bind::<DeviceProxy>(connection, path.clone()),
+                    bind::<WiredProxy>(connection, path.clone()),
+                ) {
+                    Ok((device, wired)) => ethernet.push(EthernetDevice { path, device, wired }),
+                    Err(err) => debug!("failed to bind wired device {path}: {err}"),
+                }
+            }
             DEVICE_TYPE_WIFI => {
-                let id = match device.interface().await {
+                let id = match probe.interface().await {
                     Ok(id) => id,
                     Err(err) => {
                         debug!("failed to read interface for {path}: {err}");
@@ -84,8 +96,11 @@ pub(super) async fn resolve_devices(
                     warn!("skipping Wi-Fi device {path} with empty or duplicate interface {id:?}");
                     continue;
                 }
-                match bind::<WirelessProxy>(connection, path.clone()).await {
-                    Ok(wireless) => wifi.push(WifiDevice { id, device_path: path, device, wireless }),
+                match tokio::try_join!(
+                    bind::<DeviceProxy>(connection, path.clone()),
+                    bind::<WirelessProxy>(connection, path.clone()),
+                ) {
+                    Ok((device, wireless)) => wifi.push(WifiDevice { id, device_path: path, device, wireless }),
                     Err(err) => debug!("failed to bind wireless device {path}: {err}"),
                 }
             }
@@ -308,9 +323,13 @@ impl NetworkController {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
-    use crate::capabilities::test_support::{p2p_pair_serving, within};
+    use crate::capabilities::test_support::{PrivateBus, p2p_pair_serving, private_bus, within};
 
     struct FakeNm;
 
@@ -320,6 +339,226 @@ mod tests {
         fn wireless_enabled(&self) -> bool {
             true
         }
+    }
+
+    pub(super) async fn method_call_monitor(bus: &PrivateBus) -> zbus::MessageStream {
+        let monitor = bus.connection().await;
+        let dbus = "org.freedesktop.DBus";
+        monitor
+            .call_method(
+                Some(dbus),
+                "/org/freedesktop/DBus",
+                Some("org.freedesktop.DBus.Monitoring"),
+                "BecomeMonitor",
+                &(&["type='method_call'"][..], 0u32),
+            )
+            .await
+            .unwrap();
+        zbus::MessageStream::from(monitor)
+    }
+
+    pub(super) async fn collect_method_calls(
+        monitor: &mut zbus::MessageStream,
+        barrier: &zbus::Connection,
+    ) -> HashMap<String, usize> {
+        tokio::task::yield_now().await;
+        zbus::fdo::DBusProxy::new(barrier).await.unwrap().get_id().await.unwrap();
+        let mut counts = HashMap::new();
+        within(async {
+            while let Some(Ok(message)) = monitor.next().await {
+                let header = message.header();
+                if header.message_type() != zbus::message::Type::MethodCall {
+                    continue;
+                }
+                let member = header.member().map(|m| m.as_str().to_owned()).unwrap_or_default();
+                if member == "GetId" && header.path().map(|p| p.as_str()) == Some("/org/freedesktop/DBus") {
+                    break;
+                }
+                *counts.entry(member).or_insert(0) += 1;
+            }
+        })
+        .await;
+        counts
+    }
+
+    struct FakeNmDevices(std::sync::Mutex<Vec<OwnedObjectPath>>);
+
+    #[zbus::interface(name = "org.freedesktop.NetworkManager")]
+    impl FakeNmDevices {
+        #[zbus(property)]
+        fn wireless_enabled(&self) -> bool {
+            true
+        }
+
+        fn get_all_devices(&self) -> Vec<OwnedObjectPath> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    struct FakeWireless;
+
+    #[zbus::interface(name = "org.freedesktop.NetworkManager.Device.Wireless")]
+    impl FakeWireless {
+        #[zbus(property)]
+        fn active_access_point(&self) -> OwnedObjectPath {
+            crate::capabilities::network::root_object_path().into()
+        }
+
+        #[zbus(property)]
+        fn last_scan(&self) -> i64 {
+            1
+        }
+    }
+
+    struct FakeDevice(u32, String, AtomicUsize, Arc<AtomicUsize>);
+
+    #[zbus::interface(name = "org.freedesktop.NetworkManager.Device")]
+    impl FakeDevice {
+        #[zbus(property)]
+        fn device_type(&self) -> u32 {
+            self.0
+        }
+
+        #[zbus(property)]
+        fn interface(&self) -> String {
+            self.1.clone()
+        }
+
+        #[zbus(property)]
+        fn state(&self) -> u32 {
+            self.3.fetch_add(1, Ordering::SeqCst);
+            self.2.load(Ordering::SeqCst) as u32
+        }
+    }
+
+    fn dev_path(name: &str) -> OwnedObjectPath {
+        OwnedObjectPath::try_from(format!("/org/freedesktop/NetworkManager/Devices/{name}")).unwrap()
+    }
+
+    async fn drain_signals(
+        signals: &mut tokio::sync::mpsc::UnboundedReceiver<NetworkSignal>,
+        mut changed: usize,
+        mut scans: usize,
+    ) {
+        while changed > 0 || scans > 0 {
+            match within(signals.recv()).await {
+                Some(NetworkSignal::Changed) if changed > 0 => changed -= 1,
+                Some(NetworkSignal::ScanCompleted(_)) if scans > 0 => scans -= 1,
+                other => panic!("unexpected signal while draining: {other:?}"),
+            }
+        }
+    }
+
+    async fn serve_devices(
+        bus: &PrivateBus,
+        specs: &[(&str, u32, &str)],
+    ) -> (zbus::Connection, Vec<OwnedObjectPath>, Vec<Arc<AtomicUsize>>) {
+        let paths: Vec<_> = specs.iter().map(|(name, ..)| dev_path(name)).collect();
+        let nm_devices = FakeNmDevices(std::sync::Mutex::new(paths.clone()));
+        let mut builder = bus.builder().serve_at("/org/freedesktop/NetworkManager", nm_devices).unwrap();
+        let mut reads = Vec::new();
+        for ((name, kind, iface), path) in specs.iter().zip(&paths) {
+            let count = Arc::new(AtomicUsize::new(0));
+            reads.push(Arc::clone(&count));
+            if *name != "gone" {
+                builder = builder
+                    .serve_at(path.clone(), FakeDevice(*kind, (*iface).into(), AtomicUsize::new(30), count))
+                    .unwrap();
+                if *kind == DEVICE_TYPE_WIFI {
+                    builder = builder.serve_at(path.clone(), FakeWireless).unwrap();
+                }
+            }
+        }
+        let nm_conn = builder.name("org.freedesktop.NetworkManager").unwrap().build().await.unwrap();
+        (nm_conn, paths, reads)
+    }
+
+    #[tokio::test]
+    async fn resolve_devices_probes_uncached_preserves_order_and_defers_retained_cache() {
+        let bus = private_bus().await;
+        let specs = [
+            ("veth0", 14, "v0"),
+            ("eth0", DEVICE_TYPE_ETHERNET, "eth0"),
+            ("wlan_empty", DEVICE_TYPE_WIFI, ""),
+            ("wlan0", DEVICE_TYPE_WIFI, "wlan0"),
+            ("wlan_dup", DEVICE_TYPE_WIFI, "wlan0"),
+            ("gone", DEVICE_TYPE_ETHERNET, "gone"),
+            ("eth1", DEVICE_TYPE_ETHERNET, "eth1"),
+            ("veth1", 32, "lo"),
+        ];
+        let (nm_conn, paths, reads) = serve_devices(&bus, &specs).await;
+        let conn = bus.connection().await;
+        let nm = NetworkManagerProxy::new(&conn).await.unwrap();
+        let mut monitor = method_call_monitor(&bus).await;
+
+        let (wifi, ethernet) = resolve_devices(&conn, &nm).await.unwrap();
+        let calls = collect_method_calls(&mut monitor, &conn).await;
+
+        assert_eq!(wifi.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(), ["wlan0"]);
+        assert_eq!(
+            ethernet.iter().map(|d| d.path.as_str()).collect::<Vec<_>>(),
+            [paths[1].as_str(), paths[6].as_str()]
+        );
+        assert_eq!(calls.get("GetAll").copied().unwrap_or(0), 0, "{calls:?}");
+        assert_eq!(calls.get("AddMatch").copied().unwrap_or(0), 0, "{calls:?}");
+        for count in &reads {
+            assert_eq!(count.load(Ordering::SeqCst), 0, "lazy proxy must not read State before use");
+        }
+
+        // Watching retained devices initializes each retained proxy once and delivers updates.
+        let (events, mut signals) = tokio::sync::mpsc::unbounded_channel();
+        let _watchers = watch_devices(&conn, &wifi, &ethernet, &events);
+        drain_signals(&mut signals, 4, 1).await;
+        let watch_calls = collect_method_calls(&mut monitor, &conn).await;
+        assert_eq!(watch_calls.get("GetAll").copied().unwrap_or(0), 4, "{watch_calls:?}");
+        for idx in [0, 2, 4, 5, 7] {
+            assert_eq!(reads[idx].load(Ordering::SeqCst), 0);
+        }
+        for idx in [1, 3, 6] {
+            assert_eq!(reads[idx].load(Ordering::SeqCst), 1);
+        }
+
+        let iface = nm_conn.object_server().interface::<_, FakeDevice>(paths[1].clone()).await.unwrap();
+        iface.get().await.2.store(100, Ordering::SeqCst);
+        iface.get().await.state_changed(iface.signal_emitter()).await.unwrap();
+        assert!(matches!(within(signals.recv()).await, Some(NetworkSignal::Changed)));
+        assert_eq!(ethernet[0].device.state().await.unwrap(), 100);
+    }
+
+    #[tokio::test]
+    async fn devices_changed_on_unrelated_device_skips_getall_and_match_rules() {
+        let bus = private_bus().await;
+        let specs = [
+            ("eth0", DEVICE_TYPE_ETHERNET, "eth0"),
+            ("wlan0", DEVICE_TYPE_WIFI, "wlan0"),
+            ("veth0", 14, "v0"),
+            ("veth1", 14, "v1"),
+        ];
+        let (nm_conn, paths, reads) = serve_devices(&bus, &specs[..3]).await;
+        nm_conn
+            .object_server()
+            .at(dev_path("veth1"), FakeDevice(14, "v1".into(), AtomicUsize::new(0), Arc::default()))
+            .await
+            .unwrap();
+        let conn = bus.connection().await;
+        let (events, mut signals) = tokio::sync::mpsc::unbounded_channel();
+        let controller = NetworkController::new(conn.clone(), events).await.unwrap();
+        drain_signals(&mut signals, 4, 1).await;
+        let mut monitor = method_call_monitor(&bus).await;
+        let _ = collect_method_calls(&mut monitor, &conn).await;
+
+        let nm_iface =
+            nm_conn.object_server().interface::<_, FakeNmDevices>("/org/freedesktop/NetworkManager").await.unwrap();
+        *nm_iface.get().await.0.lock().unwrap() = vec![paths[0].clone(), paths[1].clone(), dev_path("veth1")];
+        controller.refresh_devices(false).await;
+        let calls = collect_method_calls(&mut monitor, &conn).await;
+
+        assert_eq!(calls.get("GetAll").copied().unwrap_or(0), 0, "{calls:?}");
+        assert_eq!(calls.get("AddMatch").copied().unwrap_or(0), 0, "{calls:?}");
+        assert_eq!(reads[0].load(Ordering::SeqCst), 1);
+        assert_eq!(reads[1].load(Ordering::SeqCst), 1);
+        assert_eq!(reads[2].load(Ordering::SeqCst), 0);
+        assert_eq!((controller.ethernet().len(), controller.devices.lock().unwrap().wifi.len()), (1, 1));
     }
 
     /// zbus primes a property stream with the cached value, so an answering manager reports once.
