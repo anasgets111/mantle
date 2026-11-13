@@ -369,22 +369,17 @@ fn log_applied_surfaces(scene: &Scene, instances: &[SurfaceInstance]) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{
-        client_for, instances_for, push, queued_starts, reload, rescue_state, run_startup, test_client, write_shell_lua,
-    };
+    use super::super::tests::{client_for, instances_for, push, queued_starts, reload, rescue_state, run_startup};
     use super::super::*;
 
     /// ADR-0070 decision 5: polkit has no roster entry or `mantle.polkit`, so only a
     /// `secure_submit` naming it can request the authentication agent.
     #[test]
     fn a_secure_submit_target_starts_the_capability_it_names() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, mut outbound_rx) = client_for(
             r#"return panel { id = "prompt", layer = "top", child = textfield {
                    secure_submit = { capability = "polkit", action = "authenticate" } } }"#,
         );
-        let (mut client, mut outbound_rx) = test_client(&path);
 
         client.run_startup_evaluation().unwrap();
         client.set_instances(instances_for(&["prompt"]));
@@ -398,9 +393,7 @@ mod tests {
     /// waiting for the next reevaluation left a revealed prompt with no agent behind it.
     #[test]
     fn a_secure_submit_revealed_by_a_pushed_value_starts_its_capability_on_that_re_resolve() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, mut outbound_rx) = client_for(
             r#"
             return panel { id = "prompt", layer = "top", child = row { children = computed({mantle.network}, function(ssid)
                 if ssid then
@@ -410,7 +403,6 @@ mod tests {
             end) } }
             "#,
         );
-        let (mut client, mut outbound_rx) = test_client(&path);
         run_startup(&mut client);
         assert!(
             !queued_starts(&mut outbound_rx).contains(&"polkit".to_string()),
@@ -444,9 +436,7 @@ mod tests {
         };
         let lock = r#"return lock { id = "screen", child = textfield {
             secure_submit = { capability = "lock", action = "authenticate" } } }"#;
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), lock);
-        let (mut client, mut outbound_rx) = test_client(&path);
+        let (_dir, path, mut client, mut outbound_rx) = client_for(lock);
         assert!(run_startup(&mut client));
         assert_eq!(can_lock(&mut outbound_rx), [true]);
 
@@ -476,11 +466,11 @@ mod tests {
     /// the prior scene says nothing about the new file.
     #[test]
     fn a_reload_apply_failure_stays_in_rescue_until_a_reload_applies() {
-        let (dir, _, mut client, _outbound_rx) = client_for(r#"return panel { id = "bar", layer = "top" }"#);
+        let (_dir, path, mut client, _outbound_rx) = client_for(r#"return panel { id = "bar", layer = "top" }"#);
         push(&client, "workspace", 1, serde_json::json!("not a boolean"));
         assert!(run_startup(&mut client));
 
-        write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", visible = mantle.workspace }"#);
+        std::fs::write(&path, r#"return panel { id = "bar", layer = "top", visible = mantle.workspace }"#).unwrap();
         assert!(client.reevaluate());
         assert!(!client.handle_apply_pending());
         assert!(rescue_state(&client.loader).0, "an evaluation that fails to apply must reach rescue");
@@ -489,7 +479,7 @@ mod tests {
         assert!(client.re_resolve_if_dirty());
         assert!(rescue_state(&client.loader).0, "a pass over the prior scene must not clear it");
 
-        write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
+        std::fs::write(&path, r#"return panel { id = "bar", layer = "top" }"#).unwrap();
         assert!(client.reevaluate() && client.handle_apply_pending());
         assert_eq!(rescue_state(&client.loader), (false, String::new()));
     }
@@ -497,7 +487,7 @@ mod tests {
     /// Evaluation success alone is not the truth: the banner clears only when the scene takes it.
     #[test]
     fn an_evaluation_rescue_survives_re_resolves_and_clears_on_an_applied_reload() {
-        let (dir, path, mut client, _outbound_rx) = client_for(
+        let (_dir, path, mut client, _outbound_rx) = client_for(
             r#"w = state("w", 1)
             return panel { id = "bar", layer = "top", child = rect { width = w, height = 1 } }"#,
         );
@@ -509,7 +499,7 @@ mod tests {
         assert!(client.re_resolve_if_dirty());
         assert!(rescue_state(&client.loader).0, "the file is still broken");
 
-        write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
+        std::fs::write(&path, r#"return panel { id = "bar", layer = "top" }"#).unwrap();
         assert!(client.reevaluate());
         assert!(rescue_state(&client.loader).0, "not cleared before the apply");
         assert!(client.handle_apply_pending());
@@ -538,7 +528,7 @@ mod tests {
 
     #[test]
     fn re_resolve_if_dirty_applies_a_push_without_rereading_shell_lua_clears_the_flag_and_a_second_call_does_no_work() {
-        let (dir, path, mut client, _outbound_rx) =
+        let (_dir, path, mut client, _outbound_rx) =
             client_for(r#"return panel { id = "bar", layer = "top", visible = mantle.workspace }"#);
         push(&client, "workspace", 1, serde_json::json!(true));
         run_startup(&mut client);
@@ -553,9 +543,8 @@ mod tests {
 
         // Replace `applied_output` directly, bypassing the dirtying push path, with `visible = true`:
         // a true no-op leaves the scene as the first resolve left it.
-        let poisoned_path =
-            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", visible = true }"#);
-        let (poisoned_output, _) = evaluate_and_specs(&client.loader, &poisoned_path).unwrap();
+        std::fs::write(&path, r#"return panel { id = "bar", layer = "top", visible = true }"#).unwrap();
+        let (poisoned_output, _) = evaluate_and_specs(&client.loader, &path).unwrap();
         client.state.applied_output = Some(poisoned_output);
 
         client.re_resolve_if_dirty();

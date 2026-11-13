@@ -398,7 +398,7 @@ mod tests {
     use crate::layout::node::MoveTween;
     use crate::layout::node::PropMap;
     use crate::layout::scene::NodeId;
-    use crate::socket::client::tests::{run_startup, test_client, write_shell_lua};
+    use crate::socket::client::tests::{client_for, run_startup};
 
     /// A `rect` carrying one paint property, the way the region scan sees one.
     fn rect_paint(key: &'static str, value: impl FnOnce(&mlua::Lua) -> Value) -> Option<PaintStyle> {
@@ -1003,9 +1003,7 @@ mod tests {
     /// entire output; this must hand over the card alone.
     #[test]
     fn a_full_screen_surfaces_blur_region_is_the_card_that_asked_and_not_the_catcher() {
-        let dir = tempfile::tempdir().unwrap();
-        let shell_lua = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, _rx) = client_for(
             r##"return {
                 panel {
                     id = "host", layer = "overlay",
@@ -1023,7 +1021,6 @@ mod tests {
                 },
             }"##,
         );
-        let (mut client, _rx) = test_client(&shell_lua);
         assert!(run_startup(&mut client), "the config must resolve into a scene");
         let tree = client.scene().surface("host@TEST").expect("the panel resolved");
 
@@ -1060,11 +1057,8 @@ mod tests {
                 "the painted ground claims the surface and the walk stops there",
             ),
         ] {
-            let dir = tempfile::tempdir().unwrap();
-            let shell_lua = write_shell_lua(
-                dir.path(),
-                &format!(
-                    r##"return {{
+            let (_dir, _, mut client, _rx) = client_for(&format!(
+                r##"return {{
                     panel {{
                         id = "host", layer = "{layer}",
                         anchor = {{ top = true, bottom = true, left = true, right = true }},
@@ -1078,9 +1072,7 @@ mod tests {
                         }},
                     }},
                 }}"##
-                ),
-            );
-            let (mut client, _rx) = test_client(&shell_lua);
+            ));
             assert!(run_startup(&mut client), "{layer}: the config must resolve into a scene");
             let tree = client.scene().surface("host@TEST").expect("the panel resolved");
 

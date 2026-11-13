@@ -551,12 +551,6 @@ pub(crate) mod tests {
     use crate::lua::tests::probe;
     use shared::{ProcessExited, ProcessOutputLine, StateSnapshot, SupervisorFrame};
 
-    pub(crate) fn write_shell_lua(dir: &std::path::Path, contents: &str) -> std::path::PathBuf {
-        let path = dir.join("shell.lua");
-        std::fs::write(&path, contents).unwrap();
-        path
-    }
-
     /// Reads `rescue:get()` by probe script; `CapabilityHandle` has no getter, so this is the
     /// only way to observe `set_rescue_state`'s stored value.
     pub(super) fn rescue_state(loader: &Loader) -> (bool, String) {
@@ -571,9 +565,7 @@ pub(crate) mod tests {
     }
 
     /// Client with a real outbound channel; return its receiver for queued socket frames.
-    pub(crate) fn test_client(
-        shell_lua_path: &std::path::Path,
-    ) -> (RendererClient, mpsc::UnboundedReceiver<RendererFrame>) {
+    fn test_client(shell_lua_path: &std::path::Path) -> (RendererClient, mpsc::UnboundedReceiver<RendererFrame>) {
         let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
         let dirty = DirtyFlag::new();
         let loader = Loader::new(dirty.clone(), shell_lua_path.parent().unwrap()).unwrap();
@@ -598,11 +590,12 @@ pub(crate) mod tests {
     }
 
     /// A client over a fresh `shell.lua` holding `source`; the dir must outlive the test.
-    pub(super) fn client_for(
+    pub(crate) fn client_for(
         source: &str,
     ) -> (tempfile::TempDir, std::path::PathBuf, RendererClient, mpsc::UnboundedReceiver<RendererFrame>) {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), source);
+        let path = dir.path().join("shell.lua");
+        std::fs::write(&path, source).unwrap();
         let (client, outbound_rx) = test_client(&path);
         (dir, path, client, outbound_rx)
     }
@@ -1087,10 +1080,10 @@ pub(crate) mod tests {
     fn the_fingerprint_carries_every_role_so_adding_a_window_is_a_topology_change() {
         // ADR-0049 decision 3: a window object may come and go within a generation, but its
         // *declaration* is fixed, so adding one changes topology.
-        let (dir, path, mut client, _outbound_rx) = client_for(r#"return panel { id = "bar", layer = "top" }"#);
+        let (_dir, path, mut client, _outbound_rx) = client_for(r#"return panel { id = "bar", layer = "top" }"#);
         client.state.applied_specs = surface_specs(&client.loader.evaluate_file(&path).unwrap()).unwrap();
 
-        write_shell_lua(dir.path(), three_roles_config());
+        std::fs::write(&path, three_roles_config()).unwrap();
         assert!(client.reevaluate());
         let (specs, rebuilt) = client.pending_surfaces().expect("staged");
         assert_eq!(specs.len(), 3);
@@ -1113,12 +1106,12 @@ pub(crate) mod tests {
     fn an_in_place_reload_may_restyle_a_live_lock_screen_but_not_remove_its_way_out() {
         // `SurfaceFingerprint::Lock` carries only `id`, so edits inside the lock rebuild nothing. Restyles must land (ADR-0052 decision 2), but
         // removing the way out must be refused; `Scene::apply` rollback preserves the live tree.
-        let (dir, _, mut client, _outbound_rx) = client_for(&lock_config("#101010FF"));
+        let (_dir, path, mut client, _outbound_rx) = client_for(&lock_config("#101010FF"));
         assert!(run_startup(&mut client));
         client.set_session_locked(true);
 
         // Restyle: same surfaces and field, different colour.
-        write_shell_lua(dir.path(), &lock_config("#204080FF"));
+        std::fs::write(&path, lock_config("#204080FF")).unwrap();
         assert!(client.reevaluate());
         client.handle_apply_pending();
         let restyled = client.scene.surface("screen@TEST").expect("the lock instance is still resolved");
@@ -1129,13 +1122,14 @@ pub(crate) mod tests {
         );
 
         // Must refuse: same lock, no `textfield`.
-        write_shell_lua(
-            dir.path(),
+        std::fs::write(
+            &path,
             r##"return {
             panel { id = "bar", layer = "top" },
             lock { id = "screen", child = column { background = "#204080FF", children = {} } },
         }"##,
-        );
+        )
+        .unwrap();
         assert!(client.reevaluate());
         client.handle_apply_pending();
 
@@ -1151,16 +1145,17 @@ pub(crate) mod tests {
     #[test]
     fn an_unlocked_session_may_still_delete_its_lock_screens_password_field() {
         // With no lock held, the lock screen may become empty like any surface.
-        let (dir, _, mut client, _outbound_rx) = client_for(&lock_config("#101010FF"));
+        let (_dir, path, mut client, _outbound_rx) = client_for(&lock_config("#101010FF"));
         assert!(run_startup(&mut client));
 
-        write_shell_lua(
-            dir.path(),
+        std::fs::write(
+            &path,
             r##"return {
             panel { id = "bar", layer = "top" },
             lock { id = "screen", child = column { background = "#101010FF", children = {} } },
         }"##,
-        );
+        )
+        .unwrap();
         assert!(client.reevaluate());
         client.handle_apply_pending();
 
@@ -1177,7 +1172,7 @@ pub(crate) mod tests {
         // a dock left the veto checking an unpaintable fossil while the live lock screen was open.
         // This apply mirrors `handle_output_change`: re-expand applied specs against current
         // outputs, store, resolve.
-        let (dir, _, mut client, _outbound_rx) = client_for(&lock_config("#101010FF"));
+        let (_dir, path, mut client, _outbound_rx) = client_for(&lock_config("#101010FF"));
         assert!(run_startup(&mut client));
         client.set_session_locked(true);
 
@@ -1189,13 +1184,14 @@ pub(crate) mod tests {
         client.set_instances(expand_instances(&specs, &docked));
         assert!(client.apply_instances(), "the freshly plugged output resolves its own lock surface");
 
-        write_shell_lua(
-            dir.path(),
+        std::fs::write(
+            &path,
             r##"return {
             panel { id = "bar", layer = "top" },
             lock { id = "screen", child = column { background = "#101010FF", children = {} } },
         }"##,
-        );
+        )
+        .unwrap();
         assert!(client.reevaluate());
         client.handle_apply_pending();
 
@@ -1215,19 +1211,17 @@ pub(crate) mod tests {
         // `ext-session-lock-v1` calls that `duplicate_output`, and the compositor kills the
         // connection after lock, leaving only a VT switch. Both entry points reject it: startup
         // returns no specs and `Reevaluate` fails, never staging it.
-        let dir = tempfile::tempdir().unwrap();
         let two_locks = r#"return { lock { id = "first" }, lock { id = "second" } }"#;
-        let path = write_shell_lua(dir.path(), two_locks);
-        let (mut client, _outbound_rx) = test_client(&path);
+        let (_dir, path, mut client, _outbound_rx) = client_for(two_locks);
 
         assert!(!run_startup(&mut client), "a config with two `lock` surfaces must not produce a generation");
         let (is_rescue, error_log) = rescue_state(&client.loader);
         assert!(is_rescue, "the refusal has to be visible somewhere, and rescue is where an evaluation failure goes");
         assert!(error_log.contains("`lock` surfaces"), "the message must name what was refused: {error_log}");
 
-        write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
+        std::fs::write(&path, r#"return panel { id = "bar", layer = "top" }"#).unwrap();
         client.state.applied_specs = surface_specs(&client.loader.evaluate_file(&path).unwrap()).unwrap();
-        write_shell_lua(dir.path(), two_locks);
+        std::fs::write(&path, two_locks).unwrap();
         assert!(
             !client.reevaluate(),
             "an edit that adds a second lock must fail the reevaluation rather than be staged"
@@ -1268,10 +1262,10 @@ pub(crate) mod tests {
                 "`bar` is new; `other` goes because no fresh instance names it",
             ),
         ] {
-            let (dir, path, mut client, _outbound_rx) = client_for(applied);
+            let (_dir, path, mut client, _outbound_rx) = client_for(applied);
             client.state.applied_specs = surface_specs(&client.loader.evaluate_file(&path).unwrap()).unwrap();
 
-            write_shell_lua(dir.path(), edited);
+            std::fs::write(&path, edited).unwrap();
             assert!(client.reevaluate(), "{case}");
             let (specs, names) = client.pending_surfaces().expect("staged");
             assert_eq!(specs.len(), 1, "{case}");
@@ -1332,7 +1326,7 @@ pub(crate) mod tests {
         run_startup(&mut client);
         assert!(client.state.applied_specs.is_empty(), "startup must have failed (no file yet)");
 
-        write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
+        std::fs::write(&missing, r#"return panel { id = "bar", layer = "top" }"#).unwrap();
         assert!(client.reevaluate(), "the first successful evaluation after a startup failure must be applied");
         assert_eq!(
             client.pending_surfaces().map(|(_, rebuilt)| rebuilt),
@@ -1343,11 +1337,11 @@ pub(crate) mod tests {
 
     #[test]
     fn a_removed_declaration_applies_in_place_once_its_instance_is_gone_too() {
-        let (dir, _, mut client, _outbound_rx) =
+        let (_dir, path, mut client, _outbound_rx) =
             client_for(r#"return { panel { id = "bar", layer = "top" }, panel { id = "dock", layer = "top" } }"#);
         assert!(run_startup(&mut client));
 
-        write_shell_lua(dir.path(), r#"return { panel { id = "bar", layer = "top" } }"#);
+        std::fs::write(&path, r#"return { panel { id = "bar", layer = "top" } }"#).unwrap();
         assert!(client.reevaluate());
         let (_, rebuilt) = client.pending_surfaces().expect("staged");
         assert!(rebuilt.is_empty(), "removing `dock` rebuilds nothing; reconcile drops its instance");
@@ -1772,16 +1766,13 @@ pub(crate) mod tests {
     #[test]
     fn a_reload_kills_the_last_evaluations_process_run_children() {
         use crate::lua::capability::tests::queued_command;
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
+        let (_dir, _, mut client, mut rx) = client_for(
             r#"lines, exits = lines or 0, exits or 0
             exits_at_top = exits
             process.run("tail", { "-f", "log" }, function() lines = lines + 1 end,
                 function(code) exits, last_code = exits + 1, code end)
             return panel { id = "bar", layer = "top" }"#,
         );
-        let (mut client, mut rx) = test_client(&path);
         assert!(run_startup(&mut client));
         let run = queued_command(&mut rx).expect("the top level ran a child");
         let output = |id| {

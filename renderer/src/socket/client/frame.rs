@@ -124,19 +124,19 @@ impl RendererClient {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{client_for, write_shell_lua};
+    use super::super::tests::client_for;
     use super::*;
 
     #[test]
     fn handle_frame_hands_a_successful_reevaluate_to_the_wayland_loop() {
-        let (dir, _, mut client, _outbound_rx) = client_for(r#"return panel { id = "bar", layer = "top" }"#);
+        let (_dir, path, mut client, _outbound_rx) = client_for(r#"return panel { id = "bar", layer = "top" }"#);
 
         assert_eq!(
             client.handle_frame(SupervisorFrame::Reevaluate),
             FrameOutcome::ApplyPending,
             "every apply goes to the Wayland loop, which owns the protocol objects"
         );
-        write_shell_lua(dir.path(), "this is not lua");
+        std::fs::write(&path, "this is not lua").unwrap();
         assert_eq!(client.handle_frame(SupervisorFrame::Reevaluate), FrameOutcome::Handled);
     }
 

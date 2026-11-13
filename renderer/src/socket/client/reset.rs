@@ -39,7 +39,7 @@ impl RendererClient {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{client_for, reload, rescue_state, run_startup, test_client, write_shell_lua};
+    use super::super::tests::{client_for, reload, rescue_state, run_startup};
     use super::super::*;
     use crate::layout::instance::{OutputGeometry, expand_instances};
 
@@ -171,13 +171,10 @@ mod tests {
     #[test]
     fn an_entry_that_is_not_a_state_or_scroll_handle_fails_the_evaluation_naming_the_surface() {
         for entry in ["query:map(function(q) return q end)", "\"query\"", "hover(\"h\")"] {
-            let dir = tempfile::tempdir().unwrap();
-            let source = format!(
+            let (_dir, _, mut client, _rx) = client_for(&format!(
                 r#"local query = state("query", "")
                 return panel {{ id = "launcher", layer = "top", reset_on_close = {{ query, {entry} }} }}"#
-            );
-            let path = write_shell_lua(dir.path(), &source);
-            let (mut client, _rx) = test_client(&path);
+            ));
             assert!(!run_startup(&mut client), "{entry}");
             let (_, log) = rescue_state(&client.loader);
             assert!(

@@ -69,7 +69,7 @@ impl RendererClient {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{client_for, reload, run_startup, test_client, write_shell_lua};
+    use super::super::tests::{client_for, reload, run_startup};
     use super::super::*;
 
     /// Six 50 px tiles in a 100 px row (200 px of room) scrolled by `s`, and a getter of `s` beside it
@@ -314,17 +314,14 @@ mod tests {
     /// A page of `bar` holding a 200 px column (100 px of room) scrolled by `s`; the other page holds
     /// none. `side` holds a hidden column scrolled by `s` when `extra` is set.
     fn paged(extra: bool) -> (RendererClient, tempfile::TempDir) {
-        let dir = tempfile::tempdir().unwrap();
         let side = if extra {
             r#", panel { id = "side", layer = "top", child = column { width = 100, height = 100, scroll = s,
                 visible = shown, children = tiles(10) } }"#
         } else {
             ""
         };
-        let path = write_shell_lua(
-            dir.path(),
-            &format!(
-                r#"
+        let (dir, _, mut client, _) = client_for(&format!(
+            r#"
                 s = scroll("s")
                 page = state("page", 1)
                 shown = state("shown", false)
@@ -338,9 +335,7 @@ mod tests {
                     return {{ rect {{ width = 5, height = 5 }} }}
                 end) }} }} {side} }}
                 "#
-            ),
-        );
-        let (mut client, _) = test_client(&path);
+        ));
         assert!(run_startup(&mut client));
         (client, dir)
     }
