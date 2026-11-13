@@ -103,12 +103,13 @@ pub(super) fn rasterize_svg(
         },
         ..Default::default()
     };
-    if !within_recursion_limits(&data) {
+    let doc = parse_xml(&data).map_err(|err| err.to_string())?;
+    if !within_recursion_limits(&doc) {
         return Err(format!(
             "svg nests past {MAX_SVG_DEPTH} elements, links past its limits, repeats an image or uses an unsupported filter"
         ));
     }
-    let tree = Tree::from_data(&data, &options).map_err(|err| err.to_string())?;
+    let tree = Tree::from_xmltree(&doc, &options).map_err(|err| err.to_string())?;
     if named_a_file.load(Ordering::Relaxed) {
         warn!("{:?}: an <image> href that is not a data: URL draws nothing; embed the picture as one", path);
     }
@@ -166,7 +167,8 @@ fn embedded_image(
             return None;
         };
         budget.fetch_sub(svg.len() as u64, Ordering::Relaxed);
-        if !within_recursion_limits(&svg) {
+        let doc = parse_xml(&svg).ok()?;
+        if !within_recursion_limits(&doc) {
             return None;
         }
         depth.fetch_add(1, Ordering::Relaxed);
@@ -196,22 +198,14 @@ fn embedded_image(
     Some(kind(data))
 }
 
-/// Whether `svg` stays inside [`MAX_SVG_DEPTH`], [`MAX_SVG_LINKS`] and [`MAX_SVG_PATTERNS`],
+/// Whether `doc` stays inside [`MAX_SVG_DEPTH`], [`MAX_SVG_LINKS`] and [`MAX_SVG_PATTERNS`],
 /// walked without recursion, converts each embedded image once and filters only by [`SVG_FILTERS`].
-/// Parsed as usvg parses it, so entity-expanded elements count; a document that does not parse is
-/// left for usvg to refuse.
+/// Walks the document usvg converts, so entity-expanded elements count.
 ///
 /// usvg decodes an image's href, base64 and all, per conversion: per `<use>` copy, marker vertex,
 /// or shape under an `objectBoundingBox` mask, clip or filter. So none may sit in those, nor in
 /// what an `href` names (svgtypes' IRI: spaces, `#`, up to a space); none installed does.
-fn within_recursion_limits(svg: &[u8]) -> bool {
-    let options = resvg::usvg::roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
-    let Some(doc) = std::str::from_utf8(svg)
-        .ok()
-        .and_then(|text| resvg::usvg::roxmltree::Document::parse_with_options(text, options).ok())
-    else {
-        return true;
-    };
+fn within_recursion_limits(doc: &resvg::usvg::roxmltree::Document<'_>) -> bool {
     let linked: std::collections::HashSet<&str> = doc
         .descendants()
         .flat_map(|node| node.attributes())
@@ -242,6 +236,13 @@ fn within_recursion_limits(svg: &[u8]) -> bool {
         }
     }
     true
+}
+
+/// `data` parsed as `Tree::from_data` parses it, so the limits walk and the conversion share one parse.
+fn parse_xml(data: &[u8]) -> Result<resvg::usvg::roxmltree::Document<'_>, resvg::usvg::Error> {
+    let text = std::str::from_utf8(data).map_err(|_| resvg::usvg::Error::NotAnUtf8Str)?;
+    let options = resvg::usvg::roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
+    Ok(resvg::usvg::roxmltree::Document::parse_with_options(text, options)?)
 }
 
 /// A `-symbolic` file name, or a theme's `symbolic/` directory (Adwaita), as GTK decides it.
@@ -721,8 +722,11 @@ pub(super) mod tests {
         assert!(!draws(svg(&nested("g", MAX_SVG_DEPTH - 1, rect))));
         assert!(!draws(svg(&format!("<text>{}</text>", nested("tspan", 200_000, "x")))));
         // Elements an entity expands to count: usvg parses with a DTD allowed.
+        assert!(draws(format!("<!DOCTYPE svg [<!ENTITY ok '{rect}'>]>{}", svg("&ok;"))));
         let entity = nested("g", MAX_SVG_DEPTH - 1, rect);
-        assert!(!draws(format!("<!DOCTYPE svg [<!ENTITY deep '{entity}'>]>{}", svg("&deep;"))));
+        let deep_dtd = format!("<!DOCTYPE svg [<!ENTITY deep '{entity}'>]>{}", svg("&deep;"));
+        assert!(rasterize_at(&deep_dtd, 2).is_err_and(|err| err.contains("nests past")));
+        assert!(!draws(deep_dtd));
         let clip = |links| {
             format!(
                 r#"{}<rect width="2" height="2" fill="red" clip-path="url(#clipPath{})"/>"#,
@@ -956,6 +960,33 @@ pub(super) mod tests {
         let err =
             rasterize_svg(&bloated, 24, None, &FontDatabase::default()).expect_err("an oversized svg must be refused");
         assert!(err.contains("over the"), "the refusal should say why: {err}");
+    }
+
+    #[test]
+    fn malformed_utf8_or_xml_is_refused_and_xmltree_matches_from_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let fonts = fixture_shaping().font_database();
+        for bad in [&b"\xff\xfe<svg/>"[..], b"<svg><rect"] {
+            let path = dir.path().join("bad.svg");
+            std::fs::write(&path, bad).unwrap();
+            assert!(rasterize_svg(&path, 4, None, &fonts).is_err());
+            assert!(all_clear(&rasterize_doc(&image_doc(&data_url("image/svg+xml", bad)))));
+        }
+        let nested_doc = image_doc(&data_url("image/svg+xml", RED_SVG.as_bytes()));
+        let text_doc = svg(r#"<text x="1" y="2" font-size="2">A</text>"#);
+        let filter_doc = filtered(r#"<feGaussianBlur stdDeviation="0.2"/>"#);
+        for doc in [GRADIENT_SVG, nested_doc.as_str(), text_doc.as_str(), filter_doc.as_str()] {
+            let opts =
+                Options { fontdb: fonts.db.clone(), font_family: fonts.primary_family.clone(), ..Default::default() };
+            let render_tree = |tree: Tree| {
+                let mut pixmap = resvg::tiny_skia::Pixmap::new(32, 32).unwrap();
+                resvg::render(&tree, resvg::tiny_skia::Transform::identity(), &mut pixmap.as_mut());
+                pixmap.take()
+            };
+            let from_data = render_tree(Tree::from_data(doc.as_bytes(), &opts).unwrap());
+            let from_xml = render_tree(Tree::from_xmltree(&parse_xml(doc.as_bytes()).unwrap(), &opts).unwrap());
+            assert_eq!(from_xml, from_data);
+        }
     }
 
     fn gzip(data: &[u8]) -> Vec<u8> {
