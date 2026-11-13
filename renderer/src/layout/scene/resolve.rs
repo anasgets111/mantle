@@ -84,13 +84,17 @@ pub(super) fn resolve(
         let mut properties = std::mem::take(&mut r.properties);
         let mut tweens = std::mem::take(&mut r.tweens);
         // A resting tween moves nothing, so what the last pass or tick parsed still holds. A `text`
-        // parses again: `finish` fitted its kept paint to last pass's box.
+        // `finish` wrapped or cut parses again: its kept paint holds the fitted string (as a tick's).
         let moving = tweens.iter().any(|tween| !tween.resting);
         node::advance(&mut tweens, &mut properties, now, lua)?;
         let injected = drop_injected_sizes(&mut properties, &memo);
         let style =
             if moving || injected { Rc::new(LayoutStyle::parse(&properties)?) } else { Rc::clone(&r.layout_style) };
-        let paint = if moving || kind == "text" { node::paint_style(kind, &properties)? } else { r.paint.take() };
+        let refit = matches!(
+            &r.paint,
+            Some(PaintStyle::Text { wrap: node::Wrap::Word, .. } | PaintStyle::Text { elided: true, .. })
+        );
+        let paint = if moving || refit { node::paint_style(kind, &properties)? } else { r.paint.take() };
         return Ok(Resolved { properties, style, paint, tweens, movement: r.move_spec.take(), memo });
     }
     let stamp = signal::write_clock(lua);
@@ -576,5 +580,66 @@ mod tests {
         crate::lua::signal::begin_evaluation(&bar.lua);
         bar.apply().unwrap();
         assert_eq!(bar.runs(), 2);
+    }
+
+    #[test]
+    fn kept_plain_text_reuses_paint_while_wrapped_elided_and_animated_text_refits() {
+        let mut bar = Fixture::new(
+            r##"tick = state("tick", "0")
+            box_w = state("box_w", 300)
+            fg = state("fg", "#000000")
+            return panel { id = "bar", child = column { width = box_w, children = {
+                text { content = tick },
+                text { content = "plain label" },
+                text { content = "fit-then-elide", width = "fill", elide = "end" },
+                text { content = "alpha omega", width = "fill", wrap = "word" },
+                text { content = { { text = "hi ", bold = true }, { text = "long tail here" } },
+                    width = "fill", wrap = "word", max_lines = 1, elide = "end" },
+                text { content = "glow", foreground = fg, animate = { foreground = 100 } },
+            } } }"##,
+        );
+        let text_paint = |bar: &Fixture, i: usize| match &bar.child(i).paint {
+            Some(PaintStyle::Text { content, runs, color, elided, .. }) => {
+                (content.clone(), runs.clone(), *color, *elided)
+            }
+            other => panic!("expected text paint, got {other:?}"),
+        };
+        let (plain0, _, _, _) = text_paint(&bar, 1);
+        let (elidable0, _, _, elided0) = text_paint(&bar, 2);
+        assert!(!elided0);
+
+        // Kept plain and non-elided texts keep the exact `Arc<str>` allocation.
+        bar.run(r#"tick:set("1")"#);
+        let (plain1, _, _, _) = text_paint(&bar, 1);
+        let (elidable1, _, _, _) = text_paint(&bar, 2);
+        assert!(std::sync::Arc::ptr_eq(&plain0, &plain1));
+        assert!(std::sync::Arc::ptr_eq(&elidable0, &elidable1));
+
+        // Shrinking the parent wraps and elides the kept texts; widening recovers full content and runs.
+        bar.run("box_w:set(36)");
+        let (cut, _, _, was_elided) = text_paint(&bar, 2);
+        let (wrapped, _, _, wrap_elided) = text_paint(&bar, 3);
+        let (capped, capped_runs, _, cap_elided) = text_paint(&bar, 4);
+        assert!(was_elided && cut.ends_with('\u{2026}') && cut.as_ref() != "fit-then-elide");
+        assert!(!wrap_elided && wrapped.contains('\n'), "word wrap without elide: {wrapped:?}");
+        assert!(cap_elided && capped.ends_with('\u{2026}') && capped_runs.iter().any(|r| r.bold));
+
+        bar.run("box_w:set(400)");
+        let (restored_elide, _, _, elided_now) = text_paint(&bar, 2);
+        let (restored_wrap, _, _, _) = text_paint(&bar, 3);
+        let (restored_cap, restored_runs, _, cap_elided_now) = text_paint(&bar, 4);
+        assert_eq!((restored_elide.as_ref(), elided_now), ("fit-then-elide", false));
+        assert_eq!(restored_wrap.as_ref(), "alpha omega");
+        assert_eq!((restored_cap.as_ref(), cap_elided_now), ("hi long tail here", false));
+        assert_eq!(restored_runs[0].range, 0..3);
+
+        // A moving tween on a kept plain text still re-parses its animated paint properties.
+        let t0 = Instant::now();
+        bar.lua.set_app_data(crate::lua::timer::SimClock(t0));
+        bar.run(r##"fg:set("#ffffff")"##);
+        bar.lua.set_app_data(crate::lua::timer::SimClock(t0 + Duration::from_millis(50)));
+        bar.run(r#"tick:set("2")"#);
+        let (_, _, mid, _) = text_paint(&bar, 5);
+        assert!(mid.r > 0.1 && mid.r < 0.9, "kept moving text updates color: {mid:?}");
     }
 }
