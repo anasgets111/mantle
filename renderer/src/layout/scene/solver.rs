@@ -335,8 +335,6 @@ pub(super) fn new_solver_node(
 /// same inputs keeps the context it has, whose memo is the size the solver last got for them.
 ///
 /// [`solve_instance`]: super::pass::solve_instance
-// ponytail: an unchanged node still rebuilds and compares its taffy style and measure, about
-// 0.3 us a node (ADR-0294). Upgrade: skip nodes the resolve kept whose parent kept its axis.
 pub(super) fn update_solver_node(
     tree: &mut taffy::TaffyTree<Measure>,
     id: taffy::NodeId,
@@ -346,6 +344,8 @@ pub(super) fn update_solver_node(
     parent_axis: Option<MainAxis>,
     mut measure: Option<Measure>,
 ) -> Result<(), LayoutError> {
+    #[cfg(test)]
+    tests::SOLVER_UPDATES.with(|count| count.set(count.get() + 1));
     let mut solver_style = taffy_style(kind, properties, style, parent_axis)?;
     let current = tree.style(id).map_err(taffy_failed)?;
     if tree.parent(id).is_none() {
@@ -723,6 +723,9 @@ pub(super) mod tests {
         /// Solves on this thread that found something to lay out: [`solve`] on a clean tree is
         /// taffy's cache answering at the root.
         pub(in crate::layout::scene) static SOLVES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        /// Calls to [`update_solver_node`] on this thread: kept nodes skip it when flow and
+        /// leavers hold.
+        pub(in crate::layout::scene) static SOLVER_UPDATES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
 
     fn direction_props(lua: &mlua::Lua, direction: Option<&str>) -> PropMap {

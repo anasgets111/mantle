@@ -402,7 +402,7 @@ impl Scene {
         // of it, so the next pass starts a new one.
         let mut tree = Self::take_solver_tree(&mut self.solver_trees, &key, existing.iter_mut());
         let prepared =
-            prepare(self, &mut tree, existing, fresh.kind, resolved, (None, 0.0), (false, false), lua, now, 0)?;
+            prepare(self, &mut tree, existing, fresh.kind, resolved, (None, 0.0), (false, false, true), lua, now, 0)?;
         close(&mut at, &mut self.resolve_split.resolve);
         let solved = solve_instance(&mut tree, prepared, available, (shaping, &self.field_drafts), now)?;
         publish_geometry(&solved, 0.0, 0.0, lua, false).map_err(|e| node::invalid("geometry", e.to_string()))?;

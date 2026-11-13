@@ -171,7 +171,7 @@ pub(super) fn prepare(
     kind: &'static str,
     resolved: Resolved,
     parent_flow: (Option<MainAxis>, f32),
-    (thawing, reentry): (bool, bool),
+    (thawing, reentry, same_flow): (bool, bool, bool),
     lua: &Lua,
     now: Instant,
     depth: u32,
@@ -182,6 +182,8 @@ pub(super) fn prepare(
 
     let old_mask_target = retained.as_ref().and_then(|node| node.mask_target);
     let old_scroll = retained.as_ref().map_or(0.0, |node| node.scrolled);
+    let kept = retained.as_ref().is_some_and(|r| Rc::ptr_eq(&r.layout_style, &resolved.style));
+    let old_axis = retained.as_ref().map(|r| main_axis_of(kind, &r.properties)).transpose()?;
     let Resolved { properties, style, paint, tweens, movement: move_spec, memo: resolve_memo } = resolved;
     let prior_position = retained.as_ref().filter(|_| !thawing).and_then(|r| prior_position(r, tree, parent_flow));
     let prior_size = retained.as_ref().filter(|_| !thawing).map(|r| (r.rect.width, r.rect.height));
@@ -206,18 +208,21 @@ pub(super) fn prepare(
             (Vec::new(), old_children)
         };
 
-    // Before the children, because a `text`'s measurement reads the `content` and `font_size`
-    // `resolve` parsed rather than parsing them a second time.
-    let measure = measure_for(id, kind, paint.as_ref(), &properties, &style)?;
-
     // Before the children, so their ids attach afterwards, and so the `taffy::Style` behind it is
     // gone from the stack by the time this frame recurses (see `new_solver_node`).
     let taffy_id = match old_taffy {
+        // Kept under a parent that kept its axis. A leaver's hold (`hold_leavers`) is undone only
+        // by the rebuild, so a node with one rebuilds.
+        Some(taffy_id) if kept && same_flow && leaving.is_empty() => taffy_id,
         Some(taffy_id) => {
+            let measure = measure_for(id, kind, paint.as_ref(), &properties, &style)?;
             update_solver_node(tree, taffy_id, kind, &properties, &style, parent_axis, measure)?;
             taffy_id
         }
-        None => new_solver_node(tree, kind, &properties, &style, parent_axis, measure)?,
+        None => {
+            let measure = measure_for(id, kind, paint.as_ref(), &properties, &style)?;
+            new_solver_node(tree, kind, &properties, &style, parent_axis, measure)?
+        }
     };
 
     // A hidden node's subtree is frozen, not rebuilt (ADR-0124): the children it had keep their
@@ -256,6 +261,7 @@ pub(super) fn prepare(
     }
     let (mut fresh_children, mut matched_candidates, mut unclaimed) = children_this_pass(scene, &mut node, lua)?;
     let own_axis = main_axis_of(kind, &node.properties)?;
+    let same_child_flow = old_axis == Some(own_axis);
 
     node.children.reserve(fresh_children.len());
     let mut failed = Vec::new();
@@ -298,7 +304,7 @@ pub(super) fn prepare(
         let dropped_before = DroppedValues::count(lua);
         let child = (|| {
             let resolved = resolve(child_kind, child_raw, reusable.as_mut(), now, lua, reentry, Ok)?;
-            let flags = (thawing, reentry);
+            let flags = (thawing, reentry, same_child_flow);
             prepare(scene, tree, reusable, child_kind, resolved, (own_axis, old_scroll), flags, lua, now, depth + 1)
         })();
         let dropped = DroppedValues::under_child(lua, dropped_before, here);
@@ -2276,7 +2282,7 @@ mod tests {
     /// dropped node leaves the solver tree with it.
     #[test]
     fn a_paint_only_pass_lays_nothing_out_and_a_layout_write_still_moves_geometry() {
-        use super::super::solver::tests::SOLVES;
+        use super::super::solver::tests::{SOLVER_UPDATES, SOLVES};
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
@@ -2292,6 +2298,7 @@ mod tests {
         let pass = |scene: &mut Scene, write: &str| {
             lua.load(write).exec().unwrap();
             SOLVES.set(0);
+            SOLVER_UPDATES.set(0);
             apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
             let root = scene.surface("bar@TEST").unwrap();
             let solver = &scene.solver_trees["bar@TEST"];
@@ -2316,6 +2323,7 @@ mod tests {
 
         let (solves, after, moved, _) = pass(&mut scene, r##"accent:set("#202020")"##);
         assert_eq!(solves, 0, "a colour write lays nothing out");
+        assert_eq!(SOLVER_UPDATES.get(), 2, "kept children and ancestors skip solver node refreshes");
         assert_eq!(after, before, "and keeps every solver node");
         assert_eq!(moved, rects);
         assert_eq!(
@@ -2329,6 +2337,7 @@ mod tests {
 
         let (solves, after, _, _) = pass(&mut scene, "w:set(50)");
         assert_eq!((solves, &after), (1, &before), "a size write lays out the same solver nodes again");
+        assert_eq!(SOLVER_UPDATES.get(), 2, "only the two changed rects refresh their solver nodes");
         let text_x = scene.surface("bar@TEST").unwrap().children[0].children[0].children[1].rect.x;
         assert_eq!(text_x, 50.0, "and moves the sibling after the grown rect");
 
@@ -2408,5 +2417,71 @@ mod tests {
         let parent = &scene.surface("bar@TEST").unwrap().children[0];
         assert_eq!(parent.children.len(), 1, "removed mask does not enter the exit list");
         assert!(parent.content_children().next().is_none());
+    }
+
+    #[test]
+    fn kept_solver_nodes_still_refresh_on_parent_flow_change_leaver_finish_and_injected_size() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r##"dir = state("dir", "vertical")
+            drop_a = state("drop_a", false)
+            box_w = state("box_w", 60)
+            s = scroll("s")
+            local rows = {}
+            for i = 1, 20 do rows[i] = { id = "r" .. i } end
+            local a = rect { id = "a", width = 120, height = 20, animate = { exit = { duration = 100, opacity = 0 } } }
+            local b = rect { id = "b", width = 40, height = 20 }
+            return panel { id = "bar", child = column { children = {
+                list { width = 300, height = 100, direction = dir, items = { "x", "y" },
+                    each = function(k) return rect { id = k, width = "fill", height = 20 } end },
+                column { children = drop_a:map(function(gone) return gone and { b } or { a, b } end) },
+                row { animate = { width = 100 }, children = { rect { width = box_w, height = 10 } } },
+                list { width = 100, height = 40, scroll = s, items = rows, key = function(e) return e.id end,
+                    each = function(e) return rect { width = 100, height = 20 } end },
+            } } }"##,
+        );
+        let t0 = Instant::now();
+        let run = |scene: &mut Scene, dt_ms: u64, code: &str| {
+            lua.set_app_data(crate::lua::timer::SimClock(t0 + Duration::from_millis(dt_ms)));
+            if !code.is_empty() {
+                lua.load(code).exec().unwrap();
+            }
+            apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        };
+        run(&mut scene, 0, "");
+        let col = &scene.surface("bar@TEST").unwrap().children[0];
+        assert_eq!(col.children[0].children[0].rect, LogicalRect { x: 0.0, y: 0.0, width: 300.0, height: 20.0 });
+        assert_eq!(col.children[1].rect.width, 120.0);
+
+        // Parent `dir` flip refreshes kept `fill` items; dropping `a` holds `120` until exit finishes.
+        run(&mut scene, 0, r#"dir:set("horizontal"); drop_a:set(true); box_w:set(100)"#);
+        let col = &scene.surface("bar@TEST").unwrap().children[0];
+        assert_eq!(col.children[0].children[0].rect, LogicalRect { x: 0.0, y: 0.0, width: 150.0, height: 20.0 });
+        assert_eq!(col.children[0].children[1].rect, LogicalRect { x: 150.0, y: 0.0, width: 150.0, height: 20.0 });
+        assert_eq!(col.children[1].rect.width, 120.0, "active leaver holds container width");
+        assert!(col.children[2].rect.width < 100.0, "injected width pins start at t=0: {:?}", col.children[2].rect);
+
+        // Tick the content-sized tween to completion, then verify a pass unpins it cleanly and re-eases on shrink.
+        let instances = [super::super::tests::instance_at(&surface, full())];
+        scene.tick(&instances, &shaping, &lua, t0 + Duration::from_millis(50));
+        assert!(scene.surface("bar@TEST").unwrap().children[0].children[2].rect.width > 60.0);
+        scene.tick(&instances, &shaping, &lua, t0 + Duration::from_millis(100));
+        run(&mut scene, 200, "");
+        let col = &scene.surface("bar@TEST").unwrap().children[0];
+        assert_eq!(col.children[1].rect.width, 40.0, "cleared leaver releases solver min_size");
+        assert_eq!(col.children[2].rect.width, 100.0, "settled content-sized node unpins to solved width");
+        run(&mut scene, 250, "box_w:set(10)");
+        scene.tick(&instances, &shaping, &lua, t0 + Duration::from_millis(350));
+        run(&mut scene, 400, "");
+        assert_eq!(scene.surface("bar@TEST").unwrap().children[0].children[2].rect.width, 10.0);
+
+        // Scrolling windowed list updates `room` and moves kept items cleanly.
+        let s: mlua::AnyUserData = lua.globals().get("s").unwrap();
+        crate::lua::signal::from_userdata(&s).unwrap().scroll_handle().unwrap().set_changed(Value::Number(120.0));
+        run(&mut scene, 400, "");
+        let win = &scene.surface("bar@TEST").unwrap().children[0].children[3];
+        assert!(win.children[0].layout_style.window.0 > 0.0 && win.children.len() < 20);
+        assert_eq!(win.children.last().unwrap().rect.y, 60.0);
     }
 }
