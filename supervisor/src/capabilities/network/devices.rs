@@ -341,7 +341,7 @@ pub(super) mod tests {
         }
     }
 
-    pub(super) async fn method_call_monitor(bus: &PrivateBus) -> zbus::MessageStream {
+    pub(crate) async fn method_call_monitor(bus: &PrivateBus) -> zbus::MessageStream {
         let monitor = bus.connection().await;
         let dbus = "org.freedesktop.DBus";
         monitor
@@ -357,7 +357,7 @@ pub(super) mod tests {
         zbus::MessageStream::from(monitor)
     }
 
-    pub(super) async fn collect_method_calls(
+    pub(crate) async fn collect_method_calls(
         monitor: &mut zbus::MessageStream,
         barrier: &zbus::Connection,
     ) -> HashMap<String, usize> {

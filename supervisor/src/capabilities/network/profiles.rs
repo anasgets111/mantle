@@ -114,8 +114,8 @@ impl NetworkController {
         profiles
     }
 
-    /// Every saved Wi-Fi profile. Unreadable profiles are logged under `context` and skipped.
-    async fn wifi_profiles(&self, context: &str) -> Vec<SavedProfile> {
+    /// Every saved profile. Unreadable profiles are logged under `context` and skipped.
+    async fn list_all_profiles(&self, context: &str) -> Vec<SavedProfile> {
         let paths = match self.settings.list_connections().await {
             Ok(paths) => paths,
             Err(err) => {
@@ -123,7 +123,12 @@ impl NetworkController {
                 return Vec::new();
             }
         };
-        let mut profiles = self.read_profiles(paths, context).await;
+        self.read_profiles(paths, context).await
+    }
+
+    /// Every saved Wi-Fi profile. Unreadable profiles are logged under `context` and skipped.
+    async fn wifi_profiles(&self, context: &str) -> Vec<SavedProfile> {
+        let mut profiles = self.list_all_profiles(context).await;
         profiles.retain(|profile| profile_ssid(&profile.settings).is_some());
         profiles
     }
@@ -150,15 +155,23 @@ impl NetworkController {
         futures_util::future::join_all(reads).await.into_iter().flatten().collect()
     }
 
-    /// Replaces the saved-SSID cache with one fresh `ListConnections` walk.
-    pub(super) async fn refresh_saved_ssids(&self) {
-        let ssids = self
-            .wifi_profiles("saved networks")
-            .await
-            .iter()
-            .filter_map(|profile| profile_ssid(&profile.settings).map(|ssid| (profile.path.clone(), ssid)))
-            .collect();
+    /// Replaces the saved-SSID and VPN profile caches with one `ListConnections` walk.
+    pub(super) async fn refresh_profiles(&self) {
+        // ponytail: an edited profile stays stale until another profile change or NM restart;
+        // upgrade path: Settings.Connection.Updated.
+        let mut ssids = HashMap::new();
+        let mut vpns = Vec::new();
+        for profile in self.list_all_profiles("saved profiles").await {
+            if let Some(ssid) = profile_ssid(&profile.settings) {
+                ssids.insert(profile.path.clone(), ssid);
+            }
+            if let Some(vpn) = super::vpn::profile_of(&profile.settings) {
+                vpns.push((profile.path, vpn));
+            }
+        }
+        vpns.sort_by(|a, b| a.1.id.cmp(&b.1.id));
         *self.saved_ssids.lock().expect("mutex poisoned") = ssids;
+        self.vpn.lock().expect("mutex poisoned").profiles = vpns;
     }
 
     /// Deletes every connection profile matching `ssid`.

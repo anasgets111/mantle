@@ -14,7 +14,7 @@ use super::devices::forward;
 use super::proxies::{ACTIVE_STATE_ACTIVATED, ACTIVE_STATE_ACTIVATING, ACTIVE_STATE_DEACTIVATED};
 use super::secret_agent::PendingSecret;
 use super::{NetworkController, NetworkSignal, NetworkState, root_object_path};
-use shared::{debug, warn};
+use shared::warn;
 
 /// Profile cache, last failure, secret request and `connect_vpn` waits behind one lock; the agent shares it.
 #[derive(Default)]
@@ -35,7 +35,7 @@ impl VpnState {
 }
 
 /// A saved profile with `connection.type` `vpn` or `wireguard`.
-fn profile_of(settings: &HashMap<String, HashMap<String, OwnedValue>>) -> Option<VpnInfo> {
+pub(super) fn profile_of(settings: &HashMap<String, HashMap<String, OwnedValue>>) -> Option<VpnInfo> {
     let text = |key: &str| String::try_from(settings.get("connection")?.get(key)?.clone()).ok();
     let kind = match text("type")?.as_str() {
         "vpn" => VpnKind::Vpn,
@@ -80,23 +80,6 @@ pub(super) async fn forward_active_changes(
 }
 
 impl NetworkController {
-    /// Replaces the profile cache with one fresh `ListConnections` walk, ordered by name.
-    pub(super) async fn refresh_vpns(&self) {
-        let paths = self.settings.list_connections().await.unwrap_or_else(|err| {
-            debug!("vpn: failed to list connections: {err}");
-            Vec::new()
-        });
-        // ponytail: an edited profile stays stale until a profile is added or removed; upgrade path: Settings.Connection.Updated.
-        let mut profiles: Vec<_> = self
-            .read_profiles(paths, "vpn")
-            .await
-            .into_iter()
-            .filter_map(|profile| Some((profile.path, profile_of(&profile.settings)?)))
-            .collect();
-        profiles.sort_by(|a, b| a.1.id.cmp(&b.1.id));
-        self.vpn.lock().expect("mutex poisoned").profiles = profiles;
-    }
-
     /// Active connections as `(path, uuid, state)`, read uncached: a cached proxy per rebuild costs a `GetAll` and a match rule.
     async fn active_connections(&self) -> Vec<(OwnedObjectPath, String, u32)> {
         let mut active = Vec::new();
@@ -311,7 +294,7 @@ mod tests {
                 .serve_at(ACTIVE, active)
         })
         .await;
-        controller.refresh_vpns().await;
+        controller.refresh_profiles().await;
         (controller, deactivated, peer)
     }
 

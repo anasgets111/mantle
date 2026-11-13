@@ -145,8 +145,7 @@ impl NetworkController {
             vpn,
             events,
         };
-        controller.refresh_saved_ssids().await;
-        controller.refresh_vpns().await;
+        controller.refresh_profiles().await;
         Ok(controller)
     }
 
@@ -165,10 +164,7 @@ impl NetworkController {
             }
             _ => {
                 match signal {
-                    NetworkSignal::SavedChanged => {
-                        self.refresh_saved_ssids().await;
-                        self.refresh_vpns().await;
-                    }
+                    NetworkSignal::SavedChanged => self.refresh_profiles().await,
                     NetworkSignal::DevicesChanged | NetworkSignal::Restarted => {
                         self.refresh_devices(signal == NetworkSignal::Restarted).await;
                         if let Some(pending) = self.pending_intent()
@@ -456,5 +452,73 @@ mod tests {
         assert_eq!(display_ssid(true, Some(&wifi)).as_deref(), Some("Ethernet"));
         assert_eq!(display_ssid(false, Some(&wifi)).as_deref(), Some("home"));
         assert_eq!(display_ssid(false, None), None);
+    }
+
+    struct FakeProfileConn(HashMap<String, HashMap<String, zbus::zvariant::OwnedValue>>);
+
+    #[zbus::interface(name = "org.freedesktop.NetworkManager.Settings.Connection")]
+    impl FakeProfileConn {
+        fn get_settings(&self) -> HashMap<String, HashMap<String, zbus::zvariant::OwnedValue>> {
+            self.0.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_and_saved_changed_walk_profiles_once_and_clear_on_error() {
+        use zbus::zvariant::{OwnedValue, Value};
+
+        use super::super::connect::tests::ListedProfiles;
+        use super::super::devices::tests::{collect_method_calls, method_call_monitor};
+
+        let ov = |v: Value<'_>| OwnedValue::try_from(v).unwrap();
+        let vpn = |k: &str, i: &str| {
+            let m = [("type".into(), ov(k.into())), ("id".into(), ov(i.into())), ("uuid".into(), ov(i.into()))];
+            HashMap::from([("connection".into(), HashMap::from(m))])
+        };
+        let wifi =
+            |s: &[u8]| HashMap::from([("802-11-wireless".into(), HashMap::from([("ssid".into(), ov(s.into()))]))]);
+        let p = |n: u8| OwnedObjectPath::try_from(format!("/org/freedesktop/NetworkManager/Settings/{n}")).unwrap();
+        let (bus, sp) = (private_bus().await, "/org/freedesktop/NetworkManager/Settings");
+        let mut builder = bus
+            .builder()
+            .serve_at("/org/freedesktop/NetworkManager", FakeNm(super::super::root_object_path().into()))
+            .unwrap()
+            .serve_at(sp, ListedProfiles(vec![p(1), p(2), p(3), p(4), p(9)]))
+            .unwrap();
+        let profiles = [
+            (1, wifi(b"lab-\xff")),
+            (2, vpn("wireguard", "wg0")),
+            (3, vpn("vpn", "alpha")),
+            (4, vpn("802-3-ethernet", "eth")),
+            (5, wifi(b"cafe")),
+            (6, vpn("vpn", "beta")),
+        ];
+        for (n, map) in profiles {
+            builder = builder.serve_at(p(n), FakeProfileConn(map)).unwrap();
+        }
+        let nm_conn = builder.name("org.freedesktop.NetworkManager").unwrap().build().await.unwrap();
+        let conn = bus.connection().await;
+        let mut monitor = method_call_monitor(&bus).await;
+        let (events, _signals) = tokio::sync::mpsc::unbounded_channel();
+        let controller = NetworkController::new(conn.clone(), events).await.unwrap();
+        let startup = collect_method_calls(&mut monitor, &conn).await;
+        assert_eq!((startup.get("ListConnections"), startup.get("GetSettings")), (Some(&1), Some(&5)));
+        let ssids = || controller.saved_ssids.lock().unwrap().clone();
+        let vpn_ids = || controller.vpn.lock().unwrap().profiles.iter().map(|(_, v)| v.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ssids(), HashMap::from([(p(1), b"lab-\xff".to_vec())]));
+        assert_eq!(vpn_ids(), ["alpha", "wg0"]);
+
+        let iface = nm_conn.object_server().interface::<_, ListedProfiles>(sp).await.unwrap();
+        iface.get_mut().await.0 = vec![p(5), p(6), p(3), p(9)];
+        drop(iface);
+        controller.handle_signal(NetworkSignal::SavedChanged).await;
+        let reload = collect_method_calls(&mut monitor, &conn).await;
+        assert_eq!((reload.get("ListConnections"), reload.get("GetSettings")), (Some(&1), Some(&4)));
+        assert_eq!(ssids(), HashMap::from([(p(5), b"cafe".to_vec())]));
+        assert_eq!(vpn_ids(), ["alpha", "beta"]);
+
+        nm_conn.object_server().remove::<ListedProfiles, _>(sp).await.unwrap();
+        controller.handle_signal(NetworkSignal::SavedChanged).await;
+        assert!(ssids().is_empty() && vpn_ids().is_empty());
     }
 }
