@@ -31,6 +31,9 @@ pub fn enumerate_video_devices(dev_root: &Path) -> Vec<PathBuf> {
 /// ~6 MiB allocation, 58% of boot allocations under DHAT, so it walks `/proc` once for all devices
 /// and only inotify pays for it.
 pub fn find_device_openers(proc_root: &Path, devices: &[PathBuf]) -> Vec<u32> {
+    if devices.is_empty() {
+        return Vec::new();
+    }
     let mut pids = Vec::new();
     let Ok(proc_entries) = std::fs::read_dir(proc_root) else { return pids };
     for proc_entry in proc_entries.flatten() {
@@ -45,6 +48,9 @@ pub fn find_device_openers(proc_root: &Path, devices: &[PathBuf]) -> Vec<u32> {
 
 /// Whether `pid` has one of `devices` open: one pid's fds, not a `/proc` walk.
 pub fn holds_device(proc_root: &Path, pid: u32, devices: &[PathBuf]) -> bool {
+    if devices.is_empty() {
+        return false;
+    }
     let Ok(fd_entries) = std::fs::read_dir(proc_root.join(pid.to_string()).join("fd")) else { return false };
     fd_entries
         .flatten()
@@ -144,5 +150,23 @@ mod tests {
     fn read_comm_is_none_for_a_pid_with_no_comm_file() {
         let root = tempfile::tempdir().unwrap();
         assert_eq!(read_comm(root.path(), 9999), None);
+    }
+
+    #[test]
+    fn find_device_openers_skips_proc_walk_when_devices_is_empty() {
+        let proc_root = tempfile::tempdir().unwrap();
+        write_fd_symlink(proc_root.path(), 1234, 5, "/dev/video0");
+        let mut inotify = inotify::Inotify::init().unwrap();
+        let root_wd = inotify.watches().add(proc_root.path(), inotify::WatchMask::OPEN).unwrap();
+        let fd_wd = inotify.watches().add(proc_root.path().join("1234/fd"), inotify::WatchMask::OPEN).unwrap();
+        let mut buf = [0u8; 1024];
+
+        assert!(find_device_openers(proc_root.path(), &[]).is_empty());
+        assert!(!holds_device(proc_root.path(), 1234, &[]));
+        assert!(matches!(inotify.read_events(&mut buf), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock));
+
+        assert_eq!(find_device_openers(proc_root.path(), &[PathBuf::from("/dev/video0")]), vec![1234]);
+        let wds: Vec<_> = inotify.read_events(&mut buf).unwrap().map(|e| e.wd).collect();
+        assert!(wds.contains(&root_wd) && wds.contains(&fd_wd));
     }
 }

@@ -249,6 +249,29 @@ enum DeviceEvent {
     Ended,
 }
 
+/// Classifies one inotify batch; `Q_OVERFLOW` carries an unmapped descriptor and forces a full
+/// rescan without skipping hotplug updates in the same batch.
+fn classify_batch(watch: &mut VideoWatch, events: &[std::io::Result<inotify::EventOwned>]) -> Option<DeviceEvent> {
+    let (mut closed, mut opened) = (false, false);
+    for event in events.iter().flatten() {
+        if event.mask.contains(EventMask::Q_OVERFLOW) {
+            opened = true;
+        } else if event.wd != watch.dir {
+            opened |= event.mask.contains(EventMask::OPEN);
+            closed |= event.mask.intersects(EventMask::CLOSE_WRITE | EventMask::CLOSE_NOWRITE);
+        } else if let Some(name) = event.name.as_deref().and_then(|n| n.to_str()).filter(|n| is_video_name(n)) {
+            let path = watch.root.join(name);
+            watch.devices.retain(|device| *device != path);
+            if event.mask.contains(EventMask::CREATE) {
+                watch_device(&mut watch.watches, &path);
+                watch.devices.push(path);
+            }
+            opened = true;
+        }
+    }
+    opened.then_some(DeviceEvent::Opened).or_else(|| closed.then_some(DeviceEvent::Closed))
+}
+
 /// Next device open/close or node create/delete, or a never-completing future without a watch.
 /// `select!` still needs an arm future in that case. A node that appears or goes keeps `devices`
 /// and its watch current; a replugged node is a new inode, so the old watch is gone with it.
@@ -257,30 +280,8 @@ async fn next_device_event(watch: &mut Option<VideoWatch>) -> DeviceEvent {
     loop {
         match watch.events.next().await {
             Some(events) if events.iter().any(Result::is_ok) => {
-                let (mut relevant, mut opened) = (false, false);
-                for event in events.iter().flatten() {
-                    if event.wd != watch.dir {
-                        opened |= event.mask.contains(EventMask::OPEN);
-                        relevant |=
-                            event.mask.intersects(EventMask::OPEN | EventMask::CLOSE_WRITE | EventMask::CLOSE_NOWRITE);
-                        continue;
-                    }
-                    let name = event.name.as_deref().and_then(|name| name.to_str()).filter(|n| is_video_name(n));
-                    let Some(name) = name else { continue };
-                    let path = watch.root.join(name);
-                    watch.devices.retain(|device| *device != path);
-                    if event.mask.contains(EventMask::CREATE) {
-                        watch_device(&mut watch.watches, &path);
-                        watch.devices.push(path);
-                    }
-                    relevant = true;
-                    opened = true;
-                }
-                if opened {
-                    return DeviceEvent::Opened;
-                }
-                if relevant {
-                    return DeviceEvent::Closed;
+                if let Some(event) = classify_batch(watch, &events) {
+                    return event;
                 }
             }
             Some(events) => {
@@ -542,5 +543,65 @@ mod tests {
             vec![PrivacyUser { app_name: "Firefox".to_string() }],
             "a PipeWire capture must be reported on a machine that has no camera to watch"
         );
+    }
+
+    #[tokio::test]
+    async fn q_overflow_triggers_rescan_with_unmapped_wd_and_amid_closes_and_hotplug() {
+        let dev = tempfile::tempdir().unwrap();
+        let (first, second) = (dev.path().join("video0"), dev.path().join("video1"));
+        std::fs::write(&first, "").unwrap();
+        std::fs::write(&second, "").unwrap();
+        let mut watch = watch_video_devices(dev.path(), std::slice::from_ref(&first)).unwrap();
+        let dev_wd = watch.watches.add(&first, WatchMask::OPEN | WatchMask::CLOSE).unwrap();
+        let unmapped = Inotify::init().unwrap().watches().add(dev.path(), WatchMask::OPEN).unwrap();
+        let ev = |wd, mask, name: Option<&str>| Ok(inotify::Event { wd, mask, cookie: 0, name: name.map(Into::into) });
+        let overflow = || ev(unmapped.clone(), EventMask::Q_OVERFLOW, None);
+        let open = || ev(dev_wd.clone(), EventMask::OPEN, None);
+        let close = || ev(dev_wd.clone(), EventMask::CLOSE_NOWRITE, None);
+        let write_close = || ev(dev_wd.clone(), EventMask::CLOSE_WRITE, None);
+        let create_v1 = ev(watch.dir.clone(), EventMask::CREATE, Some("video1"));
+        let create_loop = ev(watch.dir.clone(), EventMask::CREATE, Some("loop0"));
+        let access = ev(unmapped.clone(), EventMask::ACCESS, None);
+
+        for (label, batch, want_opened) in [
+            ("overflow alone", vec![overflow()], Some(true)),
+            ("close then overflow", vec![close(), overflow()], Some(true)),
+            ("overflow then write-close", vec![overflow(), write_close()], Some(true)),
+            ("overflow with hotplug", vec![overflow(), create_v1], Some(true)),
+            ("close alone", vec![close()], Some(false)),
+            ("open and close", vec![open(), close()], Some(true)),
+            ("unmapped access", vec![access], None),
+            ("non-video create", vec![create_loop], None),
+        ] {
+            let got = match classify_batch(&mut watch, &batch) {
+                Some(DeviceEvent::Opened) => Some(true),
+                Some(DeviceEvent::Closed) => Some(false),
+                _ => None,
+            };
+            assert_eq!(got, want_opened, "{label}");
+        }
+        assert_eq!(watch.devices, vec![first, second]);
+    }
+
+    #[tokio::test]
+    async fn privacy_controller_skips_proc_walk_without_cameras_until_hotplug() {
+        let (dev, proc_root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let node = dev.path().join("video0");
+        write_fd_symlink(proc_root.path(), 1234, 5, &node);
+        let mut inotify = Inotify::init().unwrap();
+        inotify.watches().add(proc_root.path(), WatchMask::OPEN).unwrap();
+        let (_privacy_tx, sources) = watch::channel(PrivacySources::default());
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let controller = PrivacyController::new(proc_root.path().to_path_buf(), dev.path(), sources, events_tx);
+
+        assert_eq!(within(events_rx.recv()).await, Some(()));
+        assert!(controller.snapshot().camera_users.is_empty());
+        let mut buf = [0u8; 1024];
+        assert!(matches!(inotify.read_events(&mut buf), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock));
+
+        std::fs::write(&node, "").unwrap();
+        assert_eq!(within(events_rx.recv()).await, Some(()));
+        assert_eq!(controller.snapshot().camera_users, vec![PrivacyUser { app_name: "pid 1234".to_string() }]);
+        assert!(inotify.read_events(&mut buf).unwrap().any(|e| e.mask.contains(EventMask::OPEN)));
     }
 }
