@@ -46,15 +46,15 @@ pub struct Effect {
     /// The `inset` layers, first on top; they draw inside the box, so they never open a layer or grow its reach.
     pub inset: Vec<Shadow>,
     /// A program run over the painted subtree, before `blur` and `tone` (ADR-0336).
-    pub shader: Option<EffectShader>,
+    pub shader: Option<Box<EffectShader>>,
     /// A program run over what the surface painted under the node, drawn before the node.
-    pub backdrop_shader: Option<EffectShader>,
+    pub backdrop_shader: Option<Box<EffectShader>>,
     pub blur: f32,
     pub tone: Tone,
     pub backdrop: f32,
     pub backdrop_tone: Tone,
     /// `effect.backdrop.mask`: scales the glass's coverage.
-    pub backdrop_mask: Option<Mask>,
+    pub backdrop_mask: Option<Box<Mask>>,
     /// `input = "desktop"`: `backdrop_shader` reads the desktop behind the surface under its input.
     pub desktop: bool,
     pub content_shadow: bool,
@@ -374,13 +374,13 @@ pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
     let backdrop = filters.backdrop.unwrap_or_default();
     let (mut shader, mut backdrop_shader, mut desktop) = (None, None, false);
     if let Some(keys) = filters.shader {
-        let program = EffectShader {
+        let program = Box::new(EffectShader {
             source: keys.source,
             params: parse_shader_params("effect.shader.params", &keys.params)?,
             images: parse_shader_images("effect.shader.images", &keys.images)?,
             padding: keys.padding.unwrap_or(0.0),
             progress: keys.progress.unwrap_or(0.0),
-        };
+        });
         match keys.input.unwrap_or_default() {
             ShaderInput::Content => shader = Some(program),
             ShaderInput::Backdrop => backdrop_shader = Some(program),
@@ -396,7 +396,7 @@ pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
         tone: tone(filters.saturate, filters.brightness, filters.contrast),
         backdrop: backdrop.blur.unwrap_or(0.0),
         backdrop_tone: tone(backdrop.saturate, backdrop.brightness, backdrop.contrast),
-        backdrop_mask: backdrop.mask,
+        backdrop_mask: backdrop.mask.map(Box::new),
         desktop,
         content_shadow,
         blend: common::blend.read(properties)?,
@@ -411,6 +411,19 @@ mod tests {
 
     use super::*;
     use crate::layout::node::{LayoutError, Rgba, rect_props};
+
+    #[test]
+    fn boxing_rare_effect_fields_keeps_effect_and_layout_style_compact() {
+        use std::mem::size_of;
+        assert!(size_of::<Effect>() <= 112, "Effect grew to {} bytes", size_of::<Effect>());
+        assert!(
+            size_of::<crate::layout::scene::LayoutStyle>() <= 256,
+            "LayoutStyle grew to {} bytes",
+            size_of::<crate::layout::scene::LayoutStyle>()
+        );
+        assert_eq!(size_of::<Option<Box<EffectShader>>>(), size_of::<usize>());
+        assert_eq!(size_of::<Option<Box<Mask>>>(), size_of::<usize>());
+    }
 
     /// ADR-0336. `effect.shader` needs an absolute `source`, defaults `input` and `padding`, reads
     /// `params` as a `shader` node does, and refuses what it does not know.
@@ -427,7 +440,7 @@ mod tests {
         };
         let full = r#"return { effect = { shader = { source = "/s.frag", input = "content", padding = 12, progress = -0.5,
             params = { a = 2, b = { 1, 2 } }, images = { map = "/m.png" } } } }"#;
-        assert_eq!(parse(full).unwrap(), Effect { shader: Some(shader(12.0)), ..Effect::default() });
+        assert_eq!(parse(full).unwrap(), Effect { shader: Some(Box::new(shader(12.0))), ..Effect::default() });
         let bare = parse(r#"return { effect = { shader = { source = "/s.frag" } } }"#).unwrap();
         let shader = bare.shader.as_ref().unwrap();
         assert_eq!((shader.padding, shader.params.len(), shader.progress), (0.0, 0, 0.0));

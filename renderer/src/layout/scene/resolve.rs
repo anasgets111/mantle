@@ -103,7 +103,8 @@ pub(super) fn resolve(
     let dropped = drop_refused_values(kind, &mut properties, retained.as_deref().map(|r| &*r.properties), lua)?;
     let shown = retained.as_deref().map(|r| (r.tweens.as_slice(), &*r.properties));
     let (tweens, movement) = node::retarget(kind, shown, &mut properties, now, lua, reentry && shown.is_none())?;
-    let properties = Rc::new(properties);
+    // A declaration that resolved to itself shares the map the memo keeps rather than a copy.
+    let properties = if same_declaration(&raw, &properties) { Rc::clone(&raw) } else { Rc::new(properties) };
     let omitted = ["width", "height"].map(|key| raw.contains_key(key) && !properties.contains_key(key));
     let memo =
         Rc::new(ResolveMemo { raw, lua: lua.weak(), stamp, cells: frame.finish(), dropped, tables_plain, omitted });
@@ -641,5 +642,63 @@ mod tests {
         bar.run(r#"tick:set("2")"#);
         let (_, _, mid, _) = text_paint(&bar, 5);
         assert!(mid.r > 0.1 && mid.r < 0.9, "kept moving text updates color: {mid:?}");
+    }
+
+    #[test]
+    fn unchanged_declaration_shares_memo_rc_while_resolved_tweens_and_refused_values_allocate_distinct() {
+        let mut bar = Fixture::new(
+            r##"w = state("w", 20)
+            nested = state("nested", 4)
+            return panel { id = "bar", child = column { width = 200, height = 200, children = {
+                rect { width = 10, height = 10, background = "#101010" },
+                rect { width = w, height = 10 },
+                rect { width = 10, height = 10, margin = { left = nested } },
+                rect { width = w, height = 10, animate = { width = 100 } },
+                row { animate = { width = 100 }, children = { rect { width = w, height = 10 } } },
+            } } }"##,
+        );
+        let shared_rect = bar.child(0);
+        let shared_memo = shared_rect.resolve_memo.as_ref().unwrap();
+        assert!(std::rc::Rc::ptr_eq(&shared_rect.properties, shared_memo.raw()));
+
+        // Top-level signal, nested-table signal, and running tween each alter `properties` and
+        // must not share `memo.raw()`.
+        let sig_rect = bar.child(1);
+        assert!(!std::rc::Rc::ptr_eq(&sig_rect.properties, sig_rect.resolve_memo.as_ref().unwrap().raw()));
+        let nested_rect = bar.child(2);
+        assert!(!std::rc::Rc::ptr_eq(&nested_rect.properties, nested_rect.resolve_memo.as_ref().unwrap().raw()));
+
+        let t0 = Instant::now();
+        bar.lua.set_app_data(crate::lua::timer::SimClock(t0));
+        bar.run("w:set(60)");
+        bar.lua.set_app_data(crate::lua::timer::SimClock(t0 + Duration::from_millis(50)));
+        bar.apply().unwrap();
+        let tweening = bar.child(3);
+        assert!(!std::rc::Rc::ptr_eq(&tweening.properties, tweening.resolve_memo.as_ref().unwrap().raw()));
+
+        // A content-sized `row` with no `width` in `raw` initially shares `memo.raw()`, then
+        // `measure_content_sizes` calls `Rc::make_mut(&mut node.properties)` to inject `width`:
+        // copy-on-write detaches `properties` without mutating `memo.raw()`.
+        let measured = bar.child(4);
+        let measured_memo = measured.resolve_memo.as_ref().unwrap();
+        assert!(measured.properties.contains_key("width"));
+        assert!(!measured_memo.raw().contains_key("width"), "Rc::make_mut must not mutate ResolveMemo.raw");
+        assert!(!std::rc::Rc::ptr_eq(&measured.properties, measured_memo.raw()));
+    }
+
+    #[test]
+    fn refused_value_dropped_by_resolve_does_not_share_raw_rc() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) =
+            surface_from(r#"return panel { id = "bar", child = rect { width = 10, height = 10, opacity = 2 } }"#);
+        let instances = [instance_at(&surface, full())];
+        let report = scene.apply_locked(&[surface], &instances, &shaping, &lua, false, false).unwrap();
+        assert!(report.is_some());
+        let child = &scene.surface("bar@TEST").unwrap().children[0];
+        let memo = child.resolve_memo.as_ref().unwrap();
+        assert!(memo.raw().contains_key("opacity"));
+        assert!(!child.properties.contains_key("opacity"));
+        assert!(!std::rc::Rc::ptr_eq(&child.properties, memo.raw()));
     }
 }

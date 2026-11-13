@@ -142,7 +142,7 @@ fn build_node(
         if node.clips_children() { parent_clip.intersect(snap_to_physical(rect, scale)) } else { parent_clip };
     let effect = &node.layout_style.effect;
     let read = snap_to_physical(
-        grow(bounds, reach(effect.backdrop).max(shader_padding(effect.backdrop_shader.as_ref()))),
+        grow(bounds, reach(effect.backdrop).max(shader_padding(effect.backdrop_shader.as_deref()))),
         scale,
     );
     let opacity = inherited_opacity * node.opacity;
@@ -176,8 +176,10 @@ fn build_node(
     };
     let ring_pad = ring.map_or(0.0, |ring| (ring.offset + ring.width).max(0.0));
     let ring_box = ring.map(|_| snap_to_physical(grow(bounds, ring_pad), scale));
-    let mut layered = if casts { node::Effect { shadows: Vec::new(), ..effect.clone() } } else { effect.clone() };
-    let own = layer_bounds(bounds, &layered, scale);
+    // Cloned only when shadows must be stripped for a separate pass or when opening a layer.
+    let shadowless = casts.then(|| node::Effect { shadows: Vec::new(), ..effect.clone() });
+    let layered = shadowless.as_ref().unwrap_or(effect);
+    let own = layer_bounds(bounds, layered, scale);
     let reach = if casts && radius.analytic() {
         effect
             .shadows
@@ -190,7 +192,8 @@ fn build_node(
     };
     let reach = ring_box.map_or(reach, |ring_box| reach.union(ring_box));
     // A backdrop shader's padding can reach back into the clip from a box that is itself outside it.
-    let padded_read = shader_padding(effect.backdrop_shader.as_ref()) > 0.0 && !parent_clip.intersect(read).is_empty();
+    let padded_read =
+        shader_padding(effect.backdrop_shader.as_deref()) > 0.0 && !parent_clip.intersect(read).is_empty();
     // A box just scrolled out still casts the shadow reaching back in; one whose shadow is out still draws.
     if parent_clip.intersect(reach).is_empty() && !padded_read {
         return;
@@ -219,7 +222,7 @@ fn build_node(
         && opacity > 0.0
         && (!clip.is_empty() || padded_read)
     {
-        let shader = effect.backdrop_shader.clone().map(|shader| layer_shader(shader, radius.clone()));
+        let shader = effect.backdrop_shader.as_deref().map(|shader| layer_shader(shader.clone(), radius.clone()));
         if effect.desktop {
             super::DESKTOP_READS.store(true, std::sync::atomic::Ordering::Relaxed);
         }
@@ -231,8 +234,8 @@ fn build_node(
             shader,
             mask: effect
                 .backdrop_mask
-                .clone()
-                .map(|mask| (mask, (physical_edge(rect.width, scale), physical_edge(rect.height, scale)))),
+                .as_deref()
+                .map(|mask| (mask.clone(), (physical_edge(rect.width, scale), physical_edge(rect.height, scale)))),
             desktop: effect.desktop.then_some(node.id),
         };
         out.push(cmd(parent_clip.intersect(read), draw));
@@ -387,10 +390,11 @@ fn build_node(
             pad.max(self::reach(shadow.blur / 2.0) + shadow.offset.0.abs().max(shadow.offset.1.abs()))
         });
         let target = snap_to_physical(
-            grow(surface, pad.max(self::reach(layered.blur)).max(shader_padding(layered.shader.as_ref()))),
+            grow(surface, pad.max(self::reach(layered.blur)).max(shader_padding(layered.shader.as_deref()))),
             scale,
         );
-        let shader = layered.shader.take().map(|shader| layer_shader(shader, radius));
+        let mut layered = shadowless.unwrap_or_else(|| effect.clone());
+        let shader = layered.shader.take().map(|shader| layer_shader(*shader, radius));
         let draw = Draw::Layer { effect: Box::new(layered), shader, silhouette: false, commands };
         out.push(cmd(parent_clip.intersect(bounds).intersect(target), draw));
     }
