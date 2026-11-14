@@ -59,7 +59,7 @@ pub fn spawn_client(
     std::thread::spawn(move || {
         // Hold for the thread's life: connection close, runtime failure, or panic wakes Wayland to
         // find `inbound_rx` disconnected, rather than blocking on an unsatisfiable poll (ADR-0124).
-        let _wake_on_exit = crate::wake::WakeOnDrop(waker.clone());
+        let _wake_on_exit = std::mem::DropGuard::new(waker.clone(), |waker| waker.wake());
         let runtime = match tokio::runtime::Builder::new_current_thread().enable_io().build() {
             Ok(runtime) => runtime,
             Err(err) => {

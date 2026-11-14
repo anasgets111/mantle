@@ -124,14 +124,6 @@ fn claim_writer(active: &AtomicUsize) -> bool {
     active.try_update(Ordering::AcqRel, Ordering::Acquire, |count| (count < MAX_WRITERS).then_some(count + 1)).is_ok()
 }
 
-struct WriterPermit(Arc<AtomicUsize>);
-
-impl Drop for WriterPermit {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
-    }
-}
-
 impl App {
     /// Whether the selection reached the clipboard.
     pub(super) fn copy_selection(&mut self, serial: u32) -> bool {
@@ -273,18 +265,14 @@ impl DataSourceHandler for App {
             return;
         }
         let text = Arc::clone(&copy.text);
-        let active = Arc::clone(&self.clipboard_writers);
-        let thread_active = Arc::clone(&active);
-        if std::thread::Builder::new()
-            .name("mantle-copy".into())
-            .spawn(move || {
-                let _permit = WriterPermit(thread_active);
-                write_copy(fd, text);
-            })
-            .is_err()
-        {
+        // A failed spawn drops the closure, and the permit with it.
+        let permit = std::mem::DropGuard::new(Arc::clone(&self.clipboard_writers), |active| {
             active.fetch_sub(1, Ordering::AcqRel);
-        }
+        });
+        let _ = std::thread::Builder::new().name("mantle-copy".into()).spawn(move || {
+            let _permit = permit;
+            write_copy(fd, text);
+        });
     }
     fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource) {
         self.clipboard_sources.retain(|copy| copy.source.inner() != source);

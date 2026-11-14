@@ -290,7 +290,7 @@ pub(crate) struct Signature {
 /// A `///` block's lines, trimmed of the space `///` leaves.
 #[cfg(test)]
 pub(crate) fn lines(doc: &str) -> impl Iterator<Item = &str> {
-    doc.lines().map(|line| line.strip_prefix(' ').unwrap_or(line)).skip_while(|line| line.is_empty())
+    doc.lines().map(|line| line.trim_prefix(' ')).skip_while(|line| line.is_empty())
 }
 
 /// A `///` block as `---` comment lines.

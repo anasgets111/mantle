@@ -42,15 +42,6 @@ pub fn poll_timeout(remaining: Duration) -> PollTimeout {
     PollTimeout::try_from(remaining.as_micros().div_ceil(1000)).unwrap_or(PollTimeout::NONE)
 }
 
-/// Wakes poll when the socket thread drops its `Sender`, which the loop reads as Supervisor exit.
-pub struct WakeOnDrop(pub Waker);
-
-impl Drop for WakeOnDrop {
-    fn drop(&mut self) {
-        self.0.wake();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,12 +67,5 @@ mod tests {
         assert!(readable(&waker), "two wakes are one pending wakeup");
         waker.drain();
         assert!(!readable(&waker));
-    }
-
-    #[test]
-    fn dropping_the_guard_wakes() {
-        let waker = Waker::new().unwrap();
-        drop(WakeOnDrop(waker.clone()));
-        assert!(readable(&waker));
     }
 }

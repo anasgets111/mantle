@@ -26,7 +26,7 @@ pub(super) fn is_trackable_player(bus_name: &str) -> bool {
 /// [`service_name_for_id`] (ADR-0036). Meaningful only for names accepted by
 /// [`is_trackable_player`].
 pub(super) fn player_id(bus_name: &str) -> &str {
-    bus_name.strip_prefix(MPRIS_SERVICE_PREFIX).unwrap_or(bus_name)
+    bus_name.trim_prefix(MPRIS_SERVICE_PREFIX)
 }
 
 /// Reconstructs the bus name from write argument `id`, the inverse of [`player_id`] (ADR-0036);

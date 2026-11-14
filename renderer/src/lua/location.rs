@@ -50,7 +50,7 @@ pub(super) fn chunk_name(config_dir: &Path, path: &Path) -> String {
 /// A Lua error as a config author reads it: no mlua prefix, no engine frames, and led by the config line when unlocated.
 pub(crate) fn describe(err: &mlua::Error) -> String {
     let text = err.to_string();
-    let text = text.strip_prefix("runtime error: ").unwrap_or(&text);
+    let text = text.trim_prefix("runtime error: ");
     // `error({...})`: Lua stringifies a non-string error value as `table: 0x...`.
     let first = text.lines().next().unwrap_or_default();
     let object;

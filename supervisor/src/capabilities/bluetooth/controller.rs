@@ -1,6 +1,7 @@
 //! [`BluetoothController`]: the `mantle.bluetooth` write-action dispatcher and state owner.
 
 use std::collections::HashMap;
+use std::mem::DropGuard;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -223,13 +224,29 @@ impl BluetoothController {
         (connected, paired_only, discovered)
     }
 
-    /// Marks `mac` as running `action` until the guard drops, pushing a rebuild on both edges so
-    /// the row spins on the click. A later action replaces the label, which is how `pair` hands the
-    /// row to its `connect`; the earlier guard then finds its label gone and leaves it.
-    fn mark_busy(&self, mac: &str, action: DeviceAction) -> BusyGuard<'_> {
+    /// Marks `mac` as running `action` until the guard drops, on every return path and on
+    /// cancellation, pushing a rebuild on both edges so the row spins on the click. A later action
+    /// replaces the label, which is how `pair` hands the row to its `connect`; the earlier guard then
+    /// finds its label gone and leaves it.
+    fn mark_busy(&self, mac: &str, action: DeviceAction) -> DropGuard<String, impl FnOnce(String)> {
         self.busy.lock().expect("mutex poisoned").insert(mac.to_string(), action);
         let _ = self.events.send(BluetoothSignal::DeviceRegistryChanged);
-        BusyGuard { controller: self, mac: mac.to_string(), action }
+        DropGuard::new(mac.to_string(), move |mac| {
+            let mut busy = match self.busy.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            if busy.get(&mac) == Some(&action) {
+                busy.remove(&mac);
+            }
+            drop(busy);
+            let _ = self.events.send(BluetoothSignal::DeviceRegistryChanged);
+            // A code display has no answer and BlueZ sends no `Cancel` for it, so the pairing call
+            // ending, either way, is what takes it down.
+            if action == DeviceAction::Pairing && agent::clear_display(&self.prompts, &mac) {
+                let _ = self.events.send(BluetoothSignal::PairingChanged);
+            }
+        })
     }
 
     /// Whether `mac` may raise a pairing prompt: the adapter is visible, or this Supervisor is
@@ -420,33 +437,6 @@ impl BluetoothController {
         };
         if let Err(err) = removed.await {
             warn!("RemoveDevice({mac:?}) failed: {err}");
-        }
-    }
-}
-
-/// Clears its action from the busy map when the call ends, on every return path and on
-/// cancellation.
-struct BusyGuard<'a> {
-    controller: &'a BluetoothController,
-    mac: String,
-    action: DeviceAction,
-}
-
-impl Drop for BusyGuard<'_> {
-    fn drop(&mut self) {
-        let mut busy = match self.controller.busy.lock() {
-            Ok(g) => g,
-            Err(p) => p.into_inner(),
-        };
-        if busy.get(&self.mac) == Some(&self.action) {
-            busy.remove(&self.mac);
-        }
-        drop(busy);
-        let _ = self.controller.events.send(BluetoothSignal::DeviceRegistryChanged);
-        // A code display has no answer and BlueZ sends no `Cancel` for it, so the pairing call
-        // ending, either way, is what takes it down.
-        if self.action == DeviceAction::Pairing && agent::clear_display(&self.controller.prompts, &self.mac) {
-            let _ = self.controller.events.send(BluetoothSignal::PairingChanged);
         }
     }
 }

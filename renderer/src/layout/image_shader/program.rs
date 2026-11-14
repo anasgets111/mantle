@@ -112,7 +112,7 @@ impl ShaderStage {
                 };
                 // An array reports as `name[0]`, whose location is the first element's.
                 if let Some(location) = gl.get_uniform_location(program, &uniform.name) {
-                    let name = uniform.name.strip_suffix("[0]").unwrap_or(&uniform.name).to_string();
+                    let name = uniform.name.trim_suffix("[0]").to_string();
                     params.insert(name, (location, width, uniform.size.max(1) as usize, std::cell::Cell::new(false)));
                 }
             }

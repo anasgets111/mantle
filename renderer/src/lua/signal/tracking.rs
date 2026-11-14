@@ -1,6 +1,7 @@
 use std::rc::Rc;
 
 use std::cell::RefCell;
+use std::mem::DropGuard;
 
 use mlua::{Lua, Value};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -177,24 +178,18 @@ pub(crate) struct MemoTable {
 /// The cells read between `enter` and `finish`, including through a memo hit or a nested frame,
 /// which hands its own up on close. A `computed` evaluation is one; a `list`'s build is another
 /// (ADR-0269).
-pub(crate) struct ComputedFrame<'lua>(&'lua Lua);
+pub(crate) struct ComputedFrame<'lua>(DropGuard<&'lua Lua, fn(&'lua Lua)>);
 
 impl<'lua> ComputedFrame<'lua> {
     pub(crate) fn enter(lua: &'lua Lua) -> Self {
         EvaluationMemo::push_frame(lua);
-        Self(lua)
+        Self(DropGuard::new(lua, |lua| {
+            EvaluationMemo::pop_frame(lua, true);
+        }))
     }
 
     pub(crate) fn finish(self) -> Vec<CellId> {
-        let cells = EvaluationMemo::pop_frame(self.0, true);
-        std::mem::forget(self);
-        cells
-    }
-}
-
-impl Drop for ComputedFrame<'_> {
-    fn drop(&mut self) {
-        EvaluationMemo::pop_frame(self.0, true);
+        EvaluationMemo::pop_frame(DropGuard::dismiss(self.0), true)
     }
 }
 

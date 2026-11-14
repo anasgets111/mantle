@@ -49,7 +49,7 @@ fn files(dir: &Path, extension: &str, out: &mut Vec<PathBuf>) {
 /// `line` without its blockquote markers, indentation kept.
 fn unquoted(mut line: &str) -> &str {
     while let Some(rest) = line.trim_start().strip_prefix('>') {
-        line = rest.strip_prefix(' ').unwrap_or(rest);
+        line = rest.trim_prefix(' ');
     }
     line
 }

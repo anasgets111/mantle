@@ -33,7 +33,7 @@ fn parse_json_i64(val: Option<&serde_json::Value>) -> Option<i64> {
     match val {
         Some(serde_json::Value::Number(n)) => n.as_i64(),
         Some(serde_json::Value::String(s)) => {
-            let s = s.trim().strip_suffix('C').unwrap_or(s).trim();
+            let s = s.trim().trim_suffix('C').trim();
             s.parse::<f64>().ok().map(|f| f.round() as i64)
         }
         _ => None,

@@ -342,7 +342,7 @@ async fn read_helper_lines(
 fn helper_message(line: &str) -> Option<shared::PamMessage> {
     use shared::{PamMessage, PamNoticeKind};
     let line = unescape(line);
-    let text = |prefix: &str| line.strip_prefix(prefix).map(|rest| rest.strip_prefix(' ').unwrap_or(rest).to_string());
+    let text = |prefix: &str| line.strip_prefix(prefix).map(|rest| rest.trim_prefix(' ').to_string());
     match line.as_str() {
         "SUCCESS" => return Some(PamMessage::Outcome(shared::PamOutcome::Success)),
         "FAILURE" => return Some(PamMessage::Outcome(shared::PamOutcome::AuthFailed)),

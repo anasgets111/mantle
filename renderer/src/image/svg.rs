@@ -340,7 +340,7 @@ enum XmlError {
 /// Extracts entity definitions from the prolog's internal DTD subset and returns
 /// the byte offset where the document body starts, or `None` when no entity is declared.
 fn dtd_entities(text: &str) -> Option<(std::collections::HashMap<&str, &str>, usize)> {
-    let body = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let body = text.trim_prefix('\u{feff}');
     let mut i = text.len() - body.len();
     let bytes = text.as_bytes();
     let skip_ws = |i: &mut usize| {
