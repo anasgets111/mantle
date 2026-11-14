@@ -131,6 +131,12 @@ pub(crate) struct Supervisor {
     departed_reaped: Option<tokio::sync::oneshot::Receiver<()>>,
     /// The sleep delay's wait (ADR-0385), answered by the next lock report, whatever it says.
     sleep_waits: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Test hook replacing [`pam_worker::start_lock_conversation`] so tests never re-exec `/proc/self/exe`.
+    #[cfg(test)]
+    pam_starter: Option<std::sync::Arc<dyn Fn(&'static str, u64) -> pam_worker::Conversation + Send + Sync>>,
+    /// Test hook overriding [`pam_worker::fingerprint_installed`] so tests never probe `/etc/pam.d`.
+    #[cfg(test)]
+    fingerprint_installed: Option<bool>,
 }
 
 impl Supervisor {
@@ -180,6 +186,10 @@ impl Supervisor {
             reaps: tokio::task::JoinSet::new(),
             departed_reaped: None,
             sleep_waits: None,
+            #[cfg(test)]
+            pam_starter: None,
+            #[cfg(test)]
+            fingerprint_installed: None,
         };
         // Boot-built controllers have no lazy reader to publish their initial state. An owed relock
         // leaves `lock` nil until its `LockReport`: a default `active = false` here would tell the
@@ -272,13 +282,25 @@ impl Supervisor {
 
     /// Starts the lock's worker for this session's user, in `mode`.
     fn lock_starter(&self, mode: &'static str) -> impl FnOnce(u64) -> pam_worker::Conversation + use<> {
+        #[cfg(test)]
+        let starter = self.pam_starter.clone();
         let events = self.pam_events_tx.clone();
-        move |serial| pam_worker::start_lock_conversation(nix::unistd::Uid::current().as_raw(), mode, serial, events)
+        move |serial| {
+            #[cfg(test)]
+            if let Some(starter) = starter {
+                return starter(mode, serial);
+            }
+            pam_worker::start_lock_conversation(nix::unistd::Uid::current().as_raw(), mode, serial, events)
+        }
     }
 
     /// Starts the lock's fingerprint conversation when its stack is installed (ADR-0382).
     fn listen_for_fingerprint(&self) {
-        if pam_worker::fingerprint_installed() {
+        #[cfg(test)]
+        let installed = self.fingerprint_installed.unwrap_or_else(pam_worker::fingerprint_installed);
+        #[cfg(not(test))]
+        let installed = pam_worker::fingerprint_installed();
+        if installed {
             self.lock.listen(self.lock_starter(pam_worker::FINGERPRINT));
         }
     }
@@ -624,8 +646,48 @@ impl Supervisor {
 mod tests {
     use super::*;
 
-    use crate::capabilities::test_support::{PrivateBus, private_bus};
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::{Arc, Mutex};
+
+    use crate::capabilities::test_support::{PrivateBus, private_bus, within};
     use tokio::sync::mpsc;
+
+    /// Kills any tracked process groups on drop so a panicking test cannot orphan children.
+    #[derive(Default)]
+    struct ChildGuard(Vec<nix::unistd::Pid>);
+
+    impl ChildGuard {
+        fn track(&mut self, child: &tokio::process::Child) {
+            if let Some(pid) = child.id() {
+                self.0.push(nix::unistd::Pid::from_raw(pid as i32));
+            }
+        }
+    }
+
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            for pid in self.0.drain(..) {
+                let _ = nix::sys::signal::killpg(pid, nix::sys::signal::Signal::SIGKILL);
+            }
+        }
+    }
+
+    fn make_fake_renderer(dir: &std::path::Path) -> std::path::PathBuf {
+        let path = dir.join("fake-renderer");
+        std::fs::write(&path, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    fn install_pam_spy(supervisor: &mut Supervisor) -> Arc<Mutex<Vec<&'static str>>> {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&calls);
+        supervisor.pam_starter = Some(Arc::new(move |mode, _serial| {
+            recorded.lock().expect("mutex poisoned").push(mode);
+            pam_worker::Conversation::detached().0
+        }));
+        calls
+    }
 
     /// A Supervisor booted in `dir` over an exited `/bin/true`, with its lock commands. The box
     /// keeps its other channels open for the test's length.
@@ -657,6 +719,8 @@ mod tests {
             polkit_tx,
             done_tx,
         );
+        supervisor.pam_starter = Some(Arc::new(|_, _| pam_worker::Conversation::detached().0));
+        supervisor.fingerprint_installed = Some(false);
         supervisor.authoritative.child.wait().await.unwrap();
         (supervisor, lock_commands, Box::new((sounds, idle, signals, logind, pam, polkit, done)))
     }
@@ -759,5 +823,208 @@ mod tests {
         assert_eq!(relock.start(), Some(RelockReason::RendererReplaced));
         assert_eq!(relock.finish(), Some(RelockReason::RendererReplaced));
         assert_eq!(relock, Relock::Idle);
+    }
+
+    #[tokio::test]
+    async fn hydrate_ignores_stale_generations_replays_icon_theme_and_relocks_once() {
+        let bus = private_bus().await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::File::create(dir.path().join("session-locked")).unwrap();
+        let (mut supervisor, mut lock_commands, _open) = booted(&bus, dir.path()).await;
+        supervisor.set_icon_theme(Some("Papirus".into()));
+
+        let (stale_tx, mut stale_frames) = mpsc::channel(8);
+        supervisor.registry.register(99, stale_tx, Default::default());
+        supervisor.hydrate(99);
+        assert!(stale_frames.try_recv().is_err(), "stale registration must not be hydrated");
+        assert!(lock_commands.try_recv().is_err());
+        assert_eq!(supervisor.relock, Relock::Owed(RelockReason::SupervisorRestarted));
+
+        let (tx, mut frames) = mpsc::channel(8);
+        supervisor.registry.register(0, tx, Default::default());
+        let expected_polkit = supervisor.last_snapshots[&Capability::Polkit].snapshot.payload.clone();
+        // A reconnect replays both state and theme without asking to lock a second time.
+        for reconnect in [false, true] {
+            supervisor.hydrate(0);
+            let mut saw_theme = None;
+            let mut saw_polkit = None;
+            while let Ok(bytes) = frames.try_recv() {
+                match serde_json::from_slice(&bytes).unwrap() {
+                    SupervisorFrame::IconTheme(theme) => saw_theme = Some(theme),
+                    SupervisorFrame::StateSnapshot(snapshot) if snapshot.capability == Capability::Polkit.as_str() => {
+                        saw_polkit = Some(snapshot.payload);
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(saw_theme, Some(Some("Papirus".into())));
+            assert_eq!(saw_polkit.as_ref(), Some(&expected_polkit));
+            if reconnect {
+                assert!(lock_commands.try_recv().is_err(), "owed relock must fire only once");
+            } else {
+                assert_eq!(lock_commands.try_recv().unwrap(), shared::SetSessionLock { locked: true });
+            }
+            assert_eq!(supervisor.relock, Relock::InFlight(RelockReason::SupervisorRestarted));
+        }
+
+        supervisor.set_icon_theme(None);
+        while frames.try_recv().is_ok() {}
+        supervisor.hydrate(0);
+        while let Ok(bytes) = frames.try_recv() {
+            assert!(!matches!(serde_json::from_slice(&bytes).unwrap(), SupervisorFrame::IconTheme(_)));
+        }
+    }
+
+    #[tokio::test]
+    async fn respawn_renderer_tracks_generations_reaps_departed_children_and_preserves_lock_intent() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let bus = private_bus().await;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = make_fake_renderer(dir.path());
+        let (mut supervisor, mut lock_commands, _open) = booted(&bus, dir.path()).await;
+        let mut guard = ChildGuard::default();
+        supervisor.renderer = Renderer::new(fake.clone(), dir.path(), dir.path(), None, 0, None);
+
+        // Seed one child on departed gen 0 and another on gen 99; only gen 0 should reap on swap.
+        process::registry::spawn_and_register_process(&mut supervisor.processes, 0, 1, "/bin/sleep", &["5".into()])
+            .unwrap();
+        process::registry::spawn_and_register_process(&mut supervisor.processes, 99, 2, "/bin/sleep", &["5".into()])
+            .unwrap();
+
+        supervisor.renderer_departed = true;
+        supervisor.relock = Relock::InFlight(RelockReason::SupervisorRestarted);
+        assert!(!supervisor.respawn_renderer().await);
+        guard.track(&supervisor.authoritative.child);
+        let p1 = nix::unistd::Pid::from_raw(supervisor.authoritative.child.id().unwrap() as i32);
+        assert_eq!(supervisor.authoritative.generation_id, 1);
+        assert!(!supervisor.renderer_departed);
+        assert_eq!(supervisor.relock, Relock::Idle);
+        assert_eq!(supervisor.registry.may_claim(1, p1), Some(true));
+        assert_eq!(supervisor.registry.may_claim(1, nix::unistd::Pid::from_raw(p1.as_raw() + 1)), Some(false));
+        within(supervisor.departed_reaped.take().unwrap()).await.unwrap();
+        assert!(!supervisor.processes.contains_key(&(0, 1)));
+        assert!(supervisor.processes.contains_key(&(99, 2)));
+
+        // Locked (active = true, requested = false) departure forgets gen 1 and owes relock on gen 2.
+        supervisor.lock.record(lock::LockEvent::Reported(shared::LockOutcome::Locked));
+        assert!(!supervisor.replace_departed_renderer(Ok(std::process::ExitStatus::from_raw(9))).await);
+        guard.track(&supervisor.authoritative.child);
+        assert_eq!(supervisor.registry.may_claim(1, p1), None, "departed pid expectation must be cleared");
+        assert_eq!(supervisor.authoritative.generation_id, 2);
+        assert!(!supervisor.lock.snapshot().active);
+        assert_eq!(supervisor.relock, Relock::Owed(RelockReason::RendererReplaced));
+
+        // Requested-only lock (active = false, requested = true) must also owe relock on gen 3.
+        supervisor.relock = Relock::Idle;
+        supervisor.lock.lock();
+        assert_eq!(lock_commands.try_recv().unwrap(), shared::SetSessionLock { locked: true });
+        assert!(supervisor.lock.snapshot().requested && !supervisor.lock.snapshot().active);
+        assert!(!supervisor.respawn_renderer().await);
+        guard.track(&supervisor.authoritative.child);
+        assert_eq!(supervisor.authoritative.generation_id, 3);
+        assert!(!supervisor.lock.snapshot().requested);
+        assert_eq!(supervisor.relock, Relock::Owed(RelockReason::RendererReplaced));
+
+        // renderer_departed = false ensures shutdown reap kills the live replacement child too.
+        supervisor.reap().await;
+        assert!(supervisor.authoritative.child.try_wait().unwrap().is_some());
+        assert!(supervisor.processes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn respawn_renderer_schedules_cooldown_on_spawn_failure_and_restart_brake() {
+        let bus = private_bus().await;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = make_fake_renderer(dir.path());
+        let (mut supervisor, _lock_commands, _open) = booted(&bus, dir.path()).await;
+        let mut guard = ChildGuard::default();
+
+        supervisor.renderer = Renderer::new(dir.path().join("missing-renderer"), dir.path(), dir.path(), None, 0, None);
+        let before_fail = std::time::Instant::now();
+        assert!(!supervisor.respawn_renderer().await);
+        assert_eq!(supervisor.authoritative.generation_id, 0);
+        assert!(supervisor.respawn_at.is_some_and(|at| at > before_fail));
+
+        // Recovery clears respawn_at (gen 1 was consumed by the failed attempt); the 4th trips the brake.
+        supervisor.renderer = Renderer::new(fake, dir.path(), dir.path(), None, 0, None);
+        assert!(!supervisor.respawn_renderer().await);
+        guard.track(&supervisor.authoritative.child);
+        assert_eq!(supervisor.authoritative.generation_id, 2);
+        assert!(supervisor.respawn_at.is_none());
+
+        assert!(!supervisor.respawn_renderer().await);
+        guard.track(&supervisor.authoritative.child);
+        assert_eq!(supervisor.authoritative.generation_id, 3);
+
+        let before_brake = std::time::Instant::now();
+        assert!(!supervisor.respawn_renderer().await);
+        assert_eq!(supervisor.authoritative.generation_id, 3, "brake must defer before spawning");
+        assert!(supervisor.respawn_at.is_some_and(|at| at > before_brake));
+
+        supervisor.reap().await;
+    }
+
+    #[tokio::test]
+    async fn record_lock_report_updates_flag_logind_pam_and_relock_attribution() {
+        let bus = private_bus().await;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut supervisor, mut lock_commands, _open) = booted(&bus, dir.path()).await;
+        let (bridge, mut hints, _lock_requests, _logind_peer) = lock::logind::tests::test_bridge().await;
+        supervisor.session_bridge = bridge;
+        let pam_calls = install_pam_spy(&mut supervisor);
+        let (tx, mut frames) = mpsc::channel(8);
+        supervisor.registry.register(0, tx, Default::default());
+
+        // An unrelated Locked report before hydration must not consume an Owed relock.
+        supervisor.relock = Relock::Owed(RelockReason::RendererReplaced);
+        supervisor.record_lock_report(shared::LockReport { outcome: shared::LockOutcome::Locked });
+        assert_eq!(supervisor.relock, Relock::Owed(RelockReason::RendererReplaced));
+        assert!(dir.path().join("session-locked").exists());
+        assert_eq!(within(hints.recv()).await, Some(true));
+        assert!(supervisor.lock.snapshot().active);
+        assert!(supervisor.lock.snapshot().fingerprint.is_none());
+        assert_eq!(*pam_calls.lock().unwrap(), vec![pam_worker::PASSWORD]);
+        let mut last_lock = None;
+        while let Ok(bytes) = frames.try_recv() {
+            if let SupervisorFrame::StateSnapshot(s) = serde_json::from_slice(&bytes).unwrap()
+                && s.capability == Capability::Lock.as_str()
+            {
+                last_lock = Some(s.payload);
+            }
+        }
+        assert_eq!(last_lock.unwrap()["active"], true);
+
+        // Unlocked clears the marker, logind hint, and lock snapshot without starting PAM.
+        pam_calls.lock().unwrap().clear();
+        supervisor.record_lock_report(shared::LockReport { outcome: shared::LockOutcome::Unlocked });
+        assert!(!dir.path().join("session-locked").exists());
+        assert_eq!(within(hints.recv()).await, Some(false));
+        assert!(!supervisor.lock.snapshot().active);
+        assert!(pam_calls.lock().unwrap().is_empty());
+
+        // Hydrating moves Owed -> InFlight; the next Locked report attributes it and starts fingerprint too.
+        supervisor.fingerprint_installed = Some(true);
+        supervisor.hydrate(0);
+        assert_eq!(lock_commands.try_recv().unwrap(), shared::SetSessionLock { locked: true });
+        assert_eq!(supervisor.relock, Relock::InFlight(RelockReason::RendererReplaced));
+        supervisor.record_lock_report(shared::LockReport { outcome: shared::LockOutcome::Locked });
+        assert_eq!(supervisor.relock, Relock::Idle);
+        assert!(supervisor.lock.snapshot().fingerprint.is_some());
+        assert_eq!(*pam_calls.lock().unwrap(), vec![pam_worker::PASSWORD, pam_worker::FINGERPRINT]);
+        assert_eq!(within(hints.recv()).await, Some(true));
+
+        // Refused after an InFlight relock clears Relock while preserving the marker and hint.
+        supervisor.relock = Relock::InFlight(RelockReason::SupervisorRestarted);
+        pam_calls.lock().unwrap().clear();
+        supervisor.record_lock_report(shared::LockReport { outcome: shared::LockOutcome::Refused("busy".into()) });
+        assert_eq!(supervisor.relock, Relock::Idle);
+        assert!(dir.path().join("session-locked").exists());
+        assert!(hints.try_recv().is_err());
+
+        // Finished clears the marker and hint.
+        supervisor.record_lock_report(shared::LockReport { outcome: shared::LockOutcome::Finished });
+        assert!(!dir.path().join("session-locked").exists());
+        assert_eq!(within(hints.recv()).await, Some(false));
     }
 }

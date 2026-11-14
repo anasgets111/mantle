@@ -182,7 +182,7 @@ impl GenerationRegistry {
     ///
     /// The three states matter: recorded-and-matching admits, recorded-and-different refuses, and
     /// not-yet-recorded is neither. See [`Self::await_claim`].
-    fn may_claim(&self, generation_id: u32, pid: Pid) -> Option<bool> {
+    pub(crate) fn may_claim(&self, generation_id: u32, pid: Pid) -> Option<bool> {
         self.expected_pids.lock().expect("mutex poisoned").get(&generation_id).map(|expected| *expected == pid)
     }
 

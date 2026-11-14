@@ -152,7 +152,7 @@ async fn publish_locked_hints(session: Login1SessionProxy<'static>, mut hints: U
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use zbus::zvariant::OwnedObjectPath;
 
     use super::*;
@@ -180,15 +180,22 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn the_bridge_forwards_lock_session_and_publishes_hints_in_order() {
-        let (hints_tx, mut hints) = tokio::sync::mpsc::unbounded_channel();
+    /// Connects a `SessionBridge` to an in-process stub logind session and returns hint changes.
+    pub(crate) async fn test_bridge()
+    -> (SessionBridge, UnboundedReceiver<bool>, UnboundedReceiver<()>, zbus::Connection) {
+        let (hints_tx, hints) = tokio::sync::mpsc::unbounded_channel();
         let (connection, peer) = p2p_pair_serving(|peer| {
             peer.serve_at("/org/freedesktop/login1", Manager)?.serve_at(SESSION, Session(hints_tx))
         })
         .await;
-        let (lock_tx, mut lock_requests) = tokio::sync::mpsc::unbounded_channel();
+        let (lock_tx, lock_requests) = tokio::sync::mpsc::unbounded_channel();
         let bridge = SessionBridge::new(connection, lock_tx).await;
+        (bridge, hints, lock_requests, peer)
+    }
+
+    #[tokio::test]
+    async fn the_bridge_forwards_lock_session_and_publishes_hints_in_order() {
+        let (bridge, mut hints, mut lock_requests, peer) = test_bridge().await;
 
         bridge.publish_locked_hint(true);
         bridge.publish_locked_hint(false);
