@@ -107,35 +107,44 @@ pub struct NotificationsController {
 }
 
 impl NotificationsController {
-    /// Requests the bus name with `DoNotQueue`: an existing `mako`/`dunst` owner degrades this
-    /// daemon to inert rather than queueing behind it (ADR-0033).
+    /// Exports at [`NOTIFICATIONS_OBJECT_PATH`] before requesting the bus name so calls arriving as
+    /// soon as ownership is granted find the object. Requests with `DoNotQueue`: an existing
+    /// `mako`/`dunst` owner degrades this daemon to inert rather than queueing behind it (ADR-0033).
     pub async fn new(connection: zbus::Connection, events: UnboundedSender<()>, sound_tx: SoundSender) -> Self {
-        let live_connection = match connection
-            .request_name_with_flags(NOTIFICATIONS_BUS_NAME, RequestNameFlags::DoNotQueue.into())
-            .await
-        {
-            Ok(zbus::fdo::RequestNameReply::PrimaryOwner) => Some(connection.clone()),
-            Ok(other) => {
+        let mut controller = Self { connection: Some(connection.clone()), ..Self::inert(events, sound_tx) };
+        match connection.object_server().at(NOTIFICATIONS_OBJECT_PATH, controller.clone()).await {
+            Ok(true) => {}
+            Ok(false) => {
                 warn!(
-                    "RequestName({NOTIFICATIONS_BUS_NAME}) -> {other:?}; another notification daemon already owns this name, \
+                    "{NOTIFICATIONS_BUS_NAME} is already exported at {NOTIFICATIONS_OBJECT_PATH}; \
                      disabling the D-Bus server for this run"
                 );
-                None
+                controller.connection = None;
+                return controller;
             }
             Err(err) => {
-                warn!("RequestName({NOTIFICATIONS_BUS_NAME}) failed: {err}; disabling the D-Bus server for this run");
-                None
+                warn!(
+                    "failed to export {NOTIFICATIONS_BUS_NAME} at {NOTIFICATIONS_OBJECT_PATH}: {err}; \
+                     disabling the D-Bus server for this run"
+                );
+                controller.connection = None;
+                return controller;
             }
-        };
-
-        let controller = Self { connection: live_connection.clone(), ..Self::inert(events, sound_tx) };
-
-        if let Some(live_connection) = &live_connection
-            && let Err(err) = live_connection.object_server().at(NOTIFICATIONS_OBJECT_PATH, controller.clone()).await
-        {
-            debug!("failed to export org.freedesktop.Notifications at {NOTIFICATIONS_OBJECT_PATH}: {err}");
         }
-
+        match connection.request_name_with_flags(NOTIFICATIONS_BUS_NAME, RequestNameFlags::DoNotQueue.into()).await {
+            Ok(zbus::fdo::RequestNameReply::PrimaryOwner) => return controller,
+            Ok(other) => warn!(
+                "RequestName({NOTIFICATIONS_BUS_NAME}) -> {other:?}; another notification daemon already owns this name, \
+                 disabling the D-Bus server for this run"
+            ),
+            Err(err) => {
+                warn!("RequestName({NOTIFICATIONS_BUS_NAME}) failed: {err}; disabling the D-Bus server for this run");
+            }
+        }
+        if let Err(err) = connection.object_server().remove::<Self, _>(NOTIFICATIONS_OBJECT_PATH).await {
+            warn!("failed to withdraw {NOTIFICATIONS_BUS_NAME} at {NOTIFICATIONS_OBJECT_PATH}: {err}");
+        }
+        controller.connection = None;
         controller
     }
 
@@ -608,8 +617,92 @@ impl NotificationsController {
 mod tests {
     use super::super::icon::valid_rgba_image;
     use super::*;
-    use crate::capabilities::test_support::{p2p_pair_serving, within};
+    use crate::capabilities::test_support::{p2p_pair_serving, private_bus, within};
     use futures_util::StreamExt;
+
+    async fn notifications_proxy<'a>(connection: &'a zbus::Connection, destination: &'a str) -> zbus::Proxy<'a> {
+        zbus::Proxy::new(connection, destination, NOTIFICATIONS_OBJECT_PATH, NOTIFICATIONS_BUS_NAME).await.unwrap()
+    }
+
+    fn test_channels() -> (UnboundedSender<()>, SoundSender) {
+        let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (sound_tx, _sound_rx) = std::sync::mpsc::sync_channel(1);
+        (events, sound_tx)
+    }
+
+    /// `new` exports the object before suspending on `RequestName`, so no call routed to the new
+    /// owner can land before the path is registered.
+    #[tokio::test]
+    async fn new_exports_the_object_before_requesting_the_bus_name() {
+        let bus = private_bus().await;
+        let server = bus.connection().await;
+        let client = bus.connection().await;
+        let dbus = zbus::fdo::DBusProxy::new(&client).await.unwrap();
+        let (events, sound_tx) = test_channels();
+
+        let mut startup = std::pin::pin!(NotificationsController::new(server.clone(), events, sound_tx));
+        let first_poll = std::future::poll_fn(|cx| std::task::Poll::Ready(startup.as_mut().poll(cx))).await;
+        assert!(first_poll.is_pending(), "name claim awaits the bus daemon");
+        assert!(!dbus.name_has_owner(NOTIFICATIONS_BUS_NAME.try_into().unwrap()).await.unwrap());
+        assert!(
+            server.object_server().interface::<_, NotificationsController>(NOTIFICATIONS_OBJECT_PATH).await.is_ok()
+        );
+
+        let unique = server.unique_name().unwrap().as_str();
+        let controller = within(startup).await;
+        assert!(controller.connection.is_some());
+        let owner = dbus.get_name_owner(NOTIFICATIONS_BUS_NAME.try_into().unwrap()).await.unwrap();
+        assert_eq!(owner.as_str(), unique);
+        let info: (String, String, String, String) =
+            notifications_proxy(&client, NOTIFICATIONS_BUS_NAME).await.call("GetServerInformation", &()).await.unwrap();
+        assert_eq!(info.0, "mantle");
+    }
+
+    #[tokio::test]
+    async fn new_degrades_to_inert_and_withdraws_object_when_another_owner_exists() {
+        let bus = private_bus().await;
+        let rival = bus.builder().name(NOTIFICATIONS_BUS_NAME).unwrap().build().await.unwrap();
+        let server = bus.connection().await;
+        let client = bus.connection().await;
+        let dbus = zbus::fdo::DBusProxy::new(&client).await.unwrap();
+        let (events, sound_tx) = test_channels();
+
+        let controller = NotificationsController::new(server.clone(), events, sound_tx).await;
+        assert!(controller.connection.is_none());
+        let owner = dbus.get_name_owner(NOTIFICATIONS_BUS_NAME.try_into().unwrap()).await.unwrap();
+        assert_eq!(owner.as_str(), rival.unique_name().unwrap().as_str());
+        assert!(
+            server.object_server().interface::<_, NotificationsController>(NOTIFICATIONS_OBJECT_PATH).await.is_err(),
+            "the object must be withdrawn so the unique name does not serve Notifications"
+        );
+
+        let proxy = notifications_proxy(&client, server.unique_name().unwrap().as_str()).await;
+        proxy
+            .call::<_, _, (String, String, String, String)>("GetServerInformation", &())
+            .await
+            .expect_err("unique name must not answer GetServerInformation");
+        let hints = HashMap::<String, zbus::zvariant::Value<'_>>::new();
+        proxy
+            .call::<_, _, u32>("Notify", &("app", 0u32, "", "summary", "body", Vec::<String>::new(), &hints, 0i32))
+            .await
+            .expect_err("unique name must not accept Notify");
+        assert!(controller.snapshot().feed.is_empty());
+
+        controller.set_dnd(true);
+        assert!(controller.snapshot().dnd);
+        controller.dismiss(1).await;
+
+        rival.release_name(NOTIFICATIONS_BUS_NAME).await.unwrap();
+        assert!(!dbus.name_has_owner(NOTIFICATIONS_BUS_NAME.try_into().unwrap()).await.unwrap());
+
+        let (events2, sound_tx2) = test_channels();
+        server.clone().close().await.unwrap();
+        let closed_conn = NotificationsController::new(server.clone(), events2, sound_tx2).await;
+        assert!(closed_conn.connection.is_none());
+        assert!(
+            server.object_server().interface::<_, NotificationsController>(NOTIFICATIONS_OBJECT_PATH).await.is_err()
+        );
+    }
 
     #[tokio::test]
     async fn expiry_timers_do_not_outlive_replace_or_dismiss() {
