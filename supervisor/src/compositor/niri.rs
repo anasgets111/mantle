@@ -486,11 +486,162 @@ mod tests {
     }
 
     #[test]
-    fn an_event_naming_an_unseen_window_is_refused_not_applied() {
+    fn parts_apply_guards_every_unseen_id_and_accepts_seen_ones() {
+        let layout = window(2, "", "", false, false).layout;
         let mut parts = Parts::default();
-        let closed: niri_ipc::Event = serde_json::from_str(r#"{"WindowClosed":{"id":9}}"#).unwrap();
+        for unseen in [
+            niri_ipc::Event::WorkspaceActivated { id: 5, focused: true },
+            niri_ipc::Event::WorkspaceActiveWindowChanged { workspace_id: 5, active_window_id: Some(2) },
+            niri_ipc::Event::WindowClosed { id: 2 },
+            niri_ipc::Event::WindowLayoutsChanged { changes: vec![(2, layout.clone())] },
+        ] {
+            assert!(!parts.apply(unseen), "niri-ipc would panic on an unseen id");
+        }
 
-        assert!(!parts.apply(closed), "niri-ipc would panic on a window it never saw");
+        assert!(
+            parts.apply(niri_ipc::Event::WorkspacesChanged { workspaces: vec![workspace(5, 1, "eDP-1", true, true)] })
+        );
+        assert!(parts.apply(niri_ipc::Event::WindowsChanged {
+            windows: vec![window(2, "term", "kitty", true, false), window(3, "docs", "firefox", false, false)],
+        }));
+
+        assert!(
+            !parts.apply(niri_ipc::Event::WindowLayoutsChanged {
+                changes: vec![(2, layout.clone()), (99, layout.clone())],
+            })
+        );
+        for seen in [
+            niri_ipc::Event::WorkspaceActivated { id: 5, focused: false },
+            niri_ipc::Event::WorkspaceActiveWindowChanged { workspace_id: 5, active_window_id: Some(2) },
+            niri_ipc::Event::WindowLayoutsChanged { changes: vec![(2, layout)] },
+            niri_ipc::Event::WindowClosed { id: 2 },
+        ] {
+            assert!(parts.apply(seen));
+        }
+        assert!(!parts.apply(niri_ipc::Event::WindowClosed { id: 2 }), "window 2 is gone after closing");
+    }
+
+    #[test]
+    fn id_parsers_accept_u64_and_reject_non_numeric_strings() {
+        for raw in ["abc", "", "-1"] {
+            assert_eq!(window_id(raw), None, "{raw:?}");
+            assert_eq!(workspace_reference(raw), None, "{raw:?}");
+        }
+        assert_eq!(window_id("0"), Some(0));
+        assert_eq!(window_id("7"), Some(7));
+        assert_eq!(workspace_reference("7"), Some(niri_ipc::WorkspaceReferenceArg::Id(7)));
+    }
+
+    struct FollowRun {
+        end: End,
+        ws_state: std::sync::Arc<std::sync::Mutex<shared::state::workspaces::WorkspacesState>>,
+        win_state: std::sync::Arc<std::sync::Mutex<shared::state::windows::WindowsState>>,
+        keyboard: LayoutSink,
+        ws_rx: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
+        win_rx: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
+    }
+
+    /// Drives `follow` over a real `UnixListener` and `Socket::connect_to`, writing `lines` then
+    /// closing for EOF. Runs `follow` on a bounded thread so a broken EOF guard fails fast.
+    fn run_follow(lines: Vec<String>, keep_ws: bool, keep_win: bool) -> FollowRun {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("niri.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            for line in lines {
+                if let Err(err) = conn.write_all(line.as_bytes()).and_then(|()| conn.write_all(b"\n")) {
+                    assert!(
+                        !keep_ws
+                            && !keep_win
+                            && matches!(
+                                err.kind(),
+                                std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+                            ),
+                        "unexpected event write failure: {err}"
+                    );
+                    break;
+                }
+            }
+        });
+
+        let (ws_tx, ws_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (win_tx, win_rx) = tokio::sync::mpsc::unbounded_channel();
+        let ws_rx = keep_ws.then_some(ws_rx);
+        let win_rx = keep_win.then_some(win_rx);
+        let ws_state = std::sync::Arc::new(std::sync::Mutex::new(Default::default()));
+        let win_state = std::sync::Arc::new(std::sync::Mutex::new(Default::default()));
+        let mut publisher = StatePublisher::new(ws_state.clone(), ws_tx, crate::compositor::CompositorKind::Niri);
+        let mut windows_publisher = WindowsPublisher::new(win_state.clone(), win_tx, "niri");
+        let keyboard = LayoutSink::default();
+
+        let socket = niri_ipc::socket::Socket::connect_to(&path).unwrap();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let follow_keyboard = keyboard.clone();
+        std::thread::spawn(move || {
+            let _ = done_tx.send(follow(socket, &mut publisher, &mut windows_publisher, &follow_keyboard));
+        });
+        let end = done_rx.recv_timeout(std::time::Duration::from_secs(5)).expect("follow did not finish in time");
+        server.join().unwrap();
+        FollowRun { end, ws_state, win_state, keyboard, ws_rx, win_rx }
+    }
+
+    fn event_line(event: &niri_ipc::Event) -> String {
+        serde_json::to_string(event).unwrap()
+    }
+
+    #[test]
+    fn follow_skips_unknown_events_applies_later_events_and_clears_on_eof() {
+        let layouts: niri_ipc::KeyboardLayouts =
+            serde_json::from_value(serde_json::json!({ "names": ["English (US)", "Arabic"], "current_idx": 1 }))
+                .unwrap();
+        let lines = vec![
+            event_line(&niri_ipc::Event::WorkspacesChanged { workspaces: vec![workspace(5, 1, "eDP-1", true, true)] }),
+            r#"{"ScreencastStarted":{"id":1}}"#.to_string(),
+            event_line(&niri_ipc::Event::WindowsChanged { windows: vec![window(2, "term", "kitty", true, false)] }),
+            event_line(&niri_ipc::Event::KeyboardLayoutsChanged { keyboard_layouts: layouts }),
+            event_line(&niri_ipc::Event::WindowFocusTimestampChanged { id: 2, focus_timestamp: None }),
+            event_line(&niri_ipc::Event::OverviewOpenedOrClosed { is_open: true }),
+        ];
+
+        let mut ran = run_follow(lines, true, true);
+
+        assert_eq!(ran.end, End::Lost);
+        let ws = ran.ws_state.lock().unwrap();
+        assert!(ws.outputs.is_empty() && ws.active_client.is_none() && ws.overview_open == Some(false));
+        assert!(ran.win_state.lock().unwrap().windows.is_empty());
+        assert_eq!(ran.keyboard.state.lock().unwrap().active_layout, "Arabic");
+        let mut ws_rx = ran.ws_rx.take().unwrap();
+        let mut win_rx = ran.win_rx.take().unwrap();
+        assert_eq!(std::iter::from_fn(|| ws_rx.try_recv().ok()).count(), 4);
+        assert_eq!(std::iter::from_fn(|| win_rx.try_recv().ok()).count(), 3);
+    }
+
+    #[test]
+    fn follow_stops_only_once_both_receivers_are_dropped() {
+        let lines = || {
+            vec![
+                event_line(&niri_ipc::Event::WorkspacesChanged {
+                    workspaces: vec![workspace(5, 1, "eDP-1", true, true)],
+                }),
+                event_line(&niri_ipc::Event::WindowsChanged { windows: vec![window(2, "term", "kitty", true, false)] }),
+            ]
+        };
+
+        let unwanted = run_follow(lines(), false, false);
+        assert_eq!(unwanted.end, End::Unwanted);
+        assert_eq!(unwanted.ws_state.lock().unwrap().outputs.len(), 1);
+        assert!(unwanted.win_state.lock().unwrap().windows.is_empty());
+
+        let mut win_only = run_follow(lines(), false, true);
+        assert_eq!(win_only.end, End::Lost);
+        let mut win_rx = win_only.win_rx.take().unwrap();
+        assert_eq!(std::iter::from_fn(|| win_rx.try_recv().ok()).count(), 3);
+
+        let mut ws_only = run_follow(lines(), true, false);
+        assert_eq!(ws_only.end, End::Lost);
+        let mut ws_rx = ws_only.ws_rx.take().unwrap();
+        assert_eq!(std::iter::from_fn(|| ws_rx.try_recv().ok()).count(), 3);
     }
 
     /// niri-ipc's `read_events` turns a serde error into an `io::Error`; skipping relies on an

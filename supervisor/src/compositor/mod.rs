@@ -303,6 +303,66 @@ mod tests {
     }
 
     #[test]
+    fn a_flapping_stream_backs_off_between_reconnects() {
+        let started = std::time::Instant::now();
+        let mut follows = 0;
+        keep_following(
+            "niri",
+            Duration::from_millis(20),
+            || Ok(()),
+            |()| {
+                follows += 1;
+                if follows <= 4 { End::Lost } else { End::Unwanted }
+            },
+        );
+
+        assert!(started.elapsed() >= Duration::from_millis(140));
+    }
+
+    #[test]
+    fn lost_clears_state_and_returns_unwanted_only_when_both_receivers_are_gone() {
+        use std::sync::{Arc, Mutex};
+
+        let row = crate::capabilities::workspaces::controller::WorkspaceRow {
+            id: "1".to_string(),
+            number: Some(1),
+            name: None,
+            output: Some("eDP-1".to_string()),
+            is_active: true,
+            is_focused: true,
+            populated: false,
+            app_id: None,
+            window_id: None,
+            urgent: false,
+        };
+        let win = WindowEntry { id: "1".to_string(), ..Default::default() };
+
+        for (drop_ws, drop_win, expected) in
+            [(true, false, End::Lost), (false, true, End::Lost), (true, true, End::Unwanted)]
+        {
+            let (ws_tx, ws_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (win_tx, win_rx) = tokio::sync::mpsc::unbounded_channel();
+            let ws_state = Arc::new(Mutex::new(Default::default()));
+            let win_state = Arc::new(Mutex::new(Default::default()));
+            let mut ws_pub = StatePublisher::new(Arc::clone(&ws_state), ws_tx, CompositorKind::Niri);
+            let mut win_pub = WindowsPublisher::new(Arc::clone(&win_state), win_tx, "niri");
+            assert!(ws_pub.publish(std::slice::from_ref(&row), None, None, Some(true)));
+            assert!(win_pub.publish(vec![win.clone()]));
+
+            if drop_ws {
+                drop(ws_rx);
+            }
+            if drop_win {
+                drop(win_rx);
+            }
+
+            assert_eq!(lost(&mut ws_pub, &mut win_pub, Some(false)), expected);
+            assert!(ws_state.lock().unwrap().outputs.is_empty());
+            assert!(win_state.lock().unwrap().windows.is_empty());
+        }
+    }
+
+    #[test]
     fn a_request_gives_up_on_a_socket_that_never_answers() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("silent.sock");
