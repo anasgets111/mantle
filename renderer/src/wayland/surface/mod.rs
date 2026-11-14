@@ -311,6 +311,9 @@ pub(super) struct TrackedSurface {
     pub(super) last_blur_region: Vec<crate::text::snap::PhysicalRect>,
     /// The input region last sent, `None` before this `wl_surface` was sent one (ADR-0261).
     pub(super) last_input_region: Option<Vec<crate::text::snap::PhysicalRect>>,
+    /// Hover signals currently hovered or awaiting a pointer-leave crossing on this surface, paired
+    /// with the declaring node's latest `on_hover` so removed/replaced nodes still clear.
+    pub(super) last_hover: Vec<(crate::lua::signal::Signal, Option<Function>)>,
 }
 impl TrackedSurface {
     pub(super) fn new(role: TrackedRole, surface_id: String) -> Self {
@@ -331,6 +334,7 @@ impl TrackedSurface {
             blur_effect: None,
             last_blur_region: Vec::new(),
             last_input_region: None,
+            last_hover: Vec::new(),
         }
     }
 

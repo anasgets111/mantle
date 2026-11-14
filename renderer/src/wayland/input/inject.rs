@@ -114,6 +114,14 @@ impl App {
 
     fn inject_motion(&mut self, index: usize, position: (f64, f64)) {
         let here = self.pointer_at.as_ref().is_some_and(|(id, _)| *id == self.surfaces[index].surface_id);
+        if !here
+            && let Some(previous) = self
+                .pointer_at
+                .as_ref()
+                .and_then(|(id, _)| self.surfaces.iter().position(|surface| &surface.surface_id == id))
+        {
+            self.pointer_left_destroyed_surface(previous);
+        }
         let kind = if here { PointerEventKind::Motion { time: 0 } } else { PointerEventKind::Enter { serial: 0 } };
         self.pointer_event(index, position, &kind, true);
         self.sync_pointer(index);

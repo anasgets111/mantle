@@ -273,6 +273,11 @@ impl Signal {
         entered.replace(hovered) != hovered
     }
 
+    /// Whether the last pointer event left this hover signal entered.
+    pub(crate) fn is_pointer_entered(&self) -> bool {
+        matches!(&self.0, SignalKind::Hover { entered: Some(entered), .. } if entered.get())
+    }
+
     /// Focus-within write end for `crate::wayland`; `None` for other kinds.
     pub(crate) fn focused_handle(&self) -> Option<LiveSignalHandle> {
         let SignalKind::Focused { id, cell, dirty } = &self.0 else { return None };

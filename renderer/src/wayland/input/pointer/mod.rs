@@ -267,7 +267,7 @@ impl App {
                 }
                 self.forget_pointer();
                 let tree = self.client.scene().surface(&self.surfaces[index].surface_id);
-                self.sync_hover(index, tree, &[], true);
+                sync_hover(&mut self.surfaces[index], self.client.lua(), tree, &[], true);
             }
             // Motion off the armed rect does not disarm; return and release still click. Enter
             // and Motion update hover and may fire `on_hover` on crossings.
@@ -287,7 +287,7 @@ impl App {
                 let tree = self.client.scene().surface(&self.surfaces[index].surface_id);
                 let point = layout::hit::LogicalPoint::from_position(position);
                 let path = tree.map(|tree| layout::hit::hit_path(tree, point)).unwrap_or_default();
-                self.sync_hover(index, tree, &path, true);
+                sync_hover(&mut self.surfaces[index], self.client.lua(), tree, &path, true);
                 // Chosen while the tree is still borrowed, shown once that borrow has ended.
                 let shape = layout::hit::cursor_under(&path, point, &self.shaping);
                 // The real pointer's cursor is not an injected event's to set.
@@ -390,7 +390,7 @@ impl App {
         let tree = self.client.scene().surface(surface_id);
         let point = layout::hit::LogicalPoint::from_position(*position);
         let path = tree.map(|tree| layout::hit::hit_path(tree, point)).unwrap_or_default();
-        self.sync_hover(index, tree, &path, false);
+        sync_hover(&mut self.surfaces[index], self.client.lua(), tree, &path, false);
         self.sync_pointer(index);
     }
 
@@ -418,41 +418,15 @@ impl App {
     /// position, drop the armed click, and write every hover off with `on_hover` firing.
     pub(in crate::wayland) fn pointer_left_destroyed_surface(&mut self, index: usize) {
         let surface_id = self.surfaces[index].surface_id.clone();
-        let Some(&(_, position)) = self.pointer_at.as_ref().filter(|(at, _)| *at == surface_id) else {
+        if let Some(&(_, position)) = self.pointer_at.as_ref().filter(|(at, _)| *at == surface_id) {
+            self.fire_on_drag(&surface_id, position, DragPhase::End, None);
+            self.forget_pointer();
+        } else if self.surfaces[index].last_hover.is_empty() {
             return;
-        };
-        self.fire_on_drag(&surface_id, position, DragPhase::End, None);
-        self.forget_pointer();
+        }
         let tree = self.client.scene().surface(&surface_id);
-        self.sync_hover(index, tree, &[], true);
+        sync_hover(&mut self.surfaces[index], self.client.lua(), tree, &[], true);
         self.sync_pointer(index);
-    }
-
-    /// Write all `hover` signals from the pointer's hit `path`, empty off the surface (ADR-0062). Collect writes before
-    /// `set_changed` because the tree borrow must end; only moved values dirty the scene (decision
-    /// 4), so a stationary pointer inside one node re-resolves nothing while device-rate motion
-    /// continues (ADR-0044 decision 2). Pointer updates enable `on_hover`; layout refreshes do not.
-    ///
-    /// Takes the tree and path rather than finding them so one lookup serves this and the cursor.
-    fn sync_hover(
-        &self,
-        index: usize,
-        tree: Option<&layout::ResolvedNode>,
-        path: &[&layout::ResolvedNode],
-        fires_on_hover: bool,
-    ) {
-        // Skip the expensive tree walk when no config registered `hover(name)`.
-        if !crate::lua::signal::any_hover_registered(self.client.lua()) {
-            return;
-        }
-        let Some(tree) = tree else {
-            return;
-        };
-        let writes = layout::hover::hover_writes(tree, path);
-        let lua = self.client.lua();
-        for write in writes {
-            apply_hover_write(lua, write, fires_on_hover, &self.surfaces[index].surface_id);
-        }
     }
 
     /// Call a node's `on_click` with its rect (ADR-0050 decision 3); swallow handler raises.
@@ -479,6 +453,45 @@ impl App {
     }
 }
 
+/// Write all `hover` signals from `previous` and `tree` at `path` (ADR-0062). Previous signals
+/// missing from `tree` clear to `false` without altering their last rect; pointer updates enable
+/// `on_hover` and layout refreshes do not.
+fn sync_hover(
+    surface: &mut TrackedSurface,
+    lua: &Lua,
+    tree: Option<&layout::ResolvedNode>,
+    path: &[&layout::ResolvedNode],
+    fires_on_hover: bool,
+) {
+    // Skip the tree walk when no config registered `hover(name)` and nothing is tracked.
+    if !crate::lua::signal::any_hover_registered(lua) && surface.last_hover.is_empty() {
+        return;
+    }
+    let previous = std::mem::take(&mut surface.last_hover);
+    let writes = layout::hover::reconcile_hover_writes(&previous, tree, path);
+    let mut next: Vec<(crate::lua::signal::Signal, Option<Function>)> = Vec::new();
+    for write in writes {
+        let signal = write.signal.clone();
+        let on_hover = write.on_hover.clone();
+        let hovered = write.hovered;
+        apply_hover_write(lua, write, fires_on_hover, &surface.surface_id);
+        let Some(id) = signal.hover_handle().and_then(|_| signal.cell_id()) else {
+            continue;
+        };
+        let retain = hovered || signal.is_pointer_entered();
+        if let Some(pos) = next.iter().position(|(held, _)| held.cell_id() == Some(id)) {
+            if retain {
+                next[pos].1 = on_hover;
+            } else {
+                next.remove(pos);
+            }
+        } else if retain {
+            next.push((signal, on_hover));
+        }
+    }
+    surface.last_hover = next;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -500,5 +513,181 @@ mod tests {
         // tell them apart.
         assert_eq!(pointer_button_name(0x117), None);
         assert_eq!(pointer_button_name(0), None);
+    }
+
+    fn lua_log(app: &App) -> Vec<String> {
+        app.client.lua().globals().get::<mlua::Table>("log").unwrap().sequence_values().map(Result::unwrap).collect()
+    }
+
+    fn hover_bool(app: &App, name: &str) -> bool {
+        app.client.lua().load(format!("return hover({name:?}):get()")).eval().unwrap()
+    }
+
+    fn hover_rect_box(app: &App, name: &str) -> (f32, f32, f32, f32) {
+        let rect: mlua::Table = app.client.lua().load(format!("return hover_rect({name:?}):get()")).eval().unwrap();
+        (rect.get("x").unwrap(), rect.get("y").unwrap(), rect.get("width").unwrap(), rect.get("height").unwrap())
+    }
+
+    #[test]
+    fn injected_crossing_does_not_let_old_surface_clear_shared_hover() {
+        let (mut app, _dir) = App::test_app(
+            r#"
+            local function bar(id)
+                return panel { id = id, layer = "top", output = "active", width = 100, height = 40,
+                    child = rect { width = "fill", height = "fill", hover = hover("shared") } }
+            end
+            return { bar("a"), bar("b") }
+            "#,
+        );
+        for surface in ["a", "b"] {
+            app.inject_input(&shared::Inject {
+                surface: surface.into(),
+                steps: vec![shared::InputStep::Move { x: 10.0, y: 10.0 }],
+            })
+            .unwrap();
+        }
+        assert!(hover_bool(&app, "shared"));
+        app.drop_role_object(0);
+        assert!(hover_bool(&app, "shared"), "tearing down a must not clear b's active hover");
+    }
+
+    #[test]
+    fn layout_refresh_clears_removed_and_replaced_hover_signals_without_firing_on_hover() {
+        let (mut app, _dir) = App::test_app(
+            r#"
+            log = {}
+            mode = state("mode", "a")
+            return panel {
+                id = "bar",
+                layer = "top",
+                output = "active",
+                width = 200,
+                height = 80,
+                child = row {
+                    children = computed({mode}, function(which)
+                        if which == "none" then return {} end
+                        return {
+                            rect {
+                                id = "box",
+                                width = 60,
+                                height = 40,
+                                hover = hover(which),
+                                on_hover = function(over) log[#log + 1] = which .. ":" .. tostring(over) end,
+                            }
+                        }
+                    end)
+                }
+            }
+            "#,
+        );
+
+        // Enter hovered node `a`.
+        app.pointer_event(0, (10.0, 10.0), &PointerEventKind::Enter { serial: 1 }, false);
+        assert!(hover_bool(&app, "a"));
+        assert_eq!(hover_rect_box(&app, "a"), (0.0, 0.0, 60.0, 40.0));
+        assert_eq!(lua_log(&app), ["a:true"]);
+
+        // Layout removes node `a`: signal clears, last rect stays, no `on_hover` on layout change.
+        app.client.lua().load(r#"mode:set("none")"#).exec().unwrap();
+        assert!(app.client.re_resolve_if_dirty());
+        app.refresh_hover_after_layout();
+        assert!(!hover_bool(&app, "a"));
+        assert_eq!(hover_rect_box(&app, "a"), (0.0, 0.0, 60.0, 40.0));
+        assert_eq!(lua_log(&app), ["a:true"]);
+
+        // Next motion delivers the pending leave crossing and resets `entered` for re-entry.
+        app.pointer_event(0, (12.0, 10.0), &PointerEventKind::Motion { time: 2 }, false);
+        assert_eq!(lua_log(&app), ["a:true", "a:false"]);
+        assert!(app.surfaces[0].last_hover.is_empty());
+
+        // Re-adding `a` under the pointer restores `true` silently, and next motion fires `a:true`.
+        app.client.lua().load(r#"mode:set("a")"#).exec().unwrap();
+        assert!(app.client.re_resolve_if_dirty());
+        app.refresh_hover_after_layout();
+        assert!(hover_bool(&app, "a"));
+        assert_eq!(lua_log(&app), ["a:true", "a:false"]);
+        app.pointer_event(0, (14.0, 10.0), &PointerEventKind::Motion { time: 3 }, false);
+        assert_eq!(lua_log(&app), ["a:true", "a:false", "a:true"]);
+
+        // Replacing `hover("a")` with `hover("b")` on the retained node clears `a` and sets `b`.
+        app.client.lua().load(r#"mode:set("b")"#).exec().unwrap();
+        assert!(app.client.re_resolve_if_dirty());
+        app.refresh_hover_after_layout();
+        assert!(!hover_bool(&app, "a"));
+        assert!(hover_bool(&app, "b"));
+        assert_eq!(hover_rect_box(&app, "a"), (0.0, 0.0, 60.0, 40.0));
+        assert_eq!(hover_rect_box(&app, "b"), (0.0, 0.0, 60.0, 40.0));
+        assert_eq!(lua_log(&app), ["a:true", "a:false", "a:true"]);
+
+        app.pointer_event(0, (16.0, 10.0), &PointerEventKind::Motion { time: 4 }, false);
+        assert_eq!(lua_log(&app), ["a:true", "a:false", "a:true", "a:false", "b:true"]);
+
+        app.pointer_event(0, (16.0, 10.0), &PointerEventKind::Leave { serial: 5 }, false);
+        assert!(!hover_bool(&app, "b"));
+        assert_eq!(hover_rect_box(&app, "b"), (0.0, 0.0, 60.0, 40.0));
+        assert_eq!(lua_log(&app), ["a:true", "a:false", "a:true", "a:false", "b:true", "b:false"]);
+        assert!(app.surfaces[0].last_hover.is_empty());
+    }
+
+    #[test]
+    fn missing_tree_and_surface_teardown_clear_prior_hover_state() {
+        let (mut app, _dir) = App::test_app(
+            r#"
+            log = {}
+            return panel {
+                id = "bar",
+                layer = "top",
+                output = "active",
+                width = 200,
+                height = 80,
+                child = row {
+                    hover = hover("dup"),
+                    on_hover = function(over) log[#log + 1] = "first:" .. tostring(over) end,
+                    children = {
+                        rect {
+                            width = 60,
+                            height = 40,
+                            hover = hover("dup"),
+                            on_hover = function(over) log[#log + 1] = "second:" .. tostring(over) end,
+                        },
+                        rect {
+                            width = 60,
+                            height = 40,
+                            hover = hover("x"),
+                            on_hover = function(over) log[#log + 1] = "x:" .. tostring(over) end,
+                        },
+                    }
+                }
+            }
+            "#,
+        );
+
+        // Enter second `rect` (`x` and ancestor `dup` only -> `dup` ends false, not retained).
+        app.pointer_event(0, (70.0, 10.0), &PointerEventKind::Enter { serial: 1 }, false);
+        assert!(!hover_bool(&app, "dup"));
+        assert!(hover_bool(&app, "x"));
+        assert_eq!(app.surfaces[0].last_hover.len(), 1);
+        assert_eq!(lua_log(&app), ["first:true", "second:false", "x:true"]);
+
+        // Move onto first `rect` (`dup` entered on both ancestor and child; second callback wins).
+        app.pointer_event(0, (10.0, 10.0), &PointerEventKind::Motion { time: 2 }, false);
+        assert!(hover_bool(&app, "dup"));
+        assert!(!hover_bool(&app, "x"));
+        assert_eq!(app.surfaces[0].last_hover.len(), 1);
+        assert_eq!(lua_log(&app), ["first:true", "second:false", "x:true", "first:true", "x:false"]);
+
+        // No new tree during layout refresh clears `hover("dup")` silently while keeping rect.
+        app.client.forget_surface("bar");
+        app.refresh_hover_after_layout();
+        assert!(!hover_bool(&app, "dup"));
+        assert_eq!(hover_rect_box(&app, "dup"), (0.0, 0.0, 120.0, 40.0));
+
+        // Surface teardown fires the pending leave using the last duplicate callback (`second`).
+        app.drop_role_object(0);
+        assert!(app.pointer_at.is_none());
+        assert!(!hover_bool(&app, "dup"));
+        assert_eq!(hover_rect_box(&app, "dup"), (0.0, 0.0, 120.0, 40.0));
+        assert!(app.surfaces[0].last_hover.is_empty());
+        assert_eq!(lua_log(&app), ["first:true", "second:false", "x:true", "first:true", "x:false", "second:false"]);
     }
 }
