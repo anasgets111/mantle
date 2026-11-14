@@ -971,4 +971,76 @@ mod tests {
         notify("vesktop", None).await;
         assert!(sound_rx.try_recv().is_err(), "quiet is silent");
     }
+
+    #[tokio::test]
+    async fn resolve_and_spool_image_validates_paths_urls_and_spools_raw_images() {
+        crate::capabilities::shm_icons::init_test_spool();
+        let trusted = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let trusted_file = trusted.path().join("pic.png");
+        let outside_file = outside.path().join("secret.png");
+        std::fs::write(&trusted_file, b"ok").unwrap();
+        std::fs::write(&outside_file, b"no").unwrap();
+
+        let (events, sound_tx) = test_channels();
+        let mut controller = NotificationsController::inert(events, sound_tx);
+        controller.trusted_roots = Arc::from([trusted.path().to_path_buf()]);
+        let canonical = trusted_file.canonicalize().unwrap().to_string_lossy().into_owned();
+
+        assert_eq!(
+            controller.resolve_and_spool_image(9_101, None, Some(trusted_file.display().to_string()), None).await,
+            Some(canonical.clone())
+        );
+        assert_eq!(
+            controller
+                .resolve_and_spool_image(9_102, None, Some(format!("file://{}", trusted_file.display())), None)
+                .await,
+            Some(canonical.clone())
+        );
+        for untrusted in [outside_file.display().to_string(), "/etc/passwd".into(), "file:///etc/passwd".into()] {
+            assert_eq!(
+                controller.resolve_and_spool_image(9_103, None, Some(untrusted.clone()), None).await,
+                None,
+                "{untrusted}"
+            );
+        }
+        assert_eq!(controller.resolve_and_spool_image(9_104, None, None, None).await, None);
+
+        let from_data = controller
+            .resolve_and_spool_image(9_105, Some(valid_rgba_image(2, 2)), None, None)
+            .await
+            .expect("image_data spools");
+        assert!(std::path::Path::new(&from_data).exists());
+        let from_icon_data = controller
+            .resolve_and_spool_image(9_106, None, None, Some(valid_rgba_image(2, 2)))
+            .await
+            .expect("icon_data spools");
+        assert!(std::path::Path::new(&from_icon_data).exists());
+
+        let body = format!(r#"hi <img src="{}"/> <img src="/etc/passwd"/>"#, trusted_file.display());
+        let hints = Hints { image_path: Some(format!("file://{}", trusted_file.display())), ..Hints::default() };
+        controller.notify("app".into(), 0, String::new(), "s".into(), body, vec![], hints, 0).await;
+        let first = &controller.snapshot().feed[0];
+        assert_eq!(first.image_path.as_deref(), Some(canonical.as_str()));
+        assert_eq!(
+            first.body,
+            [
+                super::super::NotificationSpan::Text {
+                    text: "hi ".into(),
+                    bold: false,
+                    italic: false,
+                    underline: false,
+                    href: None,
+                },
+                super::super::NotificationSpan::Image { image_path: canonical },
+                super::super::NotificationSpan::Text {
+                    text: " ".into(),
+                    bold: false,
+                    italic: false,
+                    underline: false,
+                    href: None,
+                },
+            ]
+        );
+    }
 }

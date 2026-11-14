@@ -262,6 +262,46 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_body_keeps_trusted_images_and_text_and_drops_untrusted_images() {
+        let trusted = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let sub = trusted.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let trusted_file = trusted.path().join("icon.png");
+        let outside_file = outside.path().join("secret.png");
+        std::fs::write(&trusted_file, b"ok").unwrap();
+        std::fs::write(&outside_file, b"no").unwrap();
+
+        let uncanonical = sub.join("..").join("icon.png");
+        let body = format!(
+            r#"<b>hi</b> <img src="{}"/> mid <img src="/etc/passwd"/> <img src="{}"/> end"#,
+            uncanonical.display(),
+            outside_file.display(),
+        );
+        let spans = sanitize_body(&body, &[trusted.path().to_path_buf()]);
+        let text = |s: &str, bold: bool| NotificationSpan::Text {
+            text: s.into(),
+            bold,
+            italic: false,
+            underline: false,
+            href: None,
+        };
+        assert_eq!(
+            spans,
+            [
+                text("hi", true),
+                text(" ", false),
+                NotificationSpan::Image {
+                    image_path: trusted_file.canonicalize().unwrap().to_string_lossy().into_owned(),
+                },
+                text(" mid ", false),
+                text(" ", false),
+                text(" end", false),
+            ]
+        );
+    }
+
+    #[test]
     fn a_file_uri_that_escapes_or_decodes_badly_gets_no_icon() {
         let dir = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();

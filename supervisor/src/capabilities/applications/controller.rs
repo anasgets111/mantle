@@ -70,6 +70,8 @@ pub struct ApplicationsController {
     /// `StateSnapshot` dirties the Renderer and triggers a full re-resolve/repaint (ADR-0044), and
     /// a launcher-open `refresh` would otherwise repaint an identical list.
     rescan: Arc<dyn Fn() + Send + Sync>,
+    /// Injected for tests so `open_url` never invokes a real `xdg-open`.
+    spawn_url: fn(&str, &[String]) -> std::io::Result<()>,
     watch: JoinHandle<()>,
 }
 
@@ -117,7 +119,8 @@ impl ApplicationsController {
             })
         };
         let watch = tokio::spawn(watch::run(dirs, Arc::clone(&rescan)));
-        ApplicationsController { state, launch_targets, rescan, watch }
+        let spawn_url = |cmd: &str, args: &[String]| crate::process::spawn_detached(cmd, args, &[], None);
+        ApplicationsController { state, launch_targets, rescan, spawn_url, watch }
     }
 
     pub fn snapshot(&self) -> ApplicationsState {
@@ -169,8 +172,7 @@ impl ApplicationsController {
     /// spawn error.
     pub fn open_url(&self, url: &str) -> Result<(), OpenUrlError> {
         openable_url(url).map_err(OpenUrlError::Refused)?;
-        crate::process::spawn_detached("xdg-open", &[url.to_string()], &[], None)
-            .map_err(|err| OpenUrlError::Spawn(err.to_string()))
+        (self.spawn_url)("xdg-open", &[url.to_string()]).map_err(|err| OpenUrlError::Spawn(err.to_string()))
     }
 }
 
@@ -181,12 +183,15 @@ mod tests {
 
     #[test]
     fn only_a_web_or_mail_url_without_whitespace_or_excess_length_is_openable() {
-        let too_long = format!("https://example.org/{}", "a".repeat(MAX_URL_BYTES));
+        let prefix = "https://example.org/";
+        let at_cap = format!("{prefix}{}", "a".repeat(MAX_URL_BYTES - prefix.len()));
+        let too_long = format!("{at_cap}a");
         for url in [
             "https://example.org/a?b=c#d",
             "http://example.org",
             "HTTPS://EXAMPLE.ORG", // the scheme's case is irrelevant
             "mailto:someone@example.org",
+            at_cap.as_str(),
         ] {
             assert_eq!(openable_url(url), Ok(()), "{url}");
         }
@@ -208,11 +213,26 @@ mod tests {
     /// A refused URL never reaches `xdg-open`.
     #[tokio::test]
     async fn open_url_refuses_before_spawning() {
-        let (controller, _dir) = controller_over(&[("thing.desktop", &runnable("Thing", "/bin/true"))]).await;
+        let (mut controller, _dir) = controller_over(&[("thing.desktop", &runnable("Thing", "/bin/true"))]).await;
+        controller.spawn_url = |cmd, args| panic!("refused URL must not spawn {cmd} {args:?}");
         assert_eq!(
             controller.open_url("file:///etc/passwd"),
             Err(OpenUrlError::Refused("scheme is not http, https or mailto"))
         );
+    }
+
+    #[tokio::test]
+    async fn open_url_forwards_allowed_urls_and_reports_spawn_errors() {
+        let (mut controller, _dir) = controller_over(&[("thing.desktop", &runnable("Thing", "/bin/true"))]).await;
+        controller.spawn_url = |cmd, args| {
+            assert_eq!(cmd, "xdg-open");
+            assert_eq!(args, ["https://example.org"]);
+            Ok(())
+        };
+        assert_eq!(controller.open_url("https://example.org"), Ok(()));
+
+        controller.spawn_url = |_, _| Err(std::io::Error::other("missing xdg-open"));
+        assert_eq!(controller.open_url("https://example.org"), Err(OpenUrlError::Spawn("missing xdg-open".into())));
     }
 
     /// Builds a controller over one temporary directory and waits for `new`'s background scan;

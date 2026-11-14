@@ -894,6 +894,85 @@ mod tests {
         assert_eq!(answer, shared::SupervisorFrame::CallResult(refusal));
     }
 
+    #[tokio::test]
+    async fn a_control_clients_call_list_and_inject_are_routed_and_answered() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("control.sock");
+        let (_registry, routes, mut inbound, _connected) = spawn_listener(&path).unwrap();
+
+        let mut client = UnixStream::connect(&path).await.unwrap();
+        let handshake = ConnectionHandshake { generation_id: shared::CONTROL_CLIENT_GENERATION };
+        framing::write_json_frame(&mut client, &handshake).await.unwrap();
+
+        let frames = [
+            RendererFrame::Call(shared::Call {
+                id: 0,
+                name: "rec.toggle".into(),
+                arguments: vec![serde_json::json!(1)],
+            }),
+            RendererFrame::ListDeclared { id: 0, declared: shared::Declared::Actions },
+            RendererFrame::Inject {
+                id: 0,
+                inject: shared::Inject { surface: "bar".into(), steps: vec![shared::InputStep::Text("hi".into())] },
+            },
+        ];
+        for frame in frames {
+            framing::write_json_frame(&mut client, &frame).await.unwrap();
+            let received = within(inbound.recv()).await.expect("frame is forwarded");
+            let id = match received.frame {
+                RendererFrame::Call(call) => call.id,
+                RendererFrame::ListDeclared { id, .. } | RendererFrame::Inject { id, .. } => id,
+                other => panic!("unexpected frame: {other:?}"),
+            };
+            assert_ne!(id, 0, "the listener stamps a nonzero routed id");
+            assert!(routes.is_pending(id), "route {id} must be pending");
+            routes.dispatched(id, 0);
+            let result = shared::CallResult { id, outcome: shared::CallOutcome::Returned(serde_json::json!("ok")) };
+            routes.answer(0, result.clone()).unwrap();
+            let answer: shared::SupervisorFrame = within(framing::read_json_frame(&mut client)).await.unwrap();
+            assert_eq!(answer, shared::SupervisorFrame::CallResult(result));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn await_claim_rejects_mismatch_immediately_waits_for_late_expectation_and_times_out() {
+        let registry = GenerationRegistry::default();
+        registry.expect_generation(1, Pid::from_raw(4242));
+        let start = tokio::time::Instant::now();
+        assert!(!registry.await_claim(1, Pid::from_raw(4243)).await, "mismatched pid refuses at once");
+        assert_eq!(start.elapsed(), Duration::ZERO);
+
+        let delayed = registry.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            delayed.expect_generation(2, Pid::from_raw(5150));
+        });
+        let start = tokio::time::Instant::now();
+        assert!(registry.await_claim(2, Pid::from_raw(5150)).await, "late expectation within timeout is admitted");
+        assert!(start.elapsed() >= Duration::from_millis(10) && start.elapsed() < HANDSHAKE_TIMEOUT);
+
+        let start = tokio::time::Instant::now();
+        assert!(!registry.await_claim(3, Pid::from_raw(6000)).await, "unrecorded generation times out");
+        assert_eq!(start.elapsed(), HANDSHAKE_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn handle_connection_refuses_mismatched_pid_and_leaves_generation_unregistered() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("control.sock");
+        let (registry, _routes, _inbound, mut connected) = spawn_listener(&path).unwrap();
+        registry.expect_generation(7, Pid::from_raw(Pid::this().as_raw() + 1));
+
+        let mut client = UnixStream::connect(&path).await.unwrap();
+        framing::write_json_frame(&mut client, &ConnectionHandshake { generation_id: 7 }).await.unwrap();
+
+        let mut byte = [0];
+        assert_eq!(within(client.read(&mut byte)).await.unwrap(), 0, "mismatched peer must be closed");
+        assert!(!registry.is_registered(7));
+        assert!(!registry.send_to(7, b"rejected".to_vec()), "send_to must find no registration");
+        assert!(connected.try_recv().is_err());
+    }
+
     /// ADR-0070 decision 3: an unknown capability name is dropped, and the connection lives on.
     #[tokio::test]
     async fn an_unknown_capability_start_is_dropped_without_closing_the_connection() {
