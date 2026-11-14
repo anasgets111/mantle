@@ -513,15 +513,23 @@ impl App {
         if !self.repeating.as_ref().is_some_and(|(_, due)| *due <= now) {
             return;
         }
-        let Some((event, _)) = self.repeating.take() else { return };
+        let Some(event) = self.repeating.as_ref().map(|(event, _)| event.clone()) else { return };
         self.apply_key(&event, true, None);
-        self.repeating = Some((event, now + interval));
+        if let Some((_, due)) = self.repeating.as_mut() {
+            *due = now + interval;
+        }
     }
 
     /// Apply one key to either field kind (ADR-0092), pruning both focuses once before dispatch. A key
     /// no plain field takes bubbles through `on_key`; an armed secure field never lets Lua hear one.
     pub(super) fn apply_key(&mut self, event: &KeyEvent, repeat: bool, serial: Option<u32>) {
+        let had_secure = self.focused_secure_submit.is_some();
         self.prune_secure_focus();
+        // A repeat pressed while a secure field was armed must not land in whatever sits behind it
+        // when pruning drops the field mid-hold (`focus_secure_submit` also stops further repeats).
+        if repeat && had_secure && self.focused_secure_submit.is_none() {
+            return;
+        }
         self.prune_text_field_focus();
         self.prune_control_focus();
         if self.apply_tab_key(event) {

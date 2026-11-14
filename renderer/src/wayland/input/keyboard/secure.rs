@@ -156,6 +156,9 @@ impl App {
     /// enforces the buffer's lifetime; assigning the field directly anywhere else reopens the leak
     /// that function closes.
     pub(in crate::wayland) fn focus_secure_submit(&mut self, next: Option<FocusedField>) {
+        if self.focused_secure_submit.as_deref() != next.as_ref() {
+            self.repeating = None;
+        }
         if next.is_some()
             && let Some(field) = self.focused_text_field.as_mut()
         {
@@ -260,10 +263,10 @@ impl App {
         if gone {
             debug!(2; "the surface holding the focused secure_submit field is gone; dropping it and scrubbing its buffer");
             self.focus_secure_submit(None);
-            // No `leave` follows either, so no press held there may be released or repeat into what is
-            // left. Not `keyboard_lost`: the keyboard may stay on a parent, with its modifiers still held.
+            // No `leave` follows either, so no press held there may be released into what is left
+            // (`focus_secure_submit` clears `repeating`). Not `keyboard_lost`: the keyboard may stay
+            // on a parent, with its modifiers still held.
             self.pressed_keys.clear();
-            self.repeating = None;
         }
     }
 
@@ -364,7 +367,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::super::super::tests::hit_node;
-    use super::super::tests::{field, secure_submit_table, target, textfield, tree_with};
+    use super::super::tests::{field, key, secure_submit_table, target, textfield, tree_with};
     use super::*;
 
     #[test]
@@ -623,5 +626,191 @@ mod tests {
         let on_popup = field("panel@TEST", "network", "connect");
         assert!(focus_is_still_armed(&on_popup, &scope(&["bar@TEST", "panel@TEST"]), true));
         assert!(!focus_is_still_armed(&on_popup, &scope(&["bar@TEST"]), true), "the popup is no longer shown");
+    }
+
+    fn lua_log(app: &App) -> Vec<String> {
+        app.client.lua().globals().get::<mlua::Table>("log").unwrap().sequence_values().map(Result::unwrap).collect()
+    }
+
+    fn key_a(raw_code: u32) -> KeyEvent {
+        KeyEvent { raw_code, ..key(Keysym::a, Some("a")) }
+    }
+
+    #[test]
+    fn removing_a_secure_fields_node_on_a_live_surface_stops_key_repeat() {
+        let (mut app, _dir) = App::test_app(
+            r#"
+            log = {}
+            show = state("show", true)
+            return panel {
+                id = "prompt",
+                layer = "top",
+                output = "active",
+                width = 200,
+                height = 80,
+                on_key = function(k) log[#log + 1] = "press:" .. k.name; return true end,
+                on_key_release = function(k) log[#log + 1] = "release:" .. k.name end,
+                child = row {
+                    children = computed({show}, function(open)
+                        if open then
+                            return { textfield { secure_submit = { capability = "lock", action = "authenticate" } } }
+                        end
+                        return {}
+                    end)
+                }
+            }
+            "#,
+        );
+
+        app.keyboard_focus = Some("prompt".to_string());
+        app.repeat_info = Some((std::time::Duration::ZERO, std::time::Duration::ZERO));
+        let scope = app.keyboard_focus_scope();
+        app.arm_secure_focus_if_the_scope_now_declares_one(&scope);
+        assert!(app.focused_secure_submit.is_some());
+
+        let event = key_a(30);
+        app.apply_key(&event, false, Some(1));
+        app.arm_repeat(event.clone());
+        assert!(app.repeating.is_some());
+        app.fire_due_repeat();
+        assert_eq!(app.focused_secure_submit.as_ref().unwrap().buffer.expose_secret(), b"aa");
+        assert!(lua_log(&app).is_empty(), "an armed secure field silences on_key");
+
+        // Remove the secure_submit node while keeping the panel surface alive.
+        app.client.lua().load("show:set(false)").exec().unwrap();
+        assert!(app.client.re_resolve_if_dirty());
+        app.prune_secure_focus_after_resolve();
+
+        assert!(app.surface_is_live("prompt"), "the surface stayed alive");
+        assert!(app.focused_secure_submit.is_none());
+        assert!(app.repeating.is_none(), "dropping secure focus must stop the held key repeat");
+
+        app.fire_due_repeat();
+        app.release_offered_key(event.raw_code);
+        assert!(
+            lua_log(&app).is_empty(),
+            "neither a repeat nor a synthetic release may reach the surface after the field goes"
+        );
+    }
+
+    #[test]
+    fn pruning_stale_secure_focus_on_a_repeat_drops_the_repeat_instead_of_leaking_it() {
+        let (mut app, _dir) = App::test_app(
+            r#"
+            log = {}
+            return {
+                panel {
+                    id = "prompt",
+                    layer = "top",
+                    output = "active",
+                    width = 200,
+                    height = 80,
+                    child = textfield { secure_submit = { capability = "lock", action = "authenticate" } },
+                },
+                panel {
+                    id = "other",
+                    layer = "top",
+                    output = "active",
+                    width = 200,
+                    height = 80,
+                    on_key = function(k) log[#log + 1] = k.name .. ":" .. tostring(k["repeat"]); return true end,
+                },
+            }
+            "#,
+        );
+
+        app.keyboard_focus = Some("prompt".to_string());
+        app.repeat_info = Some((std::time::Duration::ZERO, std::time::Duration::ZERO));
+        let scope = app.keyboard_focus_scope();
+        app.arm_secure_focus_if_the_scope_now_declares_one(&scope);
+
+        let event = key_a(30);
+        app.apply_key(&event, false, Some(1));
+        app.arm_repeat(event.clone());
+        assert!(app.repeating.is_some());
+
+        // Focus moves before a resolve prune (e.g. scope changed before next turn's repeat fires).
+        app.keyboard_focus = Some("other".to_string());
+        app.fire_due_repeat();
+
+        assert!(app.focused_secure_submit.is_none());
+        assert!(app.repeating.is_none());
+        assert!(lua_log(&app).is_empty(), "the held repeat must not leak into the newly focused surface");
+
+        // A fresh press while secure focus is stale prunes secure focus and reaches the new surface.
+        app.keyboard_focus = Some("prompt".to_string());
+        app.arm_secure_focus_if_the_scope_now_declares_one(&app.keyboard_focus_scope());
+        assert!(app.focused_secure_submit.is_some());
+        app.keyboard_focus = Some("other".to_string());
+        app.apply_key(&event, false, Some(2));
+        assert!(app.focused_secure_submit.is_none());
+        assert_eq!(lua_log(&app), ["a:false"]);
+    }
+
+    #[test]
+    fn focus_secure_submit_clears_repeat_only_when_the_secure_target_changes() {
+        let (mut app, _dir) = App::test_app(
+            r#"
+            log = {}
+            return panel {
+                id = "prompt",
+                layer = "top",
+                output = "active",
+                width = 200,
+                height = 80,
+                on_key = function(k) log[#log + 1] = k.name; return true end,
+                child = column {
+                    children = {
+                        textfield { secure_submit = { capability = "lock", action = "authenticate" } },
+                        textfield { secure_submit = { capability = "polkit", action = "authenticate" } },
+                    },
+                },
+            }
+            "#,
+        );
+
+        app.keyboard_focus = Some("prompt".to_string());
+        app.repeat_info = Some((std::time::Duration::ZERO, std::time::Duration::from_secs(60)));
+
+        // Plain/on_key repeat survives `focus_secure_submit(None)` when no secure field was armed.
+        let event = key_a(30);
+        app.apply_key(&event, false, Some(1));
+        app.arm_repeat(event.clone());
+        app.focus_secure_submit(None);
+        assert!(app.repeating.is_some(), "None -> None must not cancel an unrelated repeat");
+        app.fire_due_repeat();
+        app.fire_due_repeat();
+        assert_eq!(lua_log(&app), ["a", "a"]);
+
+        // Re-focusing the same secure field preserves repeat; switching to another clears it.
+        let tree = app.client.scene().surface("prompt").unwrap();
+        let lock_id = super::focus::secure_id(tree, &target("lock", "authenticate")).unwrap();
+        let polkit_id = super::focus::secure_id(tree, &target("polkit", "authenticate")).unwrap();
+        let lock_field =
+            FocusedField { surface_id: "prompt".into(), id: lock_id, target: target("lock", "authenticate") };
+        let polkit_field =
+            FocusedField { surface_id: "prompt".into(), id: polkit_id, target: target("polkit", "authenticate") };
+
+        app.focus_secure_submit(Some(lock_field.clone()));
+        app.apply_key(&event, false, Some(2));
+        app.arm_repeat(event.clone());
+        app.focus_secure_submit(Some(lock_field));
+        assert!(app.repeating.is_some(), "re-focusing the same field keeps the repeat");
+
+        app.focus_secure_submit(Some(polkit_field));
+        assert!(app.repeating.is_none(), "switching to a different secure field clears the repeat");
+        app.fire_due_repeat();
+        assert!(app.focused_secure_submit.as_ref().unwrap().buffer.is_empty());
+
+        // `drop_secure_focus_if_its_surface_is_gone` still clears repeat via `focus_secure_submit(None)`.
+        app.apply_key(&event, false, Some(3));
+        app.arm_repeat(event);
+        assert!(app.repeating.is_some());
+        app.keyboard_focus = None;
+        app.drop_role_object(0);
+        assert!(!app.surface_is_live("prompt"));
+        app.drop_secure_focus_if_its_surface_is_gone();
+        assert!(app.focused_secure_submit.is_none());
+        assert!(app.repeating.is_none());
     }
 }

@@ -317,3 +317,170 @@ impl ShmHandler for App {
         &mut self.shm
     }
 }
+
+#[cfg(test)]
+mod test_support {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+
+    use wayland_client::globals::registry_queue_init;
+
+    use super::*;
+
+    fn push_wire_msg(buf: &mut Vec<u8>, object_id: u32, opcode: u16, payload: &[u8]) {
+        let size = ((8 + payload.len()) as u32) << 16 | u32::from(opcode);
+        buf.extend_from_slice(&object_id.to_ne_bytes());
+        buf.extend_from_slice(&size.to_ne_bytes());
+        buf.extend_from_slice(payload);
+    }
+
+    fn spawn_mock_wayland_server(mut stream: UnixStream) {
+        std::thread::spawn(move || {
+            // `registry_queue_init` sends `wl_display.get_registry(2)` + `wl_display.sync(3)`.
+            let mut req = [0u8; 24];
+            if stream.read_exact(&mut req).is_err() {
+                return;
+            }
+            let registry_id = u32::from_ne_bytes(req[8..12].try_into().unwrap());
+            let callback_id = u32::from_ne_bytes(req[20..24].try_into().unwrap());
+
+            let mut reply = Vec::new();
+            for (name, iface, version) in
+                [(1u32, "wl_compositor", 4u32), (2u32, "zwlr_layer_shell_v1", 1u32), (3u32, "wl_shm", 1u32)]
+            {
+                let mut payload = Vec::new();
+                payload.extend_from_slice(&name.to_ne_bytes());
+                let len_with_nul = (iface.len() + 1) as u32;
+                payload.extend_from_slice(&len_with_nul.to_ne_bytes());
+                payload.extend_from_slice(iface.as_bytes());
+                payload.push(0);
+                while payload.len() % 4 != 0 {
+                    payload.push(0);
+                }
+                payload.extend_from_slice(&version.to_ne_bytes());
+                push_wire_msg(&mut reply, registry_id, 0, &payload);
+            }
+            push_wire_msg(&mut reply, callback_id, 0, &0u32.to_ne_bytes());
+            push_wire_msg(&mut reply, 1, 1, &callback_id.to_ne_bytes());
+            if stream.write_all(&reply).is_err() {
+                return;
+            }
+
+            let mut discard = [0u8; 256];
+            while matches!(stream.read(&mut discard), Ok(n) if n > 0) {}
+        });
+    }
+
+    impl App {
+        /// Builds an `App` over an in-process mock Wayland socket and evaluates `source` with one
+        /// `1920x1080` `"TEST"` output, creating tracked surfaces without a live compositor.
+        pub(in crate::wayland) fn test_app(source: &str) -> (Self, tempfile::TempDir) {
+            let (client_stream, server_stream) = UnixStream::pair().unwrap();
+            spawn_mock_wayland_server(server_stream);
+            let conn = Connection::from_socket(client_stream).unwrap();
+            let (globals, event_queue) = registry_queue_init::<App>(&conn).unwrap();
+            let qh = event_queue.handle();
+
+            let compositor_state = CompositorState::bind(&globals, &qh).unwrap();
+            let layer_shell = LayerShell::bind(&globals, &qh).unwrap();
+            let shm = Shm::bind(&globals, &qh).unwrap();
+            let background_effect = BackgroundEffectState::new(&globals, &qh);
+            let output_state = OutputState::new(&globals, &qh);
+            let seat_state = SeatState::new(&globals, &qh);
+            let session_lock_state = SessionLockState::new(&globals, &qh);
+            let registry_state = RegistryState::new(&globals);
+            let captures = CaptureRegistry::bind(&globals, &qh);
+            let waker = crate::wake::Waker::new().unwrap();
+            let shaping = ShapingHandle::spawn();
+            let (dir, _path, client, _rx) = crate::socket::client::tests::client_for(source);
+            let (outbound_tx, _app_rx) = tokio::sync::mpsc::unbounded_channel();
+
+            let mut app = App {
+                registry_state,
+                output_state,
+                compositor_state,
+                scale_globals: None,
+                seat_state,
+                data_device_manager: None,
+                data_device: None,
+                clipboard_sources: Vec::new(),
+                clipboard_writers: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                paste: None,
+                field_revision: 0,
+                field_edits: 0,
+                text_input: input::TextInput::default(),
+                waker: waker.clone(),
+                layer_shell,
+                background_effect,
+                blur_supported: false,
+                xdg_shell: None,
+                session_lock_state,
+                session_lock: None,
+                egl: None,
+                gl: None,
+                shader_stage: crate::layout::image_shader::ShaderStage::default(),
+                conn,
+                shaping: shaping.clone(),
+                text_painter: None,
+                image_cache: ImageCache::with_waker(waker.clone()).with_fonts(shaping),
+                capture_cache: CaptureCache::default(),
+                captures,
+                client,
+                surfaces: Vec::new(),
+                exit: false,
+                startup_complete: false,
+                outbound_tx,
+                generation_id: 0,
+                queue_handle: qh.clone(),
+                pointer: None,
+                cursor_shown: None,
+                pointer_at: None,
+                finger_scroll: None,
+                shm,
+                keyboard: None,
+                keyboard_focus: None,
+                armed: None,
+                armed_double: None,
+                last_click: None,
+                drag: None,
+                input_serial: None,
+                key_serial: None,
+                pointer_input_count: 0,
+                reposition_token: 0,
+                focused_secure_submit: None,
+                focused_text_field: None,
+                parked_drafts: HashMap::new(),
+                pending_seeds: Vec::new(),
+                focused_control: None,
+                armed_control: None,
+                focus_visible: false,
+                accessibility: accessibility::Accessibility::new(waker),
+                held: Held::default(),
+                repeat_info: None,
+                repeating: None,
+                pressed_keys: Vec::new(),
+                field_input_surfaces: Vec::new(),
+                caret_blink: None,
+                caret_epoch: std::time::Instant::now(),
+                caret_painted_on: true,
+                animation_frames_due: Vec::new(),
+                surfaces_drawn: 0,
+                repaint_split: surface::RepaintSplit::default(),
+                current_egl_surface: None,
+                trim: trim::Trim::default(),
+            };
+
+            let outputs = vec![OutputGeometry {
+                name: "TEST".to_string(),
+                size: layout::LogicalSize { width: 1920.0, height: 1080.0 },
+            }];
+            let specs = app.client.run_startup_evaluation().unwrap();
+            let instances = expand_instances(&specs, &outputs);
+            app.client.set_instances(instances.clone());
+            assert!(app.client.apply_instances());
+            app.create_surfaces(&qh, &specs, &instances);
+            app.startup_complete = true;
+            (app, dir)
+        }
+    }
+}
