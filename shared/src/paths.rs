@@ -159,6 +159,13 @@ fn expand_home_from(path: &str, home: Option<OsString>) -> Result<PathBuf, Expan
     if Path::new(path).is_absolute() { Ok(PathBuf::from(path)) } else { Err(ExpandHomeError::Relative) }
 }
 
+/// Strips trailing slashes for `mantle.folders` payload keys, making `/walls/` and `/walls` one
+/// watch while keeping `/` as `/`.
+pub fn folder_key(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() { "/".to_string() } else { trimmed.to_string() }
+}
+
 /// `config_dir()` joined with the real config entry point, `shell.lua`.
 pub fn shell_lua_path() -> io::Result<PathBuf> {
     Ok(config_dir()?.join("shell.lua"))
@@ -226,5 +233,13 @@ mod tests {
         assert_eq!(resolve(""), Some(PathBuf::from("/home/someone/.cache")));
         assert_eq!(resolve("cache"), Some(PathBuf::from("/home/someone/.cache")));
         assert_eq!(xdg_dir_from(None, Some("".into()), ".cache"), None);
+    }
+
+    #[test]
+    fn folder_key_strips_trailing_slashes_and_keeps_root() {
+        assert_eq!(folder_key("/walls/"), "/walls");
+        assert_eq!(folder_key("/walls//"), "/walls");
+        assert_eq!(folder_key("/walls"), "/walls");
+        assert_eq!(folder_key("/"), "/");
     }
 }

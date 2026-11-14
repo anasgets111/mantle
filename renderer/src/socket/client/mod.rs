@@ -255,6 +255,7 @@ impl RendererClient {
         lua::signal::clear_state_handlers(self.loader.lua());
         lua::action::clear(self.loader.lua());
         lua::timer::begin_evaluation(self.loader.lua());
+        self.commands.begin_folders_evaluation();
         lua::forget_raised();
     }
 
@@ -289,6 +290,7 @@ impl RendererClient {
                 self.state.applied_output = Some(output);
                 lua::timer::promote(self.loader.lua());
                 lua::signal::promote_states(self.loader.lua());
+                self.commands.promote_folders_evaluation();
                 Some(specs)
             }
             Err(err) => {
@@ -297,6 +299,7 @@ impl RendererClient {
                 // because that arms the next evaluation; nothing is running one now.
                 self.clear_change_handlers();
                 lua::timer::discard(self.loader.lua());
+                self.commands.discard_folders_evaluation();
                 self.set_rescue_state(true, &err.to_string());
                 None
             }
@@ -507,11 +510,19 @@ impl RendererClient {
                 // because that arms the next evaluation; nothing is running one now.
                 self.clear_change_handlers();
                 lua::timer::discard(self.loader.lua());
+                self.commands.discard_folders_evaluation();
                 error!("shell.lua re-evaluation failed: {err}");
                 self.set_rescue_state(true, &err.to_string());
                 false
             }
         }
+    }
+
+    /// Drops staged side effects of `state.pending` when the caller vetoes applying it.
+    pub fn discard_pending(&mut self) {
+        self.state.pending = None;
+        lua::timer::discard(self.loader.lua());
+        self.commands.discard_folders_evaluation();
     }
 
     /// The poll loop's only timeout: when the earliest pending `delay(signal, ms)` is due
@@ -1833,5 +1844,164 @@ pub(crate) mod tests {
         assert!(reload(&mut client, &path, SHELL));
         let logged = fire(&client);
         assert!(logged.contains("defined at"), "the reload forgot the fold: {logged}");
+    }
+
+    fn folder_commands(rx: &mut mpsc::UnboundedReceiver<RendererFrame>) -> Vec<(String, Vec<serde_json::Value>)> {
+        let mut cmds = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            if let RendererFrame::Command(env) = frame
+                && env.params.capability == "folders"
+            {
+                cmds.push((env.params.action, env.params.arguments));
+            }
+        }
+        cmds
+    }
+
+    #[test]
+    fn reloading_reconciles_removed_folder_watches_preserves_kept_and_updates_filters() {
+        let root = tempfile::tempdir().unwrap();
+        let a = root.path().join("a").to_string_lossy().into_owned();
+        let b = root.path().join("b").to_string_lossy().into_owned();
+        let panel = r#"return panel { id = "bar", layer = "top" }"#;
+
+        let init = format!(
+            "mantle.folders:watch({a:?} .. '/', {{ 'jpg' }})\nmantle.folders:watch({b:?}, {{ 'png' }})\n{panel}"
+        );
+        let (_dir, path, mut client, mut rx) = client_for(&init);
+        assert!(run_startup(&mut client));
+        assert_eq!(
+            folder_commands(&mut rx),
+            [
+                ("watch".into(), vec![serde_json::json!(format!("{a}/")), serde_json::json!(["jpg"])]),
+                ("watch".into(), vec![serde_json::json!(b), serde_json::json!(["png"])]),
+            ]
+        );
+
+        // Reload A+B -> only A (with trailing slash removed): unwatches B, keeps A without unwatch(A).
+        let only_a = format!("mantle.folders:watch({a:?}, {{ 'jpg' }})\n{panel}");
+        std::fs::write(&path, &only_a).unwrap();
+        assert!(client.reevaluate());
+        assert!(folder_commands(&mut rx).is_empty(), "folders stage until apply succeeds");
+        assert!(client.handle_apply_pending());
+        assert_eq!(
+            folder_commands(&mut rx),
+            [
+                ("unwatch".into(), vec![serde_json::json!(b)]),
+                ("watch".into(), vec![serde_json::json!(a), serde_json::json!(["jpg"])]),
+            ]
+        );
+
+        // Filter update on kept A sends the new filter with no unwatch(A).
+        assert!(reload(&mut client, &path, &format!("mantle.folders:watch({a:?}, {{ 'png' }})\n{panel}")));
+        assert_eq!(
+            folder_commands(&mut rx),
+            [("watch".into(), vec![serde_json::json!(a), serde_json::json!(["png"])])]
+        );
+
+        // Repeated reload: command ordering preserved (`watch(B); unwatch(B); watch(A)`).
+        let ordered =
+            format!("mantle.folders:watch({b:?})\nmantle.folders:unwatch({b:?})\nmantle.folders:watch({a:?})\n{panel}");
+        assert!(reload(&mut client, &path, &ordered));
+        assert_eq!(
+            folder_commands(&mut rx),
+            [
+                ("watch".into(), vec![serde_json::json!(b)]),
+                ("unwatch".into(), vec![serde_json::json!(b)]),
+                ("watch".into(), vec![serde_json::json!(a)]),
+            ]
+        );
+
+        // Explicit unwatch without a prior watch in the same reload emits no duplicate unwatch.
+        assert!(reload(&mut client, &path, &format!("mantle.folders:unwatch({a:?})\n{panel}")));
+        assert_eq!(folder_commands(&mut rx), [("unwatch".into(), vec![serde_json::json!(a)])]);
+
+        // Re-watch A, then drop A while unwatching B: A is still synthesized as dropped.
+        assert!(reload(&mut client, &path, &only_a));
+        let _ = folder_commands(&mut rx);
+        assert!(reload(
+            &mut client,
+            &path,
+            &format!("mantle.folders:watch({b:?})\nmantle.folders:unwatch({b:?})\n{panel}")
+        ));
+        assert_eq!(
+            folder_commands(&mut rx),
+            [
+                ("unwatch".into(), vec![serde_json::json!(a)]),
+                ("watch".into(), vec![serde_json::json!(b)]),
+                ("unwatch".into(), vec![serde_json::json!(b)]),
+            ]
+        );
+
+        // With no active watches left, a config without folders emits nothing.
+        assert!(reload(&mut client, &path, panel));
+        assert!(folder_commands(&mut rx).is_empty());
+
+        // Dropping the last watch emits `unwatch(A)` even when the new config omits `mantle.folders`.
+        assert!(reload(&mut client, &path, &only_a));
+        let _ = folder_commands(&mut rx);
+        assert!(reload(&mut client, &path, panel));
+        assert_eq!(folder_commands(&mut rx), [("unwatch".into(), vec![serde_json::json!(a)])]);
+    }
+
+    #[test]
+    fn failed_or_vetoed_reload_preserves_live_folder_watches_and_recovers_runtime_sends() {
+        let root = tempfile::tempdir().unwrap();
+        let a = root.path().join("a").to_string_lossy().into_owned();
+        let b = root.path().join("b").to_string_lossy().into_owned();
+        let c = root.path().join("c").to_string_lossy().into_owned();
+        let d = root.path().join("d").to_string_lossy().into_owned();
+        let locked_shell =
+            format!("mantle.folders:watch({a:?})\nmantle.folders:watch({b:?})\n{}", lock_config("#101010FF"));
+        let (_dir, path, mut client, mut rx) = client_for(&locked_shell);
+        assert!(run_startup(&mut client));
+        assert_eq!(folder_commands(&mut rx).len(), 2);
+
+        // Mid-eval Lua error after unwatch(A) and watch(C): emits nothing, resets evaluating flag.
+        std::fs::write(&path, format!("mantle.folders:unwatch({a:?})\nmantle.folders:watch({c:?})\nerror('boom')"))
+            .unwrap();
+        assert!(!client.reevaluate());
+        assert!(folder_commands(&mut rx).is_empty());
+        client.loader.lua().load(format!("mantle.folders:watch({c:?})\nmantle.folders:watch({d:?})")).exec().unwrap();
+        assert_eq!(
+            folder_commands(&mut rx),
+            [("watch".into(), vec![serde_json::json!(c)]), ("watch".into(), vec![serde_json::json!(d)]),]
+        );
+
+        // Apply error while session-locked (removes password field): preserves {A, B, C, D}, emits nothing.
+        client.set_session_locked(true);
+        std::fs::write(
+            &path,
+            format!(
+                r##"mantle.folders:watch({a:?})
+                return {{ panel {{ id = "bar", layer = "top" }},
+                    lock {{ id = "screen", child = column {{ background = "#101010FF", children = {{}} }} }} }}"##
+            ),
+        )
+        .unwrap();
+        assert!(client.reevaluate());
+        assert!(!client.handle_apply_pending());
+        assert!(folder_commands(&mut rx).is_empty());
+        client.loader.lua().load(format!("mantle.folders:unwatch({c:?})")).exec().unwrap();
+        assert_eq!(folder_commands(&mut rx), [("unwatch".into(), vec![serde_json::json!(c)])]);
+
+        // Vetoed pending reload (`discard_pending`): stages nothing, preserves {A, B, D}.
+        std::fs::write(&path, format!("mantle.folders:watch({c:?})\n{}", lock_config("#202020FF"))).unwrap();
+        assert!(client.reevaluate());
+        assert!(folder_commands(&mut rx).is_empty());
+        client.discard_pending();
+        assert!(client.pending_surfaces().is_none());
+        assert!(folder_commands(&mut rx).is_empty());
+
+        // Subsequent valid reload keeping only A unwatches B and runtime-added D, not already-unwatched C.
+        assert!(reload(&mut client, &path, &format!("mantle.folders:watch({a:?})\n{}", lock_config("#202020FF"))));
+        assert_eq!(
+            folder_commands(&mut rx),
+            [
+                ("unwatch".into(), vec![serde_json::json!(b)]),
+                ("unwatch".into(), vec![serde_json::json!(d)]),
+                ("watch".into(), vec![serde_json::json!(a)]),
+            ]
+        );
     }
 }

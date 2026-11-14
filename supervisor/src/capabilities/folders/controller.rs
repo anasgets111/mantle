@@ -100,12 +100,7 @@ impl FoldersController {
     }
 }
 
-/// Strips trailing slashes for payload keys, making `/walls/` and `/walls` one watch while keeping
-/// `/` as `/`.
-pub fn folder_key(path: &str) -> String {
-    let trimmed = path.trim_end_matches('/');
-    if trimmed.is_empty() { "/".to_string() } else { trimmed.to_string() }
-}
+pub use shared::folder_key;
 
 /// An empty filter matches every file; otherwise the case-folded extension must be listed. A
 /// file without an extension never matches a non-empty filter.
@@ -284,14 +279,6 @@ mod tests {
     }
 
     #[test]
-    fn folder_key_strips_trailing_slashes_and_keeps_root() {
-        assert_eq!(folder_key("/walls/"), "/walls");
-        assert_eq!(folder_key("/walls//"), "/walls");
-        assert_eq!(folder_key("/walls"), "/walls");
-        assert_eq!(folder_key("/"), "/");
-    }
-
-    #[test]
     fn an_empty_extension_list_matches_everything_and_a_filled_one_folds_case() {
         assert!(matches_extension("a.JPG", &[]));
         assert!(matches_extension("README", &[]));
@@ -464,5 +451,50 @@ mod tests {
         std::fs::create_dir(&dir).unwrap();
         touch(&dir, "two.jpg");
         until(&controller, &mut rx, &key, |folder| folder.error.is_none() && folder.entries.len() == 1).await;
+    }
+
+    #[tokio::test]
+    async fn unwatching_a_dropped_folder_stops_its_task_while_keeping_retained_watch_ready() {
+        let root = tempfile::tempdir().unwrap();
+        let dir_a = root.path().join("a");
+        let dir_b = root.path().join("b");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::create_dir_all(&dir_b).unwrap();
+        touch(&dir_a, "one.jpg");
+        touch(&dir_b, "one.png");
+        let key_a = dir_a.to_string_lossy().into_owned();
+        let key_b = dir_b.to_string_lossy().into_owned();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let controller = FoldersController::new(tx);
+
+        controller.watch(&key_a, vec!["jpg".to_string()]);
+        controller.watch(&key_b, vec!["png".to_string()]);
+        until(&controller, &mut rx, &key_a, |folder| folder.ready && folder.entries.len() == 1).await;
+        until(&controller, &mut rx, &key_b, |folder| folder.ready && folder.entries.len() == 1).await;
+        while rx.try_recv().is_ok() {}
+
+        // Reconciled reload A+B -> A: B stops, A keeps `ready = true` and its existing listing.
+        controller.unwatch(&key_b);
+        controller.watch(&key_a, vec!["jpg".to_string()]);
+        let after = controller.snapshot();
+        assert!(!after.watched.contains_key(&key_b));
+        assert!(after.watched[&key_a].ready);
+        assert_eq!(after.watched[&key_a].entries.len(), 1);
+
+        // Changes in dropped B emit no events; changes in kept A still arrive.
+        while rx.try_recv().is_ok() {}
+        touch(&dir_b, "two.png");
+        touch(&dir_a, "two.jpg");
+        until(&controller, &mut rx, &key_a, |folder| folder.entries.len() == 2).await;
+        assert!(!controller.snapshot().watched.contains_key(&key_b));
+
+        // Same-path filter update resets `ready` and relists with the new extension filter.
+        controller.watch(&key_a, vec!["txt".to_string()]);
+        assert!(!controller.snapshot().watched[&key_a].ready);
+        touch(&dir_a, "note.txt");
+        until(&controller, &mut rx, &key_a, |folder| {
+            folder.ready && folder.entries.len() == 1 && folder.entries[0].name == "note.txt"
+        })
+        .await;
     }
 }

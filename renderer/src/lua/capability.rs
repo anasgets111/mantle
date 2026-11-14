@@ -10,7 +10,7 @@
 //! [`Capability`] delegates `get`/`map` to its [`Signal`].
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::rc::Rc;
 
 use mlua::{Function, Lua, LuaSerdeExt, MetaMethod, MultiValue, UserData, UserDataMethods, Value};
@@ -24,6 +24,23 @@ use crate::lua::luacats::rust_type_in_lua;
 use crate::lua::marshal::number_word;
 use crate::lua::signal::{CpuBudget, DirtyFlag, LiveSignalHandle, Signal};
 use crate::lua::warn_raised;
+
+/// Stages `mantle.folders` commands across a `shell.lua` evaluation so a failed or vetoed reload
+/// preserves live watches and a promoted reload unwatches only paths removed by the new config.
+#[derive(Default)]
+struct FolderStaging {
+    evaluating: bool,
+    /// Canonical (`shared::folder_key`) paths active on the Supervisor.
+    active: BTreeSet<String>,
+    /// Canonical paths remaining watched at the end of the in-progress evaluation.
+    pending: BTreeSet<String>,
+    /// Validated `(action, arguments)` pairs recorded during evaluation, in call order.
+    commands: Vec<(String, Vec<serde_json::Value>)>,
+}
+
+fn folder_arg_key(arguments: &[serde_json::Value]) -> Option<String> {
+    arguments.first().and_then(serde_json::Value::as_str).map(shared::folder_key)
+}
 
 /// Builds the generation-guarded envelope and queues it for the socket thread. One sender per
 /// generation is cloned into every [`Capability`] on `mantle`.
@@ -39,6 +56,7 @@ pub struct CommandSender {
     started: Rc<RefCell<HashSet<String>>>,
     /// The last `CanLock` sent; the Supervisor's starts at `false` too.
     can_lock: Rc<Cell<bool>>,
+    folders: Rc<RefCell<FolderStaging>>,
     outbound_tx: UnboundedSender<RendererFrame>,
 }
 
@@ -50,6 +68,7 @@ impl CommandSender {
             next_id: Rc::new(Cell::new(0)),
             started: Rc::new(RefCell::new(HashSet::new())),
             can_lock: Rc::default(),
+            folders: Rc::default(),
             outbound_tx,
         }
     }
@@ -86,8 +105,73 @@ impl CommandSender {
         self.outbound_tx.clone()
     }
 
-    /// Queues the command envelope for the socket thread.
+    /// Arms folder command staging for a fresh `shell.lua` evaluation; supersedes any prior
+    /// unpromoted staging while preserving live `active` watches.
+    pub(crate) fn begin_folders_evaluation(&self) {
+        let mut folders = self.folders.borrow_mut();
+        folders.evaluating = true;
+        folders.pending.clear();
+        folders.commands.clear();
+    }
+
+    /// Discards staged folder commands after an evaluation or apply failure, leaving live watches
+    /// intact and returning runtime folder actions to direct send.
+    pub(crate) fn discard_folders_evaluation(&self) {
+        let mut folders = self.folders.borrow_mut();
+        folders.evaluating = false;
+        folders.pending.clear();
+        folders.commands.clear();
+    }
+
+    /// Unwatches paths dropped since the last promoted state and flushes this evaluation's staged
+    /// folder commands in call order.
+    pub(crate) fn promote_folders_evaluation(&self) {
+        let (dropped, commands) = {
+            let mut folders = self.folders.borrow_mut();
+            folders.evaluating = false;
+            let dropped: Vec<String> = folders
+                .active
+                .difference(&folders.pending)
+                .filter(|key| {
+                    !folders.commands.iter().any(|(action, args)| {
+                        action == "unwatch" && folder_arg_key(args).as_deref() == Some(key.as_str())
+                    })
+                })
+                .cloned()
+                .collect();
+            folders.active = std::mem::take(&mut folders.pending);
+            (dropped, std::mem::take(&mut folders.commands))
+        };
+        for key in dropped {
+            self.send_as(self.next_id(), "folders", "unwatch", vec![serde_json::Value::String(key)]);
+        }
+        for (action, arguments) in commands {
+            self.send_as(self.next_id(), "folders", &action, arguments);
+        }
+    }
+
+    /// Queues the command envelope for the socket thread, staging `folders` commands during an
+    /// evaluation until the scene accepts it.
     pub(crate) fn send(&self, capability: &str, action: &str, arguments: Vec<serde_json::Value>) {
+        if capability == "folders" {
+            let mut folders = self.folders.borrow_mut();
+            let target = if folders.evaluating { &mut folders.pending } else { &mut folders.active };
+            if let Some(key) = folder_arg_key(&arguments) {
+                match action {
+                    "watch" => {
+                        target.insert(key);
+                    }
+                    "unwatch" => {
+                        target.remove(&key);
+                    }
+                    _ => {}
+                }
+            }
+            if folders.evaluating {
+                folders.commands.push((action.to_string(), arguments));
+                return;
+            }
+        }
         self.send_as(self.next_id(), capability, action, arguments);
     }
 

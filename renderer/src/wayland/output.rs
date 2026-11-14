@@ -260,7 +260,7 @@ impl App {
                 "this reload renames the lock surface; refused while locked, save again after unlock";
             warn!("{RENAMES_LOCK}");
             self.client.set_rescue_state(true, RENAMES_LOCK);
-            crate::lua::timer::discard(self.client.lua());
+            self.client.discard_pending();
             return;
         }
         let outputs = geometries_from(&self.screens(departing));
@@ -369,6 +369,41 @@ impl OutputHandler for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn renaming_a_live_lock_discards_pending_folder_commands_and_restores_runtime_sends() {
+        let source = r#"mantle.folders:watch("/kept")
+            return lock { id = "screen",
+                child = textfield { secure_submit = { capability = "lock", action = "authenticate" } } }"#;
+        let (mut app, _app_dir, _queue, _mock) = App::test_app_with_wire(source);
+        let (_dir, path, mut client, mut frames) = crate::socket::client::tests::client_for(source);
+        client.set_instances(app.client.instances().to_vec());
+        assert!(client.run_startup_evaluation().is_some());
+        assert!(client.apply_instances());
+        app.client = client;
+        while frames.try_recv().is_ok() {}
+        let qh = app.queue_handle.clone();
+        app.set_session_lock(&qh, true);
+        assert!(app.session_lock.is_some());
+        while frames.try_recv().is_ok() {}
+
+        std::fs::write(&path, source.replace("/kept", "/rejected").replace("screen", "renamed")).unwrap();
+        assert!(app.client.reevaluate());
+        assert!(app.client.pending_surfaces().is_some());
+        app.apply_pending(&qh, None);
+        assert!(app.client.pending_surfaces().is_none());
+        assert!(frames.try_recv().is_err(), "a veto must not flush staged folder commands");
+        app.client.lua().load(r#"mantle.folders:watch("/runtime")"#).exec().unwrap();
+        let mut folders = Vec::new();
+        while let Ok(frame) = frames.try_recv() {
+            if let shared::RendererFrame::Command(env) = frame
+                && env.params.capability == "folders"
+            {
+                folders.push((env.params.action, env.params.arguments));
+            }
+        }
+        assert_eq!(folders, [("watch".into(), vec![serde_json::json!("/runtime")])]);
+    }
 
     fn facts(name: Option<&str>) -> OutputFacts {
         OutputFacts {

@@ -75,10 +75,12 @@ impl RendererClient {
                 self.settle_layout();
                 lua::timer::promote(self.loader.lua());
                 lua::signal::promote_states(self.loader.lua());
+                self.commands.promote_folders_evaluation();
                 true
             }
             Err(err) => {
                 lua::timer::discard(self.loader.lua());
+                self.commands.discard_folders_evaluation();
                 error!("the re-evaluated config failed to apply, keeping the prior scene: {err}");
                 // Not `rescue_applied_output`: this failure is the pending evaluation's, which a
                 // re-resolve of the prior scene cannot clear.

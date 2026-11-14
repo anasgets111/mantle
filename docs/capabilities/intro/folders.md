@@ -19,9 +19,10 @@ list {
 
 ## Backend
 
-One inotify watch per folder, on the folder only: subfolders are neither listed nor watched. A new
-generation drops every watch, so call `watch` at top level and each evaluation asks again; repeating
-a `watch` with the same `extensions` only re-pushes the listing.
+One inotify watch per folder, on the folder only: subfolders are neither listed nor watched. Call
+`watch` at top level: a new generation drops every watch so the next evaluation asks again, an
+in-place reload stops watches the new evaluation does not declare, including watches added from
+handlers. Repeating `watch` with the same `extensions` keeps the listing without re-listing.
 
 A missing folder is watched through its nearest existing ancestor: `ready` is `true` with `error`
 set until the folder appears, then it lists with `error` cleared. A watched folder that is deleted
