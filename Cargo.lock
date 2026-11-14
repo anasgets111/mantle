@@ -1942,6 +1942,7 @@ dependencies = [
  "shared",
  "skrifa",
  "smithay-client-toolkit",
+ "svgtypes",
  "taffy",
  "tempfile",
  "thiserror",
