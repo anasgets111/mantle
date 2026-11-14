@@ -91,6 +91,9 @@ pub(super) enum TrackedRole {
         spec: WindowSpec,
         /// The window geometry size the last configure settled on, without `geometry_inset`.
         geometry: (u32, u32),
+        /// Whether missing `xdg_wm_base` was already logged for this visible run; cleared on
+        /// role teardown or `visible = false`.
+        refusal_logged: bool,
     },
     Popup {
         /// `None` when hidden. `get_popup` consumes `xdg_positioner`, so every open builds a fresh
@@ -359,7 +362,10 @@ impl TrackedSurface {
         self.scale.destroy();
         match &mut self.role {
             TrackedRole::Panel { layer, .. } => drop(layer.take()),
-            TrackedRole::Window { window, .. } => drop(window.take()),
+            TrackedRole::Window { window, refusal_logged, .. } => {
+                drop(window.take());
+                *refusal_logged = false;
+            }
             TrackedRole::Popup { popup, positioned, .. } => {
                 drop(popup.take());
                 *positioned = None;
@@ -758,7 +764,7 @@ mod tests {
     #[test]
     fn a_dropped_role_object_leaves_an_unmapped_entry_that_pins_nothing() {
         let mut tracked = TrackedSurface::new(
-            TrackedRole::Window { window: None, spec: window("settings"), geometry: (0, 0) },
+            TrackedRole::Window { window: None, spec: window("settings"), geometry: (0, 0), refusal_logged: true },
             "settings".to_string(),
         );
         tracked.map_state = MapState::Mapped;
@@ -772,6 +778,10 @@ mod tests {
         tracked.forget_role_object();
 
         assert_eq!(tracked.map_state, MapState::Unmapped);
+        assert!(
+            matches!(tracked.role, TrackedRole::Window { refusal_logged: false, .. }),
+            "dropping the role object clears any logged refusal"
+        );
         assert!(tracked.last_painted.is_none(), "a kept list pins its images in `ImageCache::trim`");
         assert!(tracked.last_blur_region.is_empty());
         assert!(tracked.last_input_region.is_none());
@@ -782,7 +792,7 @@ mod tests {
     #[test]
     fn a_repaint_deferred_to_a_frame_callback_comes_due_when_it_lands() {
         let mut tracked = TrackedSurface::new(
-            TrackedRole::Window { window: None, spec: window("settings"), geometry: (0, 0) },
+            TrackedRole::Window { window: None, spec: window("settings"), geometry: (0, 0), refusal_logged: false },
             "settings".to_string(),
         );
         assert!(!tracked.due_a_repaint(), "nothing deferred, nothing stale");

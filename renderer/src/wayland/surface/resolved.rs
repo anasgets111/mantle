@@ -265,6 +265,9 @@ impl App {
             // `locked` through `unlock_and_destroy` (ADR-0042, ADR-0052 decision 2).
             TrackedRole::Lock { .. } => return,
         };
+        if !visible && let TrackedRole::Window { refusal_logged, .. } = &mut self.surfaces[index].role {
+            *refusal_logged = false;
+        }
         match visibility_action(self.surfaces[index].map_state, visible) {
             // `QueueHandle` is a cheap refcounted handle; clone it across `&mut self`.
             VisibilityAction::Show => {

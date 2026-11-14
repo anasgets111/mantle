@@ -207,7 +207,7 @@ impl App {
         visible: bool,
     ) {
         self.surfaces.push(TrackedSurface::new(
-            TrackedRole::Window { window: None, spec: spec.clone(), geometry: (0, 0) },
+            TrackedRole::Window { window: None, spec: spec.clone(), geometry: (0, 0), refusal_logged: false },
             instance.instance_id.clone(),
         ));
         if visible {
@@ -257,7 +257,7 @@ impl App {
     /// Stages `set_window_geometry` for the last configured geometry inside a buffer grown by
     /// `geometry_inset`, committed by the paint that attaches that buffer; returns its size.
     fn frame_window(&self, index: usize) -> Option<(u32, u32)> {
-        let TrackedRole::Window { window: Some(window), spec, geometry } = &self.surfaces[index].role else {
+        let TrackedRole::Window { window: Some(window), spec, geometry, .. } = &self.surfaces[index].role else {
             return None;
         };
         let (buffer, [x, y, width, height]) = window_frame(*geometry, spec.geometry_inset);
@@ -271,13 +271,15 @@ impl App {
     /// `xdg_wm_base`, so `WindowDecorations::RequestServer` plus
     /// [`Window::request_decoration_mode`] is the whole decoration path, with no second global.
     /// The window geometry waits for the first configure ([`App::frame_window`]). Missing
-    /// xdg-shell logs once per attempt and leaves the window absent, not fatal.
+    /// xdg-shell logs once per visible run and leaves the window absent, not fatal.
     pub(in crate::wayland) fn show_window(&mut self, qh: &QueueHandle<App>, index: usize) {
         let Some(xdg_shell) = self.xdg_shell.as_ref() else {
-            error!(
-                "{}: this compositor advertises no xdg_wm_base, so no window can be created for it",
-                self.surfaces[index].surface_id
-            );
+            if missing_xdg_is_new(&mut self.surfaces[index].role) {
+                error!(
+                    "{}: this compositor advertises no xdg_wm_base, so no window can be created for it",
+                    self.surfaces[index].surface_id
+                );
+            }
             return;
         };
         let TrackedRole::Window { spec, .. } = &self.surfaces[index].role else {
@@ -306,6 +308,14 @@ impl App {
         self.surfaces[index].map_state = MapState::AwaitingConfigure;
         debug!("{} creating: visible = true", self.surfaces[index].surface_id);
     }
+}
+
+/// Whether this visible run has not yet logged missing `xdg_wm_base`.
+fn missing_xdg_is_new(role: &mut TrackedRole) -> bool {
+    let TrackedRole::Window { refusal_logged, .. } = role else {
+        return false;
+    };
+    !std::mem::replace(refusal_logged, true)
 }
 
 /// `xdg_toplevel` handler for `window`.
@@ -520,5 +530,45 @@ mod tests {
         assert!(frame_serial(false, Some(&armed("main")), "main").is_err(), "hidden or unknown window");
         assert!(frame_serial(true, Some(&armed("other")), "main").is_err(), "another surface's press");
         assert!(frame_serial(true, None, "main").is_err(), "no armed serial");
+    }
+
+    #[test]
+    fn missing_xdg_refusal_throttles_repeats_and_resets_when_hidden() {
+        let mut role =
+            TrackedRole::Window { window: None, spec: settings_window(), geometry: (0, 0), refusal_logged: false };
+        assert!(missing_xdg_is_new(&mut role), "first missing-xdg refusal logs");
+        assert!(!missing_xdg_is_new(&mut role), "repeated refusal in the same visible run is suppressed");
+
+        let (mut app, _dir) = App::test_app(
+            r#"
+            show = state("show", false)
+            return window { id = "settings", visible = show }
+            "#,
+        );
+        app.xdg_shell = None;
+        app.client.lua().load("show:set(true)").exec().unwrap();
+        assert!(app.client.re_resolve_if_dirty());
+        app.apply_resolved_surface_state();
+        let is_logged =
+            |app: &App| matches!(app.surfaces[0].role, TrackedRole::Window { window: None, refusal_logged: true, .. });
+        assert!(is_logged(&app), "startup show_window records the missing-xdg refusal");
+        assert_eq!(app.surfaces[0].map_state, MapState::Unmapped, "retry remains open without xdg_wm_base");
+
+        app.apply_resolved_surface_state();
+        assert!(!missing_xdg_is_new(&mut app.surfaces[0].role), "a later pass while still visible stays suppressed");
+
+        app.client.lua().load("show:set(false)").exec().unwrap();
+        assert!(app.client.re_resolve_if_dirty());
+        app.apply_resolved_surface_state();
+        assert!(
+            matches!(app.surfaces[0].role, TrackedRole::Window { refusal_logged: false, .. }),
+            "resolving visible = false clears the logged refusal"
+        );
+
+        app.client.lua().load("show:set(true)").exec().unwrap();
+        assert!(app.client.re_resolve_if_dirty());
+        app.apply_resolved_surface_state();
+        assert!(is_logged(&app), "a new visible run logs once again");
+        assert_eq!(app.surfaces[0].map_state, MapState::Unmapped);
     }
 }
