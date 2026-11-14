@@ -154,6 +154,7 @@ impl App {
         self.surfaces.push(TrackedSurface::new(
             TrackedRole::Popup {
                 popup: None,
+                parent_id: None,
                 // The declaration's own numbers, which for a `Content` axis is zero until the first
                 // resolve measures one. Nothing opens before then; `apply_resolved_state` writes
                 // the real pair on every pass.
@@ -270,7 +271,9 @@ impl App {
             &spec.parent,
             self.input_serial.as_ref().map(|armed| armed.instance_id.as_str()),
         );
-        let Some(parent) = parent_index.and_then(|parent| self.surfaces[parent].role.as_popup_parent()) else {
+        let Some((parent_id, parent)) = parent_index.and_then(|parent| {
+            self.surfaces[parent].role.as_popup_parent().map(|role| (self.surfaces[parent].surface_id.clone(), role))
+        }) else {
             if self.refusal_is_new(index, PopupRefusal::HiddenParent) {
                 warn!(
                     "{surface_id}: its `parent` {:?} names no surface that is currently shown, so it is not opened",
@@ -279,7 +282,6 @@ impl App {
             }
             return;
         };
-        let parent_id = parent_index.map_or("<none>", |parent| self.surfaces[parent].surface_id.as_str()).to_string();
 
         let Some(positioner) = self.positioner_for(&surface_id, &placement) else {
             return;
@@ -310,18 +312,21 @@ impl App {
         popup.wl_surface().commit();
         // `get_popup` copied the positioner, so dropping it is correct.
 
-        if let TrackedRole::Popup { popup: slot, refusal_logged, positioned, .. } = &mut self.surfaces[index].role {
+        debug!(
+            "{surface_id} creating: visible = true, anchored to {parent_id}, grab {}",
+            if grab.is_some() { "taken" } else { "not requested" }
+        );
+        if let TrackedRole::Popup { popup: slot, parent_id: parent_slot, refusal_logged, positioned, .. } =
+            &mut self.surfaces[index].role
+        {
             *slot = Some(popup);
+            *parent_slot = Some(parent_id);
             *refusal_logged = None;
             // What this popup's positioner now holds. Every later pass compares against it.
             *positioned = Some(placement);
         }
         self.surfaces[index].scale = scale;
         self.surfaces[index].map_state = MapState::AwaitingConfigure;
-        debug!(
-            "{surface_id} creating: visible = true, anchored to {parent_id}, grab {}",
-            if grab.is_some() { "taken" } else { "not requested" }
-        );
     }
 
     /// Where `parent`'s window geometry starts in its buffer: a `geometry_inset` window's (left, top), else zero.
@@ -451,7 +456,11 @@ impl App {
     pub(in crate::wayland) fn shown_popups_under(&self, index: usize, out: &mut Vec<usize>) {
         let parent_id = self.surfaces[index].surface_id.as_str();
         for child in (0..self.surfaces.len()).filter(|&child| child != index).filter(|&child| {
-            matches!(&self.surfaces[child].role, TrackedRole::Popup { popup: Some(_), spec, .. } if is_instance_of(parent_id, &spec.parent))
+            matches!(
+                &self.surfaces[child].role,
+                TrackedRole::Popup { popup: Some(_), parent_id: Some(opened_parent), .. }
+                    if opened_parent == parent_id
+            )
         }) {
             self.shown_popups_under(child, out);
             out.push(child);
@@ -636,5 +645,145 @@ mod tests {
                 | xdg_positioner::ConstraintAdjustment::ResizeX
                 | xdg_positioner::ConstraintAdjustment::ResizeY
         );
+    }
+
+    fn two_output_popup_app() -> (App, tempfile::TempDir) {
+        let source = r#"
+            local r = { x = 0, y = 0, width = 10, height = 10 }
+            return {
+                panel { id = "bar", layer = "top", output = "all", height = 32 },
+                popup { id = "menu", parent = "bar", anchor_rect = r, width = 200, height = 120, grab = false, visible = false },
+                popup { id = "submenu", parent = "menu", anchor_rect = r, width = 160, height = 80, grab = false, visible = false },
+                popup { id = "tip", parent = "submenu", anchor_rect = r, width = 120, height = 40, grab = false, visible = false },
+            }
+        "#;
+        let (mut app, dir) = App::test_app(source);
+        let outputs = [
+            OutputGeometry { name: "eDP-1".into(), size: layout::LogicalSize { width: 1920.0, height: 1080.0 } },
+            OutputGeometry { name: "DP-1".into(), size: layout::LogicalSize { width: 1920.0, height: 1080.0 } },
+        ];
+        let specs = app.client.applied_surface_specs();
+        let instances = expand_instances(&specs, &outputs);
+        app.client.set_instances(instances.clone());
+        assert!(app.client.apply_instances());
+        app.surfaces.clear();
+        let qh = app.queue_handle.clone();
+        for inst in &instances {
+            match specs.iter().find(|s| s.declared_id() == inst.declared_id).unwrap() {
+                SurfaceSpec::Panel(panel) => {
+                    // The mock has no output globals; keep the instance id on a compositor-chosen output.
+                    let mut instance = inst.clone();
+                    instance.output.clear();
+                    app.create_panel(&qh, panel, &instance, &Default::default(), true, inst.available);
+                }
+                SurfaceSpec::Popup(popup) => app.create_popup(&qh, popup, inst, false),
+                _ => {}
+            }
+        }
+        (app, dir)
+    }
+
+    fn idx(app: &App, id: &str) -> usize {
+        app.surfaces.iter().position(|s| s.surface_id == id).unwrap()
+    }
+
+    fn popup_state(app: &App, id: &str) -> (bool, Option<String>, Option<u64>, Option<PopupRefusal>) {
+        let TrackedRole::Popup { popup, parent_id, dismissed_at, refusal_logged, .. } =
+            &app.surfaces[idx(app, id)].role
+        else {
+            panic!("{id} is not a popup");
+        };
+        (popup.is_some(), parent_id.clone(), *dismissed_at, *refusal_logged)
+    }
+
+    fn open_popup_on(app: &mut App, popup_id: &str, armed_on: Option<&str>) {
+        app.input_serial = armed_on.map(|id| ArmedSerial { serial: 1, instance_id: id.into() });
+        let index = idx(app, popup_id);
+        app.apply_popup_visibility(index, true);
+    }
+
+    #[test]
+    fn closing_sibling_panel_on_another_output_keeps_popups_and_descendants_alive() {
+        let (mut app, _dir) = two_output_popup_app();
+        open_popup_on(&mut app, "menu", Some("bar@DP-1"));
+        open_popup_on(&mut app, "submenu", Some("menu"));
+        open_popup_on(&mut app, "tip", Some("submenu"));
+
+        assert_eq!(popup_state(&app, "menu").1.as_deref(), Some("bar@DP-1"));
+        assert_eq!(popup_state(&app, "submenu").1.as_deref(), Some("menu"));
+        assert_eq!(popup_state(&app, "tip").1.as_deref(), Some("submenu"));
+
+        let mut under_a = Vec::new();
+        app.shown_popups_under(idx(&app, "bar@eDP-1"), &mut under_a);
+        assert!(under_a.is_empty());
+
+        let mut under_b = Vec::new();
+        app.shown_popups_under(idx(&app, "bar@DP-1"), &mut under_b);
+        let under_b_ids: Vec<&str> = under_b.iter().map(|&i| app.surfaces[i].surface_id.as_str()).collect();
+        assert_eq!(under_b_ids, ["tip", "submenu", "menu"], "descendants tear down deepest-first");
+
+        app.keyboard_focus = Some("bar@eDP-1".into());
+        assert_eq!(app.keyboard_focus_scope(), ["bar@eDP-1"]);
+        app.keyboard_focus = Some("bar@DP-1".into());
+        assert_eq!(app.keyboard_focus_scope(), ["bar@DP-1", "tip", "submenu", "menu"]);
+
+        // Hide the sibling panel on output A (`eDP-1`): B's popup chain stays open.
+        app.drop_role_object(idx(&app, "bar@eDP-1"));
+        assert!(popup_state(&app, "menu").0);
+        assert!(popup_state(&app, "submenu").0);
+        assert!(popup_state(&app, "tip").0);
+
+        // Removing A from `surfaces` shifts B and popups down by one; parent tracking survives.
+        app.untrack_surface("bar@eDP-1");
+        app.drop_role_object(idx(&app, "bar@DP-1"));
+        for id in ["menu", "submenu", "tip"] {
+            assert_eq!(popup_state(&app, id), (false, None, None, None), "{id} closed without latching");
+        }
+    }
+
+    #[test]
+    fn popup_teardown_preserves_latch_hide_reopen_and_hidden_parent_refusal() {
+        let (mut app, _dir) = two_output_popup_app();
+        // Hide `bar@eDP-1`; armed opens against it refuse with `HiddenParent`, and teardown on an
+        // unmapped parent never disturbs popups opened under `bar@DP-1`.
+        app.drop_role_object(idx(&app, "bar@eDP-1"));
+        open_popup_on(&mut app, "menu", Some("bar@eDP-1"));
+        assert_eq!(popup_state(&app, "menu"), (false, None, None, Some(PopupRefusal::HiddenParent)));
+
+        open_popup_on(&mut app, "menu", Some("bar@DP-1"));
+        open_popup_on(&mut app, "submenu", Some("menu"));
+        app.drop_role_object(idx(&app, "bar@eDP-1"));
+        assert!(popup_state(&app, "menu").0 && popup_state(&app, "submenu").0);
+
+        // Hiding `menu` destroys `submenu` first and latches `submenu` at `pointer_input_count`.
+        app.pointer_input_count = 7;
+        app.hide_popup(idx(&app, "menu"));
+        assert!(!popup_state(&app, "menu").0);
+        assert_eq!(popup_state(&app, "menu").1, None);
+        assert_eq!(popup_state(&app, "submenu"), (false, None, Some(7), None));
+
+        // Latch blocks reopening `submenu` while `pointer_input_count` has not moved, then clears on
+        // `visible = false`.
+        open_popup_on(&mut app, "menu", Some("bar@DP-1"));
+        open_popup_on(&mut app, "submenu", Some("menu"));
+        assert!(!popup_state(&app, "submenu").0, "latched child stays closed until pointer advances or visible=false");
+        let sub_idx = idx(&app, "submenu");
+        app.apply_popup_visibility(sub_idx, false);
+        open_popup_on(&mut app, "submenu", Some("menu"));
+        assert!(popup_state(&app, "submenu").0);
+
+        // Re-hide `menu`, recreate `bar@eDP-1`'s layer object, reopen `menu` on `bar@eDP-1`, and
+        // verify closing `bar@DP-1` now leaves `menu` open.
+        let menu_idx = idx(&app, "menu");
+        app.apply_popup_visibility(menu_idx, false);
+        let qh = app.queue_handle.clone();
+        app.show_panel(&qh, idx(&app, "bar@eDP-1"));
+        open_popup_on(&mut app, "menu", Some("bar@eDP-1"));
+        assert_eq!(popup_state(&app, "menu").1.as_deref(), Some("bar@eDP-1"));
+
+        app.drop_role_object(idx(&app, "bar@DP-1"));
+        assert!(popup_state(&app, "menu").0, "reopened menu now follows bar@eDP-1, not bar@DP-1");
+        app.drop_role_object(idx(&app, "bar@eDP-1"));
+        assert!(!popup_state(&app, "menu").0);
     }
 }

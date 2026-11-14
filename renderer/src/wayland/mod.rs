@@ -345,9 +345,12 @@ mod test_support {
             let callback_id = u32::from_ne_bytes(req[20..24].try_into().unwrap());
 
             let mut reply = Vec::new();
-            for (name, iface, version) in
-                [(1u32, "wl_compositor", 4u32), (2u32, "zwlr_layer_shell_v1", 1u32), (3u32, "wl_shm", 1u32)]
-            {
+            for (name, iface, version) in [
+                (1u32, "wl_compositor", 4u32),
+                (2u32, "zwlr_layer_shell_v1", 1u32),
+                (3u32, "wl_shm", 1u32),
+                (4u32, "xdg_wm_base", 3u32),
+            ] {
                 let mut payload = Vec::new();
                 payload.extend_from_slice(&name.to_ne_bytes());
                 let len_with_nul = (iface.len() + 1) as u32;
@@ -413,7 +416,7 @@ mod test_support {
                 layer_shell,
                 background_effect,
                 blur_supported: false,
-                xdg_shell: None,
+                xdg_shell: XdgShell::bind(&globals, &qh).ok(),
                 session_lock_state,
                 session_lock: None,
                 egl: None,

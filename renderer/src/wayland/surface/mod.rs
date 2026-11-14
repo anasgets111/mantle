@@ -99,6 +99,9 @@ pub(super) enum TrackedRole {
         /// `None` when hidden. `get_popup` consumes `xdg_positioner`, so every open builds a fresh
         /// positioner, `wl_surface`, and `xdg_popup` (ADR-0049).
         popup: Option<Popup>,
+        /// Exact instance id of the parent surface this live popup was rooted under, or `None`
+        /// while hidden.
+        parent_id: Option<String>,
         /// Whole spec for the next open; `xdg_positioner` fields are consumed at creation, so no
         /// live diff exists.
         spec: PopupSpec,
@@ -366,8 +369,9 @@ impl TrackedSurface {
                 drop(window.take());
                 *refusal_logged = false;
             }
-            TrackedRole::Popup { popup, positioned, .. } => {
+            TrackedRole::Popup { popup, parent_id, positioned, .. } => {
                 drop(popup.take());
+                *parent_id = None;
                 *positioned = None;
             }
             TrackedRole::Lock { surface, .. } => drop(surface.take()),

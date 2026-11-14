@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: a popup opened from a panel on one output stays open when that panel hides on another output.
 - Changed: building from source requires Rust 1.100 or later.
 - Fixed: `mantle.tray` caps the tray at 32 items, 512-byte object paths and 4096 menu nodes across all items together, so a flooded session bus cannot push the snapshot past the 16 MiB frame limit. An item arriving past 32 logs one warning and enters once a tracked item leaves.
 - Fixed: `mantle.sysinfo.gpu` samples `nvidia-smi` before `nvtop`, and rounds fractional `nvidia-smi` temperatures to whole °C instead of reporting `temp` as `nil`.
