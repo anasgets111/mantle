@@ -1,7 +1,5 @@
 //! [`TrayController`]: the `mantle.tray` write-action dispatcher and state owner.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use enumflags2::BitFlags;
@@ -21,7 +19,8 @@ use super::menu::fetch_menu_via;
 use super::proxies::StatusNotifierWatcherClientProxy;
 use super::registration::{ResolvedRegistration, item_id, resolve_registration};
 use super::registry::{
-    ItemEntry, ItemKey, ItemRegistry, ordered_items, register_item, spawn_name_owner_changed_forwarder, store_menu,
+    ItemEntry, ItemKey, ItemRegistry, RegisterOutcome, enforce_menu_budget, ordered_items, register_item,
+    remaining_menu_budget, spawn_name_owner_changed_forwarder, store_menu,
 };
 use super::watcher::StatusNotifierWatcher;
 use super::{DEFAULT_ITEM_OBJECT_PATH, TrayState, WATCHER_BUS_NAME, WATCHER_OBJECT_PATH};
@@ -53,7 +52,7 @@ impl TrayController {
             ),
             None => (None, None),
         };
-        let registry: ItemRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let registry = ItemRegistry::default();
         let watcher = StatusNotifierWatcher {
             connection: connection.clone(),
             registry: registry.clone(),
@@ -110,7 +109,7 @@ impl TrayController {
     /// Empty registry, no forwarders, and nothing exported. Used when the tray session-bus
     /// connection cannot be established; actions behave like a live controller with no items.
     pub fn inert(events: UnboundedSender<()>) -> Self {
-        Self { registry: Arc::new(Mutex::new(HashMap::new())), events }
+        Self { registry: ItemRegistry::default(), events }
     }
 
     /// Re-derives `tray.items` from the registry. Synchronous because forwarders update
@@ -119,11 +118,16 @@ impl TrayController {
         TrayState { items: ordered_items(&self.registry) }
     }
 
+    #[cfg(test)]
+    pub(super) fn waiting_len(&self) -> usize {
+        self.registry.lock().expect("mutex poisoned").waiting.len()
+    }
+
     /// What `pick` clones out of the entry `id` names, under one lock that no D-Bus call outlives.
     /// An unknown id is logged under `action`.
     fn find<T>(&self, action: &str, id: &str, pick: impl FnOnce(&ItemKey, &ItemEntry) -> T) -> Option<T> {
         let guard = self.registry.lock().expect("mutex poisoned");
-        let found = guard.iter().find(|(key, _)| item_id(key.0.as_str(), key.1.as_str()) == id);
+        let found = guard.items.iter().find(|(key, _)| item_id(key.0.as_str(), key.1.as_str()) == id);
         if found.is_none() {
             debug!("{action}({id:?}) failed: no tray item with that id has been registered");
         }
@@ -207,14 +211,19 @@ impl TrayController {
             Ok(true) => {}
             Err(err) => debug!("menu_will_show({id:?}, {submenu_id}) AboutToShow failed: {err}"),
         }
-        match fetch_menu_via(&menu, &icon_filename_stem(id)).await {
-            Ok(items) => {
+        let max_nodes = remaining_menu_budget(&self.registry.lock().expect("mutex poisoned"), &key);
+        match fetch_menu_via(&menu, &icon_filename_stem(id), max_nodes).await {
+            Ok(mut items) => {
                 let mut guard = self.registry.lock().expect("mutex poisoned");
+                let budget = remaining_menu_budget(&guard, &key);
                 // A `NewMenu` rebind during the fetch made this menu stale.
                 let current = |entry: &&mut ItemEntry| {
                     entry.menu.as_ref().map(|bound| bound.inner().path()) == Some(menu.inner().path())
                 };
-                let changed = guard.get_mut(&key).filter(current).is_some_and(|entry| store_menu(entry, items));
+                let changed = guard.items.get_mut(&key).filter(current).is_some_and(|entry| {
+                    enforce_menu_budget(&entry.last_known.id, &mut items, budget);
+                    store_menu(entry, items)
+                });
                 drop(guard);
                 if changed {
                     let _ = self.events.send(());
@@ -259,7 +268,7 @@ const ADOPTION_OBJECT_PATHS: [&str; 3] =
 /// `RegisterStatusNotifierItem("/some/object/path")` is invisible without introspecting every
 /// session-bus connection. Vesktop has that shape but re-registers on the signal. Upgrade path:
 /// introspection, costing dozens of startup round trips for a rare case.
-async fn adopt_existing_items(
+pub(super) async fn adopt_existing_items(
     connection: &zbus::Connection,
     dbus_proxy: &zbus::fdo::DBusProxy<'_>,
     registry: &ItemRegistry,
@@ -284,6 +293,15 @@ async fn adopt_existing_items(
                     return;
                 }
             };
+            {
+                let guard = registry.lock().expect("mutex poisoned");
+                if ADOPTION_OBJECT_PATHS.iter().any(|candidate| {
+                    OwnedObjectPath::try_from(*candidate)
+                        .is_ok_and(|path| guard.items.contains_key(&(resolved.unique_name.clone(), path)))
+                }) {
+                    return;
+                }
+            }
             let mut refusals = Vec::new();
             for candidate in ADOPTION_OBJECT_PATHS {
                 let object_path = match OwnedObjectPath::try_from(candidate) {
@@ -294,12 +312,13 @@ async fn adopt_existing_items(
                     }
                 };
                 let attempt = ResolvedRegistration { object_path, ..resolved.clone() };
-                match register_item(&connection, &registry, &events, attempt).await {
-                    Ok(()) => {
+                match register_item(&connection, &registry, &events, attempt, false).await {
+                    RegisterOutcome::Registered => {
                         debug!("adopted {name} at {candidate}, registered before this host started");
                         return;
                     }
-                    Err(err) => refusals.push(err),
+                    RegisterOutcome::Deferred => return,
+                    RegisterOutcome::Failed(err) => refusals.push(err),
                 }
             }
             if !refusals.is_empty() {
@@ -312,6 +331,8 @@ async fn adopt_existing_items(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::super::watcher::tests::{StubDBusDaemon, StubStatusNotifierItem};
     use super::*;
     use crate::capabilities::test_support::p2p_pair_serving;
@@ -330,14 +351,14 @@ mod tests {
         })
         .await;
 
-        let registry: ItemRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let registry = ItemRegistry::default();
         let (events, _events_rx) = tokio::sync::mpsc::unbounded_channel();
         let dbus_proxy = zbus::fdo::DBusProxy::new(&connection).await.expect("failed to bind the stub daemon");
 
         adopt_existing_items(&connection, &dbus_proxy, &registry, &events).await;
 
         let paths: Vec<String> =
-            registry.lock().unwrap().keys().map(|(_, object_path)| object_path.to_string()).collect();
+            registry.lock().unwrap().items.keys().map(|(_, object_path)| object_path.to_string()).collect();
         assert_eq!(paths, vec!["/StatusNotifierItem/1".to_string()]);
     }
 
@@ -362,11 +383,12 @@ mod tests {
         };
         let mut item = entry(&connection, "item", 0).await;
         item.menu = Some(bind("/MenuBar").await);
-        let registry: ItemRegistry = Arc::new(Mutex::new(HashMap::from([(key(":1.10"), item)])));
+        let registry = ItemRegistry::default();
+        registry.lock().unwrap().items.insert(key(":1.10"), item);
         let (events, _pushed) = tokio::sync::mpsc::unbounded_channel();
         let controller = TrayController { registry: registry.clone(), events };
         let id = item_id(":1.10", "/StatusNotifierItem");
-        let stored = || registry.lock().unwrap().get_mut(&key(":1.10")).unwrap().last_known.menu.take().is_some();
+        let stored = || registry.lock().unwrap().items.get_mut(&key(":1.10")).unwrap().last_known.menu.take().is_some();
 
         controller.menu_will_show(&id, 0).await;
         assert!(stored(), "a fetch from the bound menu is stored");
@@ -377,7 +399,7 @@ mod tests {
         });
         poll_until(|| (fetches.load(Ordering::Relaxed) == 2).then_some(())).await;
         let rebound = bind("/MenuBar2").await;
-        registry.lock().unwrap().get_mut(&key(":1.10")).unwrap().menu = Some(rebound);
+        registry.lock().unwrap().items.get_mut(&key(":1.10")).unwrap().menu = Some(rebound);
         gate.add_permits(1);
         within(pending).await.unwrap();
         assert!(!stored(), "the replaced menu's reply must not be stored");

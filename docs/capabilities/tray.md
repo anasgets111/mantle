@@ -31,7 +31,7 @@ list {
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `items` | `TrayItem[]` | Registered items in registration order, oldest first; updates never reorder them. |
+| `items` | `TrayItem[]` | Registered items in registration order, oldest first; updates never reorder them. At most 32: one arriving past that logs one warning, waits, and enters once another leaves. |
 
 ### `MenuItem`
 
@@ -76,7 +76,7 @@ One `tray.items[].menu` entry.
 | `icon_path?` | `string` | Icon file for `image { source = ... }`: one from the item's `IconThemePath`, or its pixmap spooled to a PNG. |
 | `id` | `string` | Item identity for every `tray` action, e.g. `"1.234/StatusNotifierItem"`. Opaque. |
 | `item_is_menu` | `boolean` | Left click should open `menu` instead of `activate`. |
-| `menu?` | `MenuItem[]` | Top-level menu entries, or `nil` when the item exports no DBusMenu or its first fetch failed. |
+| `menu?` | `MenuItem[]` | Top-level menu entries, or `nil` when the item exports no DBusMenu or its first fetch failed. Capped at 1024 nodes per item, 4096 across all items together, and depth 32. |
 | `name` | `string` | SNI `Title`, or its `Id` when the title is empty. |
 | `overlay_icon_name?` | `string` | Badge to draw over the icon's corner, paired with `overlay_icon_path`; both `nil` when unset. |
 | `overlay_icon_path?` | `string` | File half of the badge. |
@@ -123,7 +123,7 @@ registers itself as a host.
 | Adoption | At start, adopts items already on the bus at `/StatusNotifierItem`, `/StatusNotifierItem/1` or `/org/chromium/StatusNotifierItem/1`, for apps that never re-register |
 | Removal | An item leaves, and its spooled PNGs are deleted, when its bus name loses its owner |
 | Icon | `IconName` found in the item's `IconThemePath`, then `IconName` as a theme name, then the largest valid pixmap: square, 1 to 128 px, exactly `w × h × 4` ARGB bytes, spooled as a PNG under `tray/` |
-| Bounds | Strings 256 bytes; menus 1024 nodes, depth 32 |
+| Bounds | 32 items (arrivals past 32 log one warning and enter when a tracked item leaves); object paths 512 bytes, strings 256 bytes; menus 1024 nodes per item, 4096 total, depth 32 |
 | Menus | `com.canonical.dbusmenu`. Drops items with `visible = false`. Spools raw PNG `icon-data` (up to 512 KB) to shared memory as `icon_name`. `menu_will_show` sends `AboutToShow`, `activate_menu_item` sends `Event("clicked")` |
 
 ## Gotchas

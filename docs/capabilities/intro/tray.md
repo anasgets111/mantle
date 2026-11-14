@@ -32,7 +32,7 @@ registers itself as a host.
 | Adoption | At start, adopts items already on the bus at `/StatusNotifierItem`, `/StatusNotifierItem/1` or `/org/chromium/StatusNotifierItem/1`, for apps that never re-register |
 | Removal | An item leaves, and its spooled PNGs are deleted, when its bus name loses its owner |
 | Icon | `IconName` found in the item's `IconThemePath`, then `IconName` as a theme name, then the largest valid pixmap: square, 1 to 128 px, exactly `w × h × 4` ARGB bytes, spooled as a PNG under `tray/` |
-| Bounds | Strings 256 bytes; menus 1024 nodes, depth 32 |
+| Bounds | 32 items (arrivals past 32 log one warning and enter when a tracked item leaves); object paths 512 bytes, strings 256 bytes; menus 1024 nodes per item, 4096 total, depth 32 |
 | Menus | `com.canonical.dbusmenu`. Drops items with `visible = false`. Spools raw PNG `icon-data` (up to 512 KB) to shared memory as `icon_name`. `menu_will_show` sends `AboutToShow`, `activate_menu_item` sends `Event("clicked")` |
 
 ## Gotchas

@@ -1,13 +1,13 @@
 //! Per-item registry: hydration + signal-forwarder tasks that keep each tracked
 //! `StatusNotifierItem`'s [`super::item::TrayItem`] snapshot live.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures_util::stream::{BoxStream, SelectAll};
 use futures_util::{FutureExt, StreamExt};
-use shared::debug;
+use shared::{debug, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 use zbus::names::{BusName, OwnedUniqueName};
@@ -17,9 +17,10 @@ use crate::capabilities::shm_icons;
 
 use super::icon::{SPOOL_SUBDIR, icon_filename_stem};
 use super::item::{TrayItem, fetch_tray_item_base};
-use super::menu::{MenuItem, fetch_menu_via};
+use super::menu::{MenuItem, count_menu_nodes, fetch_menu_via, truncate_menu_nodes};
 use super::proxies::{DBusMenuProxy, NewMenuStream, StatusNotifierItemProxy, bind_dbusmenu, bind_item};
 use super::registration::{ResolvedRegistration, item_id};
+use super::{MAX_ITEMS, MAX_MENU_NODES, MAX_TOTAL_MENU_NODES, MAX_WAITING_ITEMS};
 
 /// Process-wide sequence for [`ItemEntry::registered`]. It only needs to increase; each registry
 /// still sees a monotonic order in tests.
@@ -36,36 +37,137 @@ pub(super) struct ItemEntry {
     menu_forwarder: JoinHandle<()>,
 }
 
+#[derive(Default)]
+pub(super) struct Registry {
+    pub(super) items: HashMap<ItemKey, ItemEntry>,
+    /// Registrations that arrived while `items` was at [`MAX_ITEMS`], in arrival order.
+    pub(super) waiting: VecDeque<ResolvedRegistration>,
+    /// Set when `adopt_existing_items` skipped names at [`MAX_ITEMS`]; re-runs once a slot opens.
+    pub(super) adoption_deferred: bool,
+    /// Serializes [`admit_waiting`] so concurrent departures never pop multiple waiting items in parallel.
+    pub(super) admitting: bool,
+}
+
 /// `tray.items` in registration order. Sorting D-Bus ids lexicographically puts `1.100` before
 /// `1.20` and inserts a new app mid-strip; registration order also appends.
 pub(super) fn ordered_items(registry: &ItemRegistry) -> Vec<TrayItem> {
     let guard = registry.lock().expect("tray registry mutex poisoned");
-    let mut entries: Vec<&ItemEntry> = guard.values().collect();
+    let mut entries: Vec<&ItemEntry> = guard.items.values().collect();
     entries.sort_by_key(|entry| entry.registered);
     entries.into_iter().map(|entry| entry.last_known.clone()).collect()
 }
 
 pub(super) type ItemKey = (OwnedUniqueName, OwnedObjectPath);
-pub(super) type ItemRegistry = Arc<Mutex<HashMap<ItemKey, ItemEntry>>>;
+pub(super) type ItemRegistry = Arc<Mutex<Registry>>;
+
+/// Remaining shared menu-node allowance for `key` (excluding `key`'s own existing nodes, so a
+/// menu refresh does not starve itself), capped by [`MAX_MENU_NODES`] - 1.
+pub(super) fn remaining_menu_budget(registry: &Registry, key: &ItemKey) -> usize {
+    let used: usize = registry
+        .items
+        .iter()
+        .filter(|(k, _)| *k != key)
+        .filter_map(|(_, entry)| entry.last_known.menu.as_deref())
+        .map(count_menu_nodes)
+        .sum();
+    MAX_TOTAL_MENU_NODES.saturating_sub(used).min(MAX_MENU_NODES - 1)
+}
+
+/// Enforces `max_nodes` on `items`, deleting any spooled menu PNGs for nodes that were cut.
+pub(super) fn enforce_menu_budget(item_id: &str, items: &mut Vec<MenuItem>, max_nodes: usize) {
+    let budget = max_nodes.min(MAX_MENU_NODES - 1);
+    let mut remaining = budget;
+    let mut dropped = Vec::new();
+    truncate_menu_nodes(items, &mut remaining, &mut dropped);
+    if !dropped.is_empty() {
+        reap_menu_icons(item_id, &dropped, items);
+        debug!("menu for {item_id} truncated to {budget} nodes under shared tray budget");
+    }
+}
+
+fn cleanup_item_icons(item: &TrayItem) {
+    for path in [&item.icon_path, &item.attention_icon_path, &item.overlay_icon_path].into_iter().flatten() {
+        shm_icons::remove_png(SPOOL_SUBDIR, path);
+    }
+    reap_menu_icons(&item.id, item.menu.as_deref().unwrap_or_default(), &[]);
+}
+
+fn cleanup_replaced_icons(old: &TrayItem, kept: &TrayItem) {
+    for (old_path, new_path) in [
+        (&old.icon_path, &kept.icon_path),
+        (&old.attention_icon_path, &kept.attention_icon_path),
+        (&old.overlay_icon_path, &kept.overlay_icon_path),
+    ] {
+        if let Some(old_path) = old_path
+            && Some(old_path) != new_path.as_ref()
+        {
+            shm_icons::remove_png(SPOOL_SUBDIR, old_path);
+        }
+    }
+    reap_menu_icons(&old.id, old.menu.as_deref().unwrap_or_default(), kept.menu.as_deref().unwrap_or_default());
+}
+
+fn record_at_cap(guard: &mut Registry, resolved: &ResolvedRegistration, defer_on_full: bool) {
+    let id = item_id(resolved.unique_name.as_str(), resolved.object_path.as_str());
+    let message = format!("not tracking {id}: {} tray items already are; waiting for a slot", guard.items.len());
+    if shared::log::first_failure(&format!("tray item limit {}", resolved.unique_name)) {
+        warn!("{message}");
+    } else {
+        debug!("{message}");
+    }
+    if !defer_on_full {
+        guard.adoption_deferred = true;
+        return;
+    }
+    if guard.waiting.iter().any(|w| w.unique_name == resolved.unique_name && w.object_path == resolved.object_path) {
+        return;
+    }
+    if guard.waiting.len() < MAX_WAITING_ITEMS {
+        guard.waiting.push_back(resolved.clone());
+    } else {
+        debug!("tray waiting queue full ({MAX_WAITING_ITEMS}); dropping {id}");
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum RegisterOutcome {
+    Registered,
+    Deferred,
+    Failed(String),
+}
 
 /// Binds and hydrates a `StatusNotifierItem` and its menu (ADR-0031 eager fetch), spawns
 /// forwarders, and inserts it into `registry`. Replaces the same key and aborts its old forwarders.
+/// Refuses new keys past [`MAX_ITEMS`], logging one warning and queueing into `waiting` when
+/// `defer_on_full` is set (or flagging `adoption_deferred` otherwise).
 pub(super) async fn register_item(
     connection: &zbus::Connection,
     registry: &ItemRegistry,
     events: &UnboundedSender<()>,
     resolved: ResolvedRegistration,
-) -> Result<(), String> {
+    defer_on_full: bool,
+) -> RegisterOutcome {
+    let key: ItemKey = (resolved.unique_name.clone(), resolved.object_path.clone());
+    // Checked before any round trip: refused registrations must not spend D-Bus I/O or spool PNGs.
+    {
+        let mut guard = registry.lock().expect("mutex poisoned");
+        if guard.items.len() >= MAX_ITEMS && !guard.items.contains_key(&key) {
+            record_at_cap(&mut guard, &resolved, defer_on_full);
+            return RegisterOutcome::Deferred;
+        }
+    }
+
     let ResolvedRegistration { unique_name, destination, object_path } = resolved;
-    let item = bind_item(connection, &destination, &object_path)
-        .await
-        .map_err(|err| format!("failed to bind StatusNotifierItem: {err}"))?;
+    let item = match bind_item(connection, &destination, &object_path).await {
+        Ok(item) => item,
+        Err(err) => return RegisterOutcome::Failed(format!("failed to bind StatusNotifierItem: {err}")),
+    };
 
     // An object that answers nothing is not an item: `bind_item` does no I/O and
     // `fetch_tray_item_base` defaults every property, so an adoption guess at a path nobody exports
     // would insert a blank phantom (ADR-0168). SNI makes `Status` mandatory, so a live item answers.
     if let Err(err) = item.status().await {
-        return Err(format!("{destination} exports no StatusNotifierItem at {object_path}: {err}"));
+        return RegisterOutcome::Failed(format!("{destination} exports no StatusNotifierItem at {object_path}: {err}"));
     }
 
     // Subscribed before each first read, so a change signalled during registration is refetched.
@@ -76,13 +178,12 @@ pub(super) async fn register_item(
     let menu = menu.ok().flatten();
     let updates = menu_updates(menu.as_ref()).await;
     if let Some(menu) = &menu {
-        match fetch_menu_via(menu, &icon_filename_stem(&tray_item.id)).await {
+        let max_nodes = remaining_menu_budget(&registry.lock().expect("mutex poisoned"), &key);
+        match fetch_menu_via(menu, &icon_filename_stem(&tray_item.id), max_nodes).await {
             Ok(items) => tray_item.menu = Some(items),
             Err(err) => debug!("GetLayout failed for {unique_name}: {err}"),
         }
     }
-
-    let key: ItemKey = (unique_name.clone(), object_path.clone());
 
     // TOCTOU guard: the property/GetLayout awaits can outlive the connection, while
     // NameOwnerChanged only removes entries that already exist. Check liveness immediately before
@@ -90,7 +191,10 @@ pub(super) async fn register_item(
     // eliminates, the race.
     if let Ok(dbus_proxy) = zbus::fdo::DBusProxy::new(connection).await {
         match dbus_proxy.name_has_owner(BusName::from(unique_name.clone())).await {
-            Ok(false) => return Err(format!("{unique_name} disconnected during registration")),
+            Ok(false) => {
+                cleanup_item_icons(&tray_item);
+                return RegisterOutcome::Failed(format!("{unique_name} disconnected during registration"));
+            }
             Ok(true) => {}
             Err(err) => {
                 debug!("pre-insert liveness check for {unique_name} failed (proceeding anyway): {err}")
@@ -98,8 +202,25 @@ pub(super) async fn register_item(
         }
     }
 
+    let mut kept_snapshot = None;
     let previous = {
         let mut guard = registry.lock().expect("mutex poisoned");
+        if guard.items.len() >= MAX_ITEMS && !guard.items.contains_key(&key) {
+            let deferred = ResolvedRegistration { unique_name, destination, object_path };
+            record_at_cap(&mut guard, &deferred, defer_on_full);
+            drop(guard);
+            cleanup_item_icons(&tray_item);
+            return RegisterOutcome::Deferred;
+        }
+        if let Some(menu_items) = tray_item.menu.as_mut() {
+            let budget = remaining_menu_budget(&guard, &key);
+            enforce_menu_budget(&tray_item.id, menu_items, budget);
+        }
+        if guard.items.contains_key(&key) {
+            kept_snapshot = Some(tray_item.clone());
+        }
+        guard.waiting.retain(|w| (&w.unique_name, &w.object_path) != (&key.0, &key.1));
+
         // Spawned under the lock, so a signal already queued finds the entry rather than ending its forwarder.
         let (k, r, e) = (key.clone(), registry.clone(), events.clone());
         let properties_forwarder = spawn_item_signal_forwarder(item.clone(), signals, k, r, e);
@@ -107,20 +228,23 @@ pub(super) async fn register_item(
         let menu_forwarder = spawn_menu_signal_forwarder(&item, new_menu, menu.clone(), updates, k, r, e);
         let mut entry =
             ItemEntry { item, menu, last_known: tray_item, registered: 0, properties_forwarder, menu_forwarder };
-        entry.registered = match guard.get(&key) {
+        entry.registered = match guard.items.get(&key) {
             // Same key means re-registration, so keep its place. A restart gets a new unique name
             // and key, so it is a new item.
             Some(existing) => existing.registered,
             None => NEXT_REGISTRATION.fetch_add(1, Ordering::Relaxed),
         };
-        guard.insert(key, entry)
+        guard.items.insert(key, entry)
     };
     if let Some(previous) = previous {
         previous.properties_forwarder.abort();
         previous.menu_forwarder.abort();
+        if let Some(kept) = &kept_snapshot {
+            cleanup_replaced_icons(&previous.last_known, kept);
+        }
     }
     let _ = events.send(());
-    Ok(())
+    RegisterOutcome::Registered
 }
 
 /// Stores refreshed SNI properties under the menu the entry already holds.
@@ -190,14 +314,14 @@ fn spawn_item_signal_forwarder(
     tokio::spawn(async move {
         let Ok(mut signals) = signals else { return };
         while let Some(icon) = next_burst(&mut signals).await {
-            let Some(previous) = registry.lock().expect("mutex poisoned").get(&key).map(|e| e.last_known.clone())
+            let Some(previous) = registry.lock().expect("mutex poisoned").items.get(&key).map(|e| e.last_known.clone())
             else {
                 break;
             };
             let refreshed = fetch_tray_item_base(&item, &key.0, &key.1, &previous, !icon).await;
 
             let mut guard = registry.lock().expect("mutex poisoned");
-            let Some(entry) = guard.get_mut(&key) else { break };
+            let Some(entry) = guard.items.get_mut(&key) else { break };
             let changed = keep_menu_across(entry, refreshed);
             drop(guard);
 
@@ -221,7 +345,7 @@ pub(super) fn store_menu(entry: &mut ItemEntry, items: Vec<MenuItem>) -> bool {
 
 /// Deletes the item's own `{stem}_menu_{id}.png` files that `old` names and `kept` no longer does;
 /// an app-supplied `icon_name` cannot reap another item's file.
-fn reap_menu_icons(item_id: &str, old: &[MenuItem], kept: &[MenuItem]) {
+pub(super) fn reap_menu_icons(item_id: &str, old: &[MenuItem], kept: &[MenuItem]) {
     let prefix = format!("{}_menu_", icon_filename_stem(item_id));
     let own = |path: &str| {
         let name = std::path::Path::new(path).file_name().and_then(|name| name.to_str());
@@ -293,7 +417,7 @@ fn spawn_menu_signal_forwarder(
                 menu = bound;
                 updates = menu_updates(menu.as_ref()).await;
                 let mut guard = registry.lock().expect("mutex poisoned");
-                let Some(entry) = guard.get_mut(&key) else { break };
+                let Some(entry) = guard.items.get_mut(&key) else { break };
                 entry.menu = menu.clone();
                 let cleared = menu.is_none()
                     && entry.last_known.menu.take().is_some_and(|old| {
@@ -306,10 +430,13 @@ fn spawn_menu_signal_forwarder(
                 }
             }
             let Some(menu) = &menu else { continue };
-            match fetch_menu_via(menu, &item_stem).await {
-                Ok(items) => {
+            let max_nodes = remaining_menu_budget(&registry.lock().expect("mutex poisoned"), &key);
+            match fetch_menu_via(menu, &item_stem, max_nodes).await {
+                Ok(mut items) => {
                     let mut guard = registry.lock().expect("mutex poisoned");
-                    let Some(entry) = guard.get_mut(&key) else { break };
+                    let budget = remaining_menu_budget(&guard, &key);
+                    let Some(entry) = guard.items.get_mut(&key) else { break };
+                    enforce_menu_budget(&entry.last_known.id, &mut items, budget);
                     let changed = store_menu(entry, items);
                     drop(guard);
                     if changed && events.send(()).is_err() {
@@ -320,6 +447,62 @@ fn spawn_menu_signal_forwarder(
             }
         }
     })
+}
+
+/// Admits queued registrations and deferred startup adoptions after a departure frees slot(s).
+/// Runs in its own task so a slow or silent waiting item never stalls `NameOwnerChanged`.
+fn admit_waiting(connection: zbus::Connection, registry: ItemRegistry, events: UnboundedSender<()>) {
+    tokio::spawn(async move {
+        loop {
+            loop {
+                let next = {
+                    let mut guard = registry.lock().expect("mutex poisoned");
+                    if guard.items.len() >= MAX_ITEMS {
+                        guard.admitting = false;
+                        return;
+                    }
+                    guard.waiting.pop_front()
+                };
+                let Some(resolved) = next else { break };
+                let registered_id = format!("{}{}", resolved.unique_name.as_str(), resolved.object_path.as_str());
+                match register_item(&connection, &registry, &events, resolved, true).await {
+                    RegisterOutcome::Registered => {
+                        if let Ok(emitter) =
+                            zbus::object_server::SignalEmitter::new(&connection, super::WATCHER_OBJECT_PATH)
+                        {
+                            let _ = super::watcher::StatusNotifierWatcher::status_notifier_item_registered(
+                                &emitter,
+                                &registered_id,
+                            )
+                            .await;
+                        }
+                    }
+                    RegisterOutcome::Deferred => {
+                        registry.lock().expect("mutex poisoned").admitting = false;
+                        return;
+                    }
+                    RegisterOutcome::Failed(err) => {
+                        debug!("admitting waiting tray item {registered_id} failed: {err}");
+                    }
+                }
+            }
+            let need_adopt = {
+                let mut guard = registry.lock().expect("mutex poisoned");
+                if guard.items.len() < MAX_ITEMS && guard.adoption_deferred {
+                    guard.adoption_deferred = false;
+                    true
+                } else if guard.items.len() < MAX_ITEMS && !guard.waiting.is_empty() {
+                    continue;
+                } else {
+                    guard.admitting = false;
+                    return;
+                }
+            };
+            if need_adopt && let Ok(dbus_proxy) = zbus::fdo::DBusProxy::new(&connection).await {
+                super::controller::adopt_existing_items(&connection, &dbus_proxy, &registry, &events).await;
+            }
+        }
+    });
 }
 
 /// Removes entries whose unique name drops off the bus (`new_owner` empty). SNI has no
@@ -337,11 +520,20 @@ pub(super) fn spawn_name_owner_changed_forwarder(
             let Ok(args) = signal.args() else { continue };
             let dropped_name = args.name.to_string();
 
-            let removed: Vec<(ItemKey, ItemEntry)> = registry
-                .lock()
-                .expect("mutex poisoned")
-                .extract_if(|(unique_name, _), _| unique_name.as_str() == dropped_name)
-                .collect();
+            let (removed, admit) = {
+                let mut guard = registry.lock().expect("mutex poisoned");
+                guard.waiting.retain(|w| w.unique_name.as_str() != dropped_name);
+                let removed: Vec<(ItemKey, ItemEntry)> =
+                    guard.items.extract_if(|(unique_name, _), _| unique_name.as_str() == dropped_name).collect();
+                let admit = !removed.is_empty()
+                    && !guard.admitting
+                    && guard.items.len() < MAX_ITEMS
+                    && (!guard.waiting.is_empty() || guard.adoption_deferred);
+                if admit {
+                    guard.admitting = true;
+                }
+                (removed, admit)
+            };
             if removed.is_empty() {
                 continue;
             }
@@ -356,20 +548,13 @@ pub(super) fn spawn_name_owner_changed_forwarder(
                 // Remove all three variant files (ADR-0074). Reconnecting apps get a new unique
                 // name, so stale PNGs otherwise pile up for the rest of the session (logind clears
                 // $XDG_RUNTIME_DIR only when the user's last session ends).
-                for path in [
-                    &entry.last_known.icon_path,
-                    &entry.last_known.attention_icon_path,
-                    &entry.last_known.overlay_icon_path,
-                ]
-                .into_iter()
-                .flatten()
-                {
-                    shm_icons::remove_png(SPOOL_SUBDIR, path);
-                }
-                reap_menu_icons(&entry.last_known.id, entry.last_known.menu.as_deref().unwrap_or_default(), &[]);
+                cleanup_item_icons(&entry.last_known);
             }
             if events.send(()).is_err() {
                 break;
+            }
+            if admit {
+                admit_waiting(connection.clone(), registry.clone(), events.clone());
             }
             // Emitted last: a stalled D-Bus write must not hold up the cleanup above.
             if let Ok(emitter) = zbus::object_server::SignalEmitter::new(&connection, super::WATCHER_OBJECT_PATH) {
@@ -425,7 +610,7 @@ pub(super) mod tests {
     #[tokio::test]
     async fn the_strip_is_in_registration_order_whatever_the_map_says() {
         let (connection, _peer) = p2p_pair().await;
-        let registry: ItemRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let registry = ItemRegistry::default();
         // Build entries before locking; the helper awaits and a std mutex guard must not cross it.
         let third = entry(&connection, "third", 2).await;
         let first = entry(&connection, "first", 0).await;
@@ -433,9 +618,9 @@ pub(super) mod tests {
         // Insert out of registration order; a `HashMap` may return that order.
         {
             let mut guard = registry.lock().unwrap();
-            guard.insert(key(":1.30"), third);
-            guard.insert(key(":1.10"), first);
-            guard.insert(key(":1.20"), second);
+            guard.items.insert(key(":1.30"), third);
+            guard.items.insert(key(":1.10"), first);
+            guard.items.insert(key(":1.20"), second);
         }
         let ids: Vec<String> = ordered_items(&registry).into_iter().map(|item| item.id).collect();
         assert_eq!(ids, ["first", "second", "third"]);
@@ -525,9 +710,9 @@ pub(super) mod tests {
         let destination = BusName::from(app.unique_name().unwrap().clone()).into();
         let item = bind_item(&connection, &destination, &OwnedObjectPath::try_from(item_path).unwrap()).await.unwrap();
         let menu = bind_dbusmenu(&connection, &destination, &OwnedObjectPath::try_from(menu_path).unwrap()).await;
-        let registry: ItemRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let registry = ItemRegistry::default();
         let entry = entry(&connection, "item", 0).await;
-        registry.lock().unwrap().insert(key(":1.10"), entry);
+        registry.lock().unwrap().items.insert(key(":1.10"), entry);
         let (events, _pushed) = tokio::sync::mpsc::unbounded_channel();
         let (new_menu, menu) = (item.receive_new_menu().await, menu.ok());
         let updates = menu_updates(menu.as_ref()).await;
@@ -602,15 +787,15 @@ pub(super) mod tests {
         let app = bus.connection().await;
         let unique = app.unique_name().unwrap().to_owned();
         drop(app);
-        let registry: ItemRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let registry = ItemRegistry::default();
         let gone = entry(&host, "gone", 0).await;
-        registry.lock().unwrap().insert(key(unique.as_str()), gone);
+        registry.lock().unwrap().items.insert(key(unique.as_str()), gone);
         let (events, mut pushed) = tokio::sync::mpsc::unbounded_channel();
 
         spawn_name_owner_changed_forwarder(host.clone(), departures, registry.clone(), events);
 
         crate::capabilities::test_support::within(pushed.recv()).await.expect("the forwarder announces the removal");
-        assert!(registry.lock().unwrap().is_empty());
+        assert!(registry.lock().unwrap().items.is_empty());
     }
 
     /// Qt names `/NO_DBUSMENU` until the app sets a menu, then sends `NewMenu`.
@@ -655,11 +840,11 @@ pub(super) mod tests {
             destination: BusName::from(unique.clone()).into(),
             object_path: OwnedObjectPath::try_from("/StatusNotifierItem").unwrap(),
         };
-        let registry: ItemRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let registry = ItemRegistry::default();
         let (events, _pushed) = tokio::sync::mpsc::unbounded_channel();
-        register_item(&connection, &registry, &events, resolved).await.unwrap();
+        assert_eq!(register_item(&connection, &registry, &events, resolved, true).await, RegisterOutcome::Registered);
         let key: ItemKey = (unique, OwnedObjectPath::try_from("/StatusNotifierItem").unwrap());
-        assert!(registry.lock().unwrap()[&key].menu.is_none(), "/NO_DBUSMENU is no menu");
+        assert!(registry.lock().unwrap().items[&key].menu.is_none(), "/NO_DBUSMENU is no menu");
 
         *menu_path.lock().unwrap() = "/MenuBar";
         let emitter = SignalEmitter::new(&app, "/StatusNotifierItem").unwrap();
@@ -668,7 +853,7 @@ pub(super) mod tests {
                 LateMenuItem::new_menu(&emitter).await.unwrap();
                 tokio::time::sleep(MENU_SETTLE * 2).await;
                 let guard = registry.lock().unwrap();
-                let entry = &guard[&key];
+                let entry = &guard.items[&key];
                 if entry.last_known.menu.is_some() {
                     assert_eq!(entry.menu.as_ref().map(|menu| menu.inner().path().as_str()), Some("/MenuBar"));
                     break;
@@ -686,7 +871,7 @@ pub(super) mod tests {
                 CountingMenu::layout_updated(&old_menu, 1, 0).await.unwrap();
                 tokio::time::sleep(MENU_SETTLE * 2).await;
                 let guard = registry.lock().unwrap();
-                if guard[&key].menu.as_ref().map(|menu| menu.inner().path().as_str()) == Some("/MenuBar2") {
+                if guard.items[&key].menu.as_ref().map(|menu| menu.inner().path().as_str()) == Some("/MenuBar2") {
                     break;
                 }
             }
@@ -701,9 +886,9 @@ pub(super) mod tests {
         tokio::time::sleep(MENU_SETTLE * 2).await;
         {
             let guard = registry.lock().unwrap();
-            assert_eq!(guard[&key].menu.as_ref().map(|menu| menu.inner().path().as_str()), Some("/MenuBar2"));
+            assert_eq!(guard.items[&key].menu.as_ref().map(|menu| menu.inner().path().as_str()), Some("/MenuBar2"));
             assert!(
-                guard[&key].last_known.menu.as_ref().is_some_and(|menu| !menu.is_empty()),
+                guard.items[&key].last_known.menu.as_ref().is_some_and(|menu| !menu.is_empty()),
                 "a failed read wiped the menu"
             );
         }
@@ -720,7 +905,7 @@ pub(super) mod tests {
             }
         })
         .await;
-        assert!(registry.lock().unwrap()[&key].menu.is_none());
+        assert!(registry.lock().unwrap().items[&key].menu.is_none());
 
         // The forwarder outlives a cleared menu: one set again shows.
         *menu_path.lock().unwrap() = "/MenuBar";
@@ -788,9 +973,9 @@ pub(super) mod tests {
             destination: BusName::from(unique.clone()).into(),
             object_path: OwnedObjectPath::try_from("/StatusNotifierItem").unwrap(),
         };
-        let registry: ItemRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let registry = ItemRegistry::default();
         let (events, _pushed) = tokio::sync::mpsc::unbounded_channel();
-        register_item(&connection, &registry, &events, resolved).await.unwrap();
+        assert_eq!(register_item(&connection, &registry, &events, resolved, true).await, RegisterOutcome::Registered);
         assert_eq!(*title.lock().unwrap(), "renamed", "the rename landed during registration");
 
         let icon = crate::capabilities::test_support::poll_until(|| {
@@ -813,7 +998,7 @@ pub(super) mod tests {
                 .serve_at("/org/freedesktop/DBus", StubDBusDaemon)
         })
         .await;
-        let registry: ItemRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let registry = ItemRegistry::default();
         let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
         for (unique, path) in [(":1.10", "/A"), (":1.20", "/B"), (":1.10", "/A")] {
             let destination = zbus::names::OwnedBusName::try_from(unique).unwrap();
@@ -822,10 +1007,425 @@ pub(super) mod tests {
                 destination,
                 object_path: OwnedObjectPath::try_from(path).unwrap(),
             };
-            register_item(&connection, &registry, &events, resolved).await.unwrap();
+            assert_eq!(
+                register_item(&connection, &registry, &events, resolved, true).await,
+                RegisterOutcome::Registered
+            );
         }
 
         let ids: Vec<String> = ordered_items(&registry).into_iter().map(|item| item.id).collect();
         assert_eq!(ids, ["1.10/A", "1.20/B"], "a re-registered item must not jump to the end");
+    }
+
+    struct MutableTitleItem {
+        title: Arc<Mutex<&'static str>>,
+    }
+
+    #[zbus::interface(name = "org.kde.StatusNotifierItem")]
+    impl MutableTitleItem {
+        #[zbus(property, name = "Id")]
+        fn id(&self) -> String {
+            "mutable-item".to_string()
+        }
+        #[zbus(property, name = "Title")]
+        fn title(&self) -> String {
+            self.title.lock().unwrap().to_string()
+        }
+        #[zbus(property, name = "IconName")]
+        fn icon_name(&self) -> String {
+            String::new()
+        }
+        #[zbus(property, name = "IconPixmap")]
+        fn icon_pixmap(&self) -> Vec<super::super::RawIconPixmap> {
+            Vec::new()
+        }
+        #[zbus(property, name = "Status")]
+        fn status(&self) -> String {
+            "Active".to_string()
+        }
+        #[zbus(property, name = "ItemIsMenu")]
+        fn item_is_menu(&self) -> bool {
+            false
+        }
+        #[zbus(property, name = "ToolTip")]
+        fn tool_tip(&self) -> super::super::RawToolTip {
+            (String::new(), Vec::new(), String::new(), String::new())
+        }
+        #[zbus(property, name = "Menu")]
+        fn menu(&self) -> OwnedObjectPath {
+            OwnedObjectPath::try_from("/").unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn an_item_past_max_items_waits_and_enters_when_one_leaves() {
+        use super::super::TrayController;
+        use super::super::watcher::tests::StubStatusNotifierItem;
+        use super::super::{WATCHER_BUS_NAME, WATCHER_OBJECT_PATH};
+        use crate::capabilities::test_support::{poll_until, private_bus, snapshot_frame_len};
+
+        let bus = private_bus().await;
+        let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let controller = TrayController::new(bus.connection().await, events).await;
+
+        async fn watcher_proxy(conn: &zbus::Connection) -> zbus::Proxy<'_> {
+            zbus::Proxy::new(conn, WATCHER_BUS_NAME, WATCHER_OBJECT_PATH, "org.kde.StatusNotifierWatcher")
+                .await
+                .unwrap()
+        }
+
+        // Register the first item synchronously so `snapshot().items[0]` is known to be this mutable peer.
+        let first_title = Arc::new(Mutex::new("initial"));
+        let first_app = bus
+            .builder()
+            .serve_at("/StatusNotifierItem", MutableTitleItem { title: first_title.clone() })
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let first_unique = first_app.unique_name().unwrap().to_owned();
+        let first_id = item_id(first_unique.as_str(), "/StatusNotifierItem");
+        watcher_proxy(&first_app)
+            .await
+            .call::<_, _, ()>("RegisterStatusNotifierItem", &("/StatusNotifierItem",))
+            .await
+            .unwrap();
+        poll_until(|| (controller.snapshot().items.len() == 1).then_some(())).await;
+
+        let spawn_item = || async {
+            let app =
+                bus.builder().serve_at("/StatusNotifierItem", StubStatusNotifierItem).unwrap().build().await.unwrap();
+            let unique = app.unique_name().unwrap().to_owned();
+            watcher_proxy(&app)
+                .await
+                .call::<_, _, ()>("RegisterStatusNotifierItem", &("/StatusNotifierItem",))
+                .await
+                .unwrap();
+            (app, item_id(unique.as_str(), "/StatusNotifierItem"))
+        };
+
+        let mut apps = futures_util::future::join_all((1..MAX_ITEMS).map(|_| spawn_item())).await;
+        poll_until(|| (controller.snapshot().items.len() == MAX_ITEMS).then_some(())).await;
+
+        let full_snapshot = controller.snapshot();
+        assert_eq!(full_snapshot.items.len(), MAX_ITEMS);
+        assert_eq!(full_snapshot.items[0].id, first_id);
+        assert!(
+            snapshot_frame_len(shared::Capability::Tray, &full_snapshot) < shared::framing::MAX_FRAME_LEN,
+            "snapshot at MAX_ITEMS must fit one frame"
+        );
+
+        // Re-registering an already-tracked item at capacity must succeed, refresh, and keep its place.
+        *first_title.lock().unwrap() = "re-registered";
+        watcher_proxy(&first_app)
+            .await
+            .call::<_, _, ()>("RegisterStatusNotifierItem", &("/StatusNotifierItem",))
+            .await
+            .unwrap();
+        poll_until(|| (controller.snapshot().items[0].name == "re-registered").then_some(())).await;
+        assert_eq!(controller.snapshot().items[0].id, first_id, "re-registration kept its order");
+
+        // Register three extra items past MAX_ITEMS: one departs while waiting, two stay to enter in order.
+        let (extra_departing, extra_departing_id) = spawn_item().await;
+        let (extra_waiting1, extra_waiting1_id) = spawn_item().await;
+        let extra_waiting1_unique = extra_waiting1.unique_name().unwrap().to_string();
+        let (_extra_waiting2, extra_waiting2_id) = spawn_item().await;
+        poll_until(|| (controller.waiting_len() == 3).then_some(())).await;
+
+        // Re-registering the same waiting peer must not duplicate it in `waiting` or emit a second warning.
+        watcher_proxy(&extra_waiting1)
+            .await
+            .call::<_, _, ()>("RegisterStatusNotifierItem", &("/StatusNotifierItem",))
+            .await
+            .unwrap();
+        let waiting_warn_key = format!("tray item limit {extra_waiting1_unique}");
+        assert!(!shared::log::first_failure(&waiting_warn_key), "warning must have fired once already");
+
+        let host_conn = bus.connection().await;
+        let watcher_client = watcher_proxy(&host_conn).await;
+        assert_eq!(controller.snapshot().items.len(), MAX_ITEMS);
+        assert_eq!(controller.waiting_len(), 3);
+        assert!(!controller.snapshot().items.iter().any(|item| item.id == extra_waiting1_id));
+        assert!(!controller.snapshot().items.iter().any(|item| item.id == extra_waiting2_id));
+        assert!(!controller.snapshot().items.iter().any(|item| item.id == extra_departing_id));
+        let registered: Vec<String> = watcher_client.get_property("RegisteredStatusNotifierItems").await.unwrap();
+        assert_eq!(registered.len(), MAX_ITEMS);
+        assert!(registered.contains(&format!("{first_unique}/StatusNotifierItem")));
+
+        // Drop the departing waiting item before any slot frees: waiting queue shrinks by one.
+        drop(extra_departing);
+        poll_until(|| (controller.waiting_len() == 2).then_some(())).await;
+
+        // Free one tracked slot: waiting1 enters while waiting2 remains queued.
+        drop(first_app);
+        let after_first = poll_until(|| {
+            let snap = controller.snapshot();
+            snap.items.iter().any(|item| item.id == extra_waiting1_id).then_some(snap)
+        })
+        .await;
+        assert_eq!(after_first.items.len(), MAX_ITEMS);
+        assert!(!after_first.items.iter().any(|item| item.id == first_id));
+        assert_eq!(controller.waiting_len(), 1, "admitting waiting1 must keep waiting2 queued");
+
+        // Free a second tracked slot: waiting2 enters too.
+        let (_, dropped2_id) = apps.remove(0);
+        let after_second = poll_until(|| {
+            let snap = controller.snapshot();
+            snap.items.iter().any(|item| item.id == extra_waiting2_id).then_some(snap)
+        })
+        .await;
+        assert_eq!(after_second.items.len(), MAX_ITEMS);
+        assert!(!after_second.items.iter().any(|item| item.id == dropped2_id));
+        assert_eq!(controller.waiting_len(), 0);
+        assert!(snapshot_frame_len(shared::Capability::Tray, &after_second) < shared::framing::MAX_FRAME_LEN);
+    }
+
+    #[tokio::test]
+    async fn shared_menu_budget_truncates_across_items_and_reaps_dropped_icons() {
+        shm_icons::init_test_spool();
+        let (connection, _peer) = p2p_pair().await;
+        let registry = ItemRegistry::default();
+        let per_item = MAX_MENU_NODES - 1;
+        let filler_count = MAX_TOTAL_MENU_NODES / per_item;
+        assert_eq!(filler_count, 4);
+
+        for idx in 0..filler_count {
+            let mut item_entry = entry(&connection, &format!("1.{idx}/StatusNotifierItem"), idx as u64).await;
+            item_entry.last_known.menu = Some(vec![MenuItem::default(); per_item]);
+            registry.lock().unwrap().items.insert(key(&format!(":1.{idx}")), item_entry);
+        }
+
+        let remaining_for_new = remaining_menu_budget(&registry.lock().unwrap(), &key(":1.99"));
+        assert_eq!(remaining_for_new, MAX_TOTAL_MENU_NODES - filler_count * per_item);
+        assert_eq!(
+            remaining_menu_budget(&registry.lock().unwrap(), &key(":1.0")),
+            MAX_MENU_NODES - 1,
+            "an existing item refreshing its menu excludes its own nodes from the shared sum"
+        );
+
+        let item_id_str = "1.99/StatusNotifierItem";
+        let stem = icon_filename_stem(item_id_str);
+        let kept_icon = shm_icons::write_png(SPOOL_SUBDIR, &format!("{stem}_menu_1.png"), b"\x89PNG").unwrap();
+        let dropped_icon = shm_icons::write_png(SPOOL_SUBDIR, &format!("{stem}_menu_5.png"), b"\x89PNG").unwrap();
+        let mut new_menu = vec![
+            MenuItem { id: 1, icon_name: Some(kept_icon.clone()), ..MenuItem::default() },
+            MenuItem { id: 2, ..MenuItem::default() },
+            MenuItem { id: 3, ..MenuItem::default() },
+            MenuItem { id: 4, ..MenuItem::default() },
+            MenuItem { id: 5, icon_name: Some(dropped_icon.clone()), ..MenuItem::default() },
+            MenuItem { id: 6, ..MenuItem::default() },
+        ];
+        enforce_menu_budget(item_id_str, &mut new_menu, remaining_for_new);
+
+        assert_eq!(count_menu_nodes(&new_menu), remaining_for_new);
+        assert!(std::path::Path::new(&kept_icon).exists(), "kept node keeps its spooled icon");
+        assert!(!std::path::Path::new(&dropped_icon).exists(), "truncated node's spooled icon is reaped");
+
+        let mut single_cap = vec![MenuItem::default(); MAX_MENU_NODES + 5];
+        enforce_menu_budget(item_id_str, &mut single_cap, usize::MAX);
+        assert_eq!(count_menu_nodes(&single_cap), MAX_MENU_NODES - 1);
+    }
+
+    #[test]
+    fn record_at_cap_deduplicates_same_path_allows_second_path_and_caps_queue_at_max_waiting() {
+        let mut reg = Registry::default();
+        let reg_item = |unique: &str, path: &str| ResolvedRegistration {
+            unique_name: OwnedUniqueName::try_from(unique).unwrap(),
+            destination: zbus::names::OwnedBusName::try_from(unique).unwrap(),
+            object_path: OwnedObjectPath::try_from(path).unwrap(),
+        };
+
+        let first = reg_item(":1.1", "/A");
+        record_at_cap(&mut reg, &first, true);
+        record_at_cap(&mut reg, &first, true);
+        assert_eq!(reg.waiting.len(), 1, "identical (unique, path) must deduplicate");
+
+        record_at_cap(&mut reg, &reg_item(":1.1", "/B"), true);
+        assert_eq!(reg.waiting.len(), 2, "distinct object path on the same peer must also queue");
+
+        for i in 2..(MAX_WAITING_ITEMS + 10) {
+            record_at_cap(&mut reg, &reg_item(&format!(":1.{i}"), "/StatusNotifierItem"), true);
+        }
+        assert_eq!(reg.waiting.len(), MAX_WAITING_ITEMS, "waiting queue must cap at MAX_WAITING_ITEMS");
+    }
+
+    #[test]
+    fn cleanup_helpers_reap_only_dropped_item_and_menu_icons() {
+        shm_icons::init_test_spool();
+        let spool = |name: &str| shm_icons::write_png(SPOOL_SUBDIR, name, b"\x89PNG").unwrap();
+        let stem = icon_filename_stem("1.50/StatusNotifierItem");
+        let kept_base = spool(&format!("{stem}_base_kept.png"));
+        let old_attn = spool(&format!("{stem}_attn_old.png"));
+        let new_attn = spool(&format!("{stem}_attn_new.png"));
+        let old_overlay = spool(&format!("{stem}_overlay_old.png"));
+        let old_menu = spool(&format!("{stem}_menu_1.png"));
+
+        let old = TrayItem {
+            id: "1.50/StatusNotifierItem".into(),
+            icon_path: Some(kept_base.clone()),
+            attention_icon_path: Some(old_attn.clone()),
+            overlay_icon_path: Some(old_overlay.clone()),
+            menu: Some(vec![MenuItem { id: 1, icon_name: Some(old_menu.clone()), ..MenuItem::default() }]),
+            ..TrayItem::default()
+        };
+        let kept = TrayItem {
+            id: old.id.clone(),
+            icon_path: Some(kept_base.clone()),
+            attention_icon_path: Some(new_attn.clone()),
+            overlay_icon_path: None,
+            menu: None,
+            ..TrayItem::default()
+        };
+
+        cleanup_replaced_icons(&old, &kept);
+        assert!(std::path::Path::new(&kept_base).exists(), "unchanged icon stays");
+        assert!(std::path::Path::new(&new_attn).exists(), "new icon stays");
+        assert!(!std::path::Path::new(&old_attn).exists(), "replaced attention icon reaped");
+        assert!(!std::path::Path::new(&old_overlay).exists(), "cleared overlay icon reaped");
+        assert!(!std::path::Path::new(&old_menu).exists(), "dropped menu icon reaped");
+
+        cleanup_item_icons(&kept);
+        assert!(!std::path::Path::new(&kept_base).exists());
+        assert!(!std::path::Path::new(&new_attn).exists());
+    }
+
+    struct SlowIconItem {
+        png_bytes: Vec<u8>,
+    }
+
+    #[zbus::interface(name = "org.kde.StatusNotifierItem")]
+    impl SlowIconItem {
+        #[zbus(property, name = "Status")]
+        fn status(&self) -> String {
+            "Active".to_string()
+        }
+        #[zbus(property, name = "IconPixmap")]
+        fn icon_pixmap(&self) -> Vec<super::super::RawIconPixmap> {
+            vec![(1, 1, self.png_bytes.clone())]
+        }
+        #[zbus(property, name = "Menu")]
+        fn menu(&self) -> OwnedObjectPath {
+            OwnedObjectPath::try_from("/MenuBar").unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn post_fetch_cap_check_defers_slow_item_and_cleans_spooled_icons() {
+        shm_icons::init_test_spool();
+        let bus = crate::capabilities::test_support::private_bus().await;
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let app = bus
+            .builder()
+            .serve_at("/MenuBar", CountingMenu { fetches: fetches.clone(), gate: gate.clone() })
+            .unwrap()
+            .serve_at("/StatusNotifierItem", SlowIconItem { png_bytes: vec![255, 0, 0, 255] })
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let conn = bus.connection().await;
+        let unique = app.unique_name().unwrap().to_owned();
+        let registry = ItemRegistry::default();
+        for idx in 1..MAX_ITEMS {
+            let built = entry(&conn, &format!("1.9{idx}/StatusNotifierItem"), idx as u64).await;
+            registry.lock().unwrap().items.insert(key(&format!(":1.9{idx}")), built);
+        }
+        let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let resolved = ResolvedRegistration {
+            unique_name: unique.clone(),
+            destination: BusName::from(unique.clone()).into(),
+            object_path: OwnedObjectPath::try_from("/StatusNotifierItem").unwrap(),
+        };
+
+        let (conn_clone, reg_clone, events_clone) = (conn.clone(), registry.clone(), events.clone());
+        let handle =
+            tokio::spawn(async move { register_item(&conn_clone, &reg_clone, &events_clone, resolved, true).await });
+
+        crate::capabilities::test_support::poll_until(|| (fetches.load(Ordering::Relaxed) == 1).then_some(())).await;
+        // Fill the last slot while the slow item is awaiting GetLayout.
+        let filler = entry(&conn, "1.999/StatusNotifierItem", 999).await;
+        registry.lock().unwrap().items.insert(key(":1.999"), filler);
+        gate.add_permits(1);
+
+        assert_eq!(handle.await.unwrap(), RegisterOutcome::Deferred);
+        let guard = registry.lock().unwrap();
+        assert_eq!(guard.items.len(), MAX_ITEMS);
+        assert_eq!(guard.waiting.len(), 1);
+        let stem = icon_filename_stem(&item_id(unique.as_str(), "/StatusNotifierItem"));
+        let spool_dir = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(|dir| std::path::PathBuf::from(dir).join("mantle/icons").join(SPOOL_SUBDIR))
+            .unwrap();
+        if let Ok(entries) = std::fs::read_dir(&spool_dir) {
+            for file in entries.flatten() {
+                assert!(
+                    !file.file_name().to_string_lossy().starts_with(&stem),
+                    "deferred item must not leak spooled PNGs: {:?}",
+                    file.file_name()
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn deferred_startup_adoption_runs_after_a_tracked_item_leaves() {
+        use super::super::watcher::tests::StubStatusNotifierItem;
+        use crate::capabilities::test_support::{poll_until, private_bus};
+
+        let bus = private_bus().await;
+        let host = bus.connection().await;
+        let dbus = zbus::fdo::DBusProxy::new(&host).await.unwrap();
+        let departures = crate::capabilities::name_departures(&dbus, "test").await.unwrap();
+
+        let existing =
+            bus.builder().serve_at("/StatusNotifierItem", StubStatusNotifierItem).unwrap().build().await.unwrap();
+        existing.request_name("org.freedesktop.StatusNotifierItem-9999-1").await.unwrap();
+        let existing_unique = existing.unique_name().unwrap().to_owned();
+
+        let tracked_app = bus.connection().await;
+        let tracked_unique = tracked_app.unique_name().unwrap().to_owned();
+
+        let registry = ItemRegistry::default();
+        {
+            let tracked_entry = entry(&host, &item_id(tracked_unique.as_str(), "/StatusNotifierItem"), 0).await;
+            let mut fillers = Vec::with_capacity(MAX_ITEMS - 1);
+            for idx in 1..MAX_ITEMS {
+                fillers.push((
+                    key(&format!(":1.8{idx}")),
+                    entry(&host, &format!("1.8{idx}/StatusNotifierItem"), idx as u64).await,
+                ));
+            }
+            let mut guard = registry.lock().unwrap();
+            guard.items.insert(key(tracked_unique.as_str()), tracked_entry);
+            for (k, v) in fillers {
+                guard.items.insert(k, v);
+            }
+        }
+        let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        super::super::controller::adopt_existing_items(&host, &dbus, &registry, &events).await;
+        assert!(registry.lock().unwrap().adoption_deferred, "adoption at MAX_ITEMS must set adoption_deferred");
+        assert!(
+            !registry
+                .lock()
+                .unwrap()
+                .items
+                .contains_key(&(existing_unique.clone(), OwnedObjectPath::try_from("/StatusNotifierItem").unwrap(),))
+        );
+
+        spawn_name_owner_changed_forwarder(host.clone(), departures, registry.clone(), events);
+        drop(tracked_app);
+
+        poll_until(|| {
+            let guard = registry.lock().unwrap();
+            (!guard.adoption_deferred
+                && guard.items.contains_key(&(
+                    existing_unique.clone(),
+                    OwnedObjectPath::try_from("/StatusNotifierItem").unwrap(),
+                )))
+            .then_some(())
+        })
+        .await;
+        assert_eq!(registry.lock().unwrap().items.len(), MAX_ITEMS);
     }
 }

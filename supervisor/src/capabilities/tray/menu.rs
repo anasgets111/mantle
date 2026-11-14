@@ -169,15 +169,46 @@ pub(super) fn parse_menu_node(value: &Value<'_>, depth: u32, budget: &mut usize,
     Some(MenuItem { id, menu_type, label, enabled, icon_name, toggle_type, toggle_state, children })
 }
 
-pub(super) async fn fetch_menu_via(menu: &DBusMenuProxy<'static>, item_stem: &str) -> zbus::Result<Vec<MenuItem>> {
+/// Total [`MenuItem`] nodes in `items` and all nested submenus.
+pub(super) fn count_menu_nodes(items: &[MenuItem]) -> usize {
+    items.iter().map(|item| 1 + count_menu_nodes(&item.children)).sum()
+}
+
+/// Truncates `items` in pre-order to at most `*remaining` total nodes (including descendants),
+/// appending dropped subtrees to `dropped` so their spooled icons can be deleted.
+pub(super) fn truncate_menu_nodes(items: &mut Vec<MenuItem>, remaining: &mut usize, dropped: &mut Vec<MenuItem>) {
+    let mut keep = 0;
+    for item in items.iter_mut() {
+        if *remaining == 0 {
+            break;
+        }
+        *remaining -= 1;
+        keep += 1;
+        truncate_menu_nodes(&mut item.children, remaining, dropped);
+    }
+    if keep < items.len() {
+        dropped.extend(items.drain(keep..));
+    }
+}
+
+pub(super) async fn fetch_menu_via(
+    menu: &DBusMenuProxy<'static>,
+    item_stem: &str,
+    max_nodes: usize,
+) -> zbus::Result<Vec<MenuItem>> {
+    // The root is one of the budgeted nodes, so one GetLayout reply never exceeds MAX_MENU_NODES - 1
+    // MenuItems; a smaller `max_nodes` reflects the shared tray-wide remaining node budget.
+    let cap = max_nodes.min(MAX_MENU_NODES - 1);
+    if cap == 0 {
+        return Ok(Vec::new());
+    }
     let (_, (_, _, children)) = menu.get_layout(0, -1, &[]).await?;
-    // The root is one of the budgeted nodes, so the reply as a whole cannot exceed the cap.
-    let mut budget = MAX_MENU_NODES - 1;
+    let mut budget = cap;
     let items = children.iter().filter_map(|child| parse_menu_node(child, 1, &mut budget, item_stem)).collect();
     // Reported here rather than at the node that ran out: exhaustion stops every remaining sibling
     // and ancestor alike, so warning inside the recursion means one line per ancestor for one reply.
     if budget == 0 {
-        debug!("GetLayout reply hit the {MAX_MENU_NODES}-node cap; the rest of the menu was dropped");
+        debug!("GetLayout reply hit the {cap}-node cap; the rest of the menu was dropped");
     }
     Ok(items)
 }
@@ -414,5 +445,86 @@ mod tests {
             let item = parse_menu_node(&value, 0, &mut { MAX_MENU_NODES }, "test_app").expect("must parse");
             assert!(item.icon_name.expect("an icon").ends_with(expected), "icon-name {name:?}");
         }
+    }
+
+    #[test]
+    fn count_and_truncate_menu_nodes_preserve_preorder_within_budget() {
+        let node = |id, children| MenuItem { id, children, ..MenuItem::default() };
+        let mut tree = vec![
+            node(1, vec![node(2, vec![]), node(3, vec![node(4, vec![])])]),
+            node(5, vec![node(6, vec![])]),
+            node(7, vec![]),
+        ];
+        assert_eq!(count_menu_nodes(&tree), 7);
+
+        let mut dropped = Vec::new();
+        let mut remaining = 3;
+        truncate_menu_nodes(&mut tree, &mut remaining, &mut dropped);
+
+        assert_eq!(remaining, 0);
+        assert_eq!(count_menu_nodes(&tree), 3);
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].id, 1);
+        assert_eq!(tree[0].children.len(), 2);
+        assert!(tree[0].children[1].children.is_empty(), "grandchild past budget is dropped");
+        assert_eq!(dropped.iter().map(|item| item.id).collect::<Vec<_>>(), [4, 5, 7]);
+        assert_eq!(count_menu_nodes(&dropped), 4);
+    }
+
+    struct CapturingMenu {
+        depths: std::sync::Mutex<Vec<i32>>,
+        child_count: i32,
+    }
+
+    #[zbus::interface(name = "com.canonical.dbusmenu")]
+    impl CapturingMenu {
+        async fn get_layout(
+            &self,
+            _parent: i32,
+            depth: i32,
+            _names: Vec<String>,
+        ) -> (u32, super::super::proxies::RawMenuLayout) {
+            self.depths.lock().unwrap().push(depth);
+            let children: Vec<Value<'static>> = (1..=self.child_count)
+                .map(|id| {
+                    Value::from((
+                        id,
+                        std::collections::HashMap::<String, Value<'static>>::new(),
+                        Vec::<Value<'static>>::new(),
+                    ))
+                })
+                .collect();
+            let raw_children = children.into_iter().map(|v| v.try_into().unwrap()).collect();
+            (1, (0, std::collections::HashMap::new(), raw_children))
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_menu_via_caps_at_max_menu_nodes_minus_one_and_passes_full_depth() {
+        let bus = crate::capabilities::test_support::private_bus().await;
+        let menu_obj =
+            CapturingMenu { depths: std::sync::Mutex::new(Vec::new()), child_count: (MAX_MENU_NODES + 5) as i32 };
+        let app = bus.builder().serve_at("/MenuBar", menu_obj).unwrap().build().await.unwrap();
+        let conn = bus.connection().await;
+        let dest = zbus::names::BusName::from(app.unique_name().unwrap().clone()).into();
+        let path = zbus::zvariant::OwnedObjectPath::try_from("/MenuBar").unwrap();
+        let proxy = super::super::proxies::bind_dbusmenu(&conn, &dest, &path).await.unwrap();
+
+        assert!(fetch_menu_via(&proxy, "stem", 0).await.unwrap().is_empty());
+        let fetched = fetch_menu_via(&proxy, "stem", usize::MAX).await.unwrap();
+        assert_eq!(fetched.len(), MAX_MENU_NODES - 1);
+
+        let depths = app
+            .object_server()
+            .interface::<_, CapturingMenu>("/MenuBar")
+            .await
+            .unwrap()
+            .get()
+            .await
+            .depths
+            .lock()
+            .unwrap()
+            .clone();
+        assert_eq!(depths, vec![-1], "zero budget skips GetLayout; non-zero asks for full depth (-1)");
     }
 }

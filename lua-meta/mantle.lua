@@ -494,7 +494,7 @@
 ---@field icon_path? string Icon file for `image { source = ... }`: one from the item's `IconThemePath`, or its pixmap spooled to a PNG.
 ---@field id string Item identity for every `tray` action, e.g. `"1.234/StatusNotifierItem"`. Opaque.
 ---@field item_is_menu boolean Left click should open `menu` instead of `activate`.
----@field menu? MenuItem[] Top-level menu entries, or `nil` when the item exports no DBusMenu or its first fetch failed.
+---@field menu? MenuItem[] Top-level menu entries, or `nil` when the item exports no DBusMenu or its first fetch failed. Capped at 1024 nodes per item, 4096 across all items together, and depth 32.
 ---@field name string SNI `Title`, or its `Id` when the title is empty.
 ---@field overlay_icon_name? string Badge to draw over the icon's corner, paired with `overlay_icon_path`; both `nil` when unset.
 ---@field overlay_icon_path? string File half of the badge.
@@ -779,7 +779,7 @@
 ---@field prompt? PamPrompt The helper's pending question, as on `mantle.lock`. `nil` until the first submit starts it.
 
 ---@class TrayState
----@field items TrayItem[] Registered items in registration order, oldest first; updates never reorder them.
+---@field items TrayItem[] Registered items in registration order, oldest first; updates never reorder them. At most 32: one arriving past that logs one warning, waits, and enters once another leaves.
 
 ---@class UpdatesState
 ---`mantle.updates`'s payload.

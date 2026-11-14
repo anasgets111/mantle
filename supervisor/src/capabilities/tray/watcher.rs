@@ -5,7 +5,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::WATCHER_OBJECT_PATH;
 use super::registration::resolve_registration;
-use super::registry::{ItemRegistry, register_item};
+use super::registry::{ItemRegistry, RegisterOutcome, register_item};
 
 pub(super) struct StatusNotifierWatcher {
     pub(super) connection: zbus::Connection,
@@ -37,12 +37,16 @@ impl StatusNotifierWatcher {
         // Reply before asking the item anything (ADR-0031 amendment).
         let (connection, registry, events) = (self.connection.clone(), self.registry.clone(), self.events.clone());
         tokio::spawn(async move {
-            if let Err(err) = register_item(&connection, &registry, &events, resolved).await {
-                debug!("RegisterStatusNotifierItem({service:?}) failed: {err}");
-                return;
-            }
-            if let Ok(emitter) = zbus::object_server::SignalEmitter::new(&connection, WATCHER_OBJECT_PATH) {
-                let _ = StatusNotifierWatcher::status_notifier_item_registered(&emitter, &registered_id).await;
+            match register_item(&connection, &registry, &events, resolved, true).await {
+                RegisterOutcome::Registered => {
+                    if let Ok(emitter) = zbus::object_server::SignalEmitter::new(&connection, WATCHER_OBJECT_PATH) {
+                        let _ = StatusNotifierWatcher::status_notifier_item_registered(&emitter, &registered_id).await;
+                    }
+                }
+                RegisterOutcome::Deferred => {}
+                RegisterOutcome::Failed(err) => {
+                    debug!("RegisterStatusNotifierItem({service:?}) failed: {err}");
+                }
             }
         });
         Ok(())
@@ -61,6 +65,7 @@ impl StatusNotifierWatcher {
         self.registry
             .lock()
             .expect("mutex poisoned")
+            .items
             .keys()
             .map(|(unique_name, object_path)| format!("{unique_name}{object_path}"))
             .collect()
@@ -78,7 +83,7 @@ impl StatusNotifierWatcher {
     }
 
     #[zbus(signal)]
-    async fn status_notifier_item_registered(
+    pub(super) async fn status_notifier_item_registered(
         signal_emitter: &zbus::object_server::SignalEmitter<'_>,
         service: &str,
     ) -> zbus::Result<()>;
@@ -99,14 +104,11 @@ impl StatusNotifierWatcher {
 
 #[cfg(test)]
 pub(super) mod tests {
-    use std::collections::HashMap;
-
     use zbus::zvariant::OwnedObjectPath;
 
     use super::super::{DEFAULT_ITEM_OBJECT_PATH, RawIconPixmap, RawToolTip, WATCHER_OBJECT_PATH};
     use super::*;
     use crate::capabilities::test_support::{p2p_pair, p2p_pair_serving, poll_until};
-    use std::sync::{Arc, Mutex};
 
     // ---- fabricated unique names must be rejected ----
 
@@ -204,7 +206,7 @@ pub(super) mod tests {
         })
         .await;
 
-        let registry: ItemRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let registry = ItemRegistry::default();
         let watcher = test_watcher(connection.clone(), registry.clone());
 
         let message = register_call_message(":1.5");
@@ -232,7 +234,7 @@ pub(super) mod tests {
                 .serve_at("/org/freedesktop/DBus", StubDBusDaemon)
         })
         .await;
-        let registry: ItemRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let registry = ItemRegistry::default();
         let watcher = test_watcher(connection.clone(), registry.clone());
 
         for path in ["/Silent", "/Live"] {
@@ -253,6 +255,7 @@ pub(super) mod tests {
             let paths: Vec<String> = registry
                 .lock()
                 .expect("mutex poisoned")
+                .items
                 .keys()
                 .map(|(_, object_path)| object_path.to_string())
                 .collect();
@@ -264,7 +267,7 @@ pub(super) mod tests {
     #[tokio::test]
     async fn register_status_notifier_item_rejects_a_fabricated_unique_name_and_creates_no_registry_entry() {
         let (connection, _peer) = p2p_pair().await;
-        let registry: ItemRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let registry = ItemRegistry::default();
         let watcher = test_watcher(connection.clone(), registry.clone());
 
         // The real sender is :1.5; the call claims fabricated, never-connected :999.1.
@@ -272,6 +275,6 @@ pub(super) mod tests {
         let result = watcher.register_status_notifier_item(":999.1".to_string(), message.header()).await;
 
         assert!(result.is_err(), "a fabricated unique name not equal to the real sender must be rejected");
-        assert!(registry.lock().unwrap().is_empty(), "a rejected registration must not create a registry entry");
+        assert!(registry.lock().unwrap().items.is_empty(), "a rejected registration must not create a registry entry");
     }
 }

@@ -47,7 +47,7 @@ pub(super) enum IconSource {
 /// The longest path this can usefully build. `theme_path` is a raw string from the application and
 /// nothing in SNI bounds it; past `PATH_MAX` no `join` can name a file, so building and stat-ing
 /// the candidates only allocates the oversized string three more times to be told `ENAMETOOLONG`.
-const MAX_THEME_PATH_BYTES: usize = 4096;
+pub(super) const MAX_THEME_PATH_BYTES: usize = 4096;
 
 /// Finds `icon_name` in the item's `IconThemePath`, trying the bare name, `.png`, then `.svg`.
 /// The spec says only "a directory of icons" and leaves layout to the application. Rejects `/`

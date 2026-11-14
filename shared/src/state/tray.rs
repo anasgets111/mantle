@@ -64,7 +64,8 @@ pub enum TrayStatus {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TrayState {
-    /// Registered items in registration order, oldest first; updates never reorder them.
+    /// Registered items in registration order, oldest first; updates never reorder them. At most
+    /// 32: one arriving past that logs one warning, waits, and enters once another leaves.
     pub items: Vec<TrayItem>,
 }
 
@@ -96,6 +97,7 @@ pub struct TrayItem {
     /// Left click should open `menu` instead of `activate`.
     pub item_is_menu: bool,
     /// Top-level menu entries, or `nil` when the item exports no DBusMenu or its first fetch failed.
+    /// Capped at 1024 nodes per item, 4096 across all items together, and depth 32.
     pub menu: Option<Vec<MenuItem>>,
     /// Digests of the base, attention and overlay pixmaps behind the `*_path` PNGs, so new pixels
     /// at an unchanged path still compare unequal and push.

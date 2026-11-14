@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: `mantle.tray` caps the tray at 32 items, 512-byte object paths and 4096 menu nodes across all items together, so a flooded session bus cannot push the snapshot past the 16 MiB frame limit. An item arriving past 32 logs one warning and enters once a tracked item leaves.
 - Fixed: `mantle.sysinfo.gpu` samples `nvidia-smi` before `nvtop`, and rounds fractional `nvidia-smi` temperatures to whole °C instead of reporting `temp` as `nil`.
 - Fixed: a `text` with `elide = "start"` or `"middle"` keeps the last fitting character when layout rounds the box width a hair narrower, as `elide = "end"` already does. It used to drop one more character.
 - Fixed: a failing `mantle check` prints only its diagnostic. A capability action that an `on_change` handler ran during the check, such as `mantle.updates:check()`, used to print an `ERROR ... the control-socket writer is gone` line first, once per sample pass.

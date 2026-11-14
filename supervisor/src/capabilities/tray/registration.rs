@@ -3,7 +3,7 @@
 use zbus::names::{BusName, OwnedBusName, OwnedUniqueName, WellKnownName};
 use zbus::zvariant::OwnedObjectPath;
 
-use super::DEFAULT_ITEM_OBJECT_PATH;
+use super::{DEFAULT_ITEM_OBJECT_PATH, MAX_OBJECT_PATH_BYTES};
 
 /// Classifies `RegisterStatusNotifierItem`'s `service` before D-Bus I/O (ADR-0031); every `&str`
 /// lands in one branch.
@@ -40,10 +40,17 @@ fn classify_service_arg(service: &str) -> RegistrationTarget {
     }
 }
 
+fn bounded_object_path(path: String) -> Result<OwnedObjectPath, RegistrationError> {
+    if path.len() > MAX_OBJECT_PATH_BYTES {
+        return Err(RegistrationError::ObjectPathTooLong { len: path.len(), max: MAX_OBJECT_PATH_BYTES });
+    }
+    OwnedObjectPath::try_from(path).map_err(|err| RegistrationError::InvalidName(err.to_string()))
+}
+
 /// The object path a branch carried, or the spec's default when `service` named none.
 fn object_path_or_default(object_path: Option<String>) -> Result<OwnedObjectPath, RegistrationError> {
     match object_path {
-        Some(path) => OwnedObjectPath::try_from(path).map_err(|err| RegistrationError::InvalidName(err.to_string())),
+        Some(path) => bounded_object_path(path),
         None => Ok(default_item_object_path()),
     }
 }
@@ -52,6 +59,10 @@ fn object_path_or_default(object_path: Option<String>) -> Result<OwnedObjectPath
 pub(super) enum RegistrationError {
     NoSender,
     InvalidName(String),
+    ObjectPathTooLong {
+        len: usize,
+        max: usize,
+    },
     Dbus(String),
     /// Claimed unique name (`:N.M`) differs from the authenticated sender. A connection can only
     /// claim its own bus-daemon-filled, unspoofable unique name.
@@ -68,6 +79,9 @@ impl std::fmt::Display for RegistrationError {
                 write!(f, "an object-path service argument requires a message sender, but none was present")
             }
             Self::InvalidName(err) => write!(f, "invalid D-Bus name: {err}"),
+            Self::ObjectPathTooLong { len, max } => {
+                write!(f, "object path is {len} bytes, past the {max}-byte cap")
+            }
             Self::Dbus(err) => write!(f, "{err}"),
             Self::UniqueNameMismatch { claimed, sender } => {
                 write!(f, "claimed unique name {claimed:?} does not match the real sender {sender:?}")
@@ -107,8 +121,7 @@ pub(super) async fn resolve_registration(
             let sender = sender.ok_or(RegistrationError::NoSender)?;
             let unique_name =
                 OwnedUniqueName::try_from(sender).map_err(|err| RegistrationError::InvalidName(err.to_string()))?;
-            let object_path = OwnedObjectPath::try_from(object_path)
-                .map_err(|err| RegistrationError::InvalidName(err.to_string()))?;
+            let object_path = bounded_object_path(object_path)?;
             let destination = OwnedBusName::from(BusName::Unique(unique_name.clone().into()));
             Ok(ResolvedRegistration { unique_name, destination, object_path })
         }
@@ -269,5 +282,20 @@ mod tests {
     async fn resolve_registration_rejects_a_unique_name_with_no_sender_present() {
         let (connection, _peer) = p2p_pair().await;
         assert!(matches!(resolve_registration(&connection, ":1.5", None).await, Err(RegistrationError::NoSender)));
+    }
+
+    #[tokio::test]
+    async fn resolve_registration_caps_object_path_length() {
+        let (connection, _peer) = p2p_pair().await;
+        let at_cap = format!("/{}", "a".repeat(MAX_OBJECT_PATH_BYTES - 1));
+        assert_eq!(at_cap.len(), MAX_OBJECT_PATH_BYTES);
+        let ok = resolve_registration(&connection, &at_cap, Some(":1.5")).await.expect("at-cap path must fit");
+        assert_eq!(ok.object_path.as_str(), at_cap);
+
+        let too_long = format!("/{}", "a".repeat(MAX_OBJECT_PATH_BYTES));
+        for service in [too_long.clone(), format!(":1.5{too_long}")] {
+            let err = resolve_registration(&connection, &service, Some(":1.5")).await.unwrap_err();
+            assert!(matches!(err, RegistrationError::ObjectPathTooLong { .. }), "got {err:?} for {service}");
+        }
     }
 }
