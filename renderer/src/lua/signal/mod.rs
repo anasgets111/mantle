@@ -34,7 +34,7 @@ pub use globals::{
     any_focused_registered, any_hover_registered, any_pointer_registered, begin_evaluation, declared_states,
     promote_states, register, take_layout_changed, write_selection, write_state,
 };
-pub(crate) use globals::{note_layout_changed, reset, reset_target};
+pub(crate) use globals::{layout_changed_len, note_layout_changed, reset, reset_target, truncate_layout_changed};
 pub use held::{next_wake_deadline, take_due_wake};
 pub(crate) use scroll::ScrollRequest;
 use scroll::finite;
@@ -42,9 +42,9 @@ pub use state_handlers::{clear as clear_state_handlers, run as run_state_handler
 #[cfg(test)]
 pub(crate) use tracking::MemoTable;
 pub(crate) use tracking::{
-    ComputedFrame, EvaluationMemo, begin_instance_resolve, end_instance_resolve, forget_instance, is_read,
-    note_everything_written, note_read, note_reads, note_write, reset_read_tracker, untracked, with_derived,
-    write_clock, written_since,
+    ComputedFrame, EvaluationMemo, begin_instance_resolve, end_instance_resolve, finish_computed_undo, forget_instance,
+    is_read, note_everything_written, note_read, note_reads, note_write, note_write_prev, reset_read_tracker,
+    restore_write_stamps, set_computed_undo_active, untracked, with_derived, write_clock, written_since,
 };
 use tracking::{Evaluation, Output};
 

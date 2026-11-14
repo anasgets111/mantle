@@ -87,7 +87,7 @@ impl Scene {
             match outcome {
                 Ok(tree) => {
                     // Geometry readers update when the tween settles (ADR-0131).
-                    if let Err(err) = publish_geometry(&tree, 0.0, 0.0, lua, true) {
+                    if let Err(err) = publish_geometry(&tree, 0.0, 0.0, lua, true, None) {
                         debug!("{key}: writing a geometry signal failed: {err}");
                     }
                     if tree.tick_is_paint_only() {

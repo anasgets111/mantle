@@ -284,6 +284,8 @@ impl Drop for LayoutPassBudget<'_> {
             }
             table.eval_stack.clear();
             table.pass_opened = None;
+            table.undo_active = false;
+            table.undo.clear();
         }
     }
 }

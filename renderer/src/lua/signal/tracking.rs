@@ -72,18 +72,24 @@ impl Output {
     /// Records an evaluation that took `at` before reading `inputs`, and stamps [`Self::cell`] when
     /// the output changed. A scalar or a plain-data table changes by value ([`Plain`]);
     /// anything else is new every run, so it changes when an input was written since the last run.
-    pub(super) fn settle(&self, lua: &Lua, value: &Value, at: u64, inputs: Vec<CellId>) {
+    pub(super) fn settle(self: &Rc<Self>, lua: &Lua, value: &Value, at: u64, inputs: Vec<CellId>) {
         let stale = WRITES.with_borrow(|log| log.computeds.get(&self.cell).map(|(was, prev)| log.written(*was, prev)));
         let scalar = super::equality::is_comparable_literal(value);
         let plain = Plain::of(value, &mut { super::equality::SAME_TABLE_ENTRIES });
-        let mut last = self.last.borrow_mut();
-        let same = plain.is_some() && *last == plain;
+        let prev_plain = std::mem::replace(&mut *self.last.borrow_mut(), plain);
+        let same = self.last.borrow().as_ref().is_some_and(|last| prev_plain.as_ref() == Some(last));
         // Anything else re-run with no input written is the pass reading it again, not a change.
         let changed = stale.is_some_and(|stale| !same && (scalar || stale));
-        *last = plain;
-        drop(last);
-        let in_pass = lua.app_data_ref::<MemoTable>().is_some_and(|table| table.pass_opened.is_some());
-        WRITES.with_borrow_mut(|log| {
+        let (in_pass, record_undo) =
+            lua.app_data_ref::<MemoTable>().map_or((false, false), |t| (t.pass_opened.is_some(), t.undo_active));
+        let recorded = WRITES.with_borrow_mut(|log| {
+            let undo = record_undo.then(|| ComputedUndo {
+                out: Rc::clone(self),
+                prev_plain,
+                prev_write: log.last.get(&self.cell).copied(),
+                prev_inputs: log.computeds.get(&self.cell).cloned(),
+                inputs: inputs.clone(),
+            });
             if changed {
                 // In a pass, at its opening, so every reader this pass read the new value; or later,
                 // at a write the pass made before this run, which readers resolved earlier missed.
@@ -92,7 +98,13 @@ impl Output {
                 log.last.insert(self.cell, stamp);
             }
             log.record(self.cell, at, inputs);
+            undo
         });
+        if let Some(entry) = recorded
+            && let Some(mut table) = lua.app_data_mut::<MemoTable>()
+        {
+            table.undo.push(entry);
+        }
     }
 }
 
@@ -163,6 +175,14 @@ pub(super) fn outputs_written_since(stamp: u64) -> Vec<CellId> {
     })
 }
 
+pub(super) struct ComputedUndo {
+    out: Rc<Output>,
+    prev_plain: Option<Plain>,
+    prev_write: Option<u64>,
+    prev_inputs: Option<(u64, Vec<CellId>)>,
+    inputs: Vec<CellId>,
+}
+
 /// Values already produced during the current outermost [`Signal::get_value`](super::Signal::get_value).
 #[derive(Default)]
 pub(crate) struct MemoTable {
@@ -173,6 +193,8 @@ pub(crate) struct MemoTable {
     pub(super) pass_opened: Option<u64>,
     /// The last pass's answers and the clock when it closed, for its follow-up ([`EvaluationMemo::resume`]).
     pub(crate) carried: Option<(u64, FxHashMap<CellId, Value>)>,
+    pub(super) undo_active: bool,
+    pub(super) undo: Vec<ComputedUndo>,
 }
 
 /// The cells read between `enter` and `finish`, including through a memo hit or a nested frame,
@@ -412,9 +434,75 @@ thread_local! {
 
 /// Stamps a write to `cell`, whether or not it dirties the scene.
 pub(crate) fn note_write(cell: CellId) {
+    note_write_prev(cell);
+}
+
+/// Stamps a write to `cell` and returns its previous stamp, if any.
+pub(crate) fn note_write_prev(cell: CellId) -> Option<u64> {
     WRITES.with_borrow_mut(|log| {
         let at = log.tick();
-        log.last.insert(cell, at);
+        log.last.insert(cell, at)
+    })
+}
+
+fn set_last(last: &mut FxHashMap<CellId, u64>, cell: CellId, prev: Option<u64>) {
+    match prev {
+        Some(stamp) => {
+            last.insert(cell, stamp);
+        }
+        None => {
+            last.remove(&cell);
+        }
+    }
+}
+
+/// Restores prior write stamps on rollback without rewinding the monotonic clock, so unrelated
+/// writes keep their ordering.
+pub(crate) fn restore_write_stamps(stamps: impl IntoIterator<Item = (CellId, Option<u64>)>) {
+    WRITES.with_borrow_mut(|log| {
+        log.seen.get_mut().clear();
+        for (cell, prev) in stamps {
+            set_last(&mut log.last, cell, prev);
+        }
+    });
+}
+
+pub(crate) fn set_computed_undo_active(lua: &Lua, active: bool) {
+    if let Some(mut table) = lua.app_data_mut::<MemoTable>() {
+        table.undo_active = active;
+    }
+}
+
+/// Ends the speculative pass's computed undo window. On rollback, reverts every computed entry
+/// reachable from `rolled_back` (in evaluation order), drops contaminated entries and errors from
+/// `MemoTable::map`, and leaves unrelated evaluations untouched.
+pub(crate) fn finish_computed_undo(lua: &Lua, rolled_back: &[CellId], rollback: bool) {
+    let Some(mut table) = lua.app_data_mut::<MemoTable>() else { return };
+    table.undo_active = false;
+    let mut undo = std::mem::take(&mut table.undo);
+    if !rollback {
+        return;
+    }
+    let mut contaminated: FxHashSet<CellId> = rolled_back.iter().copied().collect();
+    for entry in &undo {
+        if entry.inputs.iter().any(|cell| contaminated.contains(cell)) {
+            contaminated.insert(entry.out.cell);
+        }
+    }
+    table.map.retain(|cell, v| v.is_ok() && !contaminated.contains(cell));
+    drop(table);
+    WRITES.with_borrow_mut(|log| {
+        for entry in undo.iter_mut().rev().filter(|entry| contaminated.contains(&entry.out.cell)) {
+            *entry.out.last.borrow_mut() = entry.prev_plain.take();
+            set_last(&mut log.last, entry.out.cell, entry.prev_write);
+            match entry.prev_inputs.take() {
+                Some((at, inputs)) => log.record(entry.out.cell, at, inputs),
+                None => {
+                    log.record(entry.out.cell, 0, Vec::new());
+                    log.computeds.remove(&entry.out.cell);
+                }
+            }
+        }
     });
 }
 
@@ -985,5 +1073,58 @@ mod tests {
             }
             other => panic!("expected DirtyScope::Instances with both surfaces, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn finish_computed_undo_reverts_only_contaminated_computeds_and_clears_errors() {
+        let (lua, _dirty) = lua_with_state();
+        lua.load(
+            r#"
+            g = state("g", 10)
+            u = state("u", 1)
+            c1 = g:map(function(v) return v * 2 end)
+            c2 = computed({ c1 }, function(v) return v + 1 end)
+            unrel = u:map(function(v) return v + 100 end)
+            broken = computed({ u }, function() error("boom") end)
+            "#,
+        )
+        .exec()
+        .unwrap();
+        let eval_cell = |expr: &str| {
+            let _memo = EvaluationMemo::enter(&lua);
+            let f = ComputedFrame::enter(&lua);
+            let _ = lua.load(expr).eval::<Value>();
+            f.finish()
+        };
+        let c1_id = eval_cell("return c1:get()")[0];
+        let c2_id = eval_cell("return c2:get()")[0];
+        let unrel_id = eval_cell("return unrel:get()")[0];
+        let g_id = super::super::from_userdata(&lua.globals().get("g").unwrap()).unwrap().cell_id().unwrap();
+        let pre_stamp = write_clock(&lua);
+
+        let _memo = EvaluationMemo::enter(&lua);
+        {
+            let _pass = LayoutPassBudget::enter(&lua);
+            let prev_g = note_write_prev(g_id);
+            set_computed_undo_active(&lua, true);
+            lua.load("g:set(50) u:set(2)").exec().unwrap();
+            assert_eq!(lua.load("return c2:get()").eval::<i64>().unwrap(), 101);
+            assert_eq!(lua.load("return unrel:get()").eval::<i64>().unwrap(), 102);
+            assert!(lua.load("return broken:get()").exec().is_err());
+            assert!(written_since(pre_stamp, &[c1_id, c2_id, unrel_id]));
+
+            restore_write_stamps([(g_id, prev_g)]);
+            finish_computed_undo(&lua, &[g_id], true);
+        }
+        assert!(!written_since(pre_stamp, &[c1_id, c2_id]), "contaminated computeds roll back");
+        assert!(written_since(pre_stamp, &[unrel_id]), "unrelated computeds keep their stamp");
+        assert!(EvaluationMemo::get(&lua, c1_id).is_none(), "contaminated entry evicted from memo");
+        assert!(EvaluationMemo::get(&lua, c2_id).is_none(), "transitive entry evicted from memo");
+        assert!(EvaluationMemo::get(&lua, unrel_id).is_some(), "unrelated Ok entry kept in memo");
+        assert!(lua.app_data_ref::<MemoTable>().unwrap().map.values().all(Result::is_ok), "errors evicted");
+        // Verify `c1`'s `Output.last` was restored to 20, so evaluating `50` still counts as a change.
+        let post_rollback = write_clock(&lua);
+        assert_eq!(lua.load("return c1:get()").eval::<i64>().unwrap(), 100);
+        assert!(written_since(post_rollback, &[c1_id]), "Output.last was restored to 20, so 100 marks changed");
     }
 }

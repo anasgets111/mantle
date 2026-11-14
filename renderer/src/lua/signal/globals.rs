@@ -222,6 +222,16 @@ pub fn take_layout_changed(lua: &Lua) -> Vec<CellId> {
     lua.app_data_mut::<LayoutChanged>().map(|mut moved| std::mem::take(&mut moved.0)).unwrap_or_default()
 }
 
+pub(crate) fn layout_changed_len(lua: &Lua) -> usize {
+    lua.app_data_ref::<LayoutChanged>().map_or(0, |moved| moved.0.len())
+}
+
+pub(crate) fn truncate_layout_changed(lua: &Lua, len: usize) {
+    if let Some(mut moved) = lua.app_data_mut::<LayoutChanged>() {
+        moved.0.truncate(len);
+    }
+}
+
 /// A `delay` or `pulse` source: a Signal or capability, anything else named by its Lua type.
 fn signal_source(function: &str, value: Value) -> mlua::Result<(AnyUserData, Signal)> {
     match value {

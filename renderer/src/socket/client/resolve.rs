@@ -607,6 +607,109 @@ mod tests {
     }
 
     #[test]
+    fn failed_pass_and_admit_veto_restore_geometry_and_transitive_computeds_without_spurious_follow_up() {
+        let base_src = |bar_width: &str, extra: &str| {
+            format!(
+                r#"
+                g = geometry("card")
+                w = state("w", 30)
+                s = state("s", 5)
+                trig = state("trig", 1)
+                armed = state("armed", false)
+                c1 = g:map(function(r) return r.width end)
+                c2 = computed({{ c1 }}, function(v) return v * 2 end)
+                unrel = computed({{ s }}, function(v) return v + 1 end)
+                return {{
+                    panel {{ id = "bar", layer = "top", child = rect {{ width = {bar_width}, height = w, geometry = g }} }},
+                    panel {{ id = "fail_mid", layer = "top", opacity = armed:map(function(a) if a then error("boom") else return 1.0 end end) }},
+                    panel {{ id = "reader", layer = "top", child = rect {{ width = c2, height = trig }} }},
+                    panel {{ id = "other", layer = "top", child = rect {{ width = unrel, height = 1 {extra} }} }},
+                }}
+                "#
+            )
+        };
+        let (_dir, path, mut client, _outbound_rx) = client_for(&base_src("w", ""));
+        assert!(run_startup(&mut client));
+        assert!(!client.re_resolve_if_dirty());
+        assert!(client.next_wake_deadline().is_none());
+        let cell_of = |lua: &mlua::Lua, name: &str| {
+            let _memo = lua::signal::EvaluationMemo::enter(lua);
+            let f = lua::signal::ComputedFrame::enter(lua);
+            let _ = lua.load(format!("return {name}:get()")).eval::<mlua::Value>();
+            f.finish()[0]
+        };
+        let (c1_id, c2_id) = {
+            let lua = client.loader.lua();
+            (cell_of(lua, "c1"), cell_of(lua, "c2"))
+        };
+
+        // Part 1: Settle `g` to 35 cleanly, then update `w` (`g = 99`) and `trig = 2` (so `reader`
+        // resolves `c1`/`c2` in the same pass after `bar`) before `admit` vetoes: `c1`/`c2` stamps
+        // and outputs must roll back.
+        client.loader.lua().load("w:set(35)").exec().unwrap();
+        while client.re_resolve_if_dirty() {}
+        let pre_veto = lua::signal::write_clock(client.loader.lua());
+        client.holds_session_lock = true;
+        client.loader.lua().load("w:set(99) trig:set(2)").exec().unwrap();
+        assert!(!client.re_resolve_if_dirty(), "missing lock surface vetoes the pass");
+        assert_eq!(client.loader.lua().load("return g:get().width").eval::<f32>().unwrap(), 35.0);
+        assert!(!lua::signal::written_since(pre_veto, &[c1_id, c2_id]), "vetoed pass must not leave computed writes");
+        {
+            let lua = client.loader.lua();
+            let _memo = lua::signal::EvaluationMemo::resume(lua);
+            let (v1, v2): (f32, f32) = lua.load("return c1:get(), c2:get()").eval().unwrap();
+            assert_eq!((v1, v2), (35.0, 70.0), "vetoed pass must revert computed outputs");
+        }
+        lua::signal::EvaluationMemo::forget_carried(client.loader.lua());
+        client.holds_session_lock = false;
+        client.loader.lua().load("w:set(35) trig:set(1)").exec().unwrap();
+        while client.re_resolve_if_dirty() {}
+
+        // Part 1b: Veto while `layout_follow_up == true` (`table.carried` stays live across failure):
+        // carried memo must not serve discarded `99.0` geometry.
+        client.loader.lua().load("w:set(36)").exec().unwrap();
+        assert!(client.re_resolve_if_dirty());
+        assert!(client.layout_follow_up);
+        client.holds_session_lock = true;
+        client.loader.lua().load("w:set(99) armed:set(true)").exec().unwrap();
+        assert!(!client.re_resolve_if_dirty(), "missing lock surface vetoes the follow-up pass");
+        assert_eq!(client.loader.lua().load("return g:get().width").eval::<f32>().unwrap(), 36.0);
+        {
+            let lua = client.loader.lua();
+            let _memo = lua::signal::EvaluationMemo::resume(lua);
+            let (v1, v2): (f32, f32) = lua.load("return c1:get(), c2:get()").eval().unwrap();
+            assert_eq!((v1, v2), (36.0, 72.0), "carried memo must not serve discarded geometry");
+        }
+        lua::signal::EvaluationMemo::forget_carried(client.loader.lua());
+        client.holds_session_lock = false;
+        client.loader.lua().load("w:set(35) armed:set(false)").exec().unwrap();
+        while client.re_resolve_if_dirty() {}
+
+        // Part 2: Atomic reload failure after `bar` publishes `g = 99` and `reader` evaluates `c1`/`c2`,
+        // alongside an unrelated `s:set(7)` read by `other` before `other` fails validation.
+        client.loader.lua().load("s:set(7)").exec().unwrap();
+        assert!(!reload(&mut client, &path, &base_src("99", ", opacity = 5")));
+        assert_eq!(client.loader.lua().load("return g:get().width").eval::<f32>().unwrap(), 35.0);
+        assert!(client.next_wake_deadline().is_none(), "no spurious follow-up scheduled after rollback");
+        assert!(!client.re_resolve_if_dirty());
+        {
+            let lua = client.loader.lua();
+            let _memo = lua::signal::EvaluationMemo::resume(lua);
+            let (v1, v2, vu): (f32, f32, f32) = lua.load("return c1:get(), c2:get(), unrel:get()").eval().unwrap();
+            assert_eq!((v1, v2), (35.0, 70.0), "discarded geometry must not linger in transitive computeds");
+            assert_eq!(vu, 8.0, "unrelated writes evaluated during the pass stay intact");
+        }
+        lua::signal::EvaluationMemo::forget_carried(client.loader.lua());
+
+        // Part 3: Normal follow-up still works once a subsequent pass succeeds.
+        client.loader.lua().load("w:set(40)").exec().unwrap();
+        assert!(client.re_resolve_if_dirty());
+        assert!(client.re_resolve_if_dirty());
+        assert_eq!(client.scene.surface("reader@TEST").unwrap().children[0].rect.width, 80.0);
+        assert!(!client.re_resolve_if_dirty());
+    }
+
+    #[test]
     fn changed_elision_re_resolves_its_readers_without_re_resolving_the_writer() {
         let (_dir, _, mut client, _) = client_for(
             r#"cut = elided("body")

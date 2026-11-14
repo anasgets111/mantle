@@ -148,7 +148,7 @@ impl Scene {
         let mut moved = Vec::new();
         for (key, tree) in &mut self.surfaces {
             if scroll_retained(tree, cell) {
-                if let Err(err) = publish_geometry(tree, 0.0, 0.0, lua, false) {
+                if let Err(err) = publish_geometry(tree, 0.0, 0.0, lua, false, None) {
                     debug!("{key}: writing a geometry signal failed: {err}");
                 }
                 moved.push(key.clone());

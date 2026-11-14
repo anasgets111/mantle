@@ -44,7 +44,7 @@ use crate::lua::nodes::VirtualNode;
 use crate::text::shaping::ShapingHandle;
 use crate::text::snap::LogicalRect;
 use children::build_child_for_output;
-use geometry::publish_geometry;
+use geometry::{GeometryWrite, publish_geometry, rollback_geometry};
 use pass::{prepare, solve_instance};
 use resolve::{DroppedValues, ResolveMemo, resolve};
 pub(crate) use solver::{MainAxis, main_axis_of};
@@ -240,12 +240,14 @@ impl Scene {
     ) -> Result<Option<LayoutError>, LayoutError> {
         let next_id_snapshot = self.next_id;
         let seeds_snapshot = self.seeds.len();
+        let lc_snapshot = crate::lua::signal::layout_changed_len(lua);
         // One budget for the whole pass: the hook covers gaps where a resolved table's `__index`
         // runs, and individually legal getters cannot add up without a pass deadline.
         let budget = crate::lua::signal::LayoutPassBudget::enter(lua);
         let mut rollback = Vec::new();
+        let mut geometry_undo = Vec::new();
         let outcome = self
-            .apply_visiting(fresh_surfaces, instances, shaping, lua, &budget, &mut rollback, admit)
+            .apply_visiting(fresh_surfaces, instances, shaping, lua, &budget, &mut rollback, &mut geometry_undo, admit)
             .and_then(|outcome| self.check_image_status_names(lua).map(|()| outcome));
         if outcome.is_err() {
             for (key, tree) in rollback {
@@ -253,7 +255,11 @@ impl Scene {
             }
             self.next_id = next_id_snapshot;
             self.seeds.truncate(seeds_snapshot);
+            let rolled = rollback_geometry(&mut geometry_undo, 0);
+            crate::lua::signal::truncate_layout_changed(lua, lc_snapshot);
+            crate::lua::signal::finish_computed_undo(lua, &rolled, true);
         } else {
+            crate::lua::signal::finish_computed_undo(lua, &[], false);
             self.publish_marks(lua);
             self.publish_image_status(lua);
             self.forget_gone_fields();
@@ -281,6 +287,7 @@ impl Scene {
         lua: &Lua,
         budget: &crate::lua::signal::LayoutPassBudget,
         rollback: &mut Vec<(String, Option<ResolvedNode>)>,
+        geometry_undo: &mut Vec<GeometryWrite>,
         admit: impl FnOnce(&Scene, Option<LayoutError>) -> Result<Option<LayoutError>, LayoutError>,
     ) -> Result<Option<LayoutError>, LayoutError> {
         // One clock reading for the pass, so every tween it starts shares a start.
@@ -296,7 +303,9 @@ impl Scene {
         let mut failed_count = 0;
         let mut seen = std::collections::HashSet::new();
         for instance in instances {
-            let applied = self.apply_one_instance(fresh_surfaces, instance, shaping, lua, now, rollback);
+            let undo_len = geometry_undo.len();
+            let lc_len = crate::lua::signal::layout_changed_len(lua);
+            let applied = self.apply_one_instance(fresh_surfaces, instance, shaping, lua, now, rollback, geometry_undo);
             // A dropped value is reported and applies; only a failure keeps the prior tree.
             let mut errors = DroppedValues::take(lua);
             if let Err(err) = applied {
@@ -308,6 +317,9 @@ impl Scene {
                 if let Some((key, tree)) = rollback.pop_if(|(key, _)| *key == instance.instance_id) {
                     self.restore(key, tree);
                 }
+                rollback_geometry(geometry_undo, undo_len);
+                crate::lua::signal::truncate_layout_changed(lua, lc_len);
+                crate::lua::signal::set_computed_undo_active(lua, !geometry_undo.is_empty());
                 errors.extend(err.into_each());
             }
             for err in errors {
@@ -339,6 +351,7 @@ impl Scene {
 
     /// One instance's worth of `apply_visiting`'s loop body, so it exits through one `?` and
     /// `apply_admitting` rolls back once.
+    #[allow(clippy::too_many_arguments)]
     fn apply_one_instance(
         &mut self,
         fresh_surfaces: &[VirtualNode],
@@ -347,6 +360,7 @@ impl Scene {
         lua: &Lua,
         now: Instant,
         rollback: &mut Vec<(String, Option<ResolvedNode>)>,
+        geometry_undo: &mut Vec<GeometryWrite>,
     ) -> Result<(), LayoutError> {
         crate::lua::signal::begin_instance_resolve(lua, &instance.instance_id);
         let _resolving = std::mem::DropGuard::new(lua, crate::lua::signal::end_instance_resolve);
@@ -391,7 +405,11 @@ impl Scene {
             prepare(self, &mut tree, existing, fresh.kind, resolved, (None, 0.0), (false, false, true), lua, now, 0)?;
         close(&mut at, &mut self.resolve_split.resolve);
         let solved = solve_instance(&mut tree, prepared, available, (shaping, &self.field_drafts), now)?;
-        publish_geometry(&solved, 0.0, 0.0, lua, false).map_err(|e| node::invalid("geometry", e.to_string()))?;
+        publish_geometry(&solved, 0.0, 0.0, lua, false, Some(geometry_undo))
+            .map_err(|e| node::invalid("geometry", e.to_string()))?;
+        if !geometry_undo.is_empty() {
+            crate::lua::signal::set_computed_undo_active(lua, true);
+        }
         self.solver_trees.insert(key.clone(), tree);
         self.surfaces.insert(key, solved);
         close(&mut at, &mut self.resolve_split.solve);
