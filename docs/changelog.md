@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: tearing down a `lock` surface with `compositor_blur = true` before its first configure, such as when the compositor refuses a lock, no longer commits the surface and disconnects the shell.
 - Fixed: a popup opened from a panel on one output stays open when that panel hides on another output.
 - Fixed: `hover(name)` turns false when its node is removed or loses its `hover` property, while keeping its last `hover_rect`.
 - Fixed: `mantle input` moving between surfaces clears the previous surface's hover state, so closing it cannot clear a hover shared with the new surface.

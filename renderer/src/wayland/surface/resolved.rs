@@ -242,7 +242,13 @@ impl App {
     /// the `stale` repaint that would commit it never runs; the unmap is next. The commit is the
     /// fix; null is only tidier than an empty region. Not `destroy`: that clears the compositor's
     /// `m_hasBackgroundEffect`, handing the surface back to any blanket `layerrule blur`.
+    ///
+    /// Only mapped surfaces run this: unconfigured surfaces (notably `ext_session_lock_surface_v1`
+    /// before its first `ack_configure`) cannot commit yet and have no mapped snapshot to clear.
     pub(super) fn release_blur_effect(&self, index: usize) {
+        if self.surfaces[index].map_state != MapState::Mapped {
+            return;
+        }
         let Some(surface) = self.surfaces[index].role.wl_surface() else {
             return;
         };
@@ -300,5 +306,105 @@ mod tests {
         ] {
             assert_eq!(visibility_action(state, visible), want, "{state:?} with visible = {visible}");
         }
+    }
+
+    fn resolve_lua(app: &mut App, code: &str) {
+        app.client.lua().load(code).exec().unwrap();
+        assert!(app.client.re_resolve_if_dirty());
+        app.apply_resolved_surface_state();
+    }
+
+    fn ids(app: &App, index: usize) -> (u32, u32) {
+        let s = &app.surfaces[index];
+        (s.role.wl_surface().unwrap().id().protocol_id(), s.blur_effect.as_ref().unwrap().id().protocol_id())
+    }
+
+    #[test]
+    fn unconfigured_lock_surface_teardown_never_commits_or_clears_blur() {
+        let (mut app, _dir, mut queue, mock) = App::test_app_with_wire(
+            r#"return lock { id = "lock", compositor_blur = true,
+                child = textfield { secure_submit = { capability = "lock", action = "authenticate" } } }"#,
+        );
+        assert!(app.blur_supported);
+        let qh = app.queue_handle.clone();
+        // Stage blur before configure, then deny lock via `finished`.
+        app.set_session_lock(&qh, true);
+        assert_eq!(app.surfaces[0].map_state, MapState::AwaitingConfigure);
+        app.apply_resolved_surface_state();
+        let (wl_1, fx_1) = ids(&app, 0);
+        queue.roundtrip(&mut app).unwrap();
+        assert_eq!(mock.commits_for(wl_1), 0);
+        assert!(matches!(mock.blur_regions_for(fx_1).as_slice(), [r] if *r != 0));
+        mock.send_lock_finished();
+        queue.roundtrip(&mut app).unwrap();
+        assert_eq!((mock.commits_for(wl_1), mock.blur_regions_for(fx_1).len()), (0, 1));
+        assert!(app.session_lock.is_none() && app.surfaces[0].map_state == MapState::Unmapped);
+        // Same on direct unconfigured unlock, followed by relock.
+        app.set_session_lock(&qh, true);
+        app.apply_resolved_surface_state();
+        let (wl_2, fx_2) = ids(&app, 0);
+        app.set_session_lock(&qh, false);
+        queue.roundtrip(&mut app).unwrap();
+        assert_eq!((mock.commits_for(wl_2), mock.blur_regions_for(fx_2).len()), (0, 1));
+        app.set_session_lock(&qh, true);
+        assert_eq!(app.surfaces[0].map_state, MapState::AwaitingConfigure);
+        assert!(app.surfaces[0].role.wl_surface().is_some());
+    }
+
+    #[test]
+    fn mapped_surfaces_clear_blur_and_commit_on_teardown_while_unconfigured_ones_skip_it() {
+        let (mut app, _dir, mut queue, mock) = App::test_app_with_wire(
+            r#"show_panel, show_win = state("show_panel", true), state("show_win", true)
+            return {
+                panel { id = "bar", layer = "top", output = "TEST", width = 100, height = 32, visible = show_panel,
+                    child = rect { width = "fill", height = "fill", compositor_blur = true } },
+                window { id = "win", visible = show_win,
+                    child = rect { width = 100, height = 100, compositor_blur = true } },
+                lock { id = "lock", compositor_blur = true,
+                    child = textfield { secure_submit = { capability = "lock", action = "authenticate" } } },
+            }"#,
+        );
+        let qh = app.queue_handle.clone();
+        // Mapped panel & window: closing clears blur strictly before committing teardown.
+        for (name, hide) in [("bar@TEST", "show_panel:set(false)"), ("win", "show_win:set(false)")] {
+            let i = app.surfaces.iter().position(|s| s.surface_id == name).unwrap();
+            app.surfaces[i].map_state = MapState::Mapped;
+            app.apply_resolved_surface_state();
+            let (wl, fx) = ids(&app, i);
+            queue.roundtrip(&mut app).unwrap();
+            let before = mock.commits_for(wl);
+            resolve_lua(&mut app, hide);
+            queue.roundtrip(&mut app).unwrap();
+            assert_eq!((mock.commits_for(wl), mock.blur_regions_for(fx).last()), (before + 1, Some(&0)), "{name}");
+            let reqs = mock.requests.lock().unwrap();
+            let clr = reqs.iter().rposition(|&(id, op, arg)| id == fx && op == 1 && arg == 0).unwrap();
+            let cmt = reqs.iter().rposition(|&(id, op, _)| id == wl && op == 6).unwrap();
+            assert!(clr < cmt, "{name}");
+        }
+        // Unconfigured panel: hiding before configure keeps only the initial commit.
+        let panel_idx = app.surfaces.iter().position(|s| s.surface_id == "bar@TEST").unwrap();
+        resolve_lua(&mut app, "show_panel:set(true)");
+        assert_eq!(app.surfaces[panel_idx].map_state, MapState::AwaitingConfigure);
+        app.apply_resolved_surface_state();
+        let (pwl, pfx) = ids(&app, panel_idx);
+        queue.roundtrip(&mut app).unwrap();
+        assert_eq!(mock.commits_for(pwl), 1);
+        resolve_lua(&mut app, "show_panel:set(false)");
+        queue.roundtrip(&mut app).unwrap();
+        assert_eq!(mock.commits_for(pwl), 1);
+        assert_ne!(mock.blur_regions_for(pfx).last(), Some(&0));
+        // Mapped lock: unlock commits blur clear, then relock starts fresh unconfigured.
+        let lock_idx = app.surfaces.iter().position(|s| s.surface_id == "lock@TEST").unwrap();
+        app.set_session_lock(&qh, true);
+        app.surfaces[lock_idx].map_state = MapState::Mapped;
+        app.apply_resolved_surface_state();
+        let (lwl, lfx) = ids(&app, lock_idx);
+        queue.roundtrip(&mut app).unwrap();
+        app.set_session_lock(&qh, false);
+        queue.roundtrip(&mut app).unwrap();
+        assert_eq!((mock.commits_for(lwl), mock.blur_regions_for(lfx).last()), (1, Some(&0)));
+        app.set_session_lock(&qh, true);
+        assert_eq!(app.surfaces[lock_idx].map_state, MapState::AwaitingConfigure);
+        assert_ne!(app.surfaces[lock_idx].role.wl_surface().unwrap().id().protocol_id(), lwl);
     }
 }

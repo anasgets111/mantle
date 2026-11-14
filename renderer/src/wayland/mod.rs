@@ -322,10 +322,46 @@ impl ShmHandler for App {
 mod test_support {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{Arc, Mutex};
 
+    use wayland_client::EventQueue;
     use wayland_client::globals::registry_queue_init;
 
     use super::*;
+
+    type WireLog = Arc<Mutex<Vec<(u32, u16, u32)>>>;
+
+    pub(in crate::wayland) struct MockWayland {
+        pub(in crate::wayland) requests: WireLog,
+        lock_id: Arc<AtomicU32>,
+        writer: Mutex<UnixStream>,
+    }
+
+    impl MockWayland {
+        pub(in crate::wayland) fn commits_for(&self, surface_id: u32) -> usize {
+            self.requests.lock().unwrap().iter().filter(|&&(id, op, _)| id == surface_id && op == 6).count()
+        }
+
+        pub(in crate::wayland) fn blur_regions_for(&self, effect_id: u32) -> Vec<u32> {
+            let reqs = self.requests.lock().unwrap();
+            reqs.iter().filter_map(|&(id, op, arg)| (id == effect_id && op == 1).then_some(arg)).collect()
+        }
+
+        pub(in crate::wayland) fn send_lock_finished(&self) {
+            let id = self.lock_id.load(Ordering::Acquire);
+            assert_ne!(id, 0);
+            let mut msg = Vec::new();
+            push_wire_msg(&mut msg, id, 1, &[]);
+            self.writer.lock().unwrap().write_all(&msg).unwrap();
+        }
+    }
+
+    fn push_wire_str(buf: &mut Vec<u8>, s: &str) {
+        buf.extend_from_slice(&((s.len() + 1) as u32).to_ne_bytes());
+        buf.extend_from_slice(s.as_bytes());
+        buf.resize(buf.len() + 1 + (4 - (buf.len() + 1) % 4) % 4, 0);
+    }
 
     fn push_wire_msg(buf: &mut Vec<u8>, object_id: u32, opcode: u16, payload: &[u8]) {
         let size = ((8 + payload.len()) as u32) << 16 | u32::from(opcode);
@@ -334,32 +370,27 @@ mod test_support {
         buf.extend_from_slice(payload);
     }
 
-    fn spawn_mock_wayland_server(mut stream: UnixStream) {
+    fn spawn_mock_wayland_server(mut stream: UnixStream, wire: Option<(WireLog, Arc<AtomicU32>)>) {
         std::thread::spawn(move || {
-            // `registry_queue_init` sends `wl_display.get_registry(2)` + `wl_display.sync(3)`.
-            let mut req = [0u8; 24];
+            let mut req = [0u8; 24]; // `wl_display.get_registry(2)` + `wl_display.sync(3)`
             if stream.read_exact(&mut req).is_err() {
                 return;
             }
             let registry_id = u32::from_ne_bytes(req[8..12].try_into().unwrap());
             let callback_id = u32::from_ne_bytes(req[20..24].try_into().unwrap());
-
-            let mut reply = Vec::new();
-            for (name, iface, version) in [
+            let all_globals = [
                 (1u32, "wl_compositor", 4u32),
-                (2u32, "zwlr_layer_shell_v1", 1u32),
-                (3u32, "wl_shm", 1u32),
-                (4u32, "xdg_wm_base", 3u32),
-            ] {
-                let mut payload = Vec::new();
-                payload.extend_from_slice(&name.to_ne_bytes());
-                let len_with_nul = (iface.len() + 1) as u32;
-                payload.extend_from_slice(&len_with_nul.to_ne_bytes());
-                payload.extend_from_slice(iface.as_bytes());
-                payload.push(0);
-                while payload.len() % 4 != 0 {
-                    payload.push(0);
-                }
+                (2, "zwlr_layer_shell_v1", 1),
+                (3, "wl_shm", 1),
+                (4, "xdg_wm_base", 3),
+                (5, "wl_output", 4),
+                (6, "ext_background_effect_manager_v1", 1),
+                (7, "ext_session_lock_manager_v1", 1),
+            ];
+            let mut reply = Vec::new();
+            for &(name, iface, version) in &all_globals[..if wire.is_some() { 7 } else { 4 }] {
+                let mut payload = name.to_ne_bytes().to_vec();
+                push_wire_str(&mut payload, iface);
                 payload.extend_from_slice(&version.to_ne_bytes());
                 push_wire_msg(&mut reply, registry_id, 0, &payload);
             }
@@ -368,20 +399,70 @@ mod test_support {
             if stream.write_all(&reply).is_err() {
                 return;
             }
-
-            let mut discard = [0u8; 256];
-            while matches!(stream.read(&mut discard), Ok(n) if n > 0) {}
+            let Some((requests, lock_id)) = wire else {
+                let mut discard = [0u8; 256];
+                while matches!(stream.read(&mut discard), Ok(n) if n > 0) {}
+                return;
+            };
+            let mut lock_mgr_id = None;
+            let mut hdr = [0u8; 8];
+            while stream.read_exact(&mut hdr).is_ok() {
+                let object_id = u32::from_ne_bytes(hdr[0..4].try_into().unwrap());
+                let word = u32::from_ne_bytes(hdr[4..8].try_into().unwrap());
+                let opcode = (word & 0xffff) as u16;
+                let mut payload = vec![0u8; ((word >> 16) as usize).saturating_sub(8)];
+                if !payload.is_empty() && stream.read_exact(&mut payload).is_err() {
+                    return;
+                }
+                let arg0 = payload.get(0..4).map_or(0, |b| u32::from_ne_bytes(b.try_into().unwrap()));
+                let mut out = Vec::new();
+                if object_id == 1 && opcode == 0 {
+                    push_wire_msg(&mut out, arg0, 0, &0u32.to_ne_bytes());
+                    push_wire_msg(&mut out, 1, 1, &arg0.to_ne_bytes());
+                } else if object_id == registry_id && opcode == 0 && payload.len() >= 16 {
+                    let slen = u32::from_ne_bytes(payload[4..8].try_into().unwrap()) as usize;
+                    let new_id = u32::from_ne_bytes(payload[payload.len() - 4..].try_into().unwrap());
+                    match payload.get(8..8 + slen.saturating_sub(1)).and_then(|b| std::str::from_utf8(b).ok()) {
+                        Some("wl_output") => {
+                            let mut name = Vec::new();
+                            push_wire_str(&mut name, "TEST");
+                            push_wire_msg(&mut out, new_id, 4, &name);
+                            push_wire_msg(&mut out, new_id, 2, &[]);
+                        }
+                        Some("ext_background_effect_manager_v1") => {
+                            push_wire_msg(&mut out, new_id, 0, &1u32.to_ne_bytes());
+                        }
+                        Some("ext_session_lock_manager_v1") => lock_mgr_id = Some(new_id),
+                        _ => {}
+                    }
+                } else if lock_mgr_id == Some(object_id) && opcode == 1 {
+                    lock_id.store(arg0, Ordering::Release);
+                }
+                requests.lock().unwrap().push((object_id, opcode, arg0));
+                if !out.is_empty() && stream.write_all(&out).is_err() {
+                    return;
+                }
+            }
         });
     }
 
     impl App {
-        /// Builds an `App` over an in-process mock Wayland socket and evaluates `source` with one
-        /// `1920x1080` `"TEST"` output, creating tracked surfaces without a live compositor.
-        pub(in crate::wayland) fn test_app(source: &str) -> (Self, tempfile::TempDir) {
+        fn build_test_app(
+            source: &str,
+            with_wire: bool,
+        ) -> (Self, tempfile::TempDir, EventQueue<App>, Option<MockWayland>) {
             let (client_stream, server_stream) = UnixStream::pair().unwrap();
-            spawn_mock_wayland_server(server_stream);
+            let mock = with_wire.then(|| MockWayland {
+                requests: Arc::default(),
+                lock_id: Arc::default(),
+                writer: Mutex::new(server_stream.try_clone().unwrap()),
+            });
+            spawn_mock_wayland_server(
+                server_stream,
+                mock.as_ref().map(|m| (Arc::clone(&m.requests), Arc::clone(&m.lock_id))),
+            );
             let conn = Connection::from_socket(client_stream).unwrap();
-            let (globals, event_queue) = registry_queue_init::<App>(&conn).unwrap();
+            let (globals, mut event_queue) = registry_queue_init::<App>(&conn).unwrap();
             let qh = event_queue.handle();
 
             let compositor_state = CompositorState::bind(&globals, &qh).unwrap();
@@ -473,6 +554,9 @@ mod test_support {
                 trim: trim::Trim::default(),
             };
 
+            if mock.is_some() {
+                event_queue.roundtrip(&mut app).unwrap();
+            }
             let outputs = vec![OutputGeometry {
                 name: "TEST".to_string(),
                 size: layout::LogicalSize { width: 1920.0, height: 1080.0 },
@@ -483,7 +567,21 @@ mod test_support {
             assert!(app.client.apply_instances());
             app.create_surfaces(&qh, &specs, &instances);
             app.startup_complete = true;
+            (app, dir, event_queue, mock)
+        }
+
+        pub(in crate::wayland) fn test_app(source: &str) -> (Self, tempfile::TempDir) {
+            let (app, dir, _, _) = Self::build_test_app(source, false);
             (app, dir)
+        }
+
+        /// Same as [`App::test_app`], with `wl_output`, `ext_background_effect_manager_v1` (Blur),
+        /// `ext_session_lock_manager_v1`, and a wire request log synchronized via `event_queue.roundtrip`.
+        pub(in crate::wayland) fn test_app_with_wire(
+            source: &str,
+        ) -> (Self, tempfile::TempDir, EventQueue<App>, MockWayland) {
+            let (app, dir, queue, mock) = Self::build_test_app(source, true);
+            (app, dir, queue, mock.unwrap())
         }
     }
 }
