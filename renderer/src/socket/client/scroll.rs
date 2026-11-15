@@ -410,6 +410,40 @@ mod tests {
         assert_eq!(signal.scroll_offset(), Some(60.0));
     }
 
+    /// A reload whose resolved tree alone binds the name keeps its offset; a reload
+    /// that removes the area lets the name go at the next pass, so the area comes back at the top.
+    #[test]
+    fn a_reload_keeps_a_bound_offset_and_a_removed_area_forgets_it() {
+        let area = r#"
+            local tiles = {}
+            for i = 1, 10 do tiles[i] = rect { width = 10, height = 20 } end
+            return panel { id = "bar", layer = "top", child = column { children = state("n", 0):map(function(n)
+                return { text { content = tostring(n) },
+                    column { width = 100, height = 100, scroll = scroll("s"), children = tiles } }
+            end) } }
+            "#;
+        let (_dir, path, mut client, _) = client_for(area);
+        assert!(run_startup(&mut client));
+        let offset = |client: &mut RendererClient| {
+            client.loader.lua().gc_collect().unwrap();
+            client.loader.lua().load(r#"local n = state("n", 0) n:set(n:get() + 1)"#).exec().unwrap();
+            while client.re_resolve_if_dirty() {}
+            client.loader.lua().load(r#"return scroll("s"):get()"#).eval::<f32>().unwrap()
+        };
+        client.loader.lua().load(r#"scroll("s"):scroll_to(60)"#).exec().unwrap();
+        assert_eq!(offset(&mut client), 60.0);
+        assert!(reload(&mut client, &path, area));
+        assert_eq!(offset(&mut client), 60.0, "the reloaded tree holds it");
+        assert!(reload(
+            &mut client,
+            &path,
+            r#"return panel { id = "bar", layer = "top", child = text { content = state("n", 0):map(tostring) } }"#
+        ));
+        offset(&mut client);
+        assert!(reload(&mut client, &path, area));
+        assert_eq!(offset(&mut client), 0.0, "removal let the name go");
+    }
+
     /// The same reload without the area: the first pass drops the request.
     #[test]
     fn a_pending_request_is_dropped_by_the_reload_that_removes_its_area() {

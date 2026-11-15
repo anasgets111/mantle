@@ -161,7 +161,8 @@ return panel {
 `hover(name)` returns a read-only boolean signal, `false` until the pointer first arrives. Bind it
 to a node's `hover` and the engine writes it as the pointer moves; read the same signal anywhere
 else to react. The name is the identity: every `hover("wifi")` call returns the same signal, and it
-survives reloads.
+survives reloads. A name that no node binds and no Lua value holds may be dropped, which resets its
+`hover_rect`: removing the node, rather than hiding it, can start the next `hover("wifi")` fresh.
 
 | API | Contract |
 | :--- | :--- |
@@ -233,7 +234,9 @@ return panel {
 
 `scroll(name)` returns a read-only signal holding a scroll offset in px, `0` at first. Bind it to
 the `scroll` property of a `row`, `column` or `list` and the wheel moves that container's children.
-Like `hover`, the name is the identity and survives reloads.
+Like `hover`, the name is the identity and survives reloads, and a name nothing holds may be dropped,
+which resets the offset to `0`. For a reset you can rely on, list it in
+[`reset_on_close`](../surfaces/index.md#reset-on-close).
 
 | Rule | Detail |
 | :--- | :--- |

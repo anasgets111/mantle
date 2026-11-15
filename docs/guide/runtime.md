@@ -184,7 +184,7 @@ return panel {
 
 | Thing | In-place reload | New generation (crash) | Shell stops |
 | :--- | :--- | :--- | :--- |
-| `state`, `hover`, `hover_rect`, `scroll`, `geometry` values (by name) | Kept. A changed scalar `state` seed re-seeds ([named state](signals.md#named-state)) | Lost | Lost |
+| `state`, `hover`, `hover_rect`, `scroll`, `geometry` values (by name) | Kept. A changed scalar `state` seed re-seeds ([named state](signals.md#named-state)). A `hover`, `scroll` or `geometry` name that no node binds and no Lua value holds may be dropped, which resets it; that includes a node removed rather than hidden, and one only an unplugged output's tree held. List a `scroll` in [`reset_on_close`](../surfaces/index.md#reset-on-close) for a reset you can rely on | Lost | Lost |
 | Plain Lua globals the config assigns | Kept: same VM | Lost | Lost |
 | Config modules in `package.loaded` | Dropped, re-required | Lost | Lost |
 | Derived signals (`:map`, `computed`, `delay`, `pulse`) | Rebuilt. A pending `delay` or open `pulse` resets | Rebuilt | Lost |

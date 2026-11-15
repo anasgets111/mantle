@@ -207,6 +207,37 @@ struct ScrollRegistry(HashMap<String, Signal>);
 #[derive(Default)]
 struct GeometryRegistry(HashMap<String, Signal>);
 
+/// Drops each `hover`, `focused`, `focus_visible`, `pointer`, `scroll` and `geometry` name that only
+/// its registry holds: no retained tree binds it, no Lua value reaches it and no computed or surface
+/// last read its cell, so asking again makes a fresh one. Called after a successful layout pass,
+/// never mid-evaluation: a reload's evaluated output holds the new tree's signals until the pass that
+/// applies it, so state the new tree keeps survives.
+/// A removed tree's handles are Lua userdata, so its names go at the first pass after Lua collects
+/// them, not at the pass that removes it; when is up to the collector.
+///
+/// ponytail: `has_selection` stays, because no node binds it and a reader that asks by name inside a
+/// function holds no handle between runs; its names grow per distinct `focus_target`. Keying the
+/// sweep on the textfield's `focus_target` would free them.
+pub(crate) fn forget_unheld(lua: &Lua) {
+    let held = |signal: &Signal| signal.held(lua, 1);
+    if let Some(mut registry) = lua.app_data_mut::<HoverRegistry>() {
+        // The boolean half's `paired_rect` is the rect cell's second holder.
+        registry.0.retain(|_, (over, rect)| over.held(lua, 1) || rect.held(lua, 2));
+    }
+    if let Some(mut registry) = lua.app_data_mut::<FocusedRegistry>() {
+        registry.0.retain(|(kind, _), signal| *kind == FocusKind::Selection || held(signal));
+    }
+    if let Some(mut registry) = lua.app_data_mut::<PointerRegistry>() {
+        registry.0.retain(|_, signal| held(signal));
+    }
+    if let Some(mut registry) = lua.app_data_mut::<ScrollRegistry>() {
+        registry.0.retain(|_, signal| held(signal));
+    }
+    if let Some(mut registry) = lua.app_data_mut::<GeometryRegistry>() {
+        registry.0.retain(|_, signal| held(signal));
+    }
+}
+
 /// The cells layout measurements changed; the client turns them into one
 /// follow-up pass over their readers so a binding on the measurement settles, and only one, so a
 /// binding that feeds its own measurement cannot spin the loop.
@@ -644,6 +675,57 @@ mod tests {
         assert!(!lua.load("return second:get()").eval::<bool>().unwrap());
         first.focused_handle().unwrap().set(Value::Boolean(true));
         assert!(lua.load("return second:get()").eval::<bool>().unwrap(), "one name is one slot");
+    }
+
+    /// Each registry keeps a name something holds, either hover half included, and lets the rest go;
+    /// `has_selection` stays, since nothing binds it.
+    #[test]
+    fn forget_unheld_drops_every_name_only_its_registry_holds() {
+        let (lua, _dirty) = lua_with_state();
+        let names = |lua: &Lua| {
+            [
+                lua.app_data_ref::<HoverRegistry>().map_or(0, |r| r.0.len()),
+                lua.app_data_ref::<FocusedRegistry>().map_or(0, |r| r.0.len()),
+                lua.app_data_ref::<PointerRegistry>().map_or(0, |r| r.0.len()),
+                lua.app_data_ref::<ScrollRegistry>().map_or(0, |r| r.0.len()),
+                lua.app_data_ref::<GeometryRegistry>().map_or(0, |r| r.0.len()),
+            ]
+        };
+        let sweep = |lua: &Lua| {
+            lua.gc_collect().unwrap();
+            forget_unheld(lua);
+            names(lua)
+        };
+        lua.load(
+            r#"held = { hover_rect("rect") }
+            for _, f in ipairs { hover, focused, focus_visible, has_selection, pointer, scroll, geometry } do
+                for i = 1, 1000 do f("x" .. i) end
+                held[#held + 1] = f("kept")
+            end"#,
+        )
+        .exec()
+        .unwrap();
+        assert_eq!(sweep(&lua), [2, 1003, 1, 1, 1], "held names stay, has_selection's 1001 included");
+        lua.load("held = nil").exec().unwrap();
+        assert_eq!(sweep(&lua), [0, 1001, 0, 0, 0]);
+        lua.load(
+            r#"reads = {}
+            for i = 1, 1000 do
+                reads[i] = computed({ state("k", 0) }, function() return hover("x" .. i):get() end)
+                reads[i]:get()
+            end"#,
+        )
+        .exec()
+        .unwrap();
+        assert_eq!(sweep(&lua)[0], 1000, "a computed that read a name by its cell keeps it");
+        lua.load("reads = nil").exec().unwrap();
+        assert_eq!(sweep(&lua)[0], 0, "a collected computed takes its reads with it");
+        super::super::tracking::begin_instance_resolve(&lua, "bar");
+        lua.load(r#"hover("y"):get()"#).exec().unwrap();
+        super::super::tracking::end_instance_resolve(&lua);
+        assert_eq!(sweep(&lua)[0], 1, "a surface that read the cell keeps it");
+        super::super::tracking::forget_instance(&lua, "bar");
+        assert_eq!(sweep(&lua)[0], 0);
     }
 
     #[test]

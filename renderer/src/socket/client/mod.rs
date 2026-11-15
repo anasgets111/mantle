@@ -750,6 +750,40 @@ pub(crate) mod tests {
         assert!(!hover_row(&client).children[0].visible, "the pointer left, so it is hidden again");
     }
 
+    /// A computed asking for `hover("b")` in its body, in a surface that does not re-resolve, holds only
+    /// a reader edge on the cell: sweeping the name would give the re-added node a cell it never reads.
+    #[test]
+    fn a_computed_reading_a_hover_by_name_follows_its_node_removed_and_re_added() {
+        let (_dir, _, mut client, _outbound_rx) = client_for(
+            r#"
+            local tip = computed({ state("k", 0) }, function() return hover("b"):get() end)
+            return {
+                panel { id = "tip", layer = "top", child = rect { width = 10, height = 10, visible = tip } },
+                panel { id = "bar", layer = "top", child = row { width = 50, height = state("n", 10),
+                    children = state("shown", true):map(function(shown)
+                        return shown and { rect { width = 50, height = 20, hover = hover("b") } } or {}
+                    end) } },
+            }
+            "#,
+        );
+        assert!(run_startup(&mut client));
+        let lua = client.loader.lua().clone();
+        let run = |client: &mut RendererClient, src: &str| {
+            lua.load(src).exec().unwrap();
+            while client.re_resolve_if_dirty() {}
+        };
+        run(&mut client, r#"state("shown", true):set(false)"#);
+        lua.gc_collect().unwrap();
+        run(&mut client, r#"state("n", 10):set(11)"#);
+        run(&mut client, r#"state("shown", true):set(true)"#);
+        let hovered = lua.load(r#"return hover("b")"#).eval::<mlua::AnyUserData>().unwrap();
+        let handle = crate::lua::signal::from_userdata(&hovered).unwrap().hover_handle().unwrap();
+        handle.set_changed(mlua::Value::Boolean(true));
+        while client.re_resolve_if_dirty() {}
+        let tip = &client.scene.surface("tip@TEST").unwrap().children[0];
+        assert!(tip.visible, "the computed still reads the cell the re-added node writes");
+    }
+
     /// Absolute centres of `hover` nodes, accumulating parent-relative origins as `layout::hit`
     /// does.
     fn hover_region_centres(

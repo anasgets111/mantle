@@ -131,6 +131,13 @@ pub(crate) fn is_read(lua: &Lua, cell: CellId) -> bool {
         || !downstream(lua, &std::iter::once(cell).collect()).is_empty()
 }
 
+/// Whether a live computed's last run or a surface instance's last resolve read `cell`. Unlike
+/// [`is_read`], a computed nothing reads still counts: its next run trusts these edges.
+pub(super) fn has_readers(lua: &Lua, cell: CellId) -> bool {
+    lua.app_data_ref::<ReadTracker>().is_some_and(|t| t.cell_readers.contains_key(&cell))
+        || WRITES.with_borrow(|log| log.readers.contains_key(&cell))
+}
+
 /// Computeds reading any of `cells`, directly or through another, that an instance reads, directly
 /// or through another. The rest, such as one the last resolve dropped, wait unread for collection.
 pub(super) fn downstream(lua: &Lua, cells: &FxHashSet<CellId>) -> Vec<CellId> {

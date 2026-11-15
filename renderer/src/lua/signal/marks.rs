@@ -79,10 +79,7 @@ pub(crate) fn any_registered(lua: &Lua) -> bool {
 pub(crate) fn publish(lua: &Lua, elided: &HashSet<CellId>, settled: &HashSet<CellId>) {
     if let Some(mut registry) = lua.app_data_mut::<Registry>() {
         // An entry only the registry holds has no reader or binding left; asking again makes a new one.
-        registry.0.retain(|_, signal| match &signal.0 {
-            SignalKind::Elided(_, cell) | SignalKind::Settled(_, cell) => Rc::strong_count(cell) > 1,
-            _ => true,
-        });
+        registry.0.retain(|_, signal| signal.held(lua, 1));
     }
     let Some(registry) = lua.app_data_ref::<Registry>() else { return };
     for ((mark, _), signal) in &registry.0 {
@@ -114,5 +111,12 @@ mod tests {
         lua.gc_collect().unwrap();
         publish(&lua, &HashSet::new(), &HashSet::new());
         assert_eq!(names(&lua), Some(1), "only the held name stays");
+        let (lua, _dirty) = super::super::tests::lua_with_state();
+        lua.load(r#"c = computed({ state("k", 0) }, function() return settled("read"):get() end) c:get()"#)
+            .exec()
+            .unwrap();
+        lua.gc_collect().unwrap();
+        publish(&lua, &HashSet::new(), &HashSet::new());
+        assert_eq!(names(&lua), Some(1), "a computed that read it by name keeps it");
     }
 }

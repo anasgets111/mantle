@@ -34,7 +34,9 @@ pub use globals::{
     any_focused_registered, any_hover_registered, any_pointer_registered, begin_evaluation, declared_states,
     promote_states, register, take_layout_changed, write_selection, write_state,
 };
-pub(crate) use globals::{layout_changed_len, note_layout_changed, reset, reset_target, truncate_layout_changed};
+pub(crate) use globals::{
+    forget_unheld, layout_changed_len, note_layout_changed, reset, reset_target, truncate_layout_changed,
+};
 pub use held::{next_wake_deadline, take_due_wake};
 pub(crate) use scroll::ScrollRequest;
 use scroll::finite;
@@ -313,6 +315,13 @@ impl Signal {
             | SignalKind::ImageStatus(id, cell) => Some((*id, cell)),
             _ => None,
         }
+    }
+
+    /// Whether anything besides a registry reaches this signal: more than `baseline` handles on its
+    /// value cell, or a reader edge naming the cell, which a fresh cell would leave unwritten. A
+    /// kind without a cell reads as held.
+    pub(super) fn held(&self, lua: &Lua, baseline: usize) -> bool {
+        self.cell().is_none_or(|(id, cell)| Rc::strong_count(cell) > baseline || tracking::has_readers(lua, id))
     }
 
     /// Reactive cell identifier for targeted invalidation tracking, if this signal is backed by a cell.
