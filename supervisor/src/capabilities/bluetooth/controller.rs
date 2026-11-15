@@ -445,7 +445,7 @@ impl BluetoothController {
 mod tests {
     use super::super::registry::DeviceEntry;
     use super::*;
-    use crate::capabilities::test_support::{PrivateBus, private_bus, within};
+    use crate::capabilities::test_support::{PrivateBus, poll_until, private_bus, within};
 
     fn controller() -> (BluetoothController, tokio::sync::mpsc::UnboundedReceiver<BluetoothSignal>) {
         let (events, receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -658,23 +658,10 @@ mod tests {
             let controller = controller.clone();
             async move { controller.pair("AA").await }
         });
-        crate::capabilities::test_support::poll_until(|| {
-            (controller.busy.lock().unwrap().get("AA") == Some(&DeviceAction::Pairing)).then_some(())
-        })
-        .await;
+        poll_until(|| (controller.busy.lock().unwrap().get("AA") == Some(&DeviceAction::Pairing)).then_some(())).await;
         within(controller.connect("AA")).await;
         assert_eq!(count(&connects), 1);
         pairing.abort();
-    }
-
-    /// An adapter that reports the devices `RemoveDevice` is asked to drop.
-    struct RemovingAdapter(tokio::sync::mpsc::UnboundedSender<String>);
-
-    #[zbus::interface(name = "org.bluez.Adapter1")]
-    impl RemovingAdapter {
-        fn remove_device(&self, device: zbus::zvariant::ObjectPath<'_>) {
-            let _ = self.0.send(device.to_string());
-        }
     }
 
     /// `forget` asks the adapter its device hangs under, with none in use at all.
@@ -683,7 +670,7 @@ mod tests {
         const DEVICE: &str = "/org/bluez/hci1/dev_AA";
         let (removed, mut removals) = tokio::sync::mpsc::unbounded_channel();
         let (caller, _served) = crate::capabilities::test_support::p2p_pair_serving(|peer| {
-            peer.serve_at("/org/bluez/hci1", RemovingAdapter(removed))
+            peer.serve_at("/org/bluez/hci1", FakeAdapter(removed, AtomicBool::default()))
         })
         .await;
         let path = OwnedObjectPath::try_from(DEVICE).unwrap();
@@ -694,34 +681,69 @@ mod tests {
 
         controller.forget("AA").await;
 
-        assert_eq!(within(removals.recv()).await.as_deref(), Some(DEVICE));
+        assert_eq!(within(removals.recv()).await, Some(format!("RemoveDevice {DEVICE}")));
     }
 
-    struct FakeAdapter;
+    /// Every call the fake `bluetoothd` receives, as `Name` or `Name argument`.
+    type Calls = tokio::sync::mpsc::UnboundedSender<String>;
+
+    /// A powered adapter recording each write, and whether it is scanning.
+    struct FakeAdapter(Calls, AtomicBool);
 
     #[zbus::interface(name = "org.bluez.Adapter1")]
     impl FakeAdapter {
+        async fn start_discovery(&self, #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>) {
+            let _ = self.0.send("StartDiscovery".into());
+            self.1.store(true, Ordering::SeqCst);
+            let _ = self.discovering_changed(&emitter).await;
+        }
+        async fn stop_discovery(&self, #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>) {
+            let _ = self.0.send("StopDiscovery".into());
+            self.1.store(false, Ordering::SeqCst);
+            let _ = self.discovering_changed(&emitter).await;
+        }
+        fn remove_device(&self, device: zbus::zvariant::ObjectPath<'_>) {
+            let _ = self.0.send(format!("RemoveDevice {device}"));
+        }
         #[zbus(property)]
         fn powered(&self) -> bool {
             true
         }
         #[zbus(property)]
+        fn set_powered(&self, on: bool) {
+            let _ = self.0.send(format!("Powered {on}"));
+        }
+        #[zbus(property)]
         fn discovering(&self) -> bool {
-            false
+            self.1.load(Ordering::SeqCst)
         }
         #[zbus(property)]
         fn discoverable(&self) -> bool {
             false
+        }
+        #[zbus(property)]
+        fn set_discoverable(&self, on: bool) {
+            let _ = self.0.send(format!("Discoverable {on}"));
         }
     }
 
     struct FakeDevice {
         mac: &'static str,
         paired: bool,
+        calls: Calls,
     }
 
     #[zbus::interface(name = "org.bluez.Device1")]
     impl FakeDevice {
+        fn pair(&self) {
+            let _ = self.calls.send(format!("Pair {}", self.mac));
+        }
+        fn connect(&self) {
+            let _ = self.calls.send(format!("Connect {}", self.mac));
+        }
+        fn disconnect(&self) {
+            let _ = self.calls.send(format!("Disconnect {}", self.mac));
+        }
         #[zbus(property)]
         fn address(&self) -> String {
             self.mac.to_string()
@@ -749,7 +771,7 @@ mod tests {
     }
 
     struct FakeAgentManager {
-        registered: tokio::sync::mpsc::UnboundedSender<String>,
+        registered: Calls,
     }
 
     #[zbus::interface(name = "org.bluez.AgentManager1")]
@@ -760,27 +782,28 @@ mod tests {
         fn request_default_agent(&self, _agent: zbus::zvariant::ObjectPath<'_>) {}
     }
 
-    /// A `bluetoothd` with one adapter and `devices` as `(mac, paired)`.
+    /// A `bluetoothd` with one adapter and `devices` as `(mac, paired)`, reporting each call to
+    /// `calls`; `RegisterAgent` sends only its capability.
     async fn serve_bluez(
         bus: &PrivateBus,
         devices: &[(&'static str, bool)],
-        registered: tokio::sync::mpsc::UnboundedSender<String>,
+        calls: Calls,
         second_adapter: bool,
     ) -> zbus::Connection {
         let mut builder = bus
             .builder()
             .serve_at("/", zbus::fdo::ObjectManager)
             .unwrap()
-            .serve_at("/org/bluez", FakeAgentManager { registered })
+            .serve_at("/org/bluez", FakeAgentManager { registered: calls.clone() })
             .unwrap()
-            .serve_at("/org/bluez/hci0", FakeAdapter)
+            .serve_at("/org/bluez/hci0", FakeAdapter(calls.clone(), AtomicBool::default()))
             .unwrap();
         if second_adapter {
-            builder = builder.serve_at("/org/bluez/hci1", FakeAdapter).unwrap();
+            builder = builder.serve_at("/org/bluez/hci1", FakeAdapter(calls.clone(), AtomicBool::default())).unwrap();
         }
         for &(mac, paired) in devices {
             let path = format!("/org/bluez/hci0/dev_{}", mac.replace(':', "_"));
-            builder = builder.serve_at(path, FakeDevice { mac, paired }).unwrap();
+            builder = builder.serve_at(path, FakeDevice { mac, paired, calls: calls.clone() }).unwrap();
         }
         builder.name("org.bluez").unwrap().build().await.unwrap()
     }
@@ -869,5 +892,103 @@ mod tests {
         })
         .await;
         assert!(controller.state.lock().unwrap().available);
+    }
+
+    /// Lua's actions reach BlueZ through `dispatch`; a MAC nobody tracks, arguments of the wrong
+    /// shape and an unknown action reach nothing.
+    #[tokio::test]
+    async fn dispatch_routes_each_action_to_bluez_and_drops_what_it_cannot_resolve() {
+        const MAC: &str = "AA:AA:AA:AA:AA:AA";
+        let bus = private_bus().await;
+        let (calls, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let _bluez = serve_bluez(&bus, &[(MAC, false)], calls, false).await;
+        let (events, mut signals) = tokio::sync::mpsc::unbounded_channel();
+        let controller = BluetoothController::new(bus.connection().await, events).await;
+        assert_eq!(within(received.recv()).await.as_deref(), Some("KeyboardDisplay"));
+        let dispatch = |action: &str, arguments: Vec<serde_json::Value>| {
+            let params = shared::CommandParams {
+                generation_id: 0,
+                capability: "bluetooth".into(),
+                action: action.into(),
+                arguments,
+                legacy_expected_revision: 0,
+            };
+            super::super::dispatch(&controller, &shared::CommandEnvelope { params, id: 0 });
+        };
+        let mut next = async || within(received.recv()).await.expect("bluez is alive");
+
+        dispatch("set_enabled", vec![true.into()]);
+        assert_eq!(next().await, "Powered true");
+        dispatch("set_discoverable", vec![true.into()]);
+        assert_eq!(next().await, "Discoverable true");
+
+        // A reconcile reads `Discovering` from the proxy's cache, which the fake's signal updates.
+        let adapter = &controller.adapter().unwrap();
+        let scanning = |on: bool| poll_until(move || (adapter.cached_discovering().unwrap() == Some(on)).then_some(()));
+        dispatch("start_discovery", vec![]);
+        assert_eq!(next().await, "StartDiscovery");
+        within(async {
+            loop {
+                match signals.recv().await {
+                    Some(BluetoothSignal::DiscoveryCleared) => break,
+                    Some(_) => {}
+                    None => panic!("the controller dropped its signal sender"),
+                }
+            }
+        })
+        .await;
+        scanning(true).await;
+        // Stopped before `pair`, which reconciles discovery itself and would start the scan alone.
+        dispatch("stop_discovery", vec![]);
+        assert_eq!(next().await, "StopDiscovery");
+        scanning(false).await;
+
+        // Spawned in order on this single-threaded runtime, so a call they wrongly made would
+        // arrive before the one that follows them.
+        dispatch("disconnect", vec!["BB:BB:BB:BB:BB:BB".into()]);
+        dispatch("disconnect", vec![]);
+        dispatch("disconnect", vec![7.into()]);
+        dispatch("nonsense", vec![MAC.into()]);
+        dispatch("disconnect", vec![MAC.into()]);
+        assert_eq!(next().await, format!("Disconnect {MAC}"));
+        dispatch("connect", vec![MAC.into()]);
+        assert_eq!(next().await, format!("Connect {MAC}"));
+        dispatch("pair", vec![MAC.into()]);
+        assert_eq!(next().await, format!("Pair {MAC}"));
+        assert_eq!(next().await, format!("Connect {MAC}"), "a pair goes on to connect");
+        dispatch("forget", vec![MAC.into()]);
+        assert_eq!(next().await, "RemoveDevice /org/bluez/hci0/dev_AA_AA_AA_AA_AA_AA");
+
+        let (reply, mut answer) = tokio::sync::oneshot::channel();
+        let mut pending = agent::PendingPrompt::display(MAC);
+        pending.reply = Some(reply);
+        *controller.prompts.lock().unwrap() = Some(pending);
+        dispatch("answer_pairing", vec!["BB:BB:BB:BB:BB:BB".into(), false.into()]);
+        dispatch("answer_pairing", vec![MAC.into()]);
+        assert!(controller.prompts.lock().unwrap().is_some(), "another device or no answer leaves it up");
+        dispatch("answer_pairing", vec![MAC.into(), false.into()]);
+        assert!(controller.prompts.lock().unwrap().is_none());
+        assert_eq!(answer.try_recv().ok(), Some(None), "BlueZ hears the no");
+    }
+
+    /// The agent answers at its path on the Supervisor's own connection, where BlueZ calls it.
+    #[tokio::test]
+    async fn the_controller_exports_the_agent_bluez_calls() {
+        let bus = private_bus().await;
+        let (calls, _received) = tokio::sync::mpsc::unbounded_channel();
+        let bluez = serve_bluez(&bus, &[], calls, false).await;
+        let connection = bus.connection().await;
+        let supervisor = connection.unique_name().unwrap().to_owned();
+        let (events, _signals) = tokio::sync::mpsc::unbounded_channel();
+        let _controller = BluetoothController::new(connection, events).await;
+
+        let release = bluez.call_method(
+            Some(supervisor),
+            super::super::AGENT_OBJECT_PATH,
+            Some("org.bluez.Agent1"),
+            "Release",
+            &(),
+        );
+        within(release).await.expect("the agent is exported");
     }
 }
