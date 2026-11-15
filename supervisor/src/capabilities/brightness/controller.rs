@@ -190,7 +190,7 @@ async fn run_brightness_poll_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capabilities::test_support::{p2p_pair, within};
+    use crate::capabilities::test_support::{p2p_pair, p2p_pair_serving, within};
 
     fn write_entry(root: &Path, name: &str, attrs: &[(&str, &str)]) {
         let dir = root.join(name);
@@ -269,6 +269,78 @@ mod tests {
             "must announce the initial state without waiting for the first poll tick"
         );
         assert_eq!(controller.snapshot(), BrightnessState { percent: 50 });
+    }
+
+    /// logind's session object, forwarding each `SetBrightness`.
+    struct Session(UnboundedSender<(String, String, u32)>);
+
+    #[zbus::interface(name = "org.freedesktop.login1.Session")]
+    impl Session {
+        fn set_brightness(&self, subsystem: String, name: String, brightness: u32) {
+            self.0.send((subsystem, name, brightness)).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_routes_set_to_logind_on_the_raw_scale_and_drops_the_rest() {
+        let root = tempfile::tempdir().unwrap();
+        write_entry(root.path(), "intel_backlight", &[("max_brightness", "200"), ("brightness", "100")]);
+        let (calls, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let (bus, _logind) =
+            p2p_pair_serving(|peer| peer.serve_at("/org/freedesktop/login1/session/auto", Session(calls))).await;
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let controller = BrightnessController::new(root.path().to_path_buf(), bus, events_tx);
+        within(events_rx.recv()).await;
+        let dispatch = |action: &str, arguments: Vec<serde_json::Value>| {
+            super::super::dispatch(
+                &controller,
+                &crate::capabilities::test_support::envelope("brightness", action, arguments),
+            );
+        };
+
+        // `LatestWrites` keeps only the newest value, so each yield lets a wrongly started write take
+        // its value before the next dispatch could replace it; that write would arrive first.
+        for (action, arguments) in [("set", vec!["bright".into()]), ("set", vec![]), ("nonsense", vec![10.into()])] {
+            dispatch(action, arguments);
+            tokio::task::yield_now().await;
+        }
+        dispatch("set", vec![75.into()]);
+        assert_eq!(within(received.recv()).await, Some(("backlight".into(), "intel_backlight".into(), 150)));
+    }
+
+    /// The fallback when udev cannot watch. The udev loop itself needs kernel uevents, which no
+    /// tempdir can raise.
+    #[tokio::test]
+    async fn the_poll_loop_publishes_each_change_one_interval_later_and_ends_with_its_receiver() {
+        let root = tempfile::tempdir().unwrap();
+        let controller = unstarted().await;
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::time::pause();
+        let task = tokio::spawn(run_brightness_poll_loop(root.path().to_path_buf(), controller.clone(), events_tx));
+
+        for percent in ["40", "60"] {
+            write_entry(root.path(), "acpi_video0", &[("max_brightness", "100"), ("brightness", percent)]);
+            let pushed = tokio::time::timeout(POLL_INTERVAL * 2, events_rx.recv()).await;
+            assert_eq!((pushed, controller.snapshot().percent.to_string()), (Ok(Some(())), percent.to_string()));
+        }
+        // An unchanged reading sends nothing, so the change is what finds the receiver gone.
+        drop(events_rx);
+        write_entry(root.path(), "acpi_video0", &[("brightness", "80")]);
+        tokio::time::timeout(POLL_INTERVAL * 2, task).await.expect("the loop stops once nobody listens").unwrap();
+    }
+
+    /// A controller with no task, for driving the task or a loop directly. Nothing here calls logind.
+    async fn unstarted() -> BrightnessController {
+        let (system_bus, _peer) = p2p_pair().await;
+        BrightnessController { state: Arc::default(), device: Arc::default(), system_bus, writes: Default::default() }
+    }
+
+    #[tokio::test]
+    async fn the_task_ends_before_watching_when_nobody_listens() {
+        let root = tempfile::tempdir().unwrap();
+        let controller = unstarted().await;
+        let (events_tx, _) = tokio::sync::mpsc::unbounded_channel();
+        within(run_brightness_task(root.path().to_path_buf(), controller, events_tx)).await;
     }
 
     /// A dock or a hybrid GPU can add the backlight after startup; udev's `add` is what reselects.

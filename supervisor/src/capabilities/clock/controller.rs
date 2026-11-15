@@ -166,6 +166,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatch_routes_configure_to_the_interval_and_drops_the_rest() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let controller = ClockController::new(tx);
+        let dispatch = |action: &str, arguments: Vec<serde_json::Value>| {
+            super::super::dispatch(
+                &controller,
+                &crate::capabilities::test_support::envelope("clock", action, arguments),
+            );
+        };
+
+        dispatch("configure", vec![serde_json::json!({ "interval": 60 })]);
+        assert_eq!(*controller.interval.borrow(), 60);
+        dispatch("configure", vec![serde_json::json!({ "interval": "often" })]);
+        dispatch("configure", vec![]);
+        dispatch("nonsense", vec![serde_json::json!({ "interval": 5 })]);
+        assert_eq!(*controller.interval.borrow(), 60);
+        dispatch("configure", vec![serde_json::json!({})]);
+        assert_eq!(*controller.interval.borrow(), 60, "an absent interval keeps the current one");
+    }
+
+    #[tokio::test]
     async fn new_seeds_time_synchronously_before_any_tick_fires() {
         // The first tick is a second away; clients in that second must read real epoch, not zero.
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();

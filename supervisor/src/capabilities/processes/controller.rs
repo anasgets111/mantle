@@ -415,6 +415,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatch_routes_all_four_actions_and_drops_the_rest() {
+        let controller = controller();
+        let ready = tempfile::tempdir().expect("tempdir");
+        let (marker, signalled) = (ready.path().join("armed"), ready.path().join("usr1"));
+        let dispatch = |action: &str, arguments: Vec<serde_json::Value>| {
+            super::super::dispatch(
+                &controller,
+                &crate::capabilities::test_support::envelope("processes", action, arguments),
+            );
+        };
+        dispatch("declare", vec!["u".into(), "BOGUS".into()]);
+        dispatch("declare", vec!["".into()]);
+        dispatch("nonsense", vec!["v".into()]);
+        assert!(controller.snapshot().sessions.is_empty());
+
+        dispatch("declare", vec!["t".into(), "INT".into()]);
+        let script = format!("trap ': > {}' USR1", signalled.display());
+        let (cmd, args) = trapping_shell(&format!("{script}; trap 'exit 9' INT; trap '' TERM"), &marker);
+        dispatch("start", vec!["t".into(), "".into(), serde_json::json!(args)]);
+        assert!(!session(&controller, "t").running, "an empty command is refused");
+        dispatch("start", vec!["t".into(), cmd.into(), serde_json::json!(args)]);
+        until_ready(&marker).await;
+
+        dispatch("signal", vec!["t".into(), "BOGUS".into()]);
+        dispatch("signal", vec!["t".into(), "USR1".into()]);
+        crate::capabilities::test_support::poll_until(|| signalled.exists().then_some(())).await;
+        assert!(session(&controller, "t").running, "USR1 is trapped, not fatal");
+
+        dispatch("stop", vec![]);
+        dispatch("stop", vec!["t".into()]);
+        until(&controller, "t", |s| !s.running).await;
+        assert_eq!(session(&controller, "t").exit_code, Some(9), "stopped with the declared INT, not TERM");
+        assert_eq!(controller.snapshot().sessions.keys().collect::<Vec<_>>(), ["t"]);
+    }
+
+    #[tokio::test]
     async fn starting_a_name_no_declaration_claimed_is_refused_rather_than_creating_it() {
         let controller = controller();
         let (cmd, args) = shell("exit 0");

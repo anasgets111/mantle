@@ -215,6 +215,37 @@ mod tests {
         assert_eq!(std::fs::read(path).unwrap(), expected);
     }
 
+    /// Built around a pipe rather than through `new`, whose read task would consume the requests.
+    #[tokio::test]
+    async fn dispatch_routes_both_actions_to_one_change_all_request_and_drops_the_rest() {
+        let dispatched = |writable: bool, actions: &[(&str, Vec<serde_json::Value>)]| {
+            let (read, write) = nix::unistd::pipe().unwrap();
+            // SAFETY: the AsyncFd owns the file, as in `new`.
+            let fd = Arc::new(unsafe { AsyncFd::register(File::from(write)) }.unwrap());
+            let controller = RadioController { state: Arc::default(), device: Some((fd, writable)) };
+            for (action, arguments) in actions {
+                let envelope = crate::capabilities::test_support::envelope("radio", action, arguments.clone());
+                super::super::dispatch(&controller, &envelope);
+            }
+            drop(controller);
+            let mut written = Vec::new();
+            File::from(read).read_to_end(&mut written).unwrap();
+            written
+        };
+        let actions = [
+            ("set_blocked", vec!["bluetooth".into(), true.into()]),
+            ("set_blocked", vec!["toaster".into(), true.into()]),
+            ("set_blocked", vec!["wlan".into()]),
+            ("set_all_blocked", vec!["yes".into()]),
+            ("nonsense", vec![true.into()]),
+            ("set_all_blocked", vec![false.into()]),
+        ];
+        let mut expected = event(0, 2, OP_CHANGE_ALL, true, false);
+        expected.extend(event(0, 0, OP_CHANGE_ALL, false, false));
+        assert_eq!(dispatched(true, &actions), expected);
+        assert!(dispatched(false, &actions).is_empty(), "a read-only device is never written");
+    }
+
     #[tokio::test]
     async fn the_first_push_follows_the_initial_events_and_later_ones_only_changes() {
         let dir = tempfile::tempdir().unwrap();

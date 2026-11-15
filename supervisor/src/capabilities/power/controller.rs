@@ -299,6 +299,7 @@ mod tests {
 
     struct FakeProfiles {
         active: String,
+        sets: mpsc::UnboundedSender<String>,
     }
 
     #[zbus::interface(name = "org.freedesktop.UPower.PowerProfiles")]
@@ -309,6 +310,7 @@ mod tests {
         }
         #[zbus(property)]
         fn set_active_profile(&mut self, value: String) {
+            self.sets.send(value.clone()).unwrap();
             self.active = value;
         }
         #[zbus(property)]
@@ -317,12 +319,20 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn set_profile_writes_only_a_name_the_daemon_lists() {
-        let bus = private_bus().await;
+    /// A power-profiles-daemon listing `power-saver` and `balanced`, a controller that has read it,
+    /// and each profile the daemon is asked to set.
+    async fn serve_profiles(
+        bus: &PrivateBus,
+    ) -> (
+        zbus::Connection,
+        PowerController,
+        zbus::object_server::InterfaceRef<FakeProfiles>,
+        mpsc::UnboundedReceiver<String>,
+    ) {
+        let (sets, set_requests) = mpsc::unbounded_channel();
         let daemon = bus
             .builder()
-            .serve_at("/org/freedesktop/UPower/PowerProfiles", FakeProfiles { active: "power-saver".into() })
+            .serve_at("/org/freedesktop/UPower/PowerProfiles", FakeProfiles { active: "power-saver".into(), sets })
             .unwrap()
             .name("org.freedesktop.UPower.PowerProfiles")
             .unwrap()
@@ -334,11 +344,35 @@ mod tests {
         within(changed.recv()).await;
         let fake =
             daemon.object_server().interface::<_, FakeProfiles>("/org/freedesktop/UPower/PowerProfiles").await.unwrap();
+        (daemon, power, fake, set_requests)
+    }
+
+    #[tokio::test]
+    async fn set_profile_writes_only_a_name_the_daemon_lists() {
+        let bus = private_bus().await;
+        let (_daemon, power, fake, _sets) = serve_profiles(&bus).await;
 
         power.set_profile("turbo").await;
         assert_eq!(fake.get().await.active, "power-saver", "an unlisted name never reaches the daemon");
         power.set_profile("balanced").await;
         assert_eq!(fake.get().await.active, "balanced");
+    }
+
+    /// The bad dispatches are spawned first on this single-threaded runtime, so a write one wrongly
+    /// made would reach the daemon before the valid one.
+    #[tokio::test]
+    async fn dispatch_routes_set_profile_to_the_daemon_and_drops_the_rest() {
+        let bus = private_bus().await;
+        let (_daemon, power, _fake, mut sets) = serve_profiles(&bus).await;
+        let dispatch = |action: &str, arguments: Vec<serde_json::Value>| {
+            super::super::dispatch(&power, &crate::capabilities::test_support::envelope("power", action, arguments));
+        };
+
+        dispatch("nonsense", vec!["power-saver".into()]);
+        dispatch("set_profile", vec![]);
+        dispatch("set_profile", vec![7.into()]);
+        dispatch("set_profile", vec!["balanced".into()]);
+        assert_eq!(within(sets.recv()).await.as_deref(), Some("balanced"));
     }
 
     #[test]

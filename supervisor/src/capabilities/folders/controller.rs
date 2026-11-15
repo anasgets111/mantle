@@ -409,6 +409,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatch_routes_watch_with_folded_extensions_and_unwatch_and_drops_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "a.jpg");
+        touch(dir.path(), "b.png");
+        let key = dir.path().to_string_lossy().into_owned();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let controller = FoldersController::new(tx);
+        let dispatch = |action: &str, arguments: Vec<serde_json::Value>| {
+            super::super::dispatch(
+                &controller,
+                &crate::capabilities::test_support::envelope("folders", action, arguments),
+            );
+        };
+
+        dispatch("watch", vec!["relative/path".into(), serde_json::json!([])]);
+        dispatch("watch", vec![key.clone().into(), 7.into()]);
+        dispatch("nonsense", vec![key.clone().into()]);
+        assert!(controller.snapshot().watched.is_empty());
+
+        dispatch("watch", vec![key.clone().into(), serde_json::json!([".JPG"])]);
+        until(&controller, &mut rx, &key, |folder| folder.ready).await;
+        let names: Vec<String> = controller.snapshot().watched[&key].entries.iter().map(|e| e.name.clone()).collect();
+        assert_eq!(names, ["a.jpg"], "`.JPG` matches as `jpg`");
+
+        dispatch("unwatch", vec![key.clone().into(), true.into()]);
+        assert!(controller.snapshot().watched.contains_key(&key), "a surplus argument refuses the unwatch");
+        dispatch("unwatch", vec![key.clone().into()]);
+        assert!(controller.snapshot().watched.is_empty());
+    }
+
+    #[tokio::test]
     async fn a_missing_folder_is_listed_once_it_appears_even_several_levels_down() {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("a/b");
