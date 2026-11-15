@@ -611,92 +611,12 @@
 ---@field devices AndroidDevice[] Known devices. Unordered; sort before drawing.
 ---@field transfer_progress? integer Percent sent of the file transfer in progress, or `nil` when none runs. The daemon does not say which device it goes to.
 
----@class ApplicationsState
----`mantle.applications` payload (ADR-0061, ADR-0252).
----@field by_app_id table<string, integer> Window `app_id` to its 1-based index: `entries[by_app_id[app_id]]`. Keys are exact `StartupWMClass` and desktop ids, then lowercased and last-dot-segment guesses.
----@field entries AppSummary[] Installed entries, sorted by `name` (byte order), including `NoDisplay` entries for window lookup. Launchers omit entries with `no_display = true`. `Hidden` entries are excluded. A change under an applications directory rescans 250 ms after the last event.
-
----@class AppearanceState
----`mantle.appearance`'s payload: the `org.freedesktop.appearance` settings of xdg-desktop-portal.
----Without a portal, or for a key it does not provide, a field holds its default; the capability
----is never `nil` after it starts.
----@field accent? string System accent colour as `"#rrggbb"` (sRGB), or `nil` when none is set.
----@field color_scheme ColorScheme Preferred colour scheme; `"default"` means no preference.
----@field contrast Contrast Preferred contrast level.
----@field reduced_motion boolean `true` when the user asks for reduced motion; `false` for no preference or an older portal.
-
 ---@class AudioState
 ---`mantle.audio`'s payload (ADR-0053).
 ---@field apps AppStream[] Apps playing or recording audio, excluding pid-less streams, notification sounds, meters and monitor captures.
 ---@field cards AudioCard[] ALSA and BlueZ cards with their profiles, ordered by `device`. A card makes sinks and sources only for its active profile: analog or HDMI on one Intel HDA card, a codec on a headset.
 ---@field sinks AudioDevice[] Every output device; the `active` one is the default.
 ---@field sources AudioDevice[] Every input device; the `active` one is the default.
-
----@class BatteryState
----`mantle.battery`'s payload. Without a system battery, `present = false`; peripherals may remain.
----@field health? integer Battery health: full charge as a percent of design capacity, `0` to `100`, combined over the system batteries. `nil` when UPower reports no design capacity.
----@field percent integer UPower's `Percentage`, rounded to `0` to `100`; a spurious `0` while not draining keeps the last value.
----@field peripherals PeripheralBattery[] UPower batteries outside the system supply, ordered by object path. This may include devices also shown by `mantle.bluetooth`.
----@field present boolean UPower's display device is a present battery. Check it before drawing system charge, state or time estimates.
----@field state BatteryStatus What the battery is doing; see `BatteryStatus`.
----@field time_to_empty? integer Seconds until flat, or `nil` while UPower has no estimate.
----@field time_to_full? integer Seconds until full, or `nil` while UPower has no estimate.
-
----@class IdleState
----`mantle.idle`'s payload (ADR-0141).
----@field compositor_hold_stale boolean The compositor last withheld idle notifications, but input resumed before it could answer again. Its hold may have ended; a fresh idle period clears this uncertainty.
----@field inhibited boolean True when logind blocks idle, a `ScreenSaver` client holds it (ADR-0231), or the compositor was last observed withholding idle notifications (ADR-0160). The compositor answer can remain true after a release while the seat is active; the next idle threshold refreshes it.
----@field inhibitors IdleInhibitor[] Holders other than this shell, `ScreenSaver` clients included. The compositor's hold has an empty `who`; draw `why` then. An unconfirmed compositor hold is omitted. Lists at most 64 logind holders; a `ScreenSaver` client past 16 holds, or 64 in all, gets `LimitsExceeded`.
-
----@class BluetoothState
----@field available boolean BlueZ has an adapter; `false` without one or without `bluetoothd`.
----@field connected_devices ConnectedDevice[] Paired, connected devices. Unordered and may reshuffle on any push: sort before drawing.
----@field discoverable boolean Other devices can find this adapter. BlueZ turns it off after `DiscoverableTimeout` (180 s by default).
----@field discovered_devices DiscoveredDevice[] Unpaired devices BlueZ knows, unordered. Kept after `stop_discovery`; BlueZ expires unseen temporary ones after `TemporaryTimeout` (30 s by default).
----@field discovering boolean The adapter is scanning, whichever client started it.
----@field enabled boolean The adapter is powered.
----@field paired_devices PairedDevice[] Paired devices that are not connected. Unordered like `connected_devices`.
----@field pairing_request? PairingRequest The pairing question to show, or `nil`. Entry requests use `secure_submit`; confirmation, authorization and service requests use `answer_pairing`.
-
----@class BrightnessState
----`mantle.brightness`'s payload; the capability stays `nil` on a machine with no backlight.
----@field percent integer Screen backlight, `0` to `100`: the last requested level (sysfs `brightness`), not the mid-fade one.
-
----@class RadioState
----`mantle.radio`'s payload; the capability stays `nil` without `/dev/rfkill` or until a radio exists.
----@field radios Radio[] One entry per kind with at least one device, ordered by kernel type id.
-
----@class FoldersState
----`mantle.folders` payload (ADR-0120).
----@field watched table<string, Folder> One entry per `"watch"`, keyed by its absolute `path` (`~/` expanded) minus trailing slashes; `nil` until watched.
-
----@class ProcessesState
----`mantle.processes` payload.
----@field sessions table<string, SessionProcess> One entry per `session_process` name; an undeclared name is `nil`.
-
----@class KeyboardState
----`mantle.keyboard`'s payload (ADR-0034). Lock keys read `false` when no source resolves.
----@field active_layout string Layout display name, e.g. `"English (US)"`; empty before the compositor answers or without one.
----@field active_layout_index integer 0-based position of the active layout, as `switch_layout` takes it.
----@field backlight_percent? integer Keyboard backlight, `0` to `100`, or `nil` without a backlight device or readable level. Refreshes on hardware hotkeys and `set_backlight` only, not on other software writes.
----@field caps_lock boolean Caps Lock is on.
----@field layout_count integer Configured layout count; below `2` there is nothing to switch.
----@field num_lock boolean Num Lock is on.
----@field scroll_lock boolean Scroll Lock is on.
-
----@class LockState
----`mantle.lock`'s payload (ADR-0052).
----@field active boolean The Renderer confirmed the session locked; a requested lock stays `false` until then.
----@field attempts integer Rejected passwords since this lock was confirmed; reset by the next lock.
----@field authenticating boolean An answer is with PAM, or typed before its prompt and held for it. A second submit is refused while true.
----@field error string Last failure to draw: PAM's verdict (`"authentication failed"`, `"too many attempts"`, or a PAM or worker error) or a refused lock's reason. Cleared by a correct password, `lock`, a confirmed lock, and unlock.
----@field fingerprint? FingerprintState The fingerprint conversation beside the password one (ADR-0382), or `nil` while none runs: no `mantle-fingerprint` stack, or it ended without a match. A password submit and the next lock start it again. `prompt`, `messages`, `attempts` and `error` stay the password's.
----@field messages PamNotice[] PAM's info and error lines, oldest first, at most 8. Cleared by the next answer and when the lock ends.
----@field prompt? PamPrompt PAM's pending question (ADR-0381), or `nil` while it owes nothing.
----@field unlocking boolean PAM said yes and the lock is still up: the window for an out-animation (ADR-0190).
-
----@class MprisState
----@field players PlayerState[] Controllable MPRIS players except `playerctld`, longest-running first, so `players[1]` stays put; empty when none runs. At most 8: one arriving past that is listed once another leaves.
 
 ---@class NetworkState
 ---`mantle.network`'s payload (ADR-0037).
@@ -720,28 +640,26 @@
 ---@class SecretsState
 ---@field entries table<string, SecretStatus> Public lookup names and the result of their latest write.
 
+---@class BluetoothState
+---@field available boolean BlueZ has an adapter; `false` without one or without `bluetoothd`.
+---@field connected_devices ConnectedDevice[] Paired, connected devices. Unordered and may reshuffle on any push: sort before drawing.
+---@field discoverable boolean Other devices can find this adapter. BlueZ turns it off after `DiscoverableTimeout` (180 s by default).
+---@field discovered_devices DiscoveredDevice[] Unpaired devices BlueZ knows, unordered. Kept after `stop_discovery`; BlueZ expires unseen temporary ones after `TemporaryTimeout` (30 s by default).
+---@field discovering boolean The adapter is scanning, whichever client started it.
+---@field enabled boolean The adapter is powered.
+---@field paired_devices PairedDevice[] Paired devices that are not connected. Unordered like `connected_devices`.
+---@field pairing_request? PairingRequest The pairing question to show, or `nil`. Entry requests use `secure_submit`; confirmation, authorization and service requests use `answer_pairing`.
+
+---@class TrayState
+---@field items TrayItem[] Registered items in registration order, oldest first; updates never reorder them. At most 32: one arriving past that logs one warning, waits, and enters once another leaves.
+
 ---@class NotificationsState
 ---`mantle.notifications`'s payload (ADR-0033).
 ---@field dnd boolean Do-not-disturb: mutes non-critical sounds only. Hiding popups is the config's call.
 ---@field feed Notification[] The newest 20 of up to 100 queued notifications, newest first, expired ones included (ADR-0100); a replacement keeps its place. An entry past 20 stays dismissable by id.
 
----@class PowerState
----`mantle.power`'s payload. Profile fields are `nil` without power-profiles-daemon, the rest without UPower;
----a failed read is also `nil`. With neither service the payload is an empty table.
----@field active_profile? string Active platform profile, e.g. `"balanced"`.
----@field energy_rate? number UPower's display-device `EnergyRate` in watts; direction is `mantle.battery.state`.
----@field on_battery? boolean UPower's `OnBattery`: running on battery rather than mains.
----@field profiles? string[] Available profiles in daemon order, e.g. `{"power-saver", "balanced", "performance"}`.
-
----@class PrivacyState
----@field camera_users PrivacyUser[] Apps using a camera, one per name: running PipeWire video streams linked to a camera, and processes holding a `/dev/videoN` open outside PipeWire. Empty when none is.
----@field microphone_users PrivacyUser[] Apps with a running PipeWire audio capture, one per name (ADR-0137). Idle streams and sink-monitor captures are absent; a muted microphone still counts.
----@field screencast_users PrivacyUser[] Apps with a running PipeWire screen-capture stream, one per name (ADR-0137). wlr-screencopy tools such as `wf-recorder` and `grim` never appear.
-
----@class AudioLevelsState
----`mantle.audio_levels`' payload: the peaks of the devices `mantle.audio:set_level_meters` names,
----pushed at most 30 times a second and only when one moves by 1 % or more.
----@field levels AudioLevel[] One entry per metered device that has sent audio since the call, ordered by `id`.
+---@class MprisState
+---@field players PlayerState[] Controllable MPRIS players except `playerctld`, longest-running first, so `players[1]` stays put; empty when none runs. At most 8: one arriving past that is listed once another leaves.
 
 ---@class SysinfoState
 ---`mantle.sysinfo`'s payload; `nil` until `configure` sets an interval and a reading changes a field.
@@ -756,30 +674,20 @@
 ---@field temp_cores integer[] CPU temperatures in whole Celsius: per core (`coretemp`) or per CCD (`k10temp`), else one package or `acpitz` reading; empty without a sensor. An unreadable sensor is skipped.
 ---@field temp_gpu? integer `amdgpu`, `nouveau`, `nvidia`, `i915` or `xe` hwmon temperature in whole Celsius, or `nil` without a readable one.
 
----@class ClockState
----`mantle.clock`'s payload, pushed on each tick of `interval`.
----@field monotonic number System-wide `CLOCK_MONOTONIC` seconds since boot, as of the last push; excludes suspend. Take durations from it, since NTP moves `time`. `mantle.clock:now()` reads it live.
----@field time integer Unix epoch seconds, as `os.date` takes them.
+---@class KeyboardState
+---`mantle.keyboard`'s payload (ADR-0034). Lock keys read `false` when no source resolves.
+---@field active_layout string Layout display name, e.g. `"English (US)"`; empty before the compositor answers or without one.
+---@field active_layout_index integer 0-based position of the active layout, as `switch_layout` takes it.
+---@field backlight_percent? integer Keyboard backlight, `0` to `100`, or `nil` without a backlight device or readable level. Refreshes on hardware hotkeys and `set_backlight` only, not on other software writes.
+---@field caps_lock boolean Caps Lock is on.
+---@field layout_count integer Configured layout count; below `2` there is nothing to switch.
+---@field num_lock boolean Num Lock is on.
+---@field scroll_lock boolean Scroll Lock is on.
 
----@class StorageState
----`mantle.storage` payload (ADR-0136).
----@field contents table<string, any> Each declared `persistent_table`'s contents, keyed by its absolute file path; `nil` until declared. Another writer's change to the file replaces it, unsaved writes included.
-
----@class PolkitState
----`mantle.polkit`'s payload (ADR-0114). Every other field is empty while `active` is false.
----@field action_id string Action being authorized, e.g. `org.freedesktop.systemd1.manage-units`.
----@field active boolean polkitd is waiting for the user to authenticate.
----@field authenticating boolean An answer is with PAM, or typed before its prompt and held for it. A second submit is refused while true.
----@field error string Drawable reason for the last failure, e.g. `"authentication failed"`. The prompt stays open to retry.
----@field icon_name string Themed icon name, or empty when the caller set none.
----@field identities PolkitIdentity[] The accounts polkit accepts, as it offered them; groups arrive already expanded.
----@field identity integer The uid the next helper authenticates: this session's user if offered, else the first.
----@field message string The action's prompt, e.g. `"Authentication is required to ..."`, in `en_US`: the locale the agent registers with.
----@field messages PamNotice[] The helper's info and error lines, as on `mantle.lock`.
----@field prompt? PamPrompt The helper's pending question, as on `mantle.lock`. `nil` until the first submit starts it.
-
----@class TrayState
----@field items TrayItem[] Registered items in registration order, oldest first; updates never reorder them. At most 32: one arriving past that logs one warning, waits, and enters once another leaves.
+---@class PrivacyState
+---@field camera_users PrivacyUser[] Apps using a camera, one per name: running PipeWire video streams linked to a camera, and processes holding a `/dev/videoN` open outside PipeWire. Empty when none is.
+---@field microphone_users PrivacyUser[] Apps with a running PipeWire audio capture, one per name (ADR-0137). Idle streams and sink-monitor captures are absent; a muted microphone still counts.
+---@field screencast_users PrivacyUser[] Apps with a running PipeWire screen-capture stream, one per name (ADR-0137). wlr-screencopy tools such as `wf-recorder` and `grim` never appear.
 
 ---@class UpdatesState
 ---`mantle.updates`'s payload.
@@ -801,6 +709,49 @@
 ---@field packages UpdateCandidate[] Pending upgrades. A failed check keeps the last good list.
 ---@field reboot_required boolean `/run/mantle-reboot-required` exists, watched live. Mantle never writes it; anything you set up may, a pacman hook for example, and `/run` empties on reboot.
 
+---@class LockState
+---`mantle.lock`'s payload (ADR-0052).
+---@field active boolean The Renderer confirmed the session locked; a requested lock stays `false` until then.
+---@field attempts integer Rejected passwords since this lock was confirmed; reset by the next lock.
+---@field authenticating boolean An answer is with PAM, or typed before its prompt and held for it. A second submit is refused while true.
+---@field error string Last failure to draw: PAM's verdict (`"authentication failed"`, `"too many attempts"`, or a PAM or worker error) or a refused lock's reason. Cleared by a correct password, `lock`, a confirmed lock, and unlock.
+---@field fingerprint? FingerprintState The fingerprint conversation beside the password one (ADR-0382), or `nil` while none runs: no `mantle-fingerprint` stack, or it ended without a match. A password submit and the next lock start it again. `prompt`, `messages`, `attempts` and `error` stay the password's.
+---@field messages PamNotice[] PAM's info and error lines, oldest first, at most 8. Cleared by the next answer and when the lock ends.
+---@field prompt? PamPrompt PAM's pending question (ADR-0381), or `nil` while it owes nothing.
+---@field unlocking boolean PAM said yes and the lock is still up: the window for an out-animation (ADR-0190).
+
+---@class PolkitState
+---`mantle.polkit`'s payload (ADR-0114). Every other field is empty while `active` is false.
+---@field action_id string Action being authorized, e.g. `org.freedesktop.systemd1.manage-units`.
+---@field active boolean polkitd is waiting for the user to authenticate.
+---@field authenticating boolean An answer is with PAM, or typed before its prompt and held for it. A second submit is refused while true.
+---@field error string Drawable reason for the last failure, e.g. `"authentication failed"`. The prompt stays open to retry.
+---@field icon_name string Themed icon name, or empty when the caller set none.
+---@field identities PolkitIdentity[] The accounts polkit accepts, as it offered them; groups arrive already expanded.
+---@field identity integer The uid the next helper authenticates: this session's user if offered, else the first.
+---@field message string The action's prompt, e.g. `"Authentication is required to ..."`, in `en_US`: the locale the agent registers with.
+---@field messages PamNotice[] The helper's info and error lines, as on `mantle.lock`.
+---@field prompt? PamPrompt The helper's pending question, as on `mantle.lock`. `nil` until the first submit starts it.
+
+---@class BatteryState
+---`mantle.battery`'s payload. Without a system battery, `present = false`; peripherals may remain.
+---@field health? integer Battery health: full charge as a percent of design capacity, `0` to `100`, combined over the system batteries. `nil` when UPower reports no design capacity.
+---@field percent integer UPower's `Percentage`, rounded to `0` to `100`; a spurious `0` while not draining keeps the last value.
+---@field peripherals PeripheralBattery[] UPower batteries outside the system supply, ordered by object path. This may include devices also shown by `mantle.bluetooth`.
+---@field present boolean UPower's display device is a present battery. Check it before drawing system charge, state or time estimates.
+---@field state BatteryStatus What the battery is doing; see `BatteryStatus`.
+---@field time_to_empty? integer Seconds until flat, or `nil` while UPower has no estimate.
+---@field time_to_full? integer Seconds until full, or `nil` while UPower has no estimate.
+
+---@class ClockState
+---`mantle.clock`'s payload, pushed on each tick of `interval`.
+---@field monotonic number System-wide `CLOCK_MONOTONIC` seconds since boot, as of the last push; excludes suspend. Take durations from it, since NTP moves `time`. `mantle.clock:now()` reads it live.
+---@field time integer Unix epoch seconds, as `os.date` takes them.
+
+---@class BrightnessState
+---`mantle.brightness`'s payload; the capability stays `nil` on a machine with no backlight.
+---@field percent integer Screen backlight, `0` to `100`: the last requested level (sysfs `brightness`), not the mid-fade one.
+
 ---@class WorkspacesState
 ---`mantle.workspaces` payload; `nil` without niri, Hyprland, sway or mango.
 ---@field active_client? ActiveClient The focused window, or `nil` when none has focus. One per session, not per output.
@@ -809,11 +760,60 @@
 ---@field overview_open? boolean Whether niri's overview is open; `nil` on Hyprland, which has none.
 ---@field special? SpecialWorkspace[] Hyprland special workspaces, sorted by name (ADR-0119). `nil` on niri; empty means none exist.
 
+---@class RadioState
+---`mantle.radio`'s payload; the capability stays `nil` without `/dev/rfkill` or until a radio exists.
+---@field radios Radio[] One entry per kind with at least one device, ordered by kernel type id.
+
+---@class PowerState
+---`mantle.power`'s payload. Profile fields are `nil` without power-profiles-daemon, the rest without UPower;
+---a failed read is also `nil`. With neither service the payload is an empty table.
+---@field active_profile? string Active platform profile, e.g. `"balanced"`.
+---@field energy_rate? number UPower's display-device `EnergyRate` in watts; direction is `mantle.battery.state`.
+---@field on_battery? boolean UPower's `OnBattery`: running on battery rather than mains.
+---@field profiles? string[] Available profiles in daemon order, e.g. `{"power-saver", "balanced", "performance"}`.
+
+---@class ApplicationsState
+---`mantle.applications` payload (ADR-0061, ADR-0252).
+---@field by_app_id table<string, integer> Window `app_id` to its 1-based index: `entries[by_app_id[app_id]]`. Keys are exact `StartupWMClass` and desktop ids, then lowercased and last-dot-segment guesses.
+---@field entries AppSummary[] Installed entries, sorted by `name` (byte order), including `NoDisplay` entries for window lookup. Launchers omit entries with `no_display = true`. `Hidden` entries are excluded. A change under an applications directory rescans 250 ms after the last event.
+
+---@class FoldersState
+---`mantle.folders` payload (ADR-0120).
+---@field watched table<string, Folder> One entry per `"watch"`, keyed by its absolute `path` (`~/` expanded) minus trailing slashes; `nil` until watched.
+
+---@class StorageState
+---`mantle.storage` payload (ADR-0136).
+---@field contents table<string, any> Each declared `persistent_table`'s contents, keyed by its absolute file path; `nil` until declared. Another writer's change to the file replaces it, unsaved writes included.
+
+---@class IdleState
+---`mantle.idle`'s payload (ADR-0141).
+---@field compositor_hold_stale boolean The compositor last withheld idle notifications, but input resumed before it could answer again. Its hold may have ended; a fresh idle period clears this uncertainty.
+---@field inhibited boolean True when logind blocks idle, a `ScreenSaver` client holds it (ADR-0231), or the compositor was last observed withholding idle notifications (ADR-0160). The compositor answer can remain true after a release while the seat is active; the next idle threshold refreshes it.
+---@field inhibitors IdleInhibitor[] Holders other than this shell, `ScreenSaver` clients included. The compositor's hold has an empty `who`; draw `why` then. An unconfirmed compositor hold is omitted. Lists at most 64 logind holders; a `ScreenSaver` client past 16 holds, or 64 in all, gets `LimitsExceeded`.
+
+---@class ProcessesState
+---`mantle.processes` payload.
+---@field sessions table<string, SessionProcess> One entry per `session_process` name; an undeclared name is `nil`.
+
+---@class AppearanceState
+---`mantle.appearance`'s payload: the `org.freedesktop.appearance` settings of xdg-desktop-portal.
+---Without a portal, or for a key it does not provide, a field holds its default; the capability
+---is never `nil` after it starts.
+---@field accent? string System accent colour as `"#rrggbb"` (sRGB), or `nil` when none is set.
+---@field color_scheme ColorScheme Preferred colour scheme; `"default"` means no preference.
+---@field contrast Contrast Preferred contrast level.
+---@field reduced_motion boolean `true` when the user asks for reduced motion; `false` for no preference or an older portal.
+
 ---@class WindowsState
 ---`mantle.windows` payload; `nil` with no niri, Hyprland, sway, mango or wlr-foreign-toplevel
 ---backend.
 ---@field source string `"niri"`, `"hyprland"`, `"sway"`, `"mango"`, or `"wlr_foreign_toplevel"`.
 ---@field windows WindowEntry[] Sorted by numeric `workspace_id`, then Hyprland named ones. Windows with a non-numeric id (sway names such as `1:web`, mango's `DP-1:3`) or none come last, in backend order.
+
+---@class AudioLevelsState
+---`mantle.audio_levels`' payload: the peaks of the devices `mantle.audio:set_level_meters` names,
+---pushed at most 30 times a second and only when one moves by 1 % or more.
+---@field levels AudioLevel[] One entry per metered device that has sent audio since the call, ordered by `id`.
 
 --- Capabilities -------------------------------------------------------------------------------
 
@@ -836,16 +836,6 @@
 ---@field remove_command fun(self: AndroidConnectCapability, id: string) Stops offering the command with this `commands[].id`, then resends the list to every connected paired device. An unknown id does nothing.
 ---@field set_clipboard_auto_share fun(self: AndroidConnectCapability, id: string, enabled: boolean) Switches `clipboard_auto_share` for the device. Takes effect at the next clipboard change.
 
----[docs](https://anasgets111.github.io/mantle/capabilities/applications.html)
----@class ApplicationsCapability: Capability<ApplicationsState>, userdata
----@field refresh fun(self: ApplicationsCapability) Rescans installed desktop entries. The directories are watched, so only a failed watch (logged) needs this.
----@field launch fun(self: ApplicationsCapability, id: string, opts?: LaunchOpts) Launches `entries[].id`, detached; `Terminal=true` entries run in `$TERMINAL`. `opts.env` sets a variable to a string or unsets it with `false`.
----@field open_url fun(self: ApplicationsCapability, url: string) Opens an `http`, `https` or `mailto` URL with `xdg-open` (ADR-0103). One over 2048 bytes or holding whitespace or a control character is refused.
-
----[docs](https://anasgets111.github.io/mantle/capabilities/appearance.html)
----@class AppearanceCapability: ReadOnlyCapability<AppearanceState>, userdata
-local AppearanceCapability = {}
-
 ---[docs](https://anasgets111.github.io/mantle/capabilities/audio.html)
 ---@class AudioCapability: Capability<AudioState>, userdata
 ---@field set_volume fun(self: AudioCapability, id: integer, volume: number) Sets a `sinks[].id` or `sources[].id` volume in percent, clamped to `[0, 150]` for a sink and `[0, 100]` for a source. It need not be the default.
@@ -862,80 +852,6 @@ local AppearanceCapability = {}
 ---@field set_port fun(self: AudioCapability, card: integer, index: integer) Routes a `cards[].device` to one of its `ports[].index`, e.g. headphones instead of speakers. The port must work under the active profile. WirePlumber keeps the choice.
 ---@field set_virtual_devices fun(self: AudioCapability, devices?: VirtualDevice[]) Replaces the declared virtual devices: each appears in `sinks` or `sources` while listed, and an empty list removes them. A reload keeps them until the next call; a replaced Renderer's go. A change to any kind but a null sink restarts the other kinds' devices, which drop out briefly.
 ---@field set_level_meters fun(self: AudioCapability, ids?: integer[]) Meters these `sinks[].id` and `sources[].id`: `mantle.audio_levels` carries their peaks. Replaces the last list; an empty one stops every meter, and none runs before the first call. A reload keeps them until the next call; a replaced Renderer's go.
-
----[docs](https://anasgets111.github.io/mantle/capabilities/battery.html)
----@class BatteryCapability: ReadOnlyCapability<BatteryState>, userdata
-local BatteryCapability = {}
-
----[docs](https://anasgets111.github.io/mantle/capabilities/idle.html)
----@class IdleCapability: ReadOnlyCapability<IdleState>, userdata
----@field register_threshold fun(self: IdleCapability, seconds: integer, on_idle: fun(), on_resume: fun(cause: "input" | "activity" | "inhibitor")): integer Runs `on_idle` after `seconds` without input and `on_resume` when idle ends or input follows a non-input resume; returns a handle for `cancel_threshold`. When an earlier registration at the same `seconds` has already gone idle this evaluation, `on_idle` runs at once. Reloads drop registrations.
----@field cancel_threshold fun(self: IdleCapability, handle: integer) Drops one registration; an unknown handle is a no-op.
----@field inhibit fun(self: IdleCapability, reason: string) Holds off idle system-wide (a logind `idle` inhibitor) until `release_inhibit`. Counted; holds survive in-place reloads and drop when the Renderer restarts.
----@field release_inhibit fun(self: IdleCapability) Releases one `inhibit` hold; with none held, a no-op.
-local IdleCapability = {}
-
----[docs](https://anasgets111.github.io/mantle/capabilities/bluetooth.html)
----@class BluetoothCapability: Capability<BluetoothState>, userdata
----@field set_enabled fun(self: BluetoothCapability, enabled: boolean) Powers the adapter on or off.
----@field set_discoverable fun(self: BluetoothCapability, discoverable: boolean) Makes the adapter findable by other devices, or not.
----@field start_discovery fun(self: BluetoothCapability) Clears `discovered_devices` and scans. The request holds, so a scan starts once the adapter powers on and pauses while a `pair` runs.
----@field stop_discovery fun(self: BluetoothCapability) Stops discovery; `discovered_devices` stays.
----@field pair fun(self: BluetoothCapability, mac: string) Pairs a discovered device, then trusts and connects it.
----@field connect fun(self: BluetoothCapability, mac: string) Trusts and connects a paired device.
----@field disconnect fun(self: BluetoothCapability, mac: string) Disconnects a connected device.
----@field forget fun(self: BluetoothCapability, mac: string) Removes a device from BlueZ, unpairing it.
----@field answer_pairing fun(self: BluetoothCapability, mac: string, accept: boolean) Accepts or rejects a confirmation, authorization or service `pairing_request` for `mac`; a yes within 750 ms of it appearing is ignored. Entry requests use `secure_submit`.
-
----[docs](https://anasgets111.github.io/mantle/capabilities/brightness.html)
----@class BrightnessCapability: Capability<BrightnessState>, userdata
----@field set fun(self: BrightnessCapability, percent: number) Sets the screen backlight, `0` to `100`, fractions allowed; values outside clamp to it.
-
----[docs](https://anasgets111.github.io/mantle/capabilities/radio.html)
----@class RadioCapability: Capability<RadioState>, userdata
----@field set_blocked fun(self: RadioCapability, kind: RadioKind, blocked: boolean) Soft-blocks or unblocks every device of `kind`. A hardware block stays.
----@field set_all_blocked fun(self: RadioCapability, blocked: boolean) Soft-blocks or unblocks every radio (airplane mode).
-
----[docs](https://anasgets111.github.io/mantle/capabilities/folders.html)
----@class FoldersCapability: Capability<FoldersState>, userdata
----@field watch fun(self: FoldersCapability, path: string, extensions?: string[]) Keeps `watched[path]` listing a folder, absolute or `~/` under `$HOME`. `extensions` match case-insensitively, dot optional; omitted means every file.
----@field unwatch fun(self: FoldersCapability, path: string) Stops watching `path` (absolute or `~/`) and removes it from `watched`.
-
----[docs](https://anasgets111.github.io/mantle/capabilities/processes.html)
----@class ProcessesCapability: Capability<ProcessesState>, userdata
----@field declare fun(self: ProcessesCapability, name: string, stop_signal?: SignalName) Registers `name` (required before `start`) and sets its stop signal, default `TERM`. Redeclaring updates the signal without touching a running program.
----@field start fun(self: ProcessesCapability, name: string, cmd: string, args?: string[]) Runs `cmd` with `args` (no shell) as its own process group. No-op while `running` or when `name` is undeclared.
----@field signal fun(self: ProcessesCapability, name: string, signal: SignalName) Sends `signal` to the program's process (not its group); no-op when not running.
----@field stop fun(self: ProcessesCapability, name: string) Sends the declared stop signal to the process group, then `KILL` if it is still up 5 s later; no-op when not running.
-
----[docs](https://anasgets111.github.io/mantle/capabilities/keyboard.html)
----@class KeyboardCapability: Capability<KeyboardState>, userdata
----@field set_backlight fun(self: KeyboardCapability, percent: number) Sets the keyboard backlight, `0` to `100`, fractions allowed; values outside clamp to it.
----@field switch_layout fun(self: KeyboardCapability, index: integer) Switches to the 0-based configured layout `index`.
-
----[docs](https://anasgets111.github.io/mantle/capabilities/lock.html)
----@class LockCapability: Capability<LockState>, userdata
----`mantle.lock` actions. There is no `unlock`; only a correct password unlocks (ADR-0042).
----@field lock fun(self: LockCapability) Locks the session; a no-op while `active`.
----@field set_unlock_animation fun(self: LockCapability, ms?: integer) Keeps the lock up `ms` after a correct password for an out-animation (ADR-0190). Clamped to 600; omitted is `0`.
-
----[docs](https://anasgets111.github.io/mantle/capabilities/mpris.html)
----@class MprisCapability: Capability<MprisState>, userdata
----@field control fun(self: MprisCapability, id: string, cmd: PlayerCommand) Sends a playback command to `players[].id`.
----@field seek fun(self: MprisCapability, id: string, position_us: integer) Seeks to an absolute position in microseconds, clamped to `[0, length]` (only `>= 0` when `length` is `nil`).
----@field seek_relative fun(self: MprisCapability, id: string, offset_us: integer) Seeks by a signed offset in microseconds, unclamped; past the end may skip to the next track.
----@field raise fun(self: MprisCapability, id: string) Calls Raise; check `players[].can_raise` before calling.
----@field quit fun(self: MprisCapability, id: string) Calls Quit; check `players[].can_quit` before calling.
----@field open_uri fun(self: MprisCapability, id: string, uri: string) Opens an absolute URI in the player.
----@field set_volume fun(self: MprisCapability, id: string, value: number) Sets MPRIS `Volume` in percent; finite values at or above zero are accepted.
----@field set_loop_status fun(self: MprisCapability, id: string, value: LoopStatus) Sets MPRIS `LoopStatus`.
----@field set_shuffle fun(self: MprisCapability, id: string, value: boolean) Sets MPRIS `Shuffle`.
----@field set_rate fun(self: MprisCapability, id: string, value: number) Sets a positive finite MPRIS playback rate.
----@field track_list_add_track fun(self: MprisCapability, id: string, uri: string, after_track: string, set_as_current: boolean) Inserts a URI after a track id, or after `/org/mpris/MediaPlayer2/TrackList/NoTrack` to prepend.
----@field track_list_remove_track fun(self: MprisCapability, id: string, track_id: string) Removes a track by its TrackList object path.
----@field track_list_go_to fun(self: MprisCapability, id: string, track_id: string) Starts the track identified by its TrackList object path.
----@field playlists_get fun(self: MprisCapability, id: string, index: integer, count: integer, order: string, reverse: boolean) Reads a bounded playlist page into `players[].playlists`.
----@field playlists_activate fun(self: MprisCapability, id: string, playlist_id: string) Activates a playlist by its object path.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/network.html)
 ---@class NetworkCapability: Capability<NetworkState>, userdata
@@ -959,6 +875,27 @@ local IdleCapability = {}
 ---@class SecretsCapability: ReadOnlyCapability<SecretsState>, userdata
 local SecretsCapability = {}
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/bluetooth.html)
+---@class BluetoothCapability: Capability<BluetoothState>, userdata
+---@field set_enabled fun(self: BluetoothCapability, enabled: boolean) Powers the adapter on or off.
+---@field set_discoverable fun(self: BluetoothCapability, discoverable: boolean) Makes the adapter findable by other devices, or not.
+---@field start_discovery fun(self: BluetoothCapability) Clears `discovered_devices` and scans. The request holds, so a scan starts once the adapter powers on and pauses while a `pair` runs.
+---@field stop_discovery fun(self: BluetoothCapability) Stops discovery; `discovered_devices` stays.
+---@field pair fun(self: BluetoothCapability, mac: string) Pairs a discovered device, then trusts and connects it.
+---@field connect fun(self: BluetoothCapability, mac: string) Trusts and connects a paired device.
+---@field disconnect fun(self: BluetoothCapability, mac: string) Disconnects a connected device.
+---@field forget fun(self: BluetoothCapability, mac: string) Removes a device from BlueZ, unpairing it.
+---@field answer_pairing fun(self: BluetoothCapability, mac: string, accept: boolean) Accepts or rejects a confirmation, authorization or service `pairing_request` for `mac`; a yes within 750 ms of it appearing is ignored. Entry requests use `secure_submit`.
+
+---[docs](https://anasgets111.github.io/mantle/capabilities/tray.html)
+---@class TrayCapability: Capability<TrayState>, userdata
+---@field activate fun(self: TrayCapability, id: string, x: integer, y: integer) Left-click activation at screen coordinates `x`, `y`; a no-op when `item_is_menu`.
+---@field context_menu fun(self: TrayCapability, id: string, x: integer, y: integer) Context-menu activation at screen coordinates `x`, `y`.
+---@field secondary_activate fun(self: TrayCapability, id: string, x: integer, y: integer) Middle-click activation at screen coordinates `x`, `y` (ADR-0074).
+---@field scroll fun(self: TrayCapability, id: string, delta: integer, orientation: ScrollOrientation) Scrolls the icon by `delta` along `orientation` (ADR-0074).
+---@field activate_menu_item fun(self: TrayCapability, id: string, menu_item_id: integer) Clicks the item's `MenuItem.id`.
+---@field menu_will_show fun(self: TrayCapability, id: string, submenu_id: integer) Tells the application submenu `submenu_id` is opening, then refetches the menu unless it answers that nothing changed.
+
 ---[docs](https://anasgets111.github.io/mantle/capabilities/notifications.html)
 ---@class NotificationsCapability: Capability<NotificationsState>, userdata
 ---@field dismiss fun(self: NotificationsCapability, id: integer) Removes a queued notification.
@@ -970,45 +907,36 @@ local SecretsCapability = {}
 ---@field set_app_muted fun(self: NotificationsCapability, app: string, muted: boolean) Silences every sound from an app, critical included, matched exactly on `app_name` or `desktop_entry`.
 ---@field hold_expiry fun(self: NotificationsCapability, seconds: integer) Pauses every expiry countdown for `seconds`, capped at 300; `0` releases the hold.
 
----[docs](https://anasgets111.github.io/mantle/capabilities/power.html)
----@class PowerCapability: Capability<PowerState>, userdata
----@field set_profile fun(self: PowerCapability, name: string) Switches to one of `profiles`; a name not in it, or one the daemon rejects, is logged and `active_profile` stays.
-
----[docs](https://anasgets111.github.io/mantle/capabilities/privacy.html)
----@class PrivacyCapability: ReadOnlyCapability<PrivacyState>, userdata
-local PrivacyCapability = {}
-
----[docs](https://anasgets111.github.io/mantle/capabilities/audio_levels.html)
----@class AudioLevelsCapability: ReadOnlyCapability<AudioLevelsState>, userdata
-local AudioLevelsCapability = {}
+---[docs](https://anasgets111.github.io/mantle/capabilities/mpris.html)
+---@class MprisCapability: Capability<MprisState>, userdata
+---@field control fun(self: MprisCapability, id: string, cmd: PlayerCommand) Sends a playback command to `players[].id`.
+---@field seek fun(self: MprisCapability, id: string, position_us: integer) Seeks to an absolute position in microseconds, clamped to `[0, length]` (only `>= 0` when `length` is `nil`).
+---@field seek_relative fun(self: MprisCapability, id: string, offset_us: integer) Seeks by a signed offset in microseconds, unclamped; past the end may skip to the next track.
+---@field raise fun(self: MprisCapability, id: string) Calls Raise; check `players[].can_raise` before calling.
+---@field quit fun(self: MprisCapability, id: string) Calls Quit; check `players[].can_quit` before calling.
+---@field open_uri fun(self: MprisCapability, id: string, uri: string) Opens an absolute URI in the player.
+---@field set_volume fun(self: MprisCapability, id: string, value: number) Sets MPRIS `Volume` in percent; finite values at or above zero are accepted.
+---@field set_loop_status fun(self: MprisCapability, id: string, value: LoopStatus) Sets MPRIS `LoopStatus`.
+---@field set_shuffle fun(self: MprisCapability, id: string, value: boolean) Sets MPRIS `Shuffle`.
+---@field set_rate fun(self: MprisCapability, id: string, value: number) Sets a positive finite MPRIS playback rate.
+---@field track_list_add_track fun(self: MprisCapability, id: string, uri: string, after_track: string, set_as_current: boolean) Inserts a URI after a track id, or after `/org/mpris/MediaPlayer2/TrackList/NoTrack` to prepend.
+---@field track_list_remove_track fun(self: MprisCapability, id: string, track_id: string) Removes a track by its TrackList object path.
+---@field track_list_go_to fun(self: MprisCapability, id: string, track_id: string) Starts the track identified by its TrackList object path.
+---@field playlists_get fun(self: MprisCapability, id: string, index: integer, count: integer, order: string, reverse: boolean) Reads a bounded playlist page into `players[].playlists`.
+---@field playlists_activate fun(self: MprisCapability, id: string, playlist_id: string) Activates a playlist by its object path.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/sysinfo.html)
 ---@class SysinfoCapability: Capability<SysinfoState>, userdata
 ---@field configure fun(self: SysinfoCapability, intervals: SysinfoConfigure) Sets poll intervals; every one starts at `0`, so nothing is read until this. The first reading lands on the next wall-clock second (CPU: one interval after it).
 
----[docs](https://anasgets111.github.io/mantle/capabilities/clock.html)
----@class ClockCapability: Capability<ClockState>, userdata
----@field now fun(self: ClockCapability): number `CLOCK_MONOTONIC` seconds since boot, read now rather than as of the last push, and valid before the first one. The unit and clock of the `monotonic` field; excludes suspend.
----@field configure fun(self: ClockCapability, settings: ClockConfigure) Sets the push interval, `1` second until this. Each push lands on a wall-clock multiple of it, and one lands at once.
+---[docs](https://anasgets111.github.io/mantle/capabilities/keyboard.html)
+---@class KeyboardCapability: Capability<KeyboardState>, userdata
+---@field set_backlight fun(self: KeyboardCapability, percent: number) Sets the keyboard backlight, `0` to `100`, fractions allowed; values outside clamp to it.
+---@field switch_layout fun(self: KeyboardCapability, index: integer) Switches to the 0-based configured layout `index`.
 
----[docs](https://anasgets111.github.io/mantle/capabilities/storage.html)
----@class StorageCapability: Capability<StorageState>, userdata
----@field open fun(self: StorageCapability, path: string, defaults?: table<string, any>) Loads a JSON file, absolute or `~/` under `$HOME`, into `contents[expanded path]`, filling missing top-level keys from `defaults`. `persistent_table` sends this; stored values win over defaults.
----@field set fun(self: StorageCapability, path: string, key: string, value?: any) Sets `key` in a declared file (`path` absolute or `~/`), `nil` deleting it; saved 1 s after the last write.
-
----[docs](https://anasgets111.github.io/mantle/capabilities/polkit.html)
----@class PolkitCapability: Capability<PolkitState>, userdata
----@field cancel fun(self: PolkitCapability) Dismisses the prompt; the requesting program sees the request cancelled.
----@field select_identity fun(self: PolkitCapability, uid: integer) Authenticates as `uid`, one of `identities`. Clears the prompt and error; the next submit starts PAM for it. After a submit it ends that conversation, which PAM may count as a failure.
-
----[docs](https://anasgets111.github.io/mantle/capabilities/tray.html)
----@class TrayCapability: Capability<TrayState>, userdata
----@field activate fun(self: TrayCapability, id: string, x: integer, y: integer) Left-click activation at screen coordinates `x`, `y`; a no-op when `item_is_menu`.
----@field context_menu fun(self: TrayCapability, id: string, x: integer, y: integer) Context-menu activation at screen coordinates `x`, `y`.
----@field secondary_activate fun(self: TrayCapability, id: string, x: integer, y: integer) Middle-click activation at screen coordinates `x`, `y` (ADR-0074).
----@field scroll fun(self: TrayCapability, id: string, delta: integer, orientation: ScrollOrientation) Scrolls the icon by `delta` along `orientation` (ADR-0074).
----@field activate_menu_item fun(self: TrayCapability, id: string, menu_item_id: integer) Clicks the item's `MenuItem.id`.
----@field menu_will_show fun(self: TrayCapability, id: string, submenu_id: integer) Tells the application submenu `submenu_id` is opening, then refetches the menu unless it answers that nothing changed.
+---[docs](https://anasgets111.github.io/mantle/capabilities/privacy.html)
+---@class PrivacyCapability: ReadOnlyCapability<PrivacyState>, userdata
+local PrivacyCapability = {}
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/updates.html)
 ---@class UpdatesCapability: Capability<UpdatesState>, userdata
@@ -1016,10 +944,78 @@ local AudioLevelsCapability = {}
 ---@field configure fun(self: UpdatesCapability, config: UpdatesConfigure) Sets the check schedule and AUR use, and seeds a remembered check.
 ---@field install fun(self: UpdatesCapability) Runs a full upgrade through `pkexec`: `pacman -Syu --noconfirm`, or `aur_helper` when `aur` is on; `dnf upgrade -y --refresh`; `apt-get update` then `apt-get upgrade --with-new-pkgs`. Ignored while `installing`. Does not recheck afterwards.
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/lock.html)
+---@class LockCapability: Capability<LockState>, userdata
+---`mantle.lock` actions. There is no `unlock`; only a correct password unlocks (ADR-0042).
+---@field lock fun(self: LockCapability) Locks the session; a no-op while `active`.
+---@field set_unlock_animation fun(self: LockCapability, ms?: integer) Keeps the lock up `ms` after a correct password for an out-animation (ADR-0190). Clamped to 600; omitted is `0`.
+
+---[docs](https://anasgets111.github.io/mantle/capabilities/polkit.html)
+---@class PolkitCapability: Capability<PolkitState>, userdata
+---@field cancel fun(self: PolkitCapability) Dismisses the prompt; the requesting program sees the request cancelled.
+---@field select_identity fun(self: PolkitCapability, uid: integer) Authenticates as `uid`, one of `identities`. Clears the prompt and error; the next submit starts PAM for it. After a submit it ends that conversation, which PAM may count as a failure.
+
+---[docs](https://anasgets111.github.io/mantle/capabilities/battery.html)
+---@class BatteryCapability: ReadOnlyCapability<BatteryState>, userdata
+local BatteryCapability = {}
+
+---[docs](https://anasgets111.github.io/mantle/capabilities/clock.html)
+---@class ClockCapability: Capability<ClockState>, userdata
+---@field now fun(self: ClockCapability): number `CLOCK_MONOTONIC` seconds since boot, read now rather than as of the last push, and valid before the first one. The unit and clock of the `monotonic` field; excludes suspend.
+---@field configure fun(self: ClockCapability, settings: ClockConfigure) Sets the push interval, `1` second until this. Each push lands on a wall-clock multiple of it, and one lands at once.
+
+---[docs](https://anasgets111.github.io/mantle/capabilities/brightness.html)
+---@class BrightnessCapability: Capability<BrightnessState>, userdata
+---@field set fun(self: BrightnessCapability, percent: number) Sets the screen backlight, `0` to `100`, fractions allowed; values outside clamp to it.
+
 ---[docs](https://anasgets111.github.io/mantle/capabilities/workspaces.html)
 ---@class WorkspacesCapability: Capability<WorkspacesState>, userdata
 ---@field focus fun(self: WorkspacesCapability, id: string) Focuses a `WorkspaceEntry.id`. Hyprland creates a missing number and sway a missing name; niri ignores it. mango shows only that tag on its output and focuses the output.
 ---@field toggle_special fun(self: WorkspacesCapability, name: string) Shows or hides a `special[].name` on Hyprland, creating an unknown one; no-op on niri.
+
+---[docs](https://anasgets111.github.io/mantle/capabilities/radio.html)
+---@class RadioCapability: Capability<RadioState>, userdata
+---@field set_blocked fun(self: RadioCapability, kind: RadioKind, blocked: boolean) Soft-blocks or unblocks every device of `kind`. A hardware block stays.
+---@field set_all_blocked fun(self: RadioCapability, blocked: boolean) Soft-blocks or unblocks every radio (airplane mode).
+
+---[docs](https://anasgets111.github.io/mantle/capabilities/power.html)
+---@class PowerCapability: Capability<PowerState>, userdata
+---@field set_profile fun(self: PowerCapability, name: string) Switches to one of `profiles`; a name not in it, or one the daemon rejects, is logged and `active_profile` stays.
+
+---[docs](https://anasgets111.github.io/mantle/capabilities/applications.html)
+---@class ApplicationsCapability: Capability<ApplicationsState>, userdata
+---@field refresh fun(self: ApplicationsCapability) Rescans installed desktop entries. The directories are watched, so only a failed watch (logged) needs this.
+---@field launch fun(self: ApplicationsCapability, id: string, opts?: LaunchOpts) Launches `entries[].id`, detached; `Terminal=true` entries run in `$TERMINAL`. `opts.env` sets a variable to a string or unsets it with `false`.
+---@field open_url fun(self: ApplicationsCapability, url: string) Opens an `http`, `https` or `mailto` URL with `xdg-open` (ADR-0103). One over 2048 bytes or holding whitespace or a control character is refused.
+
+---[docs](https://anasgets111.github.io/mantle/capabilities/folders.html)
+---@class FoldersCapability: Capability<FoldersState>, userdata
+---@field watch fun(self: FoldersCapability, path: string, extensions?: string[]) Keeps `watched[path]` listing a folder, absolute or `~/` under `$HOME`. `extensions` match case-insensitively, dot optional; omitted means every file.
+---@field unwatch fun(self: FoldersCapability, path: string) Stops watching `path` (absolute or `~/`) and removes it from `watched`.
+
+---[docs](https://anasgets111.github.io/mantle/capabilities/storage.html)
+---@class StorageCapability: Capability<StorageState>, userdata
+---@field open fun(self: StorageCapability, path: string, defaults?: table<string, any>) Loads a JSON file, absolute or `~/` under `$HOME`, into `contents[expanded path]`, filling missing top-level keys from `defaults`. `persistent_table` sends this; stored values win over defaults.
+---@field set fun(self: StorageCapability, path: string, key: string, value?: any) Sets `key` in a declared file (`path` absolute or `~/`), `nil` deleting it; saved 1 s after the last write.
+
+---[docs](https://anasgets111.github.io/mantle/capabilities/idle.html)
+---@class IdleCapability: ReadOnlyCapability<IdleState>, userdata
+---@field register_threshold fun(self: IdleCapability, seconds: integer, on_idle: fun(), on_resume: fun(cause: "input" | "activity" | "inhibitor")): integer Runs `on_idle` after `seconds` without input and `on_resume` when idle ends or input follows a non-input resume; returns a handle for `cancel_threshold`. When an earlier registration at the same `seconds` has already gone idle this evaluation, `on_idle` runs at once. Reloads drop registrations.
+---@field cancel_threshold fun(self: IdleCapability, handle: integer) Drops one registration; an unknown handle is a no-op.
+---@field inhibit fun(self: IdleCapability, reason: string) Holds off idle system-wide (a logind `idle` inhibitor) until `release_inhibit`. Counted; holds survive in-place reloads and drop when the Renderer restarts.
+---@field release_inhibit fun(self: IdleCapability) Releases one `inhibit` hold; with none held, a no-op.
+local IdleCapability = {}
+
+---[docs](https://anasgets111.github.io/mantle/capabilities/processes.html)
+---@class ProcessesCapability: Capability<ProcessesState>, userdata
+---@field declare fun(self: ProcessesCapability, name: string, stop_signal?: SignalName) Registers `name` (required before `start`) and sets its stop signal, default `TERM`. Redeclaring updates the signal without touching a running program.
+---@field start fun(self: ProcessesCapability, name: string, cmd: string, args?: string[]) Runs `cmd` with `args` (no shell) as its own process group. No-op while `running` or when `name` is undeclared.
+---@field signal fun(self: ProcessesCapability, name: string, signal: SignalName) Sends `signal` to the program's process (not its group); no-op when not running.
+---@field stop fun(self: ProcessesCapability, name: string) Sends the declared stop signal to the process group, then `KILL` if it is still up 5 s later; no-op when not running.
+
+---[docs](https://anasgets111.github.io/mantle/capabilities/appearance.html)
+---@class AppearanceCapability: ReadOnlyCapability<AppearanceState>, userdata
+local AppearanceCapability = {}
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/windows.html)
 ---@class WindowsCapability: Capability<WindowsState>, userdata
@@ -1029,6 +1025,10 @@ local AudioLevelsCapability = {}
 ---@field set_minimized fun(self: WindowsCapability, id: string, minimized: boolean) Sets minimized on or off; wlr only.
 ---@field set_maximized fun(self: WindowsCapability, id: string, maximized: boolean) Sets maximized on or off; no-op on niri, sway and mango.
 ---@field move_to_workspace fun(self: WindowsCapability, id: string, workspace_id: string) Moves a window to a workspace.
+
+---[docs](https://anasgets111.github.io/mantle/capabilities/audio_levels.html)
+---@class AudioLevelsCapability: ReadOnlyCapability<AudioLevelsState>, userdata
+local AudioLevelsCapability = {}
 
 --- Off-roster members ---------------------------------------------------------------------------
 -- Written by hand in `stubs.rs`: `Screen` and `RescueState` come from the Renderer, not a capability.

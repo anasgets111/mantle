@@ -8,7 +8,7 @@ pub use catalog::*;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::Capability;
+pub use crate::capability::check;
 
 struct Invocation<'a>(&'a str, &'a [Value]);
 struct Arguments<'a>(&'a [Value]);
@@ -78,44 +78,6 @@ impl<'de> serde::de::VariantAccess<'de> for Arguments<'de> {
 /// accepted spellings and argument types; `supervisor/src/stubs.rs` generates Lua from the same enum.
 pub fn decode<A: DeserializeOwned>(action: &str, arguments: &[Value]) -> Result<A, serde_json::Error> {
     A::deserialize(serde::de::value::EnumAccessDeserializer::new(Invocation(action, arguments)))
-}
-
-/// Whether `arguments` fit `capability`'s `action`. Only the shape: a check that needs live state,
-/// such as whether a profile or MAC exists, stays with the Supervisor.
-pub fn check(capability: Capability, action: &str, arguments: &[Value]) -> Result<(), serde_json::Error> {
-    fn fits<A: DeserializeOwned>(action: &str, arguments: &[Value]) -> Result<(), serde_json::Error> {
-        decode::<A>(action, arguments).map(drop)
-    }
-    match capability {
-        Capability::AndroidConnect => fits::<AndroidConnectAction>(action, arguments),
-        Capability::Applications => fits::<ApplicationsAction>(action, arguments),
-        Capability::Audio => fits::<AudioAction>(action, arguments),
-        Capability::Bluetooth => fits::<BluetoothAction>(action, arguments),
-        Capability::Brightness => fits::<BrightnessAction>(action, arguments),
-        Capability::Folders => fits::<FoldersAction>(action, arguments),
-        Capability::Processes => fits::<ProcessesAction>(action, arguments),
-        Capability::Keyboard => fits::<KeyboardAction>(action, arguments),
-        Capability::Lock => fits::<LockAction>(action, arguments),
-        Capability::Mpris => fits::<MprisAction>(action, arguments),
-        Capability::Network => fits::<NetworkAction>(action, arguments),
-        Capability::Notifications => fits::<NotificationsAction>(action, arguments),
-        Capability::Radio => fits::<RadioAction>(action, arguments),
-        Capability::Power => fits::<PowerAction>(action, arguments),
-        Capability::Sysinfo => fits::<SysinfoAction>(action, arguments),
-        Capability::Storage => fits::<StorageAction>(action, arguments),
-        Capability::Polkit => fits::<PolkitAction>(action, arguments),
-        Capability::Tray => fits::<TrayAction>(action, arguments),
-        Capability::Updates => fits::<UpdatesAction>(action, arguments),
-        Capability::Workspaces => fits::<WorkspacesAction>(action, arguments),
-        Capability::Windows => fits::<WindowsAction>(action, arguments),
-        Capability::Clock => fits::<ClockAction>(action, arguments),
-        Capability::Appearance
-        | Capability::AudioLevels
-        | Capability::Battery
-        | Capability::Idle
-        | Capability::Privacy
-        | Capability::Secrets => Err(serde::de::Error::custom("it has no actions")),
-    }
 }
 
 /// A list that may be omitted or `nil`; mlua sends an empty Lua table as `{}`.
