@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: on a compositor without `wlr-layer-shell-v1` (or `wl_compositor` or `wl_shm`), `mantle` logs which protocol is missing and stops. It used to treat the exit as a crash and respawn the shell every 30 s for the whole session.
 - Fixed: tearing down a `lock` surface with `compositor_blur = true` before its first configure, such as when the compositor refuses a lock, no longer commits the surface and disconnects the shell.
 - Fixed: an in-place config reload stops `mantle.folders:watch` watches that `shell.lua` no longer declares and removes them from `mantle.folders.watched`, while kept watches keep their listings instead of resetting `ready` to `false`. Removed folders used to stay watched and keep pushing changes until the shell restarted.
 - Fixed: a `geometry()` signal and signals derived from it keep their previous rect when a layout pass fails or a reload is rejected. They used to keep the rejected pass's rect and trigger an extra layout pass.

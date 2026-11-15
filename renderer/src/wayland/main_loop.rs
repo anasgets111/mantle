@@ -20,6 +20,14 @@ fn exit_because_the_compositor_is_gone(what_failed: &str, err: &dyn std::fmt::Di
     std::process::exit(shared::EXIT_COMPOSITOR_GONE);
 }
 
+/// Ends the process when the compositor lacks a global the shell cannot start without. A plain
+/// error exit reads as a crash, which the Supervisor respawns into the same compositor for the
+/// whole session; this code tells it to stop.
+fn exit_because_the_compositor_lacks(global: &str, err: &dyn std::fmt::Display) -> ! {
+    error!("the compositor does not support {global} ({err}), which the shell cannot run without; exiting");
+    std::process::exit(shared::EXIT_COMPOSITOR_UNSUPPORTED);
+}
+
 /// Renderer main thread: Wayland, EGL, Lua, the retained `Scene`, and live signals (ADR-0039).
 /// `inbound_rx` carries socket-decoded `SupervisorFrame`s; `outbound_tx` carries every frame this
 /// thread sends back, including replies and lock reports.
@@ -41,9 +49,11 @@ pub fn run(
     let qh = event_queue.handle();
     let display = conn.backend().display_ptr();
 
-    let compositor_state = CompositorState::bind(&globals, &qh)?;
+    let compositor_state = CompositorState::bind(&globals, &qh)
+        .unwrap_or_else(|err| exit_because_the_compositor_lacks("wl_compositor", &err));
     let scale_globals = scale::ScaleGlobals::bind(&globals, &qh);
-    let layer_shell = LayerShell::bind(&globals, &qh)?;
+    let layer_shell = LayerShell::bind(&globals, &qh)
+        .unwrap_or_else(|err| exit_because_the_compositor_lacks("zwlr_layer_shell_v1", &err));
     // Optional: panel-only configs work without `xdg_wm_base`; `create_surfaces` logs any window
     // left unbuilt.
     let xdg_shell =
@@ -57,7 +67,7 @@ pub fn run(
     let data_device_manager = DataDeviceManagerState::bind(&globals, &qh).ok();
     let text_input = input::TextInput::bind(&globals, &qh);
     // Mandatory: every compositor advertises `wl_shm`.
-    let shm = Shm::bind(&globals, &qh)?;
+    let shm = Shm::bind(&globals, &qh).unwrap_or_else(|err| exit_because_the_compositor_lacks("wl_shm", &err));
     // Cannot fail: its `GlobalProxy` reports a missing lock global only when a lock is requested
     // (ADR-0052 decision 4).
     let session_lock_state = SessionLockState::new(&globals, &qh);

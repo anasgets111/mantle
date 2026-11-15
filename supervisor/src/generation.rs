@@ -7,6 +7,18 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// Why a Renderer that departed this way cannot be replaced, if it cannot: the exit code says the
+/// compositor itself is the problem.
+pub(crate) fn unrespawnable(departure: RendererDeparture) -> Option<&'static str> {
+    match departure {
+        RendererDeparture::Failed { code: shared::EXIT_COMPOSITOR_GONE } => Some("the compositor is gone"),
+        RendererDeparture::Failed { code: shared::EXIT_COMPOSITOR_UNSUPPORTED } => {
+            Some("the compositor lacks a protocol the shell requires")
+        }
+        _ => None,
+    }
+}
+
 /// ADR-0058 decision 3: three deaths in a minute respawn at once; a fourth waits the cooldown, so a
 /// config that kills every Renderer cannot strobe the lock screen and a GPU out of memory gets time.
 pub(super) const RESTART_LIMIT: usize = 3;
@@ -230,6 +242,19 @@ mod tests {
         ] {
             assert_eq!(classify_departure(status), want, "{case}");
         }
+    }
+
+    #[test]
+    fn only_a_compositor_that_is_gone_or_unsupported_stops_the_respawn() {
+        for (code, stops) in [
+            (shared::EXIT_COMPOSITOR_GONE, true),
+            (shared::EXIT_COMPOSITOR_UNSUPPORTED, true),
+            (1, false),
+            (101, false),
+        ] {
+            assert_eq!(unrespawnable(classify_departure(exited(code))).is_some(), stops, "code {code}");
+        }
+        assert_eq!(unrespawnable(RendererDeparture::Signalled { signal: shared::EXIT_COMPOSITOR_GONE }), None);
     }
 
     #[test]

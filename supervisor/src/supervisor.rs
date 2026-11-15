@@ -16,7 +16,7 @@ use crate::capabilities::polkit::{self, Answer, PolkitController};
 use crate::capabilities::{Capabilities, Signal};
 use crate::generation::{
     Authoritative, RESTART_COOLDOWN, RESTART_LIMIT, RESTART_WINDOW, Renderer, RendererDeparture, RestartBrake,
-    classify_departure, departure_report,
+    classify_departure, departure_report, unrespawnable,
 };
 use crate::memory;
 use crate::pam_worker;
@@ -422,10 +422,10 @@ impl Supervisor {
         // At departure rather than respawn: from here the pid is reaped and must not be signalled.
         self.registry.forget_generation(self.authoritative.generation_id);
 
-        // Before the brake: the session ended under the whole shell, so every replacement would
-        // find the same missing compositor. Stop the way a SIGTERM does, because it means the same thing.
-        if matches!(departure, RendererDeparture::Failed { code } if code == shared::EXIT_COMPOSITOR_GONE) {
-            error!("the compositor is gone, so there is nothing to respawn into; shutting down");
+        // Before the brake: every replacement would find the same compositor, gone or unable to
+        // host the shell. Stop the way a SIGTERM does.
+        if let Some(reason) = unrespawnable(departure) {
+            error!("{reason}, so a replacement renderer cannot help; shutting down");
             return true;
         }
         self.respawn_renderer().await
@@ -914,6 +914,11 @@ mod tests {
         assert_eq!(supervisor.authoritative.generation_id, 2);
         assert!(!supervisor.lock.snapshot().active);
         assert_eq!(supervisor.relock, Relock::Owed(RelockReason::RendererReplaced));
+
+        // A compositor that cannot host the shell stops the Supervisor instead of spawning gen 3.
+        let unsupported = std::process::ExitStatus::from_raw(shared::EXIT_COMPOSITOR_UNSUPPORTED << 8);
+        assert!(supervisor.replace_departed_renderer(Ok(unsupported)).await);
+        assert_eq!(supervisor.authoritative.generation_id, 2);
 
         // Requested-only lock (active = false, requested = true) must also owe relock on gen 3.
         supervisor.relock = Relock::Idle;

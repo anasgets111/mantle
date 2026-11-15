@@ -146,6 +146,7 @@ How each failure ends:
 | A reload would recreate the lock surface while locked | Refused with a warning and `mantle.rescue`; save again after unlocking |
 | The Renderer crashes | The Supervisor starts a new generation. After three crashes within 60 s, it waits 30 s before the next respawn |
 | The compositor goes away | The Renderer exits with code 71 and the Supervisor shuts down instead of respawning |
+| The compositor lacks `wl_compositor`, `wl_shm` or `wlr-layer-shell-v1` | The Renderer logs the missing protocol and exits with code 69, and the Supervisor shuts down instead of respawning |
 
 An error from an engine function, a method on an engine object (`signal:reveal`, `mantle.idle:register_threshold`) or a capability action keeps its leading `file:line:` through `pcall`. Only an unknown capability field omits it there; the logged and `mantle check` forms carry it.
 

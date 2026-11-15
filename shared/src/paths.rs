@@ -71,6 +71,11 @@ pub const VERBOSE_ENV: &str = "MANTLE_VERBOSE";
 /// for a gone Supervisor.
 pub const EXIT_COMPOSITOR_GONE: i32 = 71;
 
+/// Renderer exit code for a compositor missing a global the Renderer cannot start without, such as
+/// `zwlr_layer_shell_v1`. The Supervisor stops rather than respawning: every replacement would find
+/// the same compositor. `69` is sysexits' `EX_UNAVAILABLE`, distinct from the codes above.
+pub const EXIT_COMPOSITOR_UNSUPPORTED: i32 = 69;
+
 /// `~/.config/mantle/` by precedence: `$MANTLE_CONFIG_DIR`, `$XDG_CONFIG_HOME/mantle`, then
 /// `$HOME/.config/mantle`.
 ///
