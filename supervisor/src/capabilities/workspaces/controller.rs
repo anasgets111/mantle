@@ -405,9 +405,61 @@ mod tests {
         let state =
             Arc::new(Mutex::new(WorkspacesState { compositor: "niri".to_string(), ..WorkspacesState::default() }));
 
-        let _controller = WorkspacesController::new(state, Some(CompositorKind::Niri), tx);
+        let controller = WorkspacesController::new(state, Some(CompositorKind::Niri), tx);
 
         assert!(matches!(rx.try_recv(), Ok(())));
+        assert_eq!(controller.snapshot().compositor, "niri", "a snapshot reads the shared state");
+    }
+
+    /// Records each write instead of sending it. The real backends read their socket path from the
+    /// session's env, so a real one would reach the live compositor of the session running tests.
+    #[derive(Default)]
+    struct Recorder(Mutex<Vec<String>>);
+
+    impl Compositor for Recorder {
+        fn spawn_reader(
+            &self,
+            _: StatePublisher,
+            _: crate::capabilities::windows::controller::StatePublisher,
+            _: crate::capabilities::keyboard::controller::LayoutSink,
+        ) {
+        }
+        fn focus_workspace(&self, id: &str) {
+            self.0.lock().unwrap().push(format!("focus_workspace {id}"));
+        }
+        fn toggle_special(&self, name: &str) {
+            self.0.lock().unwrap().push(format!("toggle_special {name}"));
+        }
+        fn focus_window(&self, id: &str) {
+            self.0.lock().unwrap().push(format!("focus_window {id}"));
+        }
+        fn close_window(&self, id: &str) {
+            self.0.lock().unwrap().push(format!("close_window {id}"));
+        }
+    }
+
+    #[test]
+    fn dispatch_routes_each_action_to_the_compositor_and_drops_what_it_cannot_decode() {
+        let recorder: &'static Recorder = Box::leak(Box::default());
+        let controller = WorkspacesController { state: Arc::default(), compositor: recorder };
+        let dispatch = |action: &str, arguments: Vec<serde_json::Value>| {
+            super::super::dispatch(
+                &controller,
+                &crate::capabilities::test_support::envelope("workspaces", action, arguments),
+            );
+        };
+
+        // Both routed actions, each between drops: a missing, mistyped or empty argument and an
+        // unknown action reach no compositor.
+        dispatch("focus", vec!["3".into()]);
+        dispatch("focus", vec![]);
+        dispatch("focus", vec![3.into()]);
+        dispatch("toggle_special", vec!["".into()]);
+        dispatch("toggle_special", vec![]);
+        dispatch("nonsense", vec!["3".into()]);
+        dispatch("toggle_special", vec!["special:term".into()]);
+
+        assert_eq!(*recorder.0.lock().unwrap(), ["focus_workspace 3", "toggle_special special:term"]);
     }
 
     #[test]
