@@ -419,12 +419,7 @@ mod tests {
         let controller = controller();
         let ready = tempfile::tempdir().expect("tempdir");
         let (marker, signalled) = (ready.path().join("armed"), ready.path().join("usr1"));
-        let dispatch = |action: &str, arguments: Vec<serde_json::Value>| {
-            super::super::dispatch(
-                &controller,
-                &crate::capabilities::test_support::envelope("processes", action, arguments),
-            );
-        };
+        let dispatch = crate::capabilities::test_support::dispatcher("processes", super::super::dispatch, &controller);
         dispatch("declare", vec!["u".into(), "BOGUS".into()]);
         dispatch("declare", vec!["".into()]);
         dispatch("nonsense", vec!["v".into()]);

@@ -905,12 +905,7 @@ mod tests {
         let (events, mut signals) = tokio::sync::mpsc::unbounded_channel();
         let controller = BluetoothController::new(bus.connection().await, events).await;
         assert_eq!(within(received.recv()).await.as_deref(), Some("KeyboardDisplay"));
-        let dispatch = |action: &str, arguments: Vec<serde_json::Value>| {
-            super::super::dispatch(
-                &controller,
-                &crate::capabilities::test_support::envelope("bluetooth", action, arguments),
-            );
-        };
+        let dispatch = crate::capabilities::test_support::dispatcher("bluetooth", super::super::dispatch, &controller);
         let mut next = async || within(received.recv()).await.expect("bluez is alive");
 
         dispatch("set_enabled", vec![true.into()]);

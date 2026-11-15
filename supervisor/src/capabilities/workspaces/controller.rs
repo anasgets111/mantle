@@ -442,12 +442,7 @@ mod tests {
     fn dispatch_routes_each_action_to_the_compositor_and_drops_what_it_cannot_decode() {
         let recorder: &'static Recorder = Box::leak(Box::default());
         let controller = WorkspacesController { state: Arc::default(), compositor: recorder };
-        let dispatch = |action: &str, arguments: Vec<serde_json::Value>| {
-            super::super::dispatch(
-                &controller,
-                &crate::capabilities::test_support::envelope("workspaces", action, arguments),
-            );
-        };
+        let dispatch = crate::capabilities::test_support::dispatcher("workspaces", super::super::dispatch, &controller);
 
         // Both routed actions, each between drops: a missing, mistyped or empty argument and an
         // unknown action reach no compositor.

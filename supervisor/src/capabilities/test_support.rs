@@ -15,6 +15,15 @@ pub(crate) fn envelope(capability: &str, action: &str, arguments: Vec<serde_json
     shared::CommandEnvelope { params, id: 0 }
 }
 
+/// `dispatch` bound to one controller, sending each call as Lua would.
+pub(crate) fn dispatcher<'a, C>(
+    capability: &'static str,
+    dispatch: fn(&C, &shared::CommandEnvelope),
+    controller: &'a C,
+) -> impl Fn(&str, Vec<serde_json::Value>) + 'a {
+    move |action, arguments| dispatch(controller, &envelope(capability, action, arguments))
+}
+
 pub(crate) fn properties(pairs: &[(&str, Value<'static>)]) -> std::collections::HashMap<String, OwnedValue> {
     pairs.iter().map(|(key, value)| ((*key).into(), OwnedValue::try_from(value.clone()).unwrap())).collect()
 }
