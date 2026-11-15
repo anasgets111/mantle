@@ -1386,6 +1386,8 @@ Nested niri takeover was measured working; other compositors may refuse it. Do n
 config silently, restart the whole stack and lose lock knowledge, or ask a dead client to recover
 itself. Replacement loses named state. Supervisor death remained unhandled in this pass.
 
+Amended by ADR-0390: exit codes 69 and 71 stop the Supervisor before the brake; no respawn.
+
 ## 0059. The Renderer exits when the Supervisor is gone, and a service manager reruns the pair
 
 1. Treat inbound disconnection separately from an empty queue and exit the Renderer with code 70.
@@ -1422,6 +1424,8 @@ protocol cannot query lock state. Clean Supervisor shutdown must not clear the m
 
 Amended by ADR-0222: the marker is `$XDG_RUNTIME_DIR/obelisk/session-locked`.
 
+Amended by ADR-0391: the marker is `session-locked-<display>`, one per compositor.
+
 ## 0061. Desktop entries are an enumerated capability, not a lookup call
 
 Amends ADR-0054 decision 5.
@@ -1455,6 +1459,8 @@ because a closing popup still needs a valid anchor.
 
 No separate tooltip node, scrolling, animation, cursor changes or keyboard-focus equivalent in this
 pass; a non-grabbing popup already supplies tooltip presentation.
+
+Amended by ADR-0392: a hover name nothing holds or reads is dropped after a layout pass.
 
 ## 0063. A display list is what makes a repaint skippable
 
@@ -1561,6 +1567,8 @@ discrete data.
 Amendment, ADR-0077: apply the offset in the solved-geometry finish walk. Keep margins and spacing
 in scroll bounds; taffy's CSS overflow bounds omit margins. No scrollbar until extent exposure is
 needed.
+
+Amended by ADR-0392: a scroll name nothing holds or reads is dropped after a layout pass.
 
 ## 0070. A capability starts when the config first reads it
 
@@ -5266,6 +5274,8 @@ the name, and nothing is ever cleared.
 Amended by ADR-0228: decision 6's "an inherited `$OBELISK_CONFIG_DIR` never counts" holds at the
 spawn too: what the shell launches inherits neither variable.
 
+Amended by ADR-0391: decision 2's `session-locked` is per compositor, not per login.
+
 ## 0223. A `persistent_table` file is watched, and a change on disk wins whole
 
 Amends ADR-0136 decision 2: a hand edit or another shell's save went unseen, and the next save
@@ -8944,3 +8954,50 @@ and the filter allowlist (ADR-0387, ADR-0388). Open: a hostile SVG can still abo
 through a few filter values, and can still freeze it when drawn as an `icon` on the dispatch thread.
 Rejected: the helper process, which stays the upgrade path if that risk stops being acceptable.
 Correction (2026-11-12): the filter allowlist is ADR-0388 alone, not ADR-0387.
+
+## 0390. A compositor missing a required global stops the Supervisor instead of a respawn loop
+
+Amends ADR-0058. A compositor without `wl_compositor`, `wl_shm` or `zwlr_layer_shell_v1` made the
+Renderer's bind fail with exit 1. The Supervisor read that as a crash: three respawns, a 30 s wait,
+again, for the whole session. Those binds now exit with `EXIT_COMPOSITOR_UNSUPPORTED` (69, sysexits'
+`EX_UNAVAILABLE`; the Renderer already uses 1, 2, 70, 71 and 101 for a panic) after an `error!`
+naming the global. `unrespawnable` treats 69 like `EXIT_COMPOSITOR_GONE` (71): the Supervisor logs
+the reason and stops before the restart brake. Optional globals (xdg-shell, session lock, blur, data
+device) still degrade. A Renderer from an older build exits 1 and is still respawned. Rejected:
+running panel-less without layer-shell, and leaving the brake to slow a loop it never ends.
+ponytail: the Supervisor exits 0 after either code.
+
+## 0391. The session-locked marker is per compositor
+
+Amends ADR-0060 and ADR-0222 decision 2. One `$XDG_RUNTIME_DIR/mantle/session-locked` per login let
+a shell in a nested compositor set or clear the outer shell's marker, so a restarted outer
+Supervisor skipped a relock or asked for a password it did not need. The marker is now
+`session-locked-<display>`, keyed by `$WAYLAND_DISPLAY`. `/` becomes `%_` and `%` becomes `%%`;
+other bytes stay raw. Every `%` starts an escape, so distinct displays never share a name, and the
+name is one file in the runtime directory. A connectable display is under 108 bytes (std's
+`UnixStream::connect` refuses `sun_path` length), so the name is at most 229 bytes. An absolute
+display directly inside `$XDG_RUNTIME_DIR` keys by its file name, as libwayland resolves relative
+names there. An unset or empty display keeps the bare name. logind's `LockedHint` stays per login.
+Rejected: `%XX` escapes (can pass NAME_MAX), keying by the instance directory (holds the pid, so it
+does not survive the restart the marker exists for), and reading the old bare marker after upgrade
+(brings the sharing back; costs at most one missed relock before logout).
+ponytail: a Renderer handed an inherited `WAYLAND_SOCKET` ignores the display, so the key and the
+length bound do not hold for it; that fd is single-use, so such a shell cannot respawn anyway.
+
+## 0392. Engine-written signal names are kept only while something reaches them
+
+`hover`, `hover_rect`, `focused`, `focus_visible`, `pointer`, `scroll` and `geometry` names, and
+`elided`/`settled` marks, kept a registry entry for the Renderer's life, so names built from
+changing ids (`hover("tray_" .. id)`) grew all session. After each successful layout pass, an entry
+goes when nothing reaches it: no handle on its cell beyond the registry's own (`Signal::held`), and
+no reader edge, meaning no live computed and no surface's last resolve read the cell
+(`tracking::has_readers`). Reader edges count because a computed that asks for a name inside its
+body holds no handle between runs; dropping the name left it reading a cell nothing writes. Reload
+persistence (ADR-0062, ADR-0069) holds because a reload's evaluated output keeps the new tree's
+signals until the pass that applies it. Trees hold signals as Lua userdata, so a removed node's name
+goes at the first pass after Lua collects it; a node removed rather than hidden may lose its offset
+and `hover_rect` then, and `reset_on_close` stays the reliable reset. Rejected: a GC per pass
+(unmeasured cost on every pass) and sweeping by what trees bind (ignores Lua-held handles).
+ponytail: `has_selection` is exempt, because no node binds it and `write_selection` writes by name,
+so its names still grow with each distinct `focus_target`. Upgrade: sweep it against the text
+fields' focus targets.
