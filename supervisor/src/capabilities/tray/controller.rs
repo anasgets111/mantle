@@ -405,6 +405,106 @@ mod tests {
         assert!(!stored(), "the replaced menu's reply must not be stored");
     }
 
+    /// Records each click and scroll it receives, tagged with which item it is.
+    struct RecordingItem(&'static str, UnboundedSender<String>);
+
+    #[zbus::interface(name = "org.kde.StatusNotifierItem")]
+    impl RecordingItem {
+        fn activate(&self, x: i32, y: i32) {
+            let _ = self.1.send(format!("{} Activate {x} {y}", self.0));
+        }
+        fn context_menu(&self, x: i32, y: i32) {
+            let _ = self.1.send(format!("{} ContextMenu {x} {y}", self.0));
+        }
+        fn secondary_activate(&self, x: i32, y: i32) {
+            let _ = self.1.send(format!("{} SecondaryActivate {x} {y}", self.0));
+        }
+        fn scroll(&self, delta: i32, orientation: String) {
+            let _ = self.1.send(format!("{} Scroll {delta} {orientation}", self.0));
+        }
+    }
+
+    /// Records menu events; answers `AboutToShow` with "nothing changed", so no refetch follows.
+    struct RecordingMenu(UnboundedSender<String>);
+
+    #[zbus::interface(name = "com.canonical.dbusmenu")]
+    impl RecordingMenu {
+        fn event(&self, id: i32, event_id: String, _data: zbus::zvariant::OwnedValue, _timestamp: u32) {
+            let _ = self.0.send(format!("Event {id} {event_id}"));
+        }
+        fn about_to_show(&self, id: i32) -> bool {
+            let _ = self.0.send(format!("AboutToShow {id}"));
+            false
+        }
+    }
+
+    /// Lua's six actions reach the item or its menu through `dispatch`; an unknown id, `activate`
+    /// on an `ItemIsMenu` item, a menu action on an item with no menu, malformed arguments and an
+    /// unknown action reach nothing.
+    #[tokio::test]
+    async fn dispatch_routes_each_action_to_the_item_and_drops_what_it_cannot_resolve() {
+        use super::super::proxies::{bind_dbusmenu, bind_item};
+        use super::super::registry::tests::{entry, key};
+        use crate::capabilities::test_support::{envelope, p2p_pair_serving, within};
+        use serde_json::json;
+        let (calls, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let (connection, _peer) = p2p_pair_serving(|peer| {
+            peer.serve_at("/Plain", RecordingItem("plain", calls.clone()))?
+                .serve_at("/MenuOnly", RecordingItem("menu-only", calls.clone()))?
+                .serve_at("/MenuBar", RecordingMenu(calls))
+        })
+        .await;
+        // A p2p peer ignores the destination; only the path picks the fake.
+        let destination = zbus::names::OwnedBusName::try_from("org.example.Item").unwrap();
+        let path = |path: &str| OwnedObjectPath::try_from(path).unwrap();
+        // `entry` binds `/StatusNotifierItem`; point each at its fake.
+        let mut plain = entry(&connection, "plain", 0).await;
+        plain.item = bind_item(&connection, &destination, &path("/Plain")).await.unwrap();
+        plain.menu = Some(bind_dbusmenu(&connection, &destination, &path("/MenuBar")).await.unwrap());
+        let mut menu_only = entry(&connection, "menu-only", 1).await;
+        menu_only.item = bind_item(&connection, &destination, &path("/MenuOnly")).await.unwrap();
+        menu_only.last_known.item_is_menu = true;
+        let registry = ItemRegistry::default();
+        registry.lock().unwrap().items.extend([(key(":1.10"), plain), (key(":1.20"), menu_only)]);
+        let (events, _pushed) = tokio::sync::mpsc::unbounded_channel();
+        let controller = TrayController { registry, events };
+        let plain = item_id(":1.10", DEFAULT_ITEM_OBJECT_PATH);
+        let menu_only = item_id(":1.20", DEFAULT_ITEM_OBJECT_PATH);
+        let dispatch = |action: &str, arguments: serde_json::Value| {
+            let arguments = arguments.as_array().expect("arguments are a list").clone();
+            super::super::dispatch(&controller, &envelope("tray", action, arguments));
+        };
+        let mut next = async || within(received.recv()).await.expect("the app is alive");
+
+        dispatch("activate", json!([plain, 1, 2]));
+        assert_eq!(next().await, "plain Activate 1 2");
+        dispatch("context_menu", json!([plain, 3, 4]));
+        assert_eq!(next().await, "plain ContextMenu 3 4");
+        dispatch("secondary_activate", json!([plain, 5, 6]));
+        assert_eq!(next().await, "plain SecondaryActivate 5 6");
+        dispatch("scroll", json!([plain, -2, "horizontal"]));
+        assert_eq!(next().await, "plain Scroll -2 horizontal");
+        dispatch("scroll", json!([plain, 3, "vertical"]));
+        assert_eq!(next().await, "plain Scroll 3 vertical");
+        dispatch("activate_menu_item", json!([plain, 7]));
+        assert_eq!(next().await, "Event 7 clicked");
+        dispatch("menu_will_show", json!([plain, 9]));
+        assert_eq!(next().await, "AboutToShow 9");
+
+        // Spawned in order on this single-threaded runtime, so a call they wrongly made would
+        // arrive before the one that follows them.
+        dispatch("activate", json!([menu_only, 1, 2]));
+        dispatch("activate_menu_item", json!([menu_only, 7]));
+        dispatch("menu_will_show", json!([menu_only, 9]));
+        dispatch("activate", json!(["9.99/StatusNotifierItem", 1, 2]));
+        dispatch("context_menu", json!([plain]));
+        dispatch("secondary_activate", json!([plain, "5", 6]));
+        dispatch("scroll", json!([plain, 1, "diagonal"]));
+        dispatch("nonsense", json!([plain, 1, 2]));
+        dispatch("context_menu", json!([menu_only, 8, 9]));
+        assert_eq!(next().await, "menu-only ContextMenu 8 9", "an ItemIsMenu item still takes other clicks");
+    }
+
     /// Another watcher, counting the hosts that register with it.
     struct RivalWatcher(tokio::sync::mpsc::UnboundedSender<()>);
 
