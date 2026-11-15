@@ -2,8 +2,9 @@
 //! lock flag and config directory identically.
 
 use std::borrow::Cow;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -30,11 +31,41 @@ pub fn control_socket_path(instance_dir: &Path) -> PathBuf {
     instance_dir.join("control.sock")
 }
 
-/// The "compositor is locked and nothing of ours holds it" marker (ADR-0060), per login like the
-/// compositor lock. Only `supervisor` reads or writes it; the Renderer holds the protocol object but
-/// never the decision (ADR-0042).
+/// The "compositor is locked and nothing of ours holds it" marker (ADR-0060), per compositor like
+/// the lock it records: keyed by `$WAYLAND_DISPLAY`, so a shell in a nested compositor cannot set or
+/// clear the outer shell's. Only `supervisor` reads or writes it; the Renderer holds the protocol
+/// object but never the decision (ADR-0042).
 pub fn session_locked_flag_path() -> io::Result<PathBuf> {
-    Ok(runtime_root()?.join("session-locked"))
+    Ok(session_locked_flag_path_from(&runtime_root()?, std::env::var_os("WAYLAND_DISPLAY").as_deref()))
+}
+
+/// [`session_locked_flag_path`] with its lookups passed as parameters; `root` is [`runtime_root`],
+/// whose parent is `$XDG_RUNTIME_DIR`. An unset or empty display keeps the bare name: the Renderer
+/// cannot connect without one, so nothing ever locks under it. ponytail: a Renderer handed an
+/// inherited `WAYLAND_SOCKET` ignores the display, so this key and the length bound below do not
+/// hold for it; that fd is single-use, so such a shell cannot respawn anyway.
+fn session_locked_flag_path_from(root: &Path, display: Option<&OsStr>) -> PathBuf {
+    let Some(display) = display.filter(|display| !display.is_empty()).map(Path::new) else {
+        return root.join("session-locked");
+    };
+    // libwayland resolves a relative name against `$XDG_RUNTIME_DIR`, so `wayland-1` and
+    // `$XDG_RUNTIME_DIR/wayland-1` are one socket and share one marker.
+    let display = match display.file_name() {
+        Some(name) if display.is_absolute() && display.parent() == root.parent() => name,
+        _ => display.as_os_str(),
+    };
+    // `/` becomes `%_` and `%` becomes `%%`, so the name is one component and distinct displays
+    // stay distinct. Two-byte escapes keep it under NAME_MAX: a connectable display fits `sun_path`
+    // (std's `UnixStream::connect` refuses 108 bytes or more), so at most 15 + 2 x 107 = 229 bytes.
+    let mut name = b"session-locked-".to_vec();
+    for &byte in display.as_bytes() {
+        match byte {
+            b'/' => name.extend_from_slice(b"%_"),
+            b'%' => name.extend_from_slice(b"%%"),
+            _ => name.push(byte),
+        }
+    }
+    root.join(OsString::from_vec(name))
 }
 
 /// A config directory named by the session. The Supervisor passes every Renderer its resolved one.
@@ -179,6 +210,37 @@ pub fn shell_lua_path() -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_wayland_display_gets_its_own_session_locked_marker_inside_the_runtime_dir() {
+        let root = Path::new("/run/user/1000/mantle");
+        let marker = |display: &[u8]| session_locked_flag_path_from(root, Some(OsStr::from_bytes(display)));
+        assert_eq!(marker(b"wayland-1"), root.join("session-locked-wayland-1"));
+        assert_ne!(
+            marker(b"wayland-1"),
+            marker(b"wayland-2"),
+            "a nested shell's lock must not read as the outer one's"
+        );
+        assert_eq!(marker(b"/run/user/1000/wayland-1"), marker(b"wayland-1"), "one socket, one marker");
+
+        // An absolute socket path is legal in WAYLAND_DISPLAY; it must not escape the root, nor
+        // collide with a name that spells its encoding.
+        let absolute = marker(b"/tmp/../etc/wayland-1");
+        assert_eq!(absolute, root.join("session-locked-%_tmp%_..%_etc%_wayland-1"));
+        assert_eq!(absolute.parent(), Some(root));
+        assert_ne!(marker(b"/tmp/x"), marker(b"%_tmp%_x"));
+        assert_eq!(marker(b"w\xff_%").as_os_str().as_bytes(), b"/run/user/1000/mantle/session-locked-w\xff_%%");
+        let longest = marker(&[b'/'; 107]);
+        assert_eq!(longest.parent(), Some(root));
+        assert_eq!(longest.file_name().unwrap().len(), 229, "a connectable display stays under NAME_MAX");
+
+        // Only an absolute display takes the shortcut, even under a relative runtime dir.
+        let relative = Path::new("x/mantle");
+        let display = |name: &str| session_locked_flag_path_from(relative, Some(OsStr::new(name)));
+        assert_ne!(display("x/wayland-1"), display("wayland-1"));
+        assert_eq!(session_locked_flag_path_from(root, None), root.join("session-locked"));
+        assert_eq!(marker(b""), root.join("session-locked"));
+    }
 
     #[test]
     fn expand_home_takes_absolute_and_tilde_slash_only() {

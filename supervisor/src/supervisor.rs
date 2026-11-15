@@ -102,7 +102,7 @@ pub(crate) struct Supervisor {
     /// Polkit counterpart to `pam_events_tx`.
     polkit_events_tx: pam_worker::Events,
 
-    /// Persistent `$XDG_RUNTIME_DIR/mantle/session-locked` marker (ADR-0060).
+    /// Persistent `$XDG_RUNTIME_DIR/mantle/session-locked-$WAYLAND_DISPLAY` marker (ADR-0060).
     locked_flag: lock::SessionLockedFlag,
     /// logind half of the same fact (ADR-0138), publishing `loginctl show-session`'s `LockedHint`
     /// whenever the marker changes.
