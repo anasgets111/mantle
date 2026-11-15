@@ -8,6 +8,13 @@ use tokio::net::UnixStream;
 
 use zbus::zvariant::{OwnedValue, Value};
 
+/// A Lua command as `dispatch` receives it, for a capability's dispatch tests.
+pub(crate) fn envelope(capability: &str, action: &str, arguments: Vec<serde_json::Value>) -> shared::CommandEnvelope {
+    let (capability, action) = (capability.into(), action.into());
+    let params = shared::CommandParams { generation_id: 0, capability, action, arguments, legacy_expected_revision: 0 };
+    shared::CommandEnvelope { params, id: 0 }
+}
+
 pub(crate) fn properties(pairs: &[(&str, Value<'static>)]) -> std::collections::HashMap<String, OwnedValue> {
     pairs.iter().map(|(key, value)| ((*key).into(), OwnedValue::try_from(value.clone()).unwrap())).collect()
 }

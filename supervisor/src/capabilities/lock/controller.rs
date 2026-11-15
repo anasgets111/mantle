@@ -278,6 +278,7 @@ pub fn dispatch(controller: &LockController, envelope: &shared::CommandEnvelope)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::test_support::envelope;
 
     /// ADR-0190. The window is time the user has authenticated and is still looking at a lock
     /// screen, so the ceiling is the engine's and not the config's.
@@ -596,28 +597,15 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let controller = LockController::new(tx);
 
-        dispatch(&controller, &envelope("lock"));
+        dispatch(&controller, &envelope("lock", "lock", Vec::new()));
         assert_eq!(rx.try_recv().ok(), Some(shared::SetSessionLock { locked: true }));
 
-        dispatch(&controller, &envelope("nonsense"));
+        dispatch(&controller, &envelope("lock", "nonsense", Vec::new()));
         assert!(rx.try_recv().is_err(), "an unknown action must be logged, not turned into a command");
 
         // ADR-0042: an unlock action would make walking past PAM one mouse click. The
         // asymmetry with lock is deliberate, pinned so it isn't re-added as an oversight.
-        dispatch(&controller, &envelope("unlock"));
+        dispatch(&controller, &envelope("lock", "unlock", Vec::new()));
         assert!(rx.try_recv().is_err(), "unlock must not be commandable from Lua");
-    }
-
-    fn envelope(action: &str) -> shared::CommandEnvelope {
-        shared::CommandEnvelope {
-            params: shared::CommandParams {
-                generation_id: 0,
-                capability: "lock".to_string(),
-                action: action.to_string(),
-                arguments: Vec::new(),
-                legacy_expected_revision: 0,
-            },
-            id: 1,
-        }
     }
 }

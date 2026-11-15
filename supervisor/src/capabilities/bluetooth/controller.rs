@@ -906,14 +906,10 @@ mod tests {
         let controller = BluetoothController::new(bus.connection().await, events).await;
         assert_eq!(within(received.recv()).await.as_deref(), Some("KeyboardDisplay"));
         let dispatch = |action: &str, arguments: Vec<serde_json::Value>| {
-            let params = shared::CommandParams {
-                generation_id: 0,
-                capability: "bluetooth".into(),
-                action: action.into(),
-                arguments,
-                legacy_expected_revision: 0,
-            };
-            super::super::dispatch(&controller, &shared::CommandEnvelope { params, id: 0 });
+            super::super::dispatch(
+                &controller,
+                &crate::capabilities::test_support::envelope("bluetooth", action, arguments),
+            );
         };
         let mut next = async || within(received.recv()).await.expect("bluez is alive");
 
