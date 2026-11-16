@@ -14,15 +14,16 @@ pub use atomic::write_atomic;
 pub use capability::Capability;
 pub use frame::{
     CONTROL_CLIENT_GENERATION, Call, CallOutcome, CallResult, CommandEnvelope, CommandParams, ConnectionHandshake,
-    Declared, IdleEvent, IdleState, Inject, InputButton, InputStep, LockOutcome, LockReport, PamMessage, PamOutcome,
-    ProcessExited, ProcessOutputLine, ProcessStream, RendererFrame, ResumeCause, SecureSubmit, SetSessionLock,
-    SetState, StateSnapshot, StateWrite, SupervisorFrame, valid_secret_name,
+    Declared, IdleEvent, IdleState, Inject, InputButton, InputStep, LockOutcome, LockReport, PROTOCOL_VERSION,
+    PamMessage, PamOutcome, ProcessExited, ProcessOutputLine, ProcessStream, RendererFrame, ResumeCause, SecureSubmit,
+    SetSessionLock, SetState, StateSnapshot, StateWrite, SupervisorFrame, valid_secret_name,
 };
 pub use malloc::Malloc;
 pub use paths::{
-    CHECK_ENV, CONFIG_DIR_ENV, EXIT_COMPOSITOR_GONE, EXIT_COMPOSITOR_UNSUPPORTED, GENERATION_ID_ENV, INSTANCE_DIR_ENV,
-    PROFILE_ENV, VERBOSE_ENV, config_dir, control_socket_path, expand_home, expand_tilde, folder_key, instance_dir,
-    profile_interval, runtime_root, session_locked_flag_path, shell_lua_path, xdg_data_dirs, xdg_dir,
+    CHECK_ENV, CONFIG_DIR_ENV, EXIT_COMPOSITOR_GONE, EXIT_COMPOSITOR_UNSUPPORTED, EXIT_PROTOCOL_MISMATCH,
+    GENERATION_ID_ENV, INSTANCE_DIR_ENV, PROFILE_ENV, VERBOSE_ENV, config_dir, control_socket_path, expand_home,
+    expand_tilde, folder_key, instance_dir, profile_interval, runtime_root, session_locked_flag_path, shell_lua_path,
+    xdg_data_dirs, xdg_dir,
 };
 pub use secure_buffer::SecureBuffer;
 pub use state::conversation::PamNoticeKind;

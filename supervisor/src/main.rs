@@ -247,8 +247,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             // socket/D-Bus/inotify/timer waits; the blocking pool is separate. A twenty-core laptop
             // otherwise used twenty bar-serving threads.
             let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
-            runtime.block_on(run_supervisor(dir, config_dir, args.profile, args.verbose, detached))?;
-            std::process::exit(0);
+            let code = runtime.block_on(run_supervisor(dir, config_dir, args.profile, args.verbose, detached))?;
+            std::process::exit(code);
         }
     }
 }
@@ -258,7 +258,7 @@ async fn run_supervisor(
     profile: Option<u64>,
     verbose: u8,
     detached: bool,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<i32, Box<dyn Error>> {
     let connection = capabilities::with_call_timeout(zbus::connection::Builder::system()).await?;
 
     // Hand freed chunks back; PSS, not peak, is what stays.
@@ -478,10 +478,10 @@ async fn run_supervisor(
         }
     }
 
-    supervisor.reap().await;
+    let exit_code = supervisor.reap().await;
     // Best effort; `socket::bind` removes a missed stale file on the next boot.
     let _ = std::fs::remove_file(&socket_path);
-    Ok(())
+    Ok(exit_code)
 }
 
 #[cfg(test)]

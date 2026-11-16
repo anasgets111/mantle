@@ -41,7 +41,29 @@ pub struct StateSnapshot {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConnectionHandshake {
     pub generation_id: u32,
+    /// The sender's [`PROTOCOL_VERSION`]. `0` from a Renderer built before the field existed, so
+    /// its handshake still decodes and the Supervisor can refuse it by name.
+    #[serde(default)]
+    pub protocol: u32,
 }
+
+impl ConnectionHandshake {
+    /// This build's handshake for `generation_id`.
+    pub fn new(generation_id: u32) -> Self {
+        Self { generation_id, protocol: PROTOCOL_VERSION }
+    }
+}
+
+/// Wire protocol between Supervisor and Renderer. A Renderer whose handshake names another one is
+/// refused and the Supervisor stops, since every replacement would be the same binary (#63).
+///
+/// Bump it in the commit that changes how a [`SupervisorFrame`] or [`RendererFrame`] encodes or
+/// decodes: a variant or required field added, removed, renamed or retyped, including inside the
+/// types they carry. Not for a new `#[serde(default)]` field or a capability's snapshot payload,
+/// which the frame carries as a `serde_json::Value`. Breaking a wire-shape test here needs a bump.
+/// `ConnectionHandshake`'s `generation_id` and `protocol` never change shape: they are how a
+/// mismatch is read at all.
+pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Control clients (`mantle set`, `mantle toggle`) use this `generation_id` in
 /// [`ConnectionHandshake`] (ADR-0112). It is not a generation: the Supervisor registers no
@@ -494,12 +516,15 @@ mod tests {
 
     #[test]
     fn connection_handshake_round_trips() {
-        let handshake = ConnectionHandshake { generation_id: 3 };
+        let handshake = ConnectionHandshake::new(3);
         let wire = serde_json::to_value(handshake).unwrap();
-        assert_eq!(wire, serde_json::json!({ "generation_id": 3 }));
+        assert_eq!(wire, serde_json::json!({ "generation_id": 3, "protocol": PROTOCOL_VERSION }));
 
         let parsed: ConnectionHandshake = serde_json::from_value(wire).unwrap();
         assert_eq!(parsed, handshake);
+
+        let old: ConnectionHandshake = serde_json::from_value(serde_json::json!({ "generation_id": 3 })).unwrap();
+        assert_eq!(old.protocol, 0, "a Renderer that predates the field still decodes");
     }
 
     #[test]

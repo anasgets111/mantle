@@ -12,7 +12,7 @@
 //! Renderer and take its capability pushes and lock frames. An in-process token would not help: the
 //! same user can read `/proc/<pid>/environ`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -97,6 +97,9 @@ pub struct GenerationRegistry {
     /// `generation_id` to the pid of the Renderer Supervisor spawned for it. Written at spawn,
     /// before the child can have connected, and read once per handshake.
     expected_pids: Arc<Mutex<HashMap<u32, Pid>>>,
+    /// Generations whose Renderer spoke another `PROTOCOL_VERSION`: their departure stops the
+    /// Supervisor, since every replacement would come from the same binary.
+    protocol_refused: Arc<Mutex<HashSet<u32>>>,
 }
 
 impl GenerationRegistry {
@@ -125,21 +128,26 @@ impl GenerationRegistry {
                 // not reading. The closed socket makes the Renderer exit
                 // (`renderer/src/wayland/main_loop.rs`, `EXIT_SUPERVISOR_GONE`), a known departure.
                 entry.hangup.notify_one();
-                // A wedged Renderer never sees the EOF, so `child.wait()` would never fire. The
-                // expectation is dropped once the departure is observed, which keeps this off a reused pid.
-                let registry = self.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(WEDGED_KILL_AFTER).await;
-                    let pid = registry.expected_pids.lock().expect("mutex poisoned").get(&generation_id).copied();
-                    if let Some(pid) = pid {
-                        warn!("generation {generation_id} (pid {pid}) is still running after the hangup; killing it");
-                        let _ = crate::process::signal_group_best_effort(pid, nix::sys::signal::Signal::SIGKILL);
-                    }
-                });
+                self.kill_after_hangup(generation_id);
                 false
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
         }
+    }
+
+    /// Kills `generation_id`'s Renderer group if it is still running [`WEDGED_KILL_AFTER`] after its
+    /// connection closed. A wedged Renderer never sees the EOF, so `child.wait()` would never fire.
+    /// The expectation is dropped once the departure is observed, which keeps this off a reused pid.
+    fn kill_after_hangup(&self, generation_id: u32) {
+        let registry = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(WEDGED_KILL_AFTER).await;
+            let pid = registry.expected_pids.lock().expect("mutex poisoned").get(&generation_id).copied();
+            if let Some(pid) = pid {
+                warn!("generation {generation_id} (pid {pid}) is still running after the hangup; killing it");
+                let _ = crate::process::signal_group_best_effort(pid, nix::sys::signal::Signal::SIGKILL);
+            }
+        });
     }
 
     /// Queues `process.run` output once the peer's queue has [`OUTPUT_RESERVE`] free slots, waiting
@@ -176,6 +184,18 @@ impl GenerationRegistry {
     /// cannot be claimed by whatever the kernel gives that pid to next.
     pub fn forget_generation(&self, generation_id: u32) {
         self.expected_pids.lock().expect("mutex poisoned").remove(&generation_id);
+    }
+
+    /// Records that `generation_id`'s Renderer was refused for its protocol, before its connection
+    /// closes, and kills it like a wedged one if it ignores the EOF.
+    pub(crate) fn refuse_protocol(&self, generation_id: u32) {
+        self.protocol_refused.lock().expect("mutex poisoned").insert(generation_id);
+        self.kill_after_hangup(generation_id);
+    }
+
+    /// Whether `generation_id`'s Renderer was refused for its protocol, forgetting the record.
+    pub(crate) fn take_protocol_refusal(&self, generation_id: u32) -> bool {
+        self.protocol_refused.lock().expect("mutex poisoned").remove(&generation_id)
     }
 
     /// Whether `pid` may claim `generation_id`, or `None` if no expectation is recorded yet.
@@ -356,6 +376,19 @@ async fn handle_connection(
                  that generation belongs to another process, and accepting would hand this \
                  connection its capability pushes"
             );
+            return Ok(());
+        }
+        // After the claim, so only the process spawned for this generation can stop the Supervisor.
+        // Recorded before the hangup, so the departure it causes sees it. Control clients skip
+        // this: `mantle set` keybinds must survive an upgrade.
+        if handshake.protocol != shared::PROTOCOL_VERSION {
+            error!(
+                "refusing generation {generation_id}'s renderer: it speaks protocol {} and this Supervisor \
+                 speaks {} (0 is a build from before the check). Start mantle again to run the installed pair",
+                handshake.protocol,
+                shared::PROTOCOL_VERSION
+            );
+            registry.refuse_protocol(generation_id);
             return Ok(());
         }
         debug!("renderer generation {generation_id} (pid {pid}) registered");
@@ -636,18 +669,25 @@ mod tests {
 
     #[tokio::test]
     async fn a_hung_up_renderer_that_ignores_the_eof_is_killed() {
-        let registry = GenerationRegistry::default();
-        let mut child =
-            crate::process::spawn_group_leader("sh", &crate::process::sh_args("trap '' HUP TERM; sleep 30"), &[])
-                .unwrap();
-        registry.expect_generation(5, Pid::from_raw(child.id().unwrap() as i32));
-        let (tx, _rx) = mpsc::channel::<Vec<u8>>(MAX_OUTBOUND_FRAMES);
-        registry.register(5, tx, Arc::new(tokio::sync::Notify::new()));
-        for _ in 0..=MAX_OUTBOUND_FRAMES {
-            registry.send_to(5, b"x".to_vec());
+        // Hung up as wedged, or refused for its protocol (#63).
+        for refused in [false, true] {
+            let registry = GenerationRegistry::default();
+            let mut child =
+                crate::process::spawn_group_leader("sh", &crate::process::sh_args("trap '' HUP TERM; sleep 30"), &[])
+                    .unwrap();
+            registry.expect_generation(5, Pid::from_raw(child.id().unwrap() as i32));
+            if refused {
+                registry.refuse_protocol(5);
+            } else {
+                let (tx, _rx) = mpsc::channel::<Vec<u8>>(MAX_OUTBOUND_FRAMES);
+                registry.register(5, tx, Arc::new(tokio::sync::Notify::new()));
+                for _ in 0..=MAX_OUTBOUND_FRAMES {
+                    registry.send_to(5, b"x".to_vec());
+                }
+            }
+            let status = tokio::time::timeout(Duration::from_secs(5), child.wait()).await.expect("killed").unwrap();
+            assert_eq!(std::os::unix::process::ExitStatusExt::signal(&status), Some(9), "refused: {refused}");
         }
-        let status = tokio::time::timeout(Duration::from_secs(5), child.wait()).await.expect("killed").unwrap();
-        assert_eq!(std::os::unix::process::ExitStatusExt::signal(&status), Some(9));
     }
 
     #[tokio::test]
@@ -724,7 +764,7 @@ mod tests {
         expect_this_process(&registry, &[1]);
 
         let mut renderer = UnixStream::connect(&path).await.unwrap();
-        framing::write_json_frame(&mut renderer, &ConnectionHandshake { generation_id: 1 }).await.unwrap();
+        framing::write_json_frame(&mut renderer, &ConnectionHandshake::new(1)).await.unwrap();
 
         crate::capabilities::test_support::poll_until(|| registry.is_registered(1).then_some(())).await;
     }
@@ -751,9 +791,9 @@ mod tests {
         expect_this_process(&registry, &[1, 2]);
 
         let mut client_a = UnixStream::connect(&path).await.unwrap();
-        framing::write_json_frame(&mut client_a, &ConnectionHandshake { generation_id: 1 }).await.unwrap();
+        framing::write_json_frame(&mut client_a, &ConnectionHandshake::new(1)).await.unwrap();
         let mut client_b = UnixStream::connect(&path).await.unwrap();
-        framing::write_json_frame(&mut client_b, &ConnectionHandshake { generation_id: 2 }).await.unwrap();
+        framing::write_json_frame(&mut client_b, &ConnectionHandshake::new(2)).await.unwrap();
 
         crate::capabilities::test_support::poll_until(|| {
             (registry.is_registered(1) && registry.is_registered(2)).then_some(())
@@ -778,7 +818,7 @@ mod tests {
         let (registry, _routes, inbound, mut connected) = spawn_listener(path).unwrap();
         expect_this_process(&registry, &[5]);
         let mut client = UnixStream::connect(path).await.unwrap();
-        framing::write_json_frame(&mut client, &ConnectionHandshake { generation_id: 5 }).await.unwrap();
+        framing::write_json_frame(&mut client, &ConnectionHandshake::new(5)).await.unwrap();
         assert_eq!(within(connected.recv()).await, Some(5));
         (registry, inbound, client)
     }
@@ -879,7 +919,8 @@ mod tests {
         let (_registry, routes, mut inbound, _connected) = spawn_listener(&path).unwrap();
 
         let mut client = UnixStream::connect(&path).await.unwrap();
-        let handshake = ConnectionHandshake { generation_id: shared::CONTROL_CLIENT_GENERATION };
+        // A `mantle` CLI speaking another protocol is still served: only Renderers must match.
+        let handshake = serde_json::json!({ "generation_id": shared::CONTROL_CLIENT_GENERATION, "protocol": 0 });
         framing::write_json_frame(&mut client, &handshake).await.unwrap();
         let set = shared::SetState { name: "nope".into(), write: shared::StateWrite::Toggle };
         framing::write_json_frame(&mut client, &RendererFrame::SetState { id: 0, set }).await.unwrap();
@@ -901,7 +942,7 @@ mod tests {
         let (_registry, routes, mut inbound, _connected) = spawn_listener(&path).unwrap();
 
         let mut client = UnixStream::connect(&path).await.unwrap();
-        let handshake = ConnectionHandshake { generation_id: shared::CONTROL_CLIENT_GENERATION };
+        let handshake = ConnectionHandshake::new(shared::CONTROL_CLIENT_GENERATION);
         framing::write_json_frame(&mut client, &handshake).await.unwrap();
 
         let frames = [
@@ -964,13 +1005,58 @@ mod tests {
         registry.expect_generation(7, Pid::from_raw(Pid::this().as_raw() + 1));
 
         let mut client = UnixStream::connect(&path).await.unwrap();
-        framing::write_json_frame(&mut client, &ConnectionHandshake { generation_id: 7 }).await.unwrap();
+        // Another protocol too: a peer that fails the claim must not get to stop the Supervisor.
+        let handshake = serde_json::json!({ "generation_id": 7, "protocol": 99 });
+        framing::write_json_frame(&mut client, &handshake).await.unwrap();
 
         let mut byte = [0];
         assert_eq!(within(client.read(&mut byte)).await.unwrap(), 0, "mismatched peer must be closed");
         assert!(!registry.is_registered(7));
+        assert!(!registry.take_protocol_refusal(7));
         assert!(!registry.send_to(7, b"rejected".to_vec()), "send_to must find no registration");
         assert!(connected.try_recv().is_err());
+    }
+
+    /// #63: a Renderer speaking another protocol, or one that predates the field, is closed and
+    /// recorded, so its departure stops the Supervisor. Not a registration: nothing is replayed.
+    /// Each peer is a child group leader, [`refused_peer`], so the refusal's delayed kill of the
+    /// claimed pid's group can only reach that child, never the test runner.
+    #[tokio::test]
+    async fn a_renderer_of_another_protocol_is_refused_and_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("control.sock");
+        let (registry, _routes, _inbound, mut connected) = spawn_listener(&path).unwrap();
+        let newer = serde_json::json!({ "generation_id": 1, "protocol": shared::PROTOCOL_VERSION + 1 });
+        let older = serde_json::json!({ "generation_id": 2 });
+        for (generation_id, handshake) in [(1, newer), (2, older)] {
+            let args = ["socket::tests::refused_peer", "--exact", "--ignored"].map(String::from);
+            let env = [(PEER_SOCKET_ENV, path.clone().into()), (PEER_HANDSHAKE_ENV, handshake.to_string().into())];
+            let mut peer = crate::process::spawn_group_leader(std::env::current_exe().unwrap(), &args, &env).unwrap();
+            registry.expect_generation(generation_id, Pid::from_raw(peer.id().unwrap() as i32));
+            // Exits 0 once it reads the EOF, or dies to the delayed kill first.
+            let status = within(peer.wait()).await.unwrap();
+            let killed = std::os::unix::process::ExitStatusExt::signal(&status) == Some(9);
+            assert!(status.success() || killed, "{handshake}: {status}");
+            assert!(!registry.is_registered(generation_id));
+            assert!(registry.take_protocol_refusal(generation_id), "{handshake} must be recorded");
+        }
+        assert!(connected.try_recv().is_err());
+    }
+
+    const PEER_SOCKET_ENV: &str = "MANTLE_TEST_PEER_SOCKET";
+    const PEER_HANDSHAKE_ENV: &str = "MANTLE_TEST_PEER_HANDSHAKE";
+
+    /// The child peer [`a_renderer_of_another_protocol_is_refused_and_recorded`] runs: sends the
+    /// handshake it is given and passes only once the listener closes the connection.
+    #[tokio::test]
+    #[ignore = "a child of a_renderer_of_another_protocol_is_refused_and_recorded"]
+    async fn refused_peer() {
+        // A no-op under `--ignored` alone.
+        let Some(path) = std::env::var_os(PEER_SOCKET_ENV) else { return };
+        let handshake: serde_json::Value = serde_json::from_str(&std::env::var(PEER_HANDSHAKE_ENV).unwrap()).unwrap();
+        let mut client = UnixStream::connect(path).await.unwrap();
+        framing::write_json_frame(&mut client, &handshake).await.unwrap();
+        assert_eq!(client.read(&mut [0]).await.unwrap(), 0, "the listener must close the connection");
     }
 
     /// ADR-0070 decision 3: an unknown capability name is dropped, and the connection lives on.

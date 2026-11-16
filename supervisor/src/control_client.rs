@@ -36,7 +36,7 @@ fn ask(instance_dir: &Path, frame: RendererFrame, name: &str) -> Result<CallOutc
         let mut stream = UnixStream::connect(&path)
             .await
             .map_err(|err| format!("cannot reach the shell at {}: {err} (is mantle running?)", path.display()))?;
-        write_json_frame(&mut stream, &ConnectionHandshake { generation_id: CONTROL_CLIENT_GENERATION }).await?;
+        write_json_frame(&mut stream, &ConnectionHandshake::new(CONTROL_CLIENT_GENERATION)).await?;
         write_json_frame(&mut stream, &frame).await?;
         let answer = tokio::time::timeout(CALL_TIMEOUT, read_json_frame::<_, SupervisorFrame>(&mut stream))
             .await

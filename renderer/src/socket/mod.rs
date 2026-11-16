@@ -43,7 +43,7 @@ async fn connect_and_handshake(
     generation_id: u32,
 ) -> Result<UnixStream, Box<dyn std::error::Error + Send + Sync>> {
     let mut stream = UnixStream::connect(path).await?;
-    write_json_frame(&mut stream, &ConnectionHandshake { generation_id }).await?;
+    write_json_frame(&mut stream, &ConnectionHandshake::new(generation_id)).await?;
     Ok(stream)
 }
 
@@ -217,7 +217,7 @@ mod tests {
 
         let (mut server_side, _addr) = listener.accept().await.unwrap();
         let handshake: ConnectionHandshake = read_json_frame(&mut server_side).await.unwrap();
-        assert_eq!(handshake.generation_id, 9);
+        assert_eq!(handshake, ConnectionHandshake::new(9));
 
         client.await.unwrap().unwrap();
     }

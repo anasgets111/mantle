@@ -120,6 +120,8 @@ pub(crate) struct Supervisor {
     /// Set only by [`Supervisor::replace_departed_renderer`]; distinguishes shutdown reaping from
     /// an already-gone Renderer.
     renderer_departed: bool,
+    /// The process exit status [`Self::reap`] returns.
+    exit_code: i32,
     /// ADR-0058 decision 4, ADR-0060: intent after lock-holder death or locked startup.
     relock: Relock,
     /// Tracked `process.run` children (ADR-0026).
@@ -180,6 +182,7 @@ impl Supervisor {
             restart_brake: RestartBrake::default(),
             respawn_at: None,
             renderer_departed: false,
+            exit_code: 0,
             relock,
             processes: HashMap::new(),
             process_done_tx,
@@ -416,15 +419,22 @@ impl Supervisor {
                 RendererDeparture::Failed { code: -1 }
             }
         };
+        let generation_id = self.authoritative.generation_id;
         let was_locked = self.lock.snapshot().active;
-        warn!("{}", departure_report(departure, self.authoritative.generation_id, was_locked));
+        warn!("{}", departure_report(departure, generation_id, was_locked));
         self.renderer_departed = true;
         // At departure rather than respawn: from here the pid is reaped and must not be signalled.
-        self.registry.forget_generation(self.authoritative.generation_id);
+        self.registry.forget_generation(generation_id);
 
-        // Before the brake: every replacement would find the same compositor, gone or unable to
-        // host the shell. Stop the way a SIGTERM does.
-        if let Some(reason) = unrespawnable(departure) {
+        // A refused Renderer leaves on the hangup's exit 70 or the kill after it, so the record
+        // decides, not the code. Before the brake: every replacement would find the same
+        // compositor, gone or unable to host the shell, or would be the same refused binary. Stop
+        // the way a SIGTERM does.
+        let refused = self.registry.take_protocol_refusal(generation_id);
+        if refused {
+            self.exit_code = shared::EXIT_PROTOCOL_MISMATCH;
+        }
+        if let Some(reason) = refused.then_some("it speaks another protocol").or_else(|| unrespawnable(departure)) {
             error!("{reason}, so a replacement renderer cannot help; shutting down");
             return true;
         }
@@ -621,9 +631,9 @@ impl Supervisor {
     }
 
     /// Reaps authoritative Renderer and live `process.run` children with SIGTERM/SIGKILL and
-    /// `DEFAULT_REAP_GRACE`. Skip a Renderer already collected by
-    /// [`Supervisor::replace_departed_renderer`], avoiding a misleading "already reaped" log.
-    pub(crate) async fn reap(&mut self) {
+    /// `DEFAULT_REAP_GRACE`, and returns the process exit status. Skip a Renderer already collected
+    /// by [`Supervisor::replace_departed_renderer`], avoiding a misleading "already reaped" log.
+    pub(crate) async fn reap(&mut self) -> i32 {
         if !self.renderer_departed
             && let Err(err) =
                 process::reap_process_group(&mut self.authoritative.child, process::DEFAULT_REAP_GRACE).await
@@ -639,6 +649,7 @@ impl Supervisor {
         // Session processes are not in `self.processes`: they outlive generations by design, so
         // the per-generation sweep never sees them and this is their only reap.
         self.capabilities.reap_sessions().await;
+        self.exit_code
     }
 }
 
@@ -919,6 +930,14 @@ mod tests {
         let unsupported = std::process::ExitStatus::from_raw(shared::EXIT_COMPOSITOR_UNSUPPORTED << 8);
         assert!(supervisor.replace_departed_renderer(Ok(unsupported)).await);
         assert_eq!(supervisor.authoritative.generation_id, 2);
+        assert_eq!(supervisor.exit_code, 0);
+
+        // #63: a Renderer refused for its protocol leaves on the hangup's exit 70, which alone
+        // respawns; the refusal record stops the Supervisor with `EXIT_PROTOCOL_MISMATCH` instead.
+        supervisor.registry.refuse_protocol(2);
+        assert!(supervisor.replace_departed_renderer(Ok(std::process::ExitStatus::from_raw(70 << 8))).await);
+        assert_eq!(supervisor.authoritative.generation_id, 2);
+        assert!(!supervisor.registry.take_protocol_refusal(2), "the record is taken once");
 
         // Requested-only lock (active = false, requested = true) must also owe relock on gen 3.
         supervisor.relock = Relock::Idle;
@@ -931,8 +950,9 @@ mod tests {
         assert!(!supervisor.lock.snapshot().requested);
         assert_eq!(supervisor.relock, Relock::Owed(RelockReason::RendererReplaced));
 
-        // renderer_departed = false ensures shutdown reap kills the live replacement child too.
-        supervisor.reap().await;
+        // renderer_departed = false ensures shutdown reap kills the live replacement child too, and
+        // the stop's exit status is what `run_supervisor` hands `process::exit`.
+        assert_eq!(supervisor.reap().await, shared::EXIT_PROTOCOL_MISMATCH);
         assert!(supervisor.authoritative.child.try_wait().unwrap().is_some());
         assert!(supervisor.processes.is_empty());
     }

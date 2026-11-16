@@ -225,7 +225,7 @@ mod tests {
     #[tokio::test]
     async fn write_json_frame_then_read_json_frame_round_trips_a_typed_value() {
         let (mut a, mut b) = tokio::io::duplex(64);
-        let sent = ConnectionHandshake { generation_id: 7 };
+        let sent = ConnectionHandshake::new(7);
         write_json_frame(&mut a, &sent).await.unwrap();
         let received: ConnectionHandshake = read_json_frame(&mut b).await.unwrap();
         assert_eq!(received, sent);
