@@ -315,12 +315,14 @@ mod tests {
 
         for percent in ["40", "60"] {
             write_entry(root.path(), "acpi_video0", &[("max_brightness", "100"), ("brightness", percent)]);
-            let pushed = tokio::time::timeout(POLL_INTERVAL * 2, events_rx.recv()).await;
+            // Paused time only jumps to timers, so each read starts exactly on the previous tick.
+            let early = tokio::time::timeout(POLL_INTERVAL - Duration::from_millis(1), events_rx.recv()).await;
+            assert!(early.is_err(), "nothing publishes before a full interval");
+            let pushed = tokio::time::timeout(Duration::from_millis(2), events_rx.recv()).await;
             assert_eq!((pushed, controller.snapshot().percent.to_string()), (Ok(Some(())), percent.to_string()));
         }
-        // An unchanged reading sends nothing, so the change is what finds the receiver gone.
+        // An unchanged reading sends nothing, yet must still find the receiver gone.
         drop(events_rx);
-        write_entry(root.path(), "acpi_video0", &[("brightness", "80")]);
         tokio::time::timeout(POLL_INTERVAL * 2, task).await.expect("the loop stops once nobody listens").unwrap();
     }
 

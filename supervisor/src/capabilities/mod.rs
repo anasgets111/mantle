@@ -108,7 +108,7 @@ pub(crate) fn udev_watch(subsystem: &str) -> std::io::Result<tokio::io::unix::As
 pub(super) fn publish<S: PartialEq>(state: &Mutex<S>, events: &UnboundedSender<()>, next: S) -> bool {
     let mut current = state.lock().expect("capability state mutex poisoned");
     if *current == next {
-        return true;
+        return !events.is_closed();
     }
     *current = next;
     drop(current);
