@@ -9014,3 +9014,18 @@ is dropped, and a node mask draws nothing (ADR-0297). A gradient or image mask p
 leaves its subtree unmasked, as ADR-0255 decision 7 allows. The development GPU's limit is
 32768 px; the test lowers it to 32. Rejected: rendering the layer downscaled to fit, which threads
 a scale through every pass for a case only a huge subtree on a HiDPI output reaches.
+
+## 0394. A Renderer speaking another wire protocol stops the Supervisor with exit 76
+
+Amends ADR-0058 and ADR-0390. After a package upgrade, the running Supervisor could respawn the new
+Renderer, whose frames it could not decode: a hangup, exit 70, a respawn into the same failure.
+`ConnectionHandshake` now carries `PROTOCOL_VERSION`, a `u32` bumped by hand when a frame's encoding
+changes; a Renderer older than the field sends none and reads as 0. After the pid claim, a mismatch
+is logged with both numbers, recorded, and the connection closed. The Renderer exits on the EOF; one
+that ignores it is killed after `WEDGED_KILL_AFTER` (5 s), the wedged-peer path. Its departure stops
+the Supervisor with `EXIT_PROTOCOL_MISMATCH` (76, sysexits' `EX_PROTOCOL`), nonzero unlike
+ADR-0390's 0 because starting `mantle` again runs the installed pair and fixes it. Control clients
+are not checked. Rejected: stopping on any crate-version change, which turns every compatible
+upgrade's next crash into a full stop. Deferred: the Supervisor re-executing its upgraded binary
+(#104). ponytail: a missed bump goes unnoticed; upgrade path is a golden of each frame type's wire
+shape.
