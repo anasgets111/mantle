@@ -8937,7 +8937,7 @@ bounding-box units. The pre-parse walk now refuses any `fe*` element outside `fe
 `feColorMatrix` 76, `feComposite` 7, `feFlood` 4, `feOffset` 4, `feBlend` 4, every other primitive
 0, so none is refused. Rejected: bounds per attribute (82f4502d), which tracked one panic at a time
 and still missed values scaled by a bounding box or transform. A huge offset or filter region still
-panics in tiny-skia; a killable helper process (planned) covers that.
+panics in tiny-skia; a killable helper process was planned to cover that (declined in ADR-0389).
 Correction: a huge `feGaussianBlur` `stdDeviation` also overflows resvg's box blur, and CSS
 `filter: blur()` or `drop-shadow()` reaches it with no `fe*` element; the helper covers those too.
 Correction (2026-11-12): `SVG_FILTERS` (`renderer/src/image/svg.rs`) allows eight filter elements,
