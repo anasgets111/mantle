@@ -64,7 +64,9 @@ With staged and unstaged edits both present, `just check` sets tracked unstaged 
 (untracked files stay). To check the working tree, run `just fmt-check test lint rustdoc lua types`.
 The commit is the gate: the hook (`just hooks`) runs, on the staged tree, the stub goldens plus
 fmt-check, test, lint and rustdoc for Rust paths, the docs-example test for docs, and `lua types`
-for Lua. Don't run those before committing; on failure, fix and recommit. The hook skips `just book`,
+for Lua. Don't run those before committing; on failure, fix and recommit. Delegate branches are the
+exception: they commit without the hook, and the landing's `just check` gates them (Delegating to
+agents). The hook skips `just book`,
 `demo-check` and `mantle -c DIR check`: run those by hand. Report failed or unavailable checks.
 
 ## Ponytail mode
@@ -170,19 +172,19 @@ Any agent may coordinate others. The coordinator owns the result: it reviews, la
   commit (`git show wt/<name>`), so new files are included.
 - **Sandbox.** A delegate's sandbox may block sockets, D-Bus and Wayland. Rerun failures it reports
   outside the sandbox before believing them.
-- **Checks.** A delegate iterates on the tests it touched (`cargo test -p <crate> <filter>`) and
-  runs the rows the hook skips; its commit runs the hook, and it fixes what fails. Never the full
-  `just check`. After committing, it runs `cargo mutants --in-place --in-diff <(git diff main...)
+- **Checks.** A delegate iterates on the tests it touched (`cargo test -p <crate> <filter>`), runs
+  the rows the hook skips, `just fmt`, `cargo clippy -p <crate> --all-targets` and `just stubs` when
+  a generated file's source changed, then commits with `--no-verify`: the hook's full suite runs
+  once per landing instead of on every amend. Never the full `just check`. After committing, it runs `cargo mutants --in-place --in-diff <(git diff main...)
   -p <crate>` under the lock, and kills each missed mutant with a test or names why it can't. A
   commit is a full build: commits and builds take one machine-wide lock, so only one runs at a
   time. The hook and the justfile's build recipes take it when `git config mantle.buildWrapper`
   names the lock command (shared by every worktree).
 - **Land.** Send real gaps back to the same delegate, which keeps its context and amends on its
-  own base; the coordinator fixes small findings (a trailer, a rewrap, a few lines) itself. A
-  single branch whose base is still `main` lands with `git merge --ff-only wt/<name>`, no second
-  check. Otherwise land as a stack: in one landing worktree on `main`, cherry-pick each approved
-  branch's commits (cherry-pick runs no pre-commit hook; each passed it on its own base), run `just
-  check` once on the tip, then fast-forward `main`. A failure there is fixed and the stack
+  own base; the coordinator fixes small findings (a trailer, a rewrap, a few lines) itself. Land
+  approved branches as a stack: in one landing worktree on `main`, cherry-pick each branch's
+  commits, run `just check` once on the tip, then fast-forward `main`. Delegate commits never ran
+  the hook, so a single branch lands the same way. A failure there is fixed and the stack
   rechecked; a cherry-pick conflict goes back to that branch's delegate. Then remove each
   worktree, branch and target dir.
 
