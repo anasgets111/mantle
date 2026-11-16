@@ -597,15 +597,15 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let controller = LockController::new(tx);
 
-        dispatch(&controller, &envelope("lock", "lock", Vec::new()));
+        dispatch(&controller, &envelope(shared::Capability::Lock, "lock", Vec::new()));
         assert_eq!(rx.try_recv().ok(), Some(shared::SetSessionLock { locked: true }));
 
-        dispatch(&controller, &envelope("lock", "nonsense", Vec::new()));
+        dispatch(&controller, &envelope(shared::Capability::Lock, "nonsense", Vec::new()));
         assert!(rx.try_recv().is_err(), "an unknown action must be logged, not turned into a command");
 
         // ADR-0042: an unlock action would make walking past PAM one mouse click. The
         // asymmetry with lock is deliberate, pinned so it isn't re-added as an oversight.
-        dispatch(&controller, &envelope("lock", "unlock", Vec::new()));
+        dispatch(&controller, &envelope(shared::Capability::Lock, "unlock", Vec::new()));
         assert!(rx.try_recv().is_err(), "unlock must not be commandable from Lua");
     }
 }

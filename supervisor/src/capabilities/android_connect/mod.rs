@@ -318,7 +318,10 @@ mod tests {
         let device = || controller.snapshot().devices[0].clone();
         let set = |plugin: &str, enabled: bool| {
             let arguments = vec!["phone-123".into(), plugin.into(), enabled.into()];
-            super::dispatch(&controller, &envelope("android_connect", "set_plugin_enabled", arguments));
+            super::dispatch(
+                &controller,
+                &envelope(shared::Capability::AndroidConnect, "set_plugin_enabled", arguments),
+            );
         };
 
         set("sms", true);
@@ -344,7 +347,7 @@ mod tests {
 
         FakeDaemon::browse_failed(emitter, "phone-123".into(), "sshfs missing".into()).await.unwrap();
         poll_until(|| device().browse_error.is_some().then_some(())).await;
-        super::dispatch(&controller, &envelope("android_connect", "browse", vec!["phone-123".into()]));
+        super::dispatch(&controller, &envelope(shared::Capability::AndroidConnect, "browse", vec!["phone-123".into()]));
         poll_until(|| device().browse_error.is_none().then_some(())).await;
     }
 
@@ -363,7 +366,10 @@ mod tests {
         poll_until(|| controller.snapshot().available.then_some(())).await;
         let on_disk = || serde_json::from_slice::<Vec<AndroidCommand>>(&std::fs::read(&file).unwrap()).unwrap();
         let add = |name: &str| {
-            super::dispatch(&controller, &envelope("android_connect", "add_command", vec![name.into(), "true".into()]))
+            super::dispatch(
+                &controller,
+                &envelope(shared::Capability::AndroidConnect, "add_command", vec![name.into(), "true".into()]),
+            )
         };
 
         add("one");
@@ -375,7 +381,10 @@ mod tests {
         assert_eq!(on_disk(), [one.clone(), two.clone()]);
 
         assert!(!controller.remove_command("nope").unwrap());
-        super::dispatch(&controller, &envelope("android_connect", "remove_command", vec![one.id.clone().into()]));
+        super::dispatch(
+            &controller,
+            &envelope(shared::Capability::AndroidConnect, "remove_command", vec![one.id.clone().into()]),
+        );
         poll_until(|| (controller.snapshot().commands == [two.clone()]).then_some(())).await;
         assert_eq!(on_disk(), [two]);
 
@@ -426,7 +435,10 @@ mod tests {
         assert!(!auto_share());
 
         let arguments = vec!["phone-123".into(), true.into()];
-        super::dispatch(&controller, &envelope("android_connect", "set_clipboard_auto_share", arguments));
+        super::dispatch(
+            &controller,
+            &envelope(shared::Capability::AndroidConnect, "set_clipboard_auto_share", arguments),
+        );
         poll_until(|| auto_share().then_some(())).await;
         assert_eq!(std::fs::read_to_string(&config).unwrap(), "[General]\nautoShare=true\nsendPassword=true\n");
 
@@ -501,7 +513,10 @@ mod tests {
         poll_until(|| (device().battery == Some(50)).then_some(())).await;
         assert!(device().pairing_requested, "the connect keeps the flag");
 
-        super::dispatch(&controller, &envelope("android_connect", "reject_pairing", vec!["phone-123".into()]));
+        super::dispatch(
+            &controller,
+            &envelope(shared::Capability::AndroidConnect, "reject_pairing", vec!["phone-123".into()]),
+        );
         poll_until(|| (!device().pairing_requested).then_some(())).await;
 
         // An unpaired device is forgotten on disconnect, as after a daemon restart.
@@ -518,7 +533,12 @@ mod tests {
         let iface = server.object_server().interface::<_, FakeDaemon>(DAEMON_PATH).await.unwrap();
         let emitter = iface.signal_emitter();
         let device = || controller.snapshot().devices[0].clone();
-        let pair = || super::dispatch(&controller, &envelope("android_connect", "pair", vec!["phone-123".into()]));
+        let pair = || {
+            super::dispatch(
+                &controller,
+                &envelope(shared::Capability::AndroidConnect, "pair", vec!["phone-123".into()]),
+            )
+        };
 
         pair();
         poll_until(|| device().pairing_sent.then_some(())).await;
@@ -543,7 +563,7 @@ mod tests {
 
         pair();
         poll_until(|| device().pairing_sent.then_some(())).await;
-        super::dispatch(&controller, &envelope("android_connect", "unpair", vec!["phone-123".into()]));
+        super::dispatch(&controller, &envelope(shared::Capability::AndroidConnect, "unpair", vec!["phone-123".into()]));
         poll_until(|| (!device().pairing_sent).then_some(())).await;
     }
 
@@ -581,7 +601,7 @@ mod tests {
             ("reject_pairing", vec!["phone-123".into()], "reject_pairing:phone-123"),
         ];
         for (action, arguments, _) in &table {
-            super::dispatch(&controller, &envelope("android_connect", action, arguments.clone()));
+            super::dispatch(&controller, &envelope(shared::Capability::AndroidConnect, action, arguments.clone()));
         }
         let mut expected: Vec<String> = table.iter().map(|(.., record)| (*record).to_owned()).collect();
         expected.sort();
@@ -607,7 +627,7 @@ mod tests {
         let file = file.to_str().unwrap();
         super::dispatch(
             &controller,
-            &envelope("android_connect", "send_files", vec!["phone-123".into(), vec![file].into()]),
+            &envelope(shared::Capability::AndroidConnect, "send_files", vec!["phone-123".into(), vec![file].into()]),
         );
         poll_until(|| (!calls.files.lock().unwrap().is_empty()).then_some(())).await;
         assert_eq!(*calls.files.lock().unwrap(), [vec![file.to_owned()]]);

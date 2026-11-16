@@ -219,15 +219,8 @@ mod tests {
             c.begin(offering("a", &[1000, 2000]), reply, 1000);
             answer
         };
-        let select = |uid: u32| shared::CommandEnvelope {
-            params: shared::CommandParams {
-                generation_id: 0,
-                capability: "polkit".into(),
-                action: "select_identity".into(),
-                arguments: vec![uid.into()],
-                legacy_expected_revision: 0,
-            },
-            id: 1,
+        let select = |uid: u32| {
+            crate::capabilities::test_support::envelope(shared::Capability::Polkit, "select_identity", vec![uid.into()])
         };
         assert!(!dispatch(&mut c, &select(1000)), "already the identity");
         assert!(!c.select_identity(4000), "not offered");

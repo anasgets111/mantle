@@ -499,7 +499,7 @@ mod tests {
 
     fn command(action: &str, arguments: serde_json::Value) -> shared::CommandEnvelope {
         let serde_json::Value::Array(arguments) = arguments else { panic!("positional arguments") };
-        crate::capabilities::test_support::envelope("mpris", action, arguments)
+        crate::capabilities::test_support::envelope(shared::Capability::Mpris, action, arguments)
     }
 
     /// The seek reads `Position` first; spawned apart, the `Next` behind it overtook it and the seek

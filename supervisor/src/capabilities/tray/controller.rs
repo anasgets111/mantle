@@ -472,7 +472,7 @@ mod tests {
         let menu_only = item_id(":1.20", DEFAULT_ITEM_OBJECT_PATH);
         let dispatch = |action: &str, arguments: serde_json::Value| {
             let arguments = arguments.as_array().expect("arguments are a list").clone();
-            super::super::dispatch(&controller, &envelope("tray", action, arguments));
+            super::super::dispatch(&controller, &envelope(shared::Capability::Tray, action, arguments));
         };
         let mut next = async || within(received.recv()).await.expect("the app is alive");
 

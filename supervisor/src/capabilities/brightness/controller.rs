@@ -291,7 +291,11 @@ mod tests {
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
         let controller = BrightnessController::new(root.path().to_path_buf(), bus, events_tx);
         within(events_rx.recv()).await;
-        let dispatch = crate::capabilities::test_support::dispatcher("brightness", super::super::dispatch, &controller);
+        let dispatch = crate::capabilities::test_support::dispatcher(
+            shared::Capability::Brightness,
+            super::super::dispatch,
+            &controller,
+        );
 
         // `LatestWrites` keeps only the newest value, so each yield lets a wrongly started write take
         // its value before the next dispatch could replace it; that write would arrive first.

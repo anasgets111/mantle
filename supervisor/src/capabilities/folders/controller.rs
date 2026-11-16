@@ -416,7 +416,11 @@ mod tests {
         let key = dir.path().to_string_lossy().into_owned();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let controller = FoldersController::new(tx);
-        let dispatch = crate::capabilities::test_support::dispatcher("folders", super::super::dispatch, &controller);
+        let dispatch = crate::capabilities::test_support::dispatcher(
+            shared::Capability::Folders,
+            super::super::dispatch,
+            &controller,
+        );
 
         dispatch("watch", vec!["relative/path".into(), serde_json::json!([])]);
         dispatch("watch", vec![key.clone().into(), 7.into()]);

@@ -419,7 +419,11 @@ mod tests {
         let controller = controller();
         let ready = tempfile::tempdir().expect("tempdir");
         let (marker, signalled) = (ready.path().join("armed"), ready.path().join("usr1"));
-        let dispatch = crate::capabilities::test_support::dispatcher("processes", super::super::dispatch, &controller);
+        let dispatch = crate::capabilities::test_support::dispatcher(
+            shared::Capability::Processes,
+            super::super::dispatch,
+            &controller,
+        );
         dispatch("declare", vec!["u".into(), "BOGUS".into()]);
         dispatch("declare", vec!["".into()]);
         dispatch("nonsense", vec!["v".into()]);

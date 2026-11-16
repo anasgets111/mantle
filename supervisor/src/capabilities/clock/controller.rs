@@ -169,7 +169,11 @@ mod tests {
     async fn dispatch_routes_configure_to_the_interval_and_drops_the_rest() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let controller = ClockController::new(tx);
-        let dispatch = crate::capabilities::test_support::dispatcher("clock", super::super::dispatch, &controller);
+        let dispatch = crate::capabilities::test_support::dispatcher(
+            shared::Capability::Clock,
+            super::super::dispatch,
+            &controller,
+        );
 
         dispatch("configure", vec![serde_json::json!({ "interval": 60 })]);
         assert_eq!(*controller.interval.borrow(), 60);

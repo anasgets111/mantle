@@ -203,18 +203,6 @@ mod tests {
         assert_eq!(fold(&[extended]).radios, [radio(RadioKind::Wlan, true, false)]);
     }
 
-    #[test]
-    fn send_writes_one_change_all_request() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("rfkill");
-        let file = File::create(&path).unwrap();
-        send(&file, 2, true).unwrap();
-        send(&file, 0, false).unwrap();
-        let mut expected = event(0, 2, OP_CHANGE_ALL, true, false);
-        expected.extend(event(0, 0, OP_CHANGE_ALL, false, false));
-        assert_eq!(std::fs::read(path).unwrap(), expected);
-    }
-
     /// Built around a pipe rather than through `new`, whose read task would consume the requests.
     #[tokio::test]
     async fn dispatch_routes_both_actions_to_one_change_all_request_and_drops_the_rest() {
@@ -224,7 +212,8 @@ mod tests {
             let fd = Arc::new(unsafe { AsyncFd::register(File::from(write)) }.unwrap());
             let controller = RadioController { state: Arc::default(), device: Some((fd, writable)) };
             for (action, arguments) in actions {
-                let envelope = crate::capabilities::test_support::envelope("radio", action, arguments.clone());
+                let envelope =
+                    crate::capabilities::test_support::envelope(shared::Capability::Radio, action, arguments.clone());
                 super::super::dispatch(&controller, &envelope);
             }
             drop(controller);

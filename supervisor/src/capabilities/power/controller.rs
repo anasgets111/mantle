@@ -364,7 +364,8 @@ mod tests {
     async fn dispatch_routes_set_profile_to_the_daemon_and_drops_the_rest() {
         let bus = private_bus().await;
         let (_daemon, power, _fake, mut sets) = serve_profiles(&bus).await;
-        let dispatch = crate::capabilities::test_support::dispatcher("power", super::super::dispatch, &power);
+        let dispatch =
+            crate::capabilities::test_support::dispatcher(shared::Capability::Power, super::super::dispatch, &power);
 
         dispatch("nonsense", vec!["power-saver".into()]);
         dispatch("set_profile", vec![]);

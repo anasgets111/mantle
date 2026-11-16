@@ -8,16 +8,22 @@ use tokio::net::UnixStream;
 
 use zbus::zvariant::{OwnedValue, Value};
 
-/// A Lua command as `dispatch` receives it, for a capability's dispatch tests.
-pub(crate) fn envelope(capability: &str, action: &str, arguments: Vec<serde_json::Value>) -> shared::CommandEnvelope {
-    let (capability, action) = (capability.into(), action.into());
-    let params = shared::CommandParams { generation_id: 0, capability, action, arguments, legacy_expected_revision: 0 };
-    shared::CommandEnvelope { params, id: 0 }
+/// A Lua command as `dispatch` receives it, for a capability's dispatch tests. Generation and id
+/// are not the defaults, so a `dispatch` that drops them for zero fails a test that checks them.
+pub(crate) fn envelope(
+    capability: shared::Capability,
+    action: &str,
+    arguments: Vec<serde_json::Value>,
+) -> shared::CommandEnvelope {
+    let (capability, action) = (capability.as_str().into(), action.into());
+    let params = shared::CommandParams { generation_id: 7, capability, action, arguments, legacy_expected_revision: 0 };
+    shared::CommandEnvelope { params, id: 3 }
 }
 
-/// `dispatch` bound to one controller, sending each call as Lua would.
+/// `dispatch` bound to one controller, called directly with each [`envelope`]: routing by
+/// capability name is not exercised.
 pub(crate) fn dispatcher<'a, C>(
-    capability: &'static str,
+    capability: shared::Capability,
     dispatch: fn(&C, &shared::CommandEnvelope),
     controller: &'a C,
 ) -> impl Fn(&str, Vec<serde_json::Value>) + 'a {
