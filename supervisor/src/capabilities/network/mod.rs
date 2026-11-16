@@ -109,3 +109,229 @@ pub fn dispatch(controller: &NetworkController, envelope: &shared::CommandEnvelo
         NetworkAction::CancelVpnSecret => controller.cancel_vpn_secret(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use shared::Capability;
+    use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+    use zbus::message::Header;
+    use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+
+    use super::connect::tests::{ListedProfiles, attempting, begun, home_on, wifi};
+    use super::join::tests::joined;
+    use super::vpn::tests::{ACTIVE, FakeActive, settings};
+    use super::*;
+    use crate::capabilities::bind;
+    use crate::capabilities::test_support::{dispatcher, poll_until, within};
+
+    const NM: &str = "/org/freedesktop/NetworkManager";
+    const WLAN0: &str = "/org/freedesktop/NetworkManager/Devices/1";
+    const WLAN1: &str = "/org/freedesktop/NetworkManager/Devices/2";
+    const ETH0: &str = "/org/freedesktop/NetworkManager/Devices/3";
+    const HOME: &str = "/org/freedesktop/NetworkManager/Settings/1";
+    const VPN: &str = "/org/freedesktop/NetworkManager/Settings/2";
+
+    /// Each fake sends `<object path> <call>` for every call it answers, to a test that may not listen.
+    fn record(calls: &UnboundedSender<String>, header: &Header<'_>, call: String) {
+        let path = header.path().map_or("", |path| path.as_str());
+        let _ = calls.send(format!("{path} {call}"));
+    }
+
+    /// NetworkManager's manager object, for any `network` test that checks what it was asked.
+    pub(crate) struct Nm(pub(crate) UnboundedSender<String>);
+
+    #[zbus::interface(name = "org.freedesktop.NetworkManager")]
+    impl Nm {
+        fn enable(&self, #[zbus(header)] header: Header<'_>, enable: bool) {
+            record(&self.0, &header, format!("Enable({enable})"));
+        }
+
+        #[zbus(property)]
+        fn wireless_enabled(&self) -> bool {
+            false
+        }
+
+        #[zbus(property)]
+        fn set_wireless_enabled(&self, enabled: bool) {
+            let _ = self.0.send(format!("{NM} WirelessEnabled={enabled}"));
+        }
+
+        #[zbus(property)]
+        fn active_connections(&self) -> Vec<OwnedObjectPath> {
+            vec![OwnedObjectPath::try_from(ACTIVE).unwrap()]
+        }
+
+        fn activate_connection(
+            &self,
+            #[zbus(header)] header: Header<'_>,
+            profile: OwnedObjectPath,
+            device: OwnedObjectPath,
+            ap: OwnedObjectPath,
+        ) -> OwnedObjectPath {
+            record(&self.0, &header, format!("ActivateConnection({profile}, {device}, {ap})"));
+            OwnedObjectPath::try_from(ACTIVE).unwrap()
+        }
+
+        fn deactivate_connection(&self, #[zbus(header)] header: Header<'_>, active: OwnedObjectPath) {
+            record(&self.0, &header, format!("DeactivateConnection({active})"));
+        }
+    }
+
+    struct Device(UnboundedSender<String>);
+
+    #[zbus::interface(name = "org.freedesktop.NetworkManager.Device")]
+    impl Device {
+        fn disconnect(&self, #[zbus(header)] header: Header<'_>) {
+            record(&self.0, &header, "Disconnect".into());
+        }
+    }
+
+    struct Wireless(UnboundedSender<String>);
+
+    #[zbus::interface(name = "org.freedesktop.NetworkManager.Device.Wireless")]
+    impl Wireless {
+        fn request_scan(&self, #[zbus(header)] header: Header<'_>, _options: HashMap<String, OwnedValue>) {
+            record(&self.0, &header, "RequestScan".into());
+        }
+    }
+
+    pub(crate) struct SavedProfile(
+        pub(crate) UnboundedSender<String>,
+        pub(crate) HashMap<String, HashMap<String, OwnedValue>>,
+    );
+
+    #[zbus::interface(name = "org.freedesktop.NetworkManager.Settings.Connection")]
+    impl SavedProfile {
+        fn get_settings(&self) -> HashMap<String, HashMap<String, OwnedValue>> {
+            self.1.clone()
+        }
+
+        fn delete(&self, #[zbus(header)] header: Header<'_>) {
+            record(&self.0, &header, "Delete".into());
+        }
+    }
+
+    /// A controller with Wi-Fi devices wlan0 and wlan1, one wired device, a saved `home` network
+    /// and a VPN `u-1` whose activation reads as activated; then what its NetworkManager was asked.
+    async fn fixture()
+    -> (NetworkController, UnboundedReceiver<String>, UnboundedReceiver<NetworkSignal>, zbus::Connection) {
+        let (calls, asked) = unbounded_channel();
+        let ssid = OwnedValue::try_from(Value::from(&b"home"[..])).unwrap();
+        let home = HashMap::from([("802-11-wireless".into(), HashMap::from([("ssid".into(), ssid)]))]);
+        let (controller, events, peer) = attempting(|mut peer| {
+            for path in [WLAN0, WLAN1, ETH0] {
+                peer = peer.serve_at(path, Device(calls.clone()))?;
+            }
+            peer.serve_at(NM, Nm(calls.clone()))?
+                .serve_at(WLAN0, Wireless(calls.clone()))?
+                .serve_at(WLAN1, Wireless(calls.clone()))?
+                .serve_at(HOME, SavedProfile(calls.clone(), home))?
+                .serve_at(VPN, SavedProfile(calls.clone(), settings("vpn")))?
+                .serve_at(
+                    "/org/freedesktop/NetworkManager/Settings",
+                    ListedProfiles([HOME, VPN].map(|path| OwnedObjectPath::try_from(path).unwrap()).to_vec()),
+                )?
+                .serve_at(ACTIVE, FakeActive { state: proxies::ACTIVE_STATE_ACTIVATED, then: None })
+        })
+        .await;
+        for (id, path) in [("wlan0", WLAN0), ("wlan1", WLAN1)] {
+            let device = wifi(&controller, id, OwnedObjectPath::try_from(path).unwrap()).await;
+            controller.devices.lock().unwrap().wifi.push(device);
+        }
+        let path = OwnedObjectPath::try_from(ETH0).unwrap();
+        let device = bind(&controller.connection, path.clone()).await.unwrap();
+        let wired = bind(&controller.connection, path.clone()).await.unwrap();
+        controller.devices.lock().unwrap().ethernet.push(devices::EthernetDevice { device, wired, path });
+        controller.refresh_profiles().await;
+        (controller, asked, events, peer)
+    }
+
+    /// Every arm that writes to NetworkManager reaches its one call, on the device or profile named.
+    #[tokio::test]
+    async fn each_write_reaches_its_networkmanager_call() {
+        let cases: [(&str, Vec<serde_json::Value>, String); 10] = [
+            ("set_networking_enabled", vec![false.into()], format!("{NM} Enable(false)")),
+            ("set_wifi_enabled", vec![true.into()], format!("{NM} WirelessEnabled=true")),
+            ("set_ethernet_enabled", vec![false.into()], format!("{ETH0} Disconnect")),
+            ("scan", vec![], format!("{WLAN0} RequestScan")),
+            ("scan_device", vec!["wlan1".into()], format!("{WLAN1} RequestScan")),
+            ("forget", vec!["home".into()], format!("{HOME} Delete")),
+            ("disconnect_wifi", vec![], format!("{WLAN0} Disconnect")),
+            ("disconnect_wifi_device", vec!["wlan1".into()], format!("{WLAN1} Disconnect")),
+            ("connect_vpn", vec!["u-1".into()], format!("{NM} ActivateConnection({VPN}, /, /)")),
+            ("disconnect_vpn", vec!["u-1".into()], format!("{NM} DeactivateConnection({ACTIVE})")),
+        ];
+        let mut wrong = Vec::new();
+        for (action, arguments, expected) in cases {
+            let (controller, mut asked, _events, _peer) = fixture().await;
+            dispatcher(Capability::Network, dispatch, &controller)(action, arguments);
+            let call = within(asked.recv()).await;
+            if call.as_deref() != Some(expected.as_str()) {
+                wrong.push(format!("{action}: expected {expected:?}, got {call:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    #[tokio::test]
+    async fn connect_stashes_its_intent_on_the_primary_or_named_device() {
+        for (action, arguments, hidden, id, path) in [
+            ("connect", vec!["cafe".into(), false.into()], false, "wlan0", WLAN0),
+            ("connect_device", vec!["cafe".into(), true.into(), "wlan1".into()], true, "wlan1", WLAN1),
+        ] {
+            let (controller, _asked, _events, _peer) = fixture().await;
+            dispatcher(Capability::Network, dispatch, &controller)(action, arguments);
+            // Stashed before `dispatch` returns; its resolution is spawned.
+            let pending = controller.pending_intent().unwrap_or_else(|| panic!("{action} stashed nothing"));
+            let device_path = pending.device_path.as_ref().map(|path| path.as_str());
+            assert_eq!(
+                (pending.ssid.as_str(), pending.hidden, pending.device_id.as_str(), device_path),
+                ("cafe", hidden, id, Some(path)),
+                "{action}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_drops_only_a_prompt_and_abort_stops_an_accepted_join() {
+        let (controller, mut asked, _events, _peer) = fixture().await;
+        let dispatch = dispatcher(Capability::Network, dispatch, &controller);
+        let join = || {
+            let mut state = NetworkState::default();
+            controller.join.lock().unwrap().overlay(&mut state);
+            (state.password_ssid, state.connecting_ssid)
+        };
+        {
+            let mut join = controller.join.lock().unwrap();
+            join.stash(home_on(WLAN0));
+            let pending = join.pending().unwrap();
+            assert!(join.request_password(&pending));
+        }
+        dispatch("cancel_connect", vec![]);
+        assert_eq!(join(), (None, None), "cancel takes the prompt down");
+
+        let (_, attempt) = begun(&controller, home_on(WLAN0));
+        assert!(controller.accept(attempt, &joined(1)));
+        dispatch("cancel_connect", vec![]);
+        assert_eq!(join(), (None, Some("home".into())), "cancel leaves a running join");
+        dispatch("abort_connect", vec![]);
+        assert_eq!(join(), (None, None), "abort ends the join");
+        let stopped = within(asked.recv()).await;
+        assert_eq!(stopped, Some(format!("{NM} DeactivateConnection({})", joined(1).active)));
+    }
+
+    #[tokio::test]
+    async fn cancel_vpn_secret_declines_the_pending_request() {
+        let (controller, _asked, _events, _peer) = fixture().await;
+        let declined = secret_agent::tests::asking(Arc::clone(&controller.vpn), controller.events.clone());
+        poll_until(|| controller.vpn.lock().unwrap().secret.is_some().then_some(())).await;
+
+        dispatcher(Capability::Network, dispatch, &controller)("cancel_vpn_secret", vec![]);
+
+        assert!(controller.vpn.lock().unwrap().secret.is_none(), "the request is taken down at once");
+        assert!(within(declined).await.unwrap(), "NetworkManager hears the user declined");
+    }
+}

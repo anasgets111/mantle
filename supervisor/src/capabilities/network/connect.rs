@@ -373,7 +373,7 @@ pub(super) mod tests {
         }
     }
 
-    async fn wifi(controller: &NetworkController, id: &str, path: OwnedObjectPath) -> WifiDevice {
+    pub(crate) async fn wifi(controller: &NetworkController, id: &str, path: OwnedObjectPath) -> WifiDevice {
         WifiDevice {
             id: id.into(),
             device: bind::<DeviceProxy>(&controller.connection, path.clone()).await.unwrap(),
@@ -457,7 +457,10 @@ pub(super) mod tests {
     }
 
     /// Stashes `pending` and begins it, as a password submission does.
-    fn begun(controller: &NetworkController, pending: PendingNetworkConnect) -> (PendingNetworkConnect, u64) {
+    pub(crate) fn begun(
+        controller: &NetworkController,
+        pending: PendingNetworkConnect,
+    ) -> (PendingNetworkConnect, u64) {
         let mut join = controller.join.lock().unwrap();
         join.stash(pending);
         let current = join.pending().unwrap();
@@ -466,7 +469,7 @@ pub(super) mod tests {
         (pending, attempt)
     }
 
-    fn home_on(device: &str) -> PendingNetworkConnect {
+    pub(crate) fn home_on(device: &str) -> PendingNetworkConnect {
         PendingNetworkConnect {
             attempt: 0,
             ssid: "home".into(),

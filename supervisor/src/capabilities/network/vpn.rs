@@ -197,20 +197,21 @@ impl NetworkController {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+pub(super) mod tests {
     use std::time::Duration;
 
-    use zbus::zvariant::{ObjectPath, Value};
+    use tokio::sync::mpsc::UnboundedReceiver;
+    use zbus::zvariant::Value;
 
     use super::*;
     use crate::capabilities::network::connect::tests::{ListedProfiles, attempting};
+    use crate::capabilities::network::tests::{Nm, SavedProfile};
     use crate::capabilities::test_support::within;
 
-    const ACTIVE: &str = "/org/freedesktop/NetworkManager/ActiveConnection/3";
+    pub(crate) const ACTIVE: &str = "/org/freedesktop/NetworkManager/ActiveConnection/3";
     const PROFILE: &str = "/org/freedesktop/NetworkManager/Settings/5";
 
-    fn settings(kind: &str) -> HashMap<String, HashMap<String, OwnedValue>> {
+    pub(crate) fn settings(kind: &str) -> HashMap<String, HashMap<String, OwnedValue>> {
         let field = |value: &str| OwnedValue::try_from(Value::from(value)).unwrap();
         HashMap::from([(
             "connection".to_string(),
@@ -225,43 +226,10 @@ mod tests {
         assert_eq!(profile_of(&settings("802-11-wireless")), None);
     }
 
-    /// Counts `DeactivateConnection` calls.
-    struct FakeNm(Arc<AtomicUsize>);
-
-    #[zbus::interface(name = "org.freedesktop.NetworkManager")]
-    impl FakeNm {
-        #[zbus(property)]
-        fn active_connections(&self) -> Vec<OwnedObjectPath> {
-            vec![OwnedObjectPath::try_from(ACTIVE).unwrap()]
-        }
-
-        fn activate_connection(
-            &self,
-            _profile: ObjectPath<'_>,
-            _device: ObjectPath<'_>,
-            _ap: ObjectPath<'_>,
-        ) -> OwnedObjectPath {
-            OwnedObjectPath::try_from(ACTIVE).unwrap()
-        }
-
-        fn deactivate_connection(&self, _active: ObjectPath<'_>) {
-            self.0.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-
-    struct FakeProfile;
-
-    #[zbus::interface(name = "org.freedesktop.NetworkManager.Settings.Connection")]
-    impl FakeProfile {
-        fn get_settings(&self) -> HashMap<String, HashMap<String, OwnedValue>> {
-            settings("vpn")
-        }
-    }
-
     /// An activation reading `state`, whose `State` read first queues `then`, as NM does.
-    struct FakeActive {
-        state: u32,
-        then: Option<(u32, u32)>,
+    pub(crate) struct FakeActive {
+        pub(crate) state: u32,
+        pub(crate) then: Option<(u32, u32)>,
     }
 
     #[zbus::interface(name = "org.freedesktop.NetworkManager.Connection.Active")]
@@ -281,21 +249,21 @@ mod tests {
         }
     }
 
-    async fn controller(active: FakeActive) -> (NetworkController, Arc<AtomicUsize>, zbus::Connection) {
-        let deactivated = Arc::<AtomicUsize>::default();
-        let nm = FakeNm(Arc::clone(&deactivated));
+    /// The controller, and every call its NetworkManager answers.
+    async fn controller(active: FakeActive) -> (NetworkController, UnboundedReceiver<String>, zbus::Connection) {
+        let (calls, asked) = tokio::sync::mpsc::unbounded_channel();
         let (controller, _events, peer) = attempting(|peer| {
-            peer.serve_at("/org/freedesktop/NetworkManager", nm)?
+            peer.serve_at("/org/freedesktop/NetworkManager", Nm(calls.clone()))?
                 .serve_at(
                     "/org/freedesktop/NetworkManager/Settings",
                     ListedProfiles(vec![PROFILE.try_into().unwrap()]),
                 )?
-                .serve_at(PROFILE, FakeProfile)?
+                .serve_at(PROFILE, SavedProfile(calls, settings("vpn")))?
                 .serve_at(ACTIVE, active)
         })
         .await;
         controller.refresh_profiles().await;
-        (controller, deactivated, peer)
+        (controller, asked, peer)
     }
 
     fn vpn_error(controller: &NetworkController) -> Option<String> {
@@ -378,13 +346,15 @@ mod tests {
 
     #[tokio::test]
     async fn the_ceiling_stops_a_stuck_activation_and_a_user_disconnect_is_no_error() {
-        let (controller, deactivated, _peer) = controller(FakeActive { state: 1, then: None }).await;
+        let (controller, mut asked, _peer) = controller(FakeActive { state: 1, then: None }).await;
         tokio::time::pause();
         tokio::join!(controller.connect_vpn("u-1"), controller.disconnect_vpn("u-1"));
         assert_eq!(vpn_error(&controller), None, "the user stopped it");
 
         controller.connect_vpn("u-1").await;
         assert_eq!(vpn_error(&controller).as_deref(), Some("connection timed out"));
-        assert_eq!(deactivated.load(Ordering::SeqCst), 3, "the disconnect, then each ceiling");
+        let deactivated =
+            std::iter::from_fn(|| asked.try_recv().ok()).filter(|call| call.contains("DeactivateConnection"));
+        assert_eq!(deactivated.count(), 3, "the disconnect, then each ceiling");
     }
 }

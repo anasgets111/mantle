@@ -272,7 +272,7 @@ pub(super) async fn register(connection: &zbus::Connection) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::capabilities::test_support::private_bus;
 
@@ -323,6 +323,18 @@ mod tests {
     async fn ask(agent: &SecretAgent, fields: &[&str], flags: u32) -> Result<Settings, AgentError> {
         let path = OwnedObjectPath::try_from(PATH).unwrap();
         agent.ask(profile("vpn", None), path, "vpn".into(), strings(fields), flags).await
+    }
+
+    /// A `GetSecrets` for one VPN password through `vpn`, as the exported agent asks it; resolves to
+    /// whether the user declined it.
+    pub(crate) fn asking(
+        vpn: Arc<Mutex<VpnState>>,
+        events: UnboundedSender<NetworkSignal>,
+    ) -> tokio::task::JoinHandle<bool> {
+        tokio::spawn(async move {
+            let agent = SecretAgent { vpn, events };
+            matches!(ask(&agent, &["password"], FLAG_ALLOW_INTERACTION).await, Err(AgentError::UserCanceled(_)))
+        })
     }
 
     #[tokio::test]

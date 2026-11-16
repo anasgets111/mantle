@@ -454,21 +454,13 @@ mod tests {
         assert_eq!(display_ssid(false, None), None);
     }
 
-    struct FakeProfileConn(HashMap<String, HashMap<String, zbus::zvariant::OwnedValue>>);
-
-    #[zbus::interface(name = "org.freedesktop.NetworkManager.Settings.Connection")]
-    impl FakeProfileConn {
-        fn get_settings(&self) -> HashMap<String, HashMap<String, zbus::zvariant::OwnedValue>> {
-            self.0.clone()
-        }
-    }
-
     #[tokio::test]
     async fn startup_and_saved_changed_walk_profiles_once_and_clear_on_error() {
         use zbus::zvariant::{OwnedValue, Value};
 
         use super::super::connect::tests::ListedProfiles;
         use super::super::devices::tests::{collect_method_calls, method_call_monitor};
+        use super::super::tests::SavedProfile;
 
         let ov = |v: Value<'_>| OwnedValue::try_from(v).unwrap();
         let vpn = |k: &str, i: &str| {
@@ -494,7 +486,7 @@ mod tests {
             (6, vpn("vpn", "beta")),
         ];
         for (n, map) in profiles {
-            builder = builder.serve_at(p(n), FakeProfileConn(map)).unwrap();
+            builder = builder.serve_at(p(n), SavedProfile(tokio::sync::mpsc::unbounded_channel().0, map)).unwrap();
         }
         let nm_conn = builder.name("org.freedesktop.NetworkManager").unwrap().build().await.unwrap();
         let conn = bus.connection().await;
