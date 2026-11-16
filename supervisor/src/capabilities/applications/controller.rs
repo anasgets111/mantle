@@ -179,7 +179,7 @@ impl ApplicationsController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capabilities::test_support::within;
+    use crate::capabilities::test_support::{dispatcher, within};
 
     #[test]
     fn only_a_web_or_mail_url_without_whitespace_or_excess_length_is_openable() {
@@ -357,8 +357,9 @@ mod tests {
         tokio::task::spawn_blocking(move || rescan()).await.unwrap();
         assert!(rx.try_recv().is_err(), "a rescan finding the same entries must not push a snapshot");
 
-        controller.refresh();
+        controller.watch.abort(); // or the watch, not `refresh`, finds `b`
         std::fs::write(dir.path().join("b.desktop"), runnable("B", "/bin/true")).unwrap();
+        controller.refresh();
         while controller.snapshot().entries.len() < 2 {
             within(rx.recv()).await.unwrap();
         }
@@ -376,6 +377,34 @@ mod tests {
             }
         })
         .await;
+    }
+
+    #[tokio::test]
+    async fn dispatch_routes_refresh_launch_and_open_url_and_drops_the_rest() {
+        static OPENED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        let marker = tempfile::tempdir().unwrap();
+        let touched = marker.path().join("ran");
+        let (mut controller, dir) =
+            controller_over(&[("t.desktop", &runnable("Toucher", &format!("touch {}", touched.display())))]).await;
+        controller.watch.abort(); // only `refresh` may rescan
+        controller.spawn_url = |_, args| {
+            OPENED.lock().unwrap().extend_from_slice(args);
+            Ok(())
+        };
+        let dispatch = dispatcher(shared::Capability::Applications, super::super::dispatch, &controller);
+
+        dispatch("open_url", vec![7.into()]);
+        dispatch("nonsense", vec!["https://example.org/nonsense".into()]);
+        dispatch("open_url", vec!["https://example.org".into()]);
+        assert_eq!(*OPENED.lock().unwrap(), ["https://example.org"]);
+
+        dispatch("launch", vec!["t".into()]);
+        crate::capabilities::test_support::poll_until(|| touched.exists().then_some(())).await;
+
+        std::fs::write(dir.path().join("b.desktop"), runnable("B", "/bin/true")).unwrap();
+        dispatch("refresh", vec![]);
+        crate::capabilities::test_support::poll_until(|| (controller.snapshot().entries.len() == 2).then_some(()))
+            .await;
     }
 
     #[tokio::test]

@@ -111,7 +111,7 @@ mod tests {
         }));
         let start = tokio::time::Instant::now();
         settle(trickle).await;
-        assert!(start.elapsed() <= Duration::from_secs(2));
+        assert_eq!(start.elapsed(), crate::debounce::MAX_WAIT);
     }
 
     #[tokio::test]
