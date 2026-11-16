@@ -760,9 +760,7 @@ return { panel { id = "a", layer = "top" }, missing, panel { id = "c", layer = "
                     // table to list: every declared name, and a capability's actions, must resolve.
                     _ => {
                         let actions = handle.borrow::<capability::Capability>().map_or(Vec::new(), |cap| {
-                            shared::Capability::from_name(cap.name())
-                                .unwrap()
-                                .actions()
+                            capability::actions(shared::Capability::from_name(cap.name()).unwrap())
                                 .iter()
                                 .map(|a| a.to_string())
                                 .collect()

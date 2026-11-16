@@ -118,8 +118,9 @@ and otherwise fails on a stale file.
 | `docs/capabilities/<name>.md` | Rust capability types and `docs/capabilities/intro/<name>.md` |
 | Property tables in `docs/{nodes,surfaces}/*.md`, `docs/guide/paint.md` | `renderer/src/layout/node/properties.rs`; prose outside the generated markers is hand-written |
 
-`renderer/build.rs` derives config-check samples from `shared/src/schema/` into Cargo's `OUT_DIR`.
-They are embedded in the renderer, never checked in or touched by `just stubs`.
+`renderer/build.rs` derives config-check samples and the Renderer's action names from
+`shared/src/schema/` into Cargo's `OUT_DIR`. They are embedded in the renderer, never checked in or
+touched by `just stubs`.
 
 ## Logging
 

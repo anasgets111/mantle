@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 /// [`Capability::ALL`], [`Capability::as_str`], [`crate::action::check`] and the stub schemas from
 /// each entry's state type and optional action enum, so a new variant missing from the Lua
 /// namespace, stubs or schema check fails to compile instead of staying silently `nil`.
+/// `renderer/build.rs` derives the Renderer's action names from the same schemas.
 macro_rules! roster {
     (@schema) => { None };
     (@schema $action:ident) => { Some(schemars::schema_for!(crate::action::$action)) };
@@ -103,129 +104,6 @@ impl Capability {
     /// Resolves a Renderer-supplied wire string at the trust boundary, or returns `None`.
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|capability| capability.as_str() == name)
-    }
-
-    /// The action names, each a method on `mantle.<name>`; empty for a read-only capability. The
-    /// Renderer refuses any other name at call time; the Supervisor still validates arguments.
-    /// `supervisor/src/stubs.rs` pins each list to its serde action enum.
-    pub const fn actions(self) -> &'static [&'static str] {
-        match self {
-            Capability::AndroidConnect => &[
-                "broadcast",
-                "ring",
-                "ping",
-                "send_clipboard",
-                "share_clipboard",
-                "send_files",
-                "browse",
-                "unmount",
-                "pair",
-                "unpair",
-                "accept_pairing",
-                "reject_pairing",
-                "set_plugin_enabled",
-                "add_command",
-                "remove_command",
-                "set_clipboard_auto_share",
-            ],
-            Capability::Applications => &["refresh", "launch", "open_url"],
-            Capability::Audio => &[
-                "set_volume",
-                "set_muted",
-                "toggle_mute",
-                "set_balance",
-                "set_default_sink",
-                "set_default_source",
-                "set_channel_volume",
-                "set_app_volume",
-                "set_app_muted",
-                "set_app_target",
-                "set_card_profile",
-                "set_port",
-                "set_virtual_devices",
-                "set_level_meters",
-            ],
-            Capability::Bluetooth => &[
-                "set_enabled",
-                "set_discoverable",
-                "start_discovery",
-                "stop_discovery",
-                "pair",
-                "connect",
-                "disconnect",
-                "forget",
-                "answer_pairing",
-            ],
-            Capability::Brightness => &["set"],
-            Capability::Radio => &["set_blocked", "set_all_blocked"],
-            Capability::Folders => &["watch", "unwatch"],
-            Capability::Processes => &["declare", "start", "signal", "stop"],
-            Capability::Keyboard => &["set_backlight", "switch_layout"],
-            Capability::Lock => &["lock", "set_unlock_animation"],
-            Capability::Mpris => &[
-                "control",
-                "seek",
-                "seek_relative",
-                "raise",
-                "quit",
-                "open_uri",
-                "set_volume",
-                "set_loop_status",
-                "set_shuffle",
-                "set_rate",
-                "track_list_add_track",
-                "track_list_remove_track",
-                "track_list_go_to",
-                "playlists_get",
-                "playlists_activate",
-            ],
-            Capability::Network => &[
-                "set_networking_enabled",
-                "set_wifi_enabled",
-                "set_ethernet_enabled",
-                "scan",
-                "scan_device",
-                "connect",
-                "connect_device",
-                "cancel_connect",
-                "abort_connect",
-                "forget",
-                "disconnect_wifi",
-                "disconnect_wifi_device",
-                "connect_vpn",
-                "disconnect_vpn",
-                "cancel_vpn_secret",
-            ],
-            Capability::Notifications => &[
-                "dismiss",
-                "invoke_action",
-                "reply",
-                "set_sound",
-                "set_dnd",
-                "set_quiet",
-                "set_app_muted",
-                "hold_expiry",
-            ],
-            Capability::Power => &["set_profile"],
-            Capability::Sysinfo => &["configure"],
-            Capability::Storage => &["open", "set"],
-            Capability::Polkit => &["cancel", "select_identity"],
-            Capability::Tray => {
-                &["activate", "context_menu", "secondary_activate", "scroll", "activate_menu_item", "menu_will_show"]
-            }
-            Capability::Updates => &["check", "configure", "install"],
-            Capability::Workspaces => &["focus", "toggle_special"],
-            Capability::Windows => {
-                &["focus", "close", "set_fullscreen", "set_minimized", "set_maximized", "move_to_workspace"]
-            }
-            Capability::Clock => &["configure"],
-            Capability::Appearance
-            | Capability::AudioLevels
-            | Capability::Battery
-            | Capability::Idle
-            | Capability::Privacy
-            | Capability::Secrets => &[],
-        }
     }
 }
 

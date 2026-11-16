@@ -248,16 +248,13 @@ fn render_actions(class: &str, actions: &serde_json::Value, out: &mut String) {
 /// ponytail: `properties` come back alphabetical, so arguments follow `required` order, then at
 /// most one optional; a second needs serde's field order.
 fn action_list(actions: &serde_json::Value) -> Vec<(String, Vec<String>, String)> {
-    let branches =
-        actions.get("oneOf").and_then(|o| o.as_array()).map_or_else(|| vec![actions], |b| b.iter().collect());
     let mut list = Vec::new();
-    for branch in branches {
+    for (name, branch) in shared::schema::action_variants(actions) {
         let description = one_line(branch.get("description"));
-        if let Some(names) = enum_strings(branch).or_else(|| Some(vec![branch.get("const")?.as_str()?])) {
-            list.extend(names.into_iter().map(|name| (name.to_string(), Vec::new(), description.clone())));
+        let Some(fields) = branch.get("properties").and_then(|p| p.get(name)) else {
+            list.push((name.to_string(), Vec::new(), description));
             continue;
-        }
-        let (name, fields) = branch["properties"].as_object().and_then(|p| p.iter().next()).expect("a one-key object");
+        };
         let properties = fields["properties"].as_object().expect("a struct variant");
         let required: Vec<&str> = fields
             .get("required")
@@ -268,7 +265,7 @@ fn action_list(actions: &serde_json::Value) -> Vec<(String, Vec<String>, String)
         let optional: Vec<_> = properties.iter().filter(|(field, _)| !required.contains(&field.as_str())).collect();
         assert!(optional.len() <= 1, "{name} has {} optional arguments; see the ponytail above", optional.len());
         arguments.extend(optional.into_iter().map(|(field, fragment)| format!("{field}?: {}", lua_type(fragment))));
-        list.push((name.clone(), arguments, description));
+        list.push((name.to_string(), arguments, description));
     }
     list
 }
@@ -442,18 +439,5 @@ mod tests {
             files.push((format!("docs/capabilities/{capability}.md"), page));
         }
         shared::check_generated(&files);
-    }
-
-    /// The Renderer's methods are `shared::Capability::actions`, so each list must be exactly its
-    /// serde action enum's variants.
-    #[test]
-    fn the_renderer_action_names_are_the_serde_variants() {
-        for (capability, _, actions) in super::capability_schemas() {
-            let variants: Vec<String> = actions.map_or_else(Vec::new, |actions| {
-                super::action_list(actions.as_value()).into_iter().map(|(name, ..)| name).collect()
-            });
-            let listed = shared::Capability::from_name(capability).expect("a roster name").actions();
-            assert_eq!(variants, listed, "shared::Capability::actions for {capability}");
-        }
     }
 }
