@@ -16,7 +16,7 @@ use futures_util::{FutureExt, StreamExt};
 use shared::{debug, warn};
 use tokio::task::JoinHandle;
 
-use super::collections::{TrackListState, next_optional, read_playlists, read_track_list, spawn_collections_forwarder};
+use super::collections::{TrackListState, collections_forwarder, next_optional, read_playlists, read_track_list};
 use super::metadata::{TrackIdentity, parse_metadata, resolve_album_art_path};
 use super::position::{publish_seeked_position, resolve_position};
 use super::proxies::{
@@ -319,6 +319,16 @@ pub(super) async fn register_player(
 
     let Resynced { mut state, identity, trackid } = resync(&bus_name, &player, &root, None).await;
     state.pid = owner_pid(connection, &bus_name).await;
+    let (refresh_tx, refresh_rx) = tokio::sync::mpsc::unbounded_channel();
+    let collections_forwarder = collections_forwarder(
+        bus_name.clone(),
+        track_list.clone(),
+        playlists.clone(),
+        registry.clone(),
+        events.clone(),
+        refresh_rx,
+    )
+    .await;
     if let Some(proxy) = &track_list
         && let Ok(tracks) = read_track_list(proxy, trackid.as_deref()).await
     {
@@ -334,8 +344,8 @@ pub(super) async fn register_player(
     let mut entry = PlayerEntry {
         player: player.clone(),
         root: root.clone(),
-        track_list: track_list.clone(),
-        playlists: playlists.clone(),
+        track_list,
+        playlists,
         last_known: state,
         registered: 0,
         track_identity: identity,
@@ -372,17 +382,9 @@ pub(super) async fn register_player(
         }
     }
 
-    let (refresh_tx, refresh_rx) = tokio::sync::mpsc::unbounded_channel();
     let forwarder =
         spawn_player_forwarder(bus_name.clone(), player, root, registry.clone(), events.clone(), refresh_tx);
-    let collections_forwarder = spawn_collections_forwarder(
-        bus_name.clone(),
-        track_list,
-        playlists,
-        registry.clone(),
-        events.clone(),
-        refresh_rx,
-    );
+    let collections_forwarder = tokio::spawn(collections_forwarder);
     match registry.lock().expect("mutex poisoned").get_mut(&bus_name) {
         Some(entry) => entry.forwarder = Some(forwarder),
         // A real NameOwnerChanged departure raced insertion; abort the new forwarder rather than

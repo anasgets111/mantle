@@ -2,10 +2,9 @@
 
 pub use shared::state::mpris::{PlaylistSummary, PlaylistsState, TrackListState, TrackSummary};
 
-use futures_util::{Stream, StreamExt};
+use futures_util::{FutureExt, Stream, StreamExt};
 use std::collections::HashMap;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio::task::JoinHandle;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 use super::metadata::parse_metadata;
@@ -115,52 +114,68 @@ pub(super) async fn next_optional<S: Stream + Unpin>(stream: &mut Option<S>) -> 
     }
 }
 
-pub(super) fn spawn_collections_forwarder(
+/// Subscribes to every change stream, then returns the forwarder for the caller to spawn. Await it
+/// before the registration read, so a change landing after that read still wakes the forwarder.
+pub(super) async fn collections_forwarder(
     bus_name: String,
     track_list: Option<MprisTrackListProxy<'static>>,
     playlists: Option<MprisPlaylistsProxy<'static>>,
     registry: PlayerRegistry,
     events: UnboundedSender<()>,
     mut refresh: UnboundedReceiver<()>,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut replaced = match &track_list {
-            Some(proxy) => proxy.receive_track_list_replaced().await.ok(),
-            None => None,
-        };
-        let mut added = match &track_list {
-            Some(proxy) => proxy.receive_track_added().await.ok(),
-            None => None,
-        };
-        let mut removed = match &track_list {
-            Some(proxy) => proxy.receive_track_removed().await.ok(),
-            None => None,
-        };
-        let mut metadata_changed = match &track_list {
-            Some(proxy) => proxy.receive_track_metadata_changed().await.ok(),
-            None => None,
-        };
-        let mut can_edit = match &track_list {
-            Some(proxy) => Some(proxy.receive_can_edit_tracks_changed().await),
-            None => None,
-        };
-        let mut playlist_changed = match &playlists {
-            Some(proxy) => proxy.receive_playlist_changed().await.ok(),
-            None => None,
-        };
-        let mut playlist_count = match &playlists {
-            Some(proxy) => Some(proxy.receive_playlist_count_changed().await),
-            None => None,
-        };
-        let mut orderings = match &playlists {
-            Some(proxy) => Some(proxy.receive_orderings_changed().await),
-            None => None,
-        };
-        let mut active_playlist = match &playlists {
-            Some(proxy) => Some(proxy.receive_active_playlist_changed().await),
-            None => None,
-        };
+) -> impl Future<Output = ()> + Send + 'static {
+    let mut replaced = match &track_list {
+        Some(proxy) => proxy.receive_track_list_replaced().await.ok(),
+        None => None,
+    };
+    let mut added = match &track_list {
+        Some(proxy) => proxy.receive_track_added().await.ok(),
+        None => None,
+    };
+    let mut removed = match &track_list {
+        Some(proxy) => proxy.receive_track_removed().await.ok(),
+        None => None,
+    };
+    let mut metadata_changed = match &track_list {
+        Some(proxy) => proxy.receive_track_metadata_changed().await.ok(),
+        None => None,
+    };
+    let mut can_edit = match &track_list {
+        Some(proxy) => Some(proxy.receive_can_edit_tracks_changed().await),
+        None => None,
+    };
+    let mut playlist_changed = match &playlists {
+        Some(proxy) => proxy.receive_playlist_changed().await.ok(),
+        None => None,
+    };
+    let mut playlist_count = match &playlists {
+        Some(proxy) => Some(proxy.receive_playlist_count_changed().await),
+        None => None,
+    };
+    let mut orderings = match &playlists {
+        Some(proxy) => Some(proxy.receive_orderings_changed().await),
+        None => None,
+    };
+    let mut active_playlist = match &playlists {
+        Some(proxy) => Some(proxy.receive_active_playlist_changed().await),
+        None => None,
+    };
 
+    // zbus replays each cached property on a stream's first poll, and the cache fills from a
+    // `GetAll` that these getters wait for. Dropping the replays before the caller's read leaves
+    // only later changes to wake the loop, without losing one (#102).
+    if let Some(proxy) = &track_list {
+        let _ = proxy.can_edit_tracks().await;
+    }
+    if let Some(proxy) = &playlists {
+        let _ = proxy.playlist_count().await;
+    }
+    next_optional(&mut can_edit).now_or_never();
+    next_optional(&mut playlist_count).now_or_never();
+    next_optional(&mut orderings).now_or_never();
+    next_optional(&mut active_playlist).now_or_never();
+
+    async move {
         loop {
             let changed = tokio::select! {
                 Some(_) = refresh.recv() => true,
@@ -224,7 +239,7 @@ pub(super) fn spawn_collections_forwarder(
                 return;
             }
         }
-    })
+    }
 }
 
 #[cfg(test)]
@@ -239,7 +254,6 @@ pub(super) mod tests {
 
     pub(in crate::capabilities::mpris) struct TrackPeer {
         edits: Arc<Mutex<Vec<String>>>,
-        metadata_requests: Arc<Mutex<Vec<usize>>>,
         track_count: Arc<AtomicUsize>,
         short_metadata: Arc<AtomicBool>,
     }
@@ -248,12 +262,24 @@ pub(super) mod tests {
         /// `tracks` tracks, each edit logged to `edits`: the controller's tests share one log.
         pub(in crate::capabilities::mpris) fn new(edits: Arc<Mutex<Vec<String>>>, tracks: usize) -> Self {
             let track_count = Arc::new(AtomicUsize::new(tracks));
-            Self { edits, metadata_requests: Arc::default(), track_count, short_metadata: Arc::default() }
+            Self { edits, track_count, short_metadata: Arc::default() }
         }
     }
 
     pub(in crate::capabilities::mpris) struct PlaylistPeer {
         pub(in crate::capabilities::mpris) edits: Arc<Mutex<Vec<String>>>,
+        /// Sent as a `PlaylistCount` change by the next `GetPlaylists`, before it answers.
+        pub(in crate::capabilities::mpris) count_on_get: Mutex<Option<u32>>,
+    }
+
+    /// `PlaylistCount` changed to `count`, which the proxy's property cache takes as the value.
+    pub(in crate::capabilities::mpris) async fn playlist_count_changed(
+        emitter: &zbus::object_server::SignalEmitter<'_>,
+        count: u32,
+    ) {
+        let interface = zbus::names::InterfaceName::from_static_str_unchecked("org.mpris.MediaPlayer2.Playlists");
+        let changed = HashMap::from([("PlaylistCount", Value::from(count))]);
+        zbus::fdo::Properties::properties_changed(emitter, interface, changed, (&[][..]).into()).await.unwrap();
     }
 
     fn path(value: &str) -> OwnedObjectPath {
@@ -263,7 +289,7 @@ pub(super) mod tests {
     #[zbus::interface(name = "org.mpris.MediaPlayer2.TrackList")]
     impl TrackPeer {
         async fn get_tracks_metadata(&self, ids: Vec<OwnedObjectPath>) -> Vec<HashMap<String, OwnedValue>> {
-            self.metadata_requests.lock().unwrap().push(ids.len());
+            self.edits.lock().unwrap().push(format!("metadata:{}", ids.len()));
             let count = ids.len() - usize::from(self.short_metadata.load(Ordering::Relaxed));
             (0..count).map(|_| HashMap::new()).collect()
         }
@@ -310,8 +336,13 @@ pub(super) mod tests {
             max_count: u32,
             order: &str,
             reverse_order: bool,
+            #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
         ) -> Vec<(OwnedObjectPath, String, String)> {
             self.edits.lock().unwrap().push(format!("get:{index}:{max_count}:{order}:{reverse_order}"));
+            let count = self.count_on_get.lock().unwrap().take();
+            if let Some(count) = count {
+                playlist_count_changed(&emitter, count).await;
+            }
             (0..max_count.min(2))
                 .map(|index| (path(&format!("/playlist/{index}")), format!("List {index}"), String::new()))
                 .collect()
@@ -369,26 +400,19 @@ pub(super) mod tests {
     #[tokio::test]
     async fn collection_proxies_read_bounded_state_and_send_track_and_playlist_actions() {
         let edits = Arc::new(Mutex::new(Vec::new()));
-        let metadata_requests = Arc::new(Mutex::new(Vec::new()));
         let track_count = Arc::new(AtomicUsize::new(300));
         let short_metadata = Arc::new(AtomicBool::new(false));
         let track_edits = edits.clone();
         let playlist_edits = edits.clone();
-        let requests_for_peer = metadata_requests.clone();
         let count_for_peer = track_count.clone();
         let short_for_peer = short_metadata.clone();
         let (client, server) = p2p_pair_serving(|builder| {
             builder
                 .serve_at(
                     "/tracklist",
-                    TrackPeer {
-                        edits: track_edits,
-                        metadata_requests: requests_for_peer,
-                        track_count: count_for_peer,
-                        short_metadata: short_for_peer,
-                    },
+                    TrackPeer { edits: track_edits, track_count: count_for_peer, short_metadata: short_for_peer },
                 )?
-                .serve_at("/playlists", PlaylistPeer { edits: playlist_edits })
+                .serve_at("/playlists", PlaylistPeer { edits: playlist_edits, count_on_get: Mutex::default() })
         })
         .await;
         let tracks = MprisTrackListProxy::builder(&client).path("/tracklist").unwrap().build().await.unwrap();
@@ -398,7 +422,6 @@ pub(super) mod tests {
         assert_eq!(track_state.current_track, "/track/250");
         assert_eq!(track_state.tracks.len(), TRACK_LIMIT);
         assert_eq!(track_state.tracks.first().unwrap().id, "/track/200");
-        assert_eq!(*metadata_requests.lock().unwrap(), [TRACK_LIMIT]);
         assert!(track_state.can_edit);
         short_metadata.store(true, Ordering::Relaxed);
         assert!(read_track_list(&tracks, Some("/track/250")).await.is_err());
@@ -447,6 +470,9 @@ pub(super) mod tests {
         assert_eq!(
             *edits.lock().unwrap(),
             [
+                // The full window, then the read refused for its short answer.
+                "metadata:100",
+                "metadata:100",
                 "add:file:///tmp/a.ogg:/org/mpris/MediaPlayer2/TrackList/NoTrack:true",
                 "remove:/track/0",
                 "goto:/track/1",
