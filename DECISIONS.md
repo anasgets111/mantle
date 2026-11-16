@@ -9063,3 +9063,20 @@ are not checked. Rejected: stopping on any crate-version change, which turns eve
 upgrade's next crash into a full stop. Deferred: the Supervisor re-executing its upgraded binary
 (#104). ponytail: a missed bump goes unnoticed; upgrade path is a golden of each frame type's wire
 shape.
+
+## 0395. Uncovered codepoints are looked up after the reply
+
+With a waker (the Wayland loop), the shaping worker answers a shape request from the faces already
+loaded and queues each codepoint they lack, once, for a probe thread that runs `fc-match` (queue
+capped at 1024). Only a change to the font database bumps the font generation: a new face file, a
+changed generic mapping, or a replaced chain. A bump reshapes results holding a missing glyph, drops
+every solver tree (unchanged nodes keep their memo and taffy cache under ADR-0294 and are never
+compared again), recounts multiline field drafts, runs a whole-scene pass from the main loop's own
+count (a narrowed pass records the scene's generation for instances it never laid out), forces a
+whole repaint through `PaintKey`, and drops kept rasters. Measured: one shape call with 100
+uncovered codepoints went from 1.49 s to 0.27 ms. Cost: the first frame draws boxes until each
+lookup lands, about 15 ms apiece (#110), and each bump costs a solver rebuild, a pass and a repaint.
+Without a waker (`mantle check`, screenshots) shaping still waits. Rejected: a budget of about 8
+lookups per request (still stalls and reflows); a generation inside `Measure::Text` (unchanged
+nodes never compare it). ponytail: windowed-list sizes off the window and an unfocused field's
+scroll offset keep box widths until relaid (#111).
