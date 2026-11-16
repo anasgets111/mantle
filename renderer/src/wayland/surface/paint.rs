@@ -326,9 +326,13 @@ impl App {
             };
         }
 
-        if self.text_painter.is_none() {
+        // Always `Some` here: `ensure_bound` sets `gl` before it marks the surface `bound`.
+        if self.text_painter.is_none()
+            && let Some(gl) = self.gl.as_ref()
+        {
             match TextPainter::new(
                 |s| egl.instance.get_proc_address(s).map_or(std::ptr::null(), |f| f as *const c_void),
+                gl,
                 width,
                 height,
                 self.shaping.clone(),

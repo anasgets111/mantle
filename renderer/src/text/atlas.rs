@@ -69,6 +69,9 @@ pub struct TextPainter {
     /// `layout::paint::canvas::draw_layer`'s finished images, kept here beside `scratch` for the
     /// same reason (ADR-0258).
     layers: Vec<KeptLayer>,
+    /// `GL_MAX_TEXTURE_SIZE`: femtovg 0.27 creates a larger texture without checking, and its
+    /// framebuffer comes out incomplete, so the subtree drew into the parent with no clip.
+    max_texture: usize,
 }
 
 /// A pooled offscreen's owner and allocated size. Owned, so a released surface frees its own and no
@@ -169,6 +172,7 @@ impl TextPainter {
     /// so reaching the shared API means building the context first and handing it over.
     pub fn new(
         load_fn: impl FnMut(&str) -> *const c_void,
+        gl: &glow::Context,
         width: u32,
         height: u32,
         shaping: ShapingHandle,
@@ -176,8 +180,11 @@ impl TextPainter {
         // SAFETY: femtovg loads every GL entry point through `load_fn` and calls them on this
         // thread. The caller binds the context with `eglMakeCurrent` before constructing this
         // (`wayland::surface::ensure_bound`, or the headless EGL helper in paint's tests),
-        // and the renderer is used only from that same thread.
-        let renderer = unsafe { OpenGl::new_from_function(load_fn)? };
+        // and the renderer is used only from that same thread. `gl` is that context.
+        let (max_texture, renderer) = unsafe {
+            use glow::HasContext;
+            (gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE), OpenGl::new_from_function(load_fn)?)
+        };
         let text_context = TextContext::default();
         let mut canvas = Canvas::new_with_text_context(renderer, text_context.clone())?;
         canvas.set_size(width, height, 1.0);
@@ -198,7 +205,19 @@ impl TextPainter {
             scratch: HashMap::default(),
             paints: 0,
             layers: Vec::new(),
+            max_texture: usize::try_from(max_texture).unwrap_or(0),
         })
+    }
+
+    /// The largest side, in pixels, a texture this context can hold.
+    pub fn max_texture(&self) -> usize {
+        self.max_texture
+    }
+
+    /// Lowers [`TextPainter::max_texture`], so a test can pass it without a gigabyte target.
+    #[cfg(test)]
+    pub fn cap_texture(&mut self, side: usize) {
+        self.max_texture = side;
     }
 
     /// The shaping-worker face-set generation this painter's femtovg registry is built from.

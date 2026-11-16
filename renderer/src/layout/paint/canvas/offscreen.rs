@@ -97,9 +97,10 @@ pub(super) fn draw_node_mask(
 }
 
 /// A pooled render target whose top-left `used` part the caller draws in, held until [`super::execute`]
-/// flushes; `None` when out of texture memory. Each side rounds up to 64 px, or stays `used` when
-/// `snug`, for an image femtovg will sample off its texel centres: past the used part it holds
-/// whatever was there, where `CLAMP_TO_EDGE` would repeat the edge (ADR-0370).
+/// flushes; `None` when out of texture memory or past the context's largest texture. Each side
+/// rounds up to 64 px, or stays `used` when `snug`, for an image femtovg will sample off its texel
+/// centres: past the used part it holds whatever was there, where `CLAMP_TO_EDGE` would repeat the
+/// edge (ADR-0370).
 pub(super) fn scratch(
     painter: &mut TextPainter,
     walk: &mut Walk<'_, '_>,
@@ -107,6 +108,9 @@ pub(super) fn scratch(
     snug: bool,
 ) -> Option<ImageId> {
     let size = if snug { used } else { (used.0.next_multiple_of(64), used.1.next_multiple_of(64)) };
+    if size.0.max(size.1) > painter.max_texture() {
+        return None;
+    }
     // `PREMULTIPLIED` prevents a second alpha multiplication; `FLIP_Y` maps canvas y=0 to the last
     // GL texture row. Both match femtovg 0.27's drop-shadow flags (`src/lib.rs`).
     let flags = ImageFlags::PREMULTIPLIED | ImageFlags::FLIP_Y;
@@ -314,6 +318,36 @@ mod tests {
         assert_eq!(kept, [(255, 255, 255, 255), (0, 0, 0, 0), (255, 0, 0, 255), (0, 0, 0, 0)]);
         let Some(inverted) = paint_points(&masked(true), &points) else { return };
         assert_eq!(inverted, [(0, 0, 0, 0), (255, 255, 255, 255), (0, 0, 0, 0), (255, 0, 0, 255)]);
+    }
+
+    /// A layer past the context's largest texture paints its subtree unblurred, still cut to its
+    /// parent's box: femtovg 0.27 would fail the texture silently and draw the subtree unclipped.
+    #[test]
+    fn a_layer_past_the_texture_limit_paints_unfiltered_inside_its_parent() {
+        let src = r##"return panel { id = "bar", width = 96, height = 96, background = "#FF0000FF", padding = 8,
+            child = rect { width = 64, height = 64, clip = "box", children = {
+                rect { width = 96, height = 64, background = "#0000FFFF", effect = { blur = 4 },
+                    children = { rect { width = 32, height = 64, background = "#FFFFFFFF" } } } } } }"##;
+        // The layer is the parent's 64 px box: a cap of 64 holds it, 32 does not.
+        for cap in [64, 32] {
+            let Some(instance) = init_headless_egl(96, 96) else { return };
+            let shaping = ShapingHandle::spawn();
+            let Some(mut painter) = text_painter(&instance, &shaping, 96, 96) else { return };
+            painter.cap_texture(cap);
+            let root = resolved_surface(&Lua::new(), src, LogicalSize { width: 96.0, height: 96.0 });
+            let gl = test_gl(&instance);
+            let mut stage = image_shader::ShaderStage::default();
+            let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
+            let whole = PhysicalRect { x0: 0, y0: 0, x1: 96, y1: 96 };
+            let (images, captures) = (&mut ImageCache::inline(), &mut CaptureCache::default());
+            let list = super::super::build(&root, 1.0, None);
+            let _ = execute("test", &mut painter, images, captures, &list, 1.0, (96.0, 96.0), &[whole], shaders);
+            let canvas = painter.canvas_mut();
+            let edge = pixel_at(canvas, 38, 40);
+            assert_eq!(edge == (255, 255, 255, 255), cap == 32, "cap {cap}: the white child's edge is sharp unblurred");
+            assert_eq!(pixel_at(canvas, 60, 40), (0, 0, 255, 255), "cap {cap}: the subtree paints");
+            assert_eq!(pixel_at(canvas, 80, 40), (255, 0, 0, 255), "cap {cap}: cut to the parent at x = 72");
+        }
     }
 
     /// An SVG mask is how a config cuts a subtree to a shape no `radius` draws.

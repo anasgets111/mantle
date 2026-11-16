@@ -677,6 +677,7 @@ pub(crate) mod tests {
     ) -> Option<TextPainter> {
         TextPainter::new(
             |s| instance.get_proc_address(s).map_or(std::ptr::null(), |f| f as *const c_void),
+            &test_gl(instance),
             width,
             height,
             shaping.clone(),

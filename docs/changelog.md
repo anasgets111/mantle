@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: a node with `effect`, `clip = "rounded"` or `mask` larger than the GPU's largest texture size paints without that effect, rounded clip or mask, inside its parent's clip. It used to vanish or paint unclipped. A node whose `mask` is another node draws nothing at that size, so masked content never shows unmasked.
 - Fixed: on a compositor without `wlr-layer-shell-v1` (or `wl_compositor` or `wl_shm`), `mantle` logs which protocol is missing and stops. It used to treat the exit as a crash and respawn the shell every 30 s for the whole session.
 - Fixed: a second shell in the same login, such as one inside a nested compositor, no longer changes whether the first shell relocks after a restart. Each compositor keeps its own lock marker, `$XDG_RUNTIME_DIR/mantle/session-locked-<display>` (such as `session-locked-wayland-1`; `/` and `%` in `$WAYLAND_DISPLAY` are escaped). A shell restarted while locked across the upgrade may not relock that once.
 - Fixed: names passed to `hover`, `focused`, `focus_visible`, `pointer`, `scroll` and `geometry` may be freed once no node binds them and no Lua value holds them, so names built from changing ids no longer grow memory for the session. A freed name starts fresh, so a node removed rather than hidden, or one only an unplugged output showed, can lose its scroll offset and `hover_rect`; list a `scroll` in `reset_on_close` for a reset you can rely on.
