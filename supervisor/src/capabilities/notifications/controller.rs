@@ -617,8 +617,9 @@ impl NotificationsController {
 mod tests {
     use super::super::icon::valid_rgba_image;
     use super::*;
-    use crate::capabilities::test_support::{p2p_pair_serving, private_bus, within};
+    use crate::capabilities::test_support::{dispatcher, p2p_pair_serving, poll_until, private_bus, within};
     use futures_util::StreamExt;
+    use serde_json::json;
 
     async fn notifications_proxy<'a>(connection: &'a zbus::Connection, destination: &'a str) -> zbus::Proxy<'a> {
         zbus::Proxy::new(connection, destination, NOTIFICATIONS_OBJECT_PATH, NOTIFICATIONS_BUS_NAME).await.unwrap()
@@ -704,9 +705,11 @@ mod tests {
         );
     }
 
+    /// Also: the live incarnation's expiry retires the entry, drops its timer and pushes state; a
+    /// stale one, from content a replace superseded, touches nothing.
     #[tokio::test]
     async fn expiry_timers_do_not_outlive_replace_or_dismiss() {
-        let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (events, mut pushed) = tokio::sync::mpsc::unbounded_channel();
         let (sound_tx, _sound_rx) = std::sync::mpsc::sync_channel(1);
         let controller = NotificationsController::inert(events, sound_tx);
         let notify = |replaces: u32| {
@@ -735,6 +738,17 @@ mod tests {
         tokio::task::yield_now().await;
         assert!(dismissed.is_finished(), "a dismissed notification's timer must be aborted");
         assert_eq!(controller.state.lock().unwrap().timers.len(), 1);
+
+        let incarnation = controller.snapshot().feed[0].incarnation;
+        while pushed.try_recv().is_ok() {}
+        controller.expire(first, incarnation + 1).await;
+        assert!(!controller.snapshot().feed[0].expired);
+        assert!(controller.state.lock().unwrap().timers.contains_key(&first), "a stale expiry dropped the live timer");
+        assert!(pushed.try_recv().is_err());
+        controller.expire(first, incarnation).await;
+        assert!(controller.snapshot().feed[0].expired);
+        assert!(controller.state.lock().unwrap().timers.is_empty());
+        assert!(pushed.try_recv().is_ok());
     }
 
     #[tokio::test]
@@ -745,6 +759,54 @@ mod tests {
         let version = env!("CARGO_PKG_VERSION").to_string();
         let expected = ("mantle".to_string(), "mantle".to_string(), version, "1.2".to_string());
         assert_eq!(controller.get_server_information().await, expected);
+        assert_eq!(controller.get_capabilities().await, NOTIFICATIONS_CAPABILITIES);
+    }
+
+    /// Each arm reaches its controller method: the inline ones change state at once, the spawned
+    /// ones remove their notification.
+    #[tokio::test]
+    async fn dispatch_routes_every_action_to_the_controller() {
+        let sounds = tempfile::tempdir().unwrap();
+        let sound = sounds.path().join("message.oga");
+        std::fs::write(&sound, b"").unwrap();
+        let (events, sound_tx) = test_channels();
+        let mut controller = NotificationsController::inert(events, sound_tx);
+        controller.sound_roots = Arc::from([sounds.path().to_path_buf()]);
+        let controller = &controller;
+        let notify = |actions: &[&str]| {
+            let actions = actions.iter().map(|a| a.to_string()).collect();
+            controller.notify("app".into(), 0, String::new(), "s".into(), String::new(), actions, Hints::default(), 0)
+        };
+        let (plain, button, replyable) =
+            (notify(&[]).await, notify(&["open", "Open"]).await, notify(&["inline-reply", "Reply"]).await);
+        let send = dispatcher(shared::Capability::Notifications, super::super::dispatch, controller);
+        let state = || controller.state.lock().unwrap();
+
+        send("set_sound", vec![json!("normal"), json!(sound.to_str().unwrap())]);
+        assert!(state().sound_registry.contains_key(&Urgency::Normal));
+        send("set_dnd", vec![json!(true)]);
+        assert!(controller.snapshot().dnd);
+        send("set_quiet", vec![json!(true)]);
+        assert!(state().quiet);
+        send("set_app_muted", vec![json!("vesktop"), json!(true)]);
+        assert!(state().muted_apps.contains("vesktop"));
+        send("hold_expiry", vec![json!(60)]);
+        assert!(controller.expiry_hold.borrow().is_some());
+
+        let gone = |id: u32| poll_until(move || (!controller.snapshot().feed.iter().any(|n| n.id == id)).then_some(()));
+        // The single-threaded runtime runs spawned arms in order, so each removal proves the
+        // refusal sent before it ran; a refusal `dismiss` would have accepted.
+        let listed = || controller.snapshot().feed.iter().any(|n| n.id == plain);
+        send("invoke_action", vec![json!(plain), json!("open")]);
+        send("invoke_action", vec![json!(button), json!("open")]);
+        gone(button).await;
+        assert!(listed(), "plain declares no open action");
+        send("reply", vec![json!(plain), json!("hi")]);
+        send("reply", vec![json!(replyable), json!("hi")]);
+        gone(replyable).await;
+        assert!(listed(), "plain takes no reply");
+        send("dismiss", vec![json!(plain)]);
+        gone(plain).await;
     }
 
     #[tokio::test]

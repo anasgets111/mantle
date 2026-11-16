@@ -196,6 +196,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_default_icon_roots_start_with_the_system_icon_directories() {
+        let roots = default_trusted_icon_roots();
+        assert_eq!(roots[..2], [PathBuf::from("/usr/share/icons"), PathBuf::from("/usr/share/pixmaps")]);
+    }
+
+    #[test]
     fn validate_trusted_path_accepts_a_real_file_under_a_trusted_root() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("icon.png");

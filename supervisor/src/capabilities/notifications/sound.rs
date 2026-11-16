@@ -255,6 +255,12 @@ fn play_one(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_default_sound_roots_start_with_the_system_data_directories() {
+        let roots = default_trusted_sound_roots();
+        assert_eq!(roots[..3], ["/usr/share", "/usr/local/share", "/opt"].map(PathBuf::from));
+    }
+
     fn wav(channels: u16, sample_rate: u32, bits_per_sample: u16, samples: &[i16]) -> tempfile::NamedTempFile {
         let file = tempfile::NamedTempFile::with_suffix(".oga").unwrap();
         let spec = hound::WavSpec { channels, sample_rate, bits_per_sample, sample_format: hound::SampleFormat::Int };

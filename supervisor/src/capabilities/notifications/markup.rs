@@ -261,6 +261,7 @@ mod tests {
     fn parse_markup_strips_disallowed_markup_but_keeps_the_surrounding_text() {
         for (input, expected) in [
             ("before<style>.x{color:red}</style>after", "beforeafter"),
+            ("before<script><b>x</b></script>after", "beforeafter"),
             (r#"before<img alt="no src">after"#, "beforeafter"),
             ("before<a>no href</a>after", "beforeno hrefafter"),
             ("before<div>middle</div>after", "beforemiddleafter"),
