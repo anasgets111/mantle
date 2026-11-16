@@ -1,7 +1,7 @@
 //! What a `multiline` `textfield` takes from the app that holds its draft: the text it measures
 //! and how far its rows scroll.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::{NodeId, ResolvedNode, Scene};
 use crate::layout::node::PaintStyle;
@@ -56,6 +56,21 @@ impl Scene {
     pub(super) fn forget_gone_fields(&mut self) {
         let surfaces = &self.surfaces;
         self.field_drafts.retain(|id, _| surfaces.values().any(|tree| hit::contains_node(tree, *id)));
+    }
+
+    /// The `focus_target` names the retained text fields declare, hidden ones included.
+    pub(super) fn field_targets(&self) -> HashSet<String> {
+        let mut stack: Vec<&ResolvedNode> = self.surfaces.values().collect();
+        let mut names = HashSet::new();
+        while let Some(node) = stack.pop() {
+            stack.extend(&node.children);
+            if node.kind == "textfield"
+                && let Some(name) = node.focus_target()
+            {
+                names.insert(name);
+            }
+        }
+        names
     }
 
     /// Scrolls the field `id`'s rows to `scroll` px; whether that moved them.
@@ -143,6 +158,34 @@ mod tests {
         lua.load(r#"state("kids", {}):set({})"#).exec().unwrap();
         apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
         assert!(scene.field_drafts.is_empty(), "a field no surface holds keeps no draft");
+    }
+
+    /// `has_selection` names follow the fields' `focus_target`s: a gone target's name goes, and the
+    /// live one keeps its written cell for a reader that asks by name and holds nothing between runs.
+    #[test]
+    fn has_selection_names_last_as_long_as_a_field_declares_them() {
+        let shaping = ShapingHandle::spawn();
+        let lua = crate::layout::node::scene_lua();
+        crate::lua::focus::register(&lua).unwrap();
+        let surface = lua.load(
+            r#"n = state("n", 1)
+            return panel { id = "bar", child = n:map(function(n)
+                return textfield { width = 80, focus_target = focus_target("f" .. n), on_change = function() end }
+            end) }"#,
+        );
+        let surface = crate::lua::nodes::deserialize_lua_table(&surface.eval().unwrap()).unwrap();
+        let mut scene = Scene::new();
+        let surfaces = std::slice::from_ref(&surface);
+        let selected = |n: usize| lua.load(format!(r#"return has_selection("f{n}"):get()"#)).eval::<bool>().unwrap();
+        for n in 1..=50 {
+            lua.load(format!("n:set({n})")).exec().unwrap();
+            assert!(!selected(n));
+            crate::lua::signal::write_selection(&lua, Some(&format!("f{n}")));
+            lua.gc_collect().unwrap();
+            apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
+            assert!(selected(n), "f{n} kept its written cell through the sweep");
+            assert_eq!(crate::lua::signal::selection_names(&lua), 1, "only f{n} has a field");
+        }
     }
 
     #[test]

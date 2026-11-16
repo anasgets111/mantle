@@ -260,7 +260,7 @@ impl Scene {
             crate::lua::signal::finish_computed_undo(lua, &rolled, true);
         } else {
             crate::lua::signal::finish_computed_undo(lua, &[], false);
-            crate::lua::signal::forget_unheld(lua);
+            crate::lua::signal::forget_unheld(lua, || self.field_targets());
             self.publish_marks(lua);
             self.publish_image_status(lua);
             self.forget_gone_fields();

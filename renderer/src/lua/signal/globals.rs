@@ -166,9 +166,10 @@ pub fn begin_evaluation(lua: &Lua) {
 struct HoverRegistry(HashMap<String, (Signal, Signal)>);
 
 /// `focused`, `focus_visible` and `has_selection` signals, kept across reloads like [`HoverRegistry`];
-/// the kind keeps `focused("x")`, `focus_visible("x")` and `has_selection("x")` distinct slots.
+/// the kind keeps `focused("x")`, `focus_visible("x")` and `has_selection("x")` distinct slots. The
+/// count is the `has_selection` names the last selection sweep kept.
 #[derive(Default)]
-struct FocusedRegistry(HashMap<(FocusKind, String), Signal>);
+struct FocusedRegistry(HashMap<(FocusKind, String), Signal>, usize);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum FocusKind {
@@ -193,6 +194,12 @@ pub fn write_selection(lua: &Lua, held: Option<&str>) {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn selection_names(lua: &Lua) -> usize {
+    let registry = lua.app_data_ref::<FocusedRegistry>();
+    registry.map_or(0, |registry| registry.0.keys().filter(|(kind, _)| *kind == FocusKind::Selection).count())
+}
+
 /// Name-keyed `pointer(name)` registry, kept across reloads like [`HoverRegistry`].
 #[derive(Default)]
 struct PointerRegistry(HashMap<String, Signal>);
@@ -207,25 +214,39 @@ struct ScrollRegistry(HashMap<String, Signal>);
 #[derive(Default)]
 struct GeometryRegistry(HashMap<String, Signal>);
 
-/// Drops each `hover`, `focused`, `focus_visible`, `pointer`, `scroll` and `geometry` name that only
-/// its registry holds: no retained tree binds it, no Lua value reaches it and no computed or surface
-/// last read its cell, so asking again makes a fresh one. Called after a successful layout pass,
-/// never mid-evaluation: a reload's evaluated output holds the new tree's signals until the pass that
-/// applies it, so state the new tree keeps survives.
+/// Drops each `hover`, `focused`, `focus_visible`, `has_selection`, `pointer`, `scroll` and `geometry`
+/// name that only its registry holds: no retained tree binds it, no Lua value reaches it and no
+/// computed or surface last read its cell, so asking again makes a fresh one. No node binds
+/// `has_selection`, and a handler that asks for it by name holds nothing between runs, so its name
+/// also stays while `field_targets`, the retained text fields' `focus_target`s, names it. Called after
+/// a successful layout pass, never mid-evaluation: a reload's evaluated output holds the new tree's
+/// signals until the pass that applies it, so state the new tree keeps survives.
 /// A removed tree's handles are Lua userdata, so its names go at the first pass after Lua collects
 /// them, not at the pass that removes it; when is up to the collector.
 ///
-/// ponytail: `has_selection` stays, because no node binds it and a reader that asks by name inside a
-/// function holds no handle between runs; its names grow per distinct `focus_target`. Keying the
-/// sweep on the textfield's `focus_target` would free them.
-pub(crate) fn forget_unheld(lua: &Lua) {
+/// ponytail: the `field_targets` walk visits every retained node, about 1.2 ms per pass over 2,000
+/// fields in a debug build, so `has_selection` names are swept only at a pass that finds more of them
+/// than the last sweep kept: a gone field's name waits for the next new one, and a reader asking every
+/// pass for a name no field declares pays the walk every pass. Collecting the targets during a walk
+/// the pass already makes would remove both.
+pub(crate) fn forget_unheld(lua: &Lua, field_targets: impl Fn() -> HashSet<String>) {
     let held = |signal: &Signal| signal.held(lua, 1);
     if let Some(mut registry) = lua.app_data_mut::<HoverRegistry>() {
         // The boolean half's `paired_rect` is the rect cell's second holder.
         registry.0.retain(|_, (over, rect)| over.held(lua, 1) || rect.held(lua, 2));
     }
     if let Some(mut registry) = lua.app_data_mut::<FocusedRegistry>() {
-        registry.0.retain(|(kind, _), signal| *kind == FocusKind::Selection || held(signal));
+        let selections =
+            |registry: &FocusedRegistry| registry.0.keys().filter(|(kind, _)| *kind == FocusKind::Selection).count();
+        let sweep = selections(&registry) > registry.1;
+        let targets = std::cell::OnceCell::new();
+        registry.0.retain(|(kind, name), signal| {
+            held(signal)
+                || *kind == FocusKind::Selection && (!sweep || targets.get_or_init(&field_targets).contains(name))
+        });
+        if sweep {
+            registry.1 = selections(&registry);
+        }
     }
     if let Some(mut registry) = lua.app_data_mut::<PointerRegistry>() {
         registry.0.retain(|_, signal| held(signal));
@@ -677,8 +698,7 @@ mod tests {
         assert!(lua.load("return second:get()").eval::<bool>().unwrap(), "one name is one slot");
     }
 
-    /// Each registry keeps a name something holds, either hover half included, and lets the rest go;
-    /// `has_selection` stays, since nothing binds it.
+    /// Each registry keeps a name something holds, either hover half included, and lets the rest go.
     #[test]
     fn forget_unheld_drops_every_name_only_its_registry_holds() {
         let (lua, _dirty) = lua_with_state();
@@ -693,7 +713,7 @@ mod tests {
         };
         let sweep = |lua: &Lua| {
             lua.gc_collect().unwrap();
-            forget_unheld(lua);
+            forget_unheld(lua, HashSet::new);
             names(lua)
         };
         lua.load(
@@ -705,9 +725,11 @@ mod tests {
         )
         .exec()
         .unwrap();
-        assert_eq!(sweep(&lua), [2, 1003, 1, 1, 1], "held names stay, has_selection's 1001 included");
+        assert_eq!(sweep(&lua), [2, 3, 1, 1, 1], "held names stay");
         lua.load("held = nil").exec().unwrap();
-        assert_eq!(sweep(&lua), [0, 1001, 0, 0, 0]);
+        assert_eq!(sweep(&lua), [0, 1, 0, 0, 0], "has_selection waits for a name the last sweep did not keep");
+        lua.load(r#"has_selection("new")"#).exec().unwrap();
+        assert_eq!(sweep(&lua), [0; 5]);
         lua.load(
             r#"reads = {}
             for i = 1, 1000 do

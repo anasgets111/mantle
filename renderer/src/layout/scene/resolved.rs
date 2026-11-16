@@ -264,6 +264,11 @@ impl ResolvedNode {
         String::new()
     }
 
+    /// The `focus_target` name this node is bound to.
+    pub(crate) fn focus_target(&self) -> Option<String> {
+        node::fields::common::focus_target.read(&self.properties).ok().flatten()
+    }
+
     /// A disabled `textfield` takes no keyboard focus of either kind.
     pub(crate) fn is_disabled_field(&self) -> bool {
         matches!(self.paint, Some(node::PaintStyle::TextField { disabled: true, .. }))
