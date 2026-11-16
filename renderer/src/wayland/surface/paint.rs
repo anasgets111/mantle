@@ -202,8 +202,12 @@ impl App {
         let logical = self.surfaces[index].configured_size;
         let (width, height) = self.surfaces[index].scale.physical_size(logical);
         let scale = self.surfaces[index].scale.factor_120() as f32 / 120.0;
-        let paint_key =
-            PaintKey { physical: (width, height), scale_120: self.surfaces[index].scale.factor_120(), logical };
+        let paint_key = PaintKey {
+            physical: (width, height),
+            scale_120: self.surfaces[index].scale.factor_120(),
+            logical,
+            fonts: self.shaping.font_generation(),
+        };
         if let Some(bound) = self.surfaces[index].bound.as_mut()
             && bound.size != (width, height)
         {

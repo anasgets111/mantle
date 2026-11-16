@@ -340,6 +340,12 @@ impl TextPainter {
         debug!("syncing fonts to generation {generation}");
         self.faces = register(&self.text_context, &mut self.registered, font_chain);
         self.generation = generation;
+        // A face landed in the background can fill what a kept raster drew as a box (#55).
+        for (.., (casts, content), _) in std::mem::take(&mut self.layers) {
+            for id in casts.into_iter().chain([content]) {
+                self.canvas.delete_image(id);
+            }
+        }
     }
 
     /// Updates the canvas's viewport to match the surface's current size. Cheap and idempotent --

@@ -92,11 +92,20 @@ impl WorkerFonts {
                 self.families.clear();
                 ensured.lock().unwrap_or_else(PoisonError::into_inner).clear();
             }
+            // Files and generic mappings: what shaping and SVG text read. Compared by value, so
+            // a name mapped where it already was, or to nothing, changes nothing and owes no pass.
+            let generics = |db: &fontdb::Database| {
+                use fontdb::Family::{Cursive, Fantasy, Monospace, SansSerif, Serif};
+                [Serif, SansSerif, Cursive, Fantasy, Monospace].map(|generic| db.family_name(&generic).to_owned())
+            };
+            let before = (self.loaded_paths.len(), generics(&self.db));
             let hit = fonts::load_chain(&mut self.db, &[&**asked], &mut self.loaded_paths);
             self.families.insert(Arc::clone(asked), hit);
-            self.chain_data = font_chain_data(&mut self.db);
-            self.register_faces();
-            generation.fetch_add(1, Ordering::Release);
+            if (self.loaded_paths.len(), generics(&self.db)) != before {
+                self.chain_data = font_chain_data(&mut self.db);
+                self.register_faces();
+                generation.fetch_add(1, Ordering::Release);
+            }
         }
         self.families[asked].clone().unwrap_or_else(|| self.primary_family.clone())
     }
@@ -107,6 +116,11 @@ impl WorkerFonts {
     /// A shell draws text it did not write -- notification bodies, MPRIS titles, window titles --
     /// so the codepoints it meets are not the ones its chain was chosen for.
     pub(super) fn cover(&mut self, ch: char, generation: &AtomicU64) -> bool {
+        self.first_probe(ch) && fonts::covering_file(ch).is_some_and(|path| self.land(ch, path, generation))
+    }
+
+    /// Whether `ch` has not been looked up yet, marking it looked up.
+    pub(super) fn first_probe(&mut self, ch: char) -> bool {
         if !self.probed.insert(ch) {
             return false;
         }
@@ -114,7 +128,17 @@ impl WorkerFonts {
         if self.probed.len() > SHAPE_CACHE_CAPACITY {
             self.probed.clear();
         }
-        if !fonts::load_covering(&mut self.db, ch, &mut self.loaded_paths) {
+        true
+    }
+
+    /// Forgets that `ch` was looked up, for a probe the queue had no room for.
+    pub(super) fn unprobe(&mut self, ch: char) {
+        self.probed.remove(&ch);
+    }
+
+    /// Loads `path`, the face fontconfig answered `ch` with. `true` when the database changed.
+    pub(super) fn land(&mut self, ch: char, path: PathBuf, generation: &AtomicU64) -> bool {
+        if !fonts::load_cover(&mut self.db, ch, path, &mut self.loaded_paths) {
             return false;
         }
         self.chain_data = font_chain_data(&mut self.db);
@@ -386,6 +410,29 @@ mod tests {
         assert_eq!((measured.width, measured.height), (0.0, 0.0));
         assert!(measured.lines.is_empty() && measured.shaped.is_empty());
         assert!(missing.is_empty(), "a database with nothing in it has no codepoint to go looking for");
+    }
+
+    /// Only a changed database bumps the generation: a new file, or a generic mapped anew.
+    #[test]
+    fn only_a_changed_database_bumps_the_generation() {
+        if !fonts::fc_match_available() {
+            return;
+        }
+        let shots = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shots/fonts/fonts.conf");
+        fonts::FONTCONFIG_FILE.set(Some(shots));
+        let mut fonts = WorkerFonts::new(&["Noto Sans"]);
+        let (generation, ensured) = (AtomicU64::new(0), Mutex::new(HashSet::new()));
+        fonts.family_for(Some(&Arc::from("noto sans")), &generation, &ensured);
+        assert_eq!(generation.load(Ordering::Acquire), 0, "another name for the loaded Noto Sans");
+        assert!(fonts.cover('●', &generation) && generation.load(Ordering::Acquire) == 1, "Symbols 2 loads");
+        assert!(!fonts.cover('●', &generation), "and only once");
+        fonts.family_for(Some(&Arc::from("Noto Sans Symbols 2")), &generation, &ensured);
+        assert_eq!(generation.load(Ordering::Acquire), 1, "a family whose file is loaded");
+        for (bumps, why) in [(2, "every file loaded, monospace maps to Noto Sans"), (2, "and again, forgotten")] {
+            fonts.families.clear();
+            fonts.family_for(Some(&Arc::from("monospace")), &generation, &ensured);
+            assert_eq!(generation.load(Ordering::Acquire), bumps, "{why}");
+        }
     }
 
     #[test]

@@ -115,6 +115,9 @@ pub struct Scene {
     /// keeps taffy's layout cache, so a pass that changed only paint lays nothing out. Dropped with
     /// a failed pass or tick, whose writes it may hold.
     solver_trees: HashMap<String, taffy::TaffyTree<solver::Measure>>,
+    /// The font generation `solver_trees` measured against. A face loaded since can fill what a
+    /// kept memo measured as boxes (#55), and an unchanged node is never compared again.
+    font_generation: u64,
     next_id: u64,
     /// `initial_text` of fields created since the app last drained them, for the app to seed.
     seeds: Vec<(NodeId, String)>,
@@ -238,6 +241,16 @@ impl Scene {
         lua: &Lua,
         admit: impl FnOnce(&Scene, Option<LayoutError>) -> Result<Option<LayoutError>, LayoutError>,
     ) -> Result<Option<LayoutError>, LayoutError> {
+        // Every tree, not the visited ones: the generation recorded here is the whole scene's.
+        // ponytail: two values measured in the old faces stay until relaid: a windowed list's
+        // sizes for items outside its window, and an unfocused multiline field's scroll offset.
+        // Upgrade: void them here with a walk of every surface.
+        let fonts = shaping.font_generation();
+        if fonts != self.font_generation {
+            self.solver_trees.clear();
+            self.rewrap_fields();
+            self.font_generation = fonts;
+        }
         let next_id_snapshot = self.next_id;
         let seeds_snapshot = self.seeds.len();
         let lc_snapshot = crate::lua::signal::layout_changed_len(lua);

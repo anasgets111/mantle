@@ -4,13 +4,15 @@
 use rustc_hash::FxHashMap as HashMap;
 use std::collections::HashSet;
 use std::ops::Range;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, mpsc};
+use std::sync::{Arc, Mutex, PoisonError, Weak, mpsc};
 use std::thread;
 
 use shared::debug;
 
 use super::fonts;
+use crate::wake::Waker;
 
 mod caret;
 mod worker;
@@ -164,7 +166,15 @@ pub(crate) struct FontDatabase {
 
 enum Request {
     /// The `bool` keeps each line's glyphs ([`ShapingHandle::shape_glyphs`]).
-    Shape(ShapeRequest, bool, mpsc::Sender<ShapeResult>),
+    /// Replies with the generation the result was shaped at when it holds a glyph 0, so the
+    /// handle reshapes it once a face loads.
+    Shape(ShapeRequest, bool, mpsc::Sender<Stamped>),
+    /// Look uncovered codepoints up on a probe thread with this lookup rather than before replying,
+    /// and wake this waker when one loads a face (#55). Weak, so the probe thread never keeps the
+    /// worker alive after the last handle drops.
+    Background(Waker, Box<dyn Fn(char) -> Option<PathBuf> + Send>, Weak<mpsc::Sender<Request>>),
+    /// A probe's answer: the file fontconfig ranks first for the codepoint.
+    Covered(char, PathBuf),
     FontChainData(mpsc::Sender<Vec<FontFace>>),
     FontDatabase(mpsc::Sender<FontDatabase>),
     /// Replace the chain this worker measures against, once the config has said what it wants
@@ -191,9 +201,17 @@ pub const FIT_SLACK: f32 = 0.01;
 /// about twenty text nodes and a long list a few hundred; a clock shapes strings nobody asks for
 /// again, so an unbounded map would grow for the session. Full, it holds about 400KB (under 1% of
 /// ADR-0043's 50MB-per-monitor budget; plus a 32-byte `Glyph` per glyph for [`ShapingHandle::shape_glyphs`]
-/// entries). Idle churn measured 2026-09-06: 3-4 new entries a minute, so about 16 h to reach the cap. `HashMap::clear` keeps its table, so the buckets are a floor after the
+/// entries, and a 16-byte generation stamp each). Idle churn measured 2026-09-06: 3-4 new entries a minute, so about 16 h to reach the cap. `HashMap::clear` keeps its table, so the buckets are a floor after the
 /// first fill.
 const SHAPE_CACHE_CAPACITY: usize = 4096;
+
+/// How many codepoints may wait for a background probe. At about 10 ms an `fc-match`, a full
+/// queue is 10 s of probing. A codepoint past it is forgotten and queued again when its text is
+/// next shaped.
+///
+/// ponytail: if everything queued is a codepoint nothing covers, no face lands, nothing reshapes,
+/// and a dropped coverable one stays a box until its text changes. Upgrade: requeue on drain.
+const PROBE_QUEUE: usize = 1024;
 
 /// What a measurement is keyed by: every field of a [`ShapeRequest`]. Keying on a subset would be
 /// a wrong-answer bug, not a slow one, which is why `line_height` is here even though every caller
@@ -216,18 +234,23 @@ struct ShapeKey {
     glyphs: bool,
 }
 
-/// A handle to a dedicated shaping worker thread and its warm font cache. `Clone` clones only the
-/// request `Sender`, so every clone addresses the one worker and font set, letting
+/// A result, with the generation it was shaped at when it holds a glyph 0.
+type Stamped = (ShapeResult, Option<u64>);
+
+/// A handle to a dedicated shaping worker thread and its warm font cache. `Clone` clones only
+/// `Arc`s, the request `Sender` among them, so every clone addresses the one worker and font set, letting
 /// `wayland::App` and the `RendererClient` it owns share a warm cache. The measurement
 /// cache is `Arc`-shared for the same reason, and lives on this side of the channel: a worker-side
 /// cache would still pay an `mpsc` round trip and thread wake per node, a real fraction of the
 /// 17us each costs on a 500-row list.
 #[derive(Clone)]
 pub struct ShapingHandle {
-    requests: mpsc::Sender<Request>,
+    requests: Arc<mpsc::Sender<Request>>,
     // ponytail: Fx hashing, and keys carry text a window title can choose, so collisions can be
     // forced; the SHAPE_CACHE_CAPACITY cap bounds the damage. Upgrade: a keyed hasher.
-    cache: Arc<Mutex<HashMap<ShapeKey, ShapeResult>>>,
+    /// Each result with the generation it was shaped at when it holds a glyph 0: such an entry
+    /// is stale once a face loads.
+    cache: Arc<Mutex<HashMap<ShapeKey, Stamped>>>,
     /// See [`ShapingHandle::font_generation`].
     generation: Arc<AtomicU64>,
     /// Families [`ShapingHandle::ensure_family`] has already asked the worker about, so the common
@@ -255,7 +278,7 @@ impl ShapingHandle {
     /// [`spawn`](Self::spawn), resolving fonts through `fontconfig` (a `fonts.conf`) when given.
     pub(crate) fn spawn_with(fontconfig: Option<std::path::PathBuf>) -> Self {
         let (tx, rx) = mpsc::channel::<Request>();
-        // Bumped by the worker whenever the loaded face set changes, read by the painter to know
+        // Bumped by the worker whenever its font database changes, read by the painter to know
         // its femtovg font registry is stale (ADR-0144). An atomic rather than another request:
         // paint asks once a frame and must not pay a channel round trip to hear "nothing changed".
         let generation = Arc::new(AtomicU64::new(0));
@@ -270,20 +293,57 @@ impl ShapingHandle {
                 // A handle dropped before its first request needs no font discovery.
                 let Ok(first) = rx.recv() else { return };
                 let mut fonts = WorkerFonts::new(fonts::DEFAULT_CHAIN);
+                let mut probes: Option<(mpsc::SyncSender<char>, Waker)> = None;
                 for request in std::iter::once(first).chain(rx) {
                     match request {
                         Request::Shape(req, glyphs, reply) => {
                             let family = fonts.family_for(req.font.as_ref(), &generation, &worker_ensured);
                             let (mut result, mut missing) = shape(&mut fonts, &family, &req, glyphs);
-                            // `any` is the whole loop control: it runs out of codepoints when none
-                            // can be covered, and short-circuits on the first that can, which is
-                            // exactly when shaping again is worth it. A codepoint nothing covers
-                            // is remembered by `cover`, so neither branch can spin.
-                            while missing.iter().any(|&ch| fonts.cover(ch, &generation)) {
-                                (result, missing) = shape(&mut fonts, &family, &req, glyphs);
+                            if let Some((queue, _)) = &probes {
+                                // Answer with the faces loaded now; an `fc-match` per codepoint
+                                // here stalled the Wayland thread a second for 100 of them (#55).
+                                for &ch in &missing {
+                                    if fonts.first_probe(ch) && queue.try_send(ch).is_err() {
+                                        fonts.unprobe(ch);
+                                    }
+                                }
+                            } else {
+                                // `any` is the whole loop control: it runs out of codepoints when
+                                // none can be covered, and short-circuits on the first that can,
+                                // which is exactly when shaping again is worth it. A codepoint
+                                // nothing covers is remembered by `cover`, so neither can spin.
+                                while missing.iter().any(|&ch| fonts.cover(ch, &generation)) {
+                                    (result, missing) = shape(&mut fonts, &family, &req, glyphs);
+                                }
                             }
+                            let stamp = (!missing.is_empty()).then(|| generation.load(Ordering::Acquire));
                             // A dropped receiver just means the result is discarded.
-                            let _ = reply.send(result);
+                            let _ = reply.send((result, stamp));
+                        }
+                        Request::Background(waker, lookup, requests) => {
+                            let (queue, queued) = mpsc::sync_channel::<char>(PROBE_QUEUE);
+                            let fontconfig = fonts::FONTCONFIG_FILE.with_borrow(Clone::clone);
+                            thread::Builder::new()
+                                .name("mantle-font-probe".into())
+                                .spawn(move || {
+                                    fonts::FONTCONFIG_FILE.set(fontconfig);
+                                    for ch in queued {
+                                        let Some(path) = lookup(ch) else { continue };
+                                        let Some(requests) = requests.upgrade() else { return };
+                                        let _ = requests.send(Request::Covered(ch, path));
+                                    }
+                                })
+                                .expect("failed to spawn mantle-font-probe thread");
+                            probes = Some((queue, waker));
+                        }
+                        Request::Covered(ch, path) => {
+                            // An already loaded file changes nothing, so a face covering many
+                            // queued codepoints reshapes the text once.
+                            if fonts.land(ch, path, &generation)
+                                && let Some((_, waker)) = &probes
+                            {
+                                waker.wake();
+                            }
                         }
                         Request::EnsureFamily(asked, reply) => {
                             fonts.family_for(Some(&asked), &generation, &worker_ensured);
@@ -322,13 +382,32 @@ impl ShapingHandle {
                 }
             })
             .expect("failed to spawn mantle-text-shaping thread");
-        Self { requests: tx, cache: Arc::new(Mutex::new(HashMap::default())), generation: handle_generation, ensured }
+        Self {
+            requests: Arc::new(tx),
+            cache: Arc::new(Mutex::new(HashMap::default())),
+            generation: handle_generation,
+            ensured,
+        }
+    }
+
+    /// Answers each shape at once and looks codepoints no loaded face covers up in the background,
+    /// waking `waker` when a face lands (#55). Without it a shape waits for every lookup, which
+    /// is what a single pass with no loop to reshape (`mantle check`, screenshots) wants.
+    pub fn probe_in_background(&self, waker: Waker) {
+        self.probe_with(waker, fonts::covering_file);
+    }
+
+    fn probe_with(&self, waker: Waker, lookup: impl Fn(char) -> Option<PathBuf> + Send + 'static) {
+        let weak = Arc::downgrade(&self.requests);
+        self.requests
+            .send(Request::Background(waker, Box::new(lookup), weak))
+            .expect("mantle-text-shaping worker thread died");
     }
 
     /// Measures `request`, from [`SHAPE_CACHE_CAPACITY`]'s memo when asked before and from the
-    /// worker thread otherwise, blocking only on a miss. Nothing invalidates an entry while the
-    /// chain stands; [`ShapingHandle::set_chain`] is the one thing that can, and it clears the
-    /// whole map rather than deciding which measurements the new faces would have changed.
+    /// worker thread otherwise, blocking only on a miss. An entry holding a missing glyph is
+    /// reshaped once the font generation moves; [`ShapingHandle::set_chain`] clears the whole map
+    /// rather than deciding which measurements the new faces would have changed.
     ///
     /// `Scene::apply` re-measures every text node it resolves, and ADR-0044 decision 2's dirty
     /// flag turned that from once per config edit into once per push. On a 500-row list, this memo
@@ -409,7 +488,9 @@ impl ShapingHandle {
         };
         // A poisoned lock is recovered rather than propagated: this map is a pure memo, so no
         // invariant can break, and an unrelated thread's death shouldn't kill text measurement.
-        if let Some(hit) = self.cache.lock().unwrap_or_else(PoisonError::into_inner).get(&key) {
+        if let Some((hit, stamp)) = self.cache.lock().unwrap_or_else(PoisonError::into_inner).get(&key)
+            && stamp.is_none_or(|at| at == self.generation.load(Ordering::Acquire))
+        {
             return hit.clone();
         }
 
@@ -432,7 +513,7 @@ impl ShapingHandle {
                 reply_tx,
             ))
             .expect("mantle-text-shaping worker thread died");
-        let result = reply_rx.recv().expect("mantle-text-shaping worker thread died before replying");
+        let (result, stamp) = reply_rx.recv().expect("mantle-text-shaping worker thread died before replying");
 
         let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
         // Cleared wholesale rather than evicted one at a time: an LRU needs a recency order
@@ -443,7 +524,7 @@ impl ShapingHandle {
         if cache.len() >= SHAPE_CACHE_CAPACITY {
             cache.clear();
         }
-        cache.insert(key, result.clone());
+        cache.insert(key, (result.clone(), stamp));
         result
     }
 
@@ -490,7 +571,7 @@ impl ShapingHandle {
         let cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
         let bytes: usize = cache
             .iter()
-            .map(|(key, result)| {
+            .map(|(key, (result, _))| {
                 let key_bytes = key.text.len()
                     + key.runs.len() * std::mem::size_of::<FontRun>()
                     + key.font.as_deref().map_or(0, str::len);
@@ -550,7 +631,7 @@ impl ShapingHandle {
         self.ensured.lock().unwrap_or_else(PoisonError::into_inner).insert(Arc::clone(family));
     }
 
-    /// How many times the loaded face set has changed (ADR-0144). The painter records this
+    /// How many times the font database has changed (ADR-0144). The painter records this
     /// alongside the faces it registered with femtovg and re-syncs when the two differ, which is
     /// what makes a family first named at runtime reach paint as well as measurement.
     ///
@@ -591,7 +672,7 @@ fn paragraph_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     pub(super) fn req(text: &str, font_size: f32) -> ShapeRequest {
@@ -736,7 +817,7 @@ mod tests {
     /// Loading a family the painter has not registered yet is only safe because the painter is
     /// told to catch up; the generation is how it finds out.
     #[test]
-    fn resolving_a_new_family_bumps_the_generation_and_resolving_it_again_does_not() {
+    fn resolving_a_new_family_bumps_the_generation_once() {
         let Some((declared, named)) = two_families() else {
             eprintln!("skip: need two installed families to tell apart");
             return;
@@ -750,7 +831,7 @@ mod tests {
         assert!(after_first > before, "the painter has to hear about a face it does not hold");
 
         handle.shape(req_in("different text entirely", 20.0, Some(named)));
-        assert_eq!(handle.font_generation(), after_first, "a family already resolved is not reloaded");
+        assert_eq!(handle.font_generation(), after_first, "a family already resolved changes nothing");
     }
 
     /// Measuring the same string in two families has to reach different faces, or the box a node
@@ -774,16 +855,15 @@ mod tests {
     }
 
     /// A family nothing on the system answers draws in the declared chain rather than as nothing,
-    /// and is resolved once -- an `fc-match` subprocess per frame for a missing font would sit on
-    /// the measurement path.
+    /// and changes no face.
     #[test]
-    fn a_family_nothing_answers_measures_in_the_declared_chain_and_is_only_looked_up_once() {
+    fn a_family_nothing_answers_measures_in_the_declared_chain_and_bumps_nothing() {
         let handle = ShapingHandle::spawn();
         let missing = Some("ZZ No Such Family 9184");
         assert_eq!(handle.shape(req_in("Mantle", 20.0, missing)).width, handle.shape(req("Mantle", 20.0)).width);
         let generation = handle.font_generation();
         handle.shape(req_in("Mantle Engine", 20.0, missing));
-        assert_eq!(handle.font_generation(), generation, "a miss is remembered, not retried");
+        assert_eq!(handle.font_generation(), generation, "a miss loads nothing");
     }
 
     /// Replacing the chain invalidates the families resolved against the old database, or a node
@@ -1203,5 +1283,117 @@ mod tests {
         assert!(wrapped.width <= unconstrained.width, "a wrapped line can't be wider than the unconstrained text");
         // Height is the line count times the step: one walk, not two counts.
         assert_eq!(wrapped.height, wrapped.lines.len() as f32 * 18.0);
+    }
+
+    /// The docs shots' fonts under the chain `Noto Sans`: `●` and `✓` are in their Symbols 2 face.
+    pub(crate) fn shots_fixture() -> Option<ShapingHandle> {
+        if !fonts::fc_match_available() {
+            eprintln!("skip: fc-match not available");
+            return None;
+        }
+        let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shots/fonts/fonts.conf");
+        let handle = ShapingHandle::spawn_with(Some(config));
+        handle.set_chain(&["Noto Sans".into()]);
+        Some(handle)
+    }
+
+    /// [`shots_fixture`] whose lookups each wait for the returned sender to drop, then run `lookup`.
+    pub(crate) fn gated_shots_fixture(
+        lookup: impl Fn(char) -> Option<PathBuf> + Send + 'static,
+    ) -> Option<(ShapingHandle, mpsc::Sender<()>)> {
+        let handle = shots_fixture()?;
+        let (open, gate) = mpsc::channel::<()>();
+        let gate = Mutex::new(gate);
+        handle.probe_with(Waker::new().unwrap(), move |ch| {
+            let _ = gate.lock().unwrap().recv();
+            lookup(ch)
+        });
+        Some((handle, open))
+    }
+
+    /// #55: uncovered codepoints answer before any lookup returns, and each is looked up once, even
+    /// past a full queue.
+    #[test]
+    fn a_shape_replies_before_its_lookups_and_looks_each_codepoint_up_once() {
+        let looked_up = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&looked_up);
+        let Some((handle, open)) = gated_shots_fixture(move |ch| {
+            seen.lock().unwrap().push(ch);
+            None
+        }) else {
+            return;
+        };
+        let before = handle.font_generation();
+        let text: String = (0..PROBE_QUEUE as u32 + 100).map(|i| char::from_u32(0x10_0000 + i).unwrap()).collect();
+
+        let (reply, replied) = mpsc::channel();
+        let (shaper, asked) = (handle.clone(), text.clone());
+        thread::spawn(move || reply.send(shaper.shape_glyphs(req(&asked, 20.0))));
+        let shaped = replied.recv_timeout(std::time::Duration::from_secs(5)).expect("the reply waited on a lookup");
+
+        let glyphs = &shaped.shaped[0].glyphs;
+        assert!(!glyphs.is_empty() && glyphs.iter().all(|glyph| glyph.id == 0), "answered with the loaded faces");
+        assert_eq!(handle.font_generation(), before);
+        drop(open);
+        // A new size each try, so a barrier the full queue turned away is queued again.
+        let size = std::cell::Cell::new(20.0);
+        let drained_to = |barrier: char| {
+            let shape = || handle.shape(req(&barrier.to_string(), size.replace(size.get() + 1.0)));
+            crate::lua::calls::poll_until(|| drop(shape()), || looked_up.lock().unwrap().last() == Some(&barrier));
+        };
+        drained_to('\u{10_FFFD}');
+        // Requeues the codepoints the full queue turned away.
+        handle.shape(req(&text, 99.0));
+        drained_to('\u{10_FFFC}');
+        let looked_up = looked_up.lock().unwrap();
+        assert_eq!(looked_up.len(), PROBE_QUEUE + 102, "every codepoint and both barriers");
+        assert_eq!(looked_up.iter().collect::<HashSet<_>>().len(), looked_up.len(), "none twice");
+    }
+
+    #[test]
+    fn probing_in_the_background_answers_before_the_face_loads() {
+        let Some(handle) = shots_fixture() else { return };
+        handle.probe_in_background(Waker::new().unwrap());
+        assert!(handle.shape_glyphs(req("●", 20.0)).shaped[0].glyphs.iter().all(|glyph| glyph.id == 0));
+    }
+
+    /// #55: once the lookup lands a face, the text shaped with boxes reshapes in it, and two
+    /// codepoints that face covers bump the generation once.
+    #[test]
+    fn a_face_that_lands_reshapes_the_text_that_lacked_it() {
+        let Some(handle) = shots_fixture() else { return };
+        let barrier = '\u{10_0000}';
+        let (done, looked_up) = mpsc::channel();
+        let done = Mutex::new(done);
+        let waker = Waker::new().unwrap();
+        handle.probe_with(waker.clone(), move |ch| {
+            if ch == barrier {
+                let _ = done.lock().unwrap().send(());
+                return None;
+            }
+            fonts::covering_file(ch)
+        });
+        let before = handle.font_generation();
+        let request = || req(&format!("●✓{barrier}"), 20.0);
+        let covered = |shaped: &ShapeResult| {
+            shaped.shaped[0].glyphs.iter().filter(|glyph| glyph.start < "●✓".len()).all(|glyph| glyph.id != 0)
+        };
+
+        assert!(!covered(&handle.shape_glyphs(request())), "answered before the lookup");
+        looked_up.recv_timeout(std::time::Duration::from_secs(5)).expect("the barrier is looked up last");
+        // Queued behind both answers, so it returns once the worker has handled them.
+        let faces = handle.font_database();
+
+        assert_eq!(handle.font_generation(), before + 1, "one face, one reshape");
+        let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shots/fonts");
+        let from_fixture = |face: &fontdb::FaceInfo| match &face.source {
+            fontdb::Source::File(path) | fontdb::Source::SharedFile(path, _) => path.starts_with(&fixtures),
+            fontdb::Source::Binary(_) => false,
+        };
+        let symbols = |face: &fontdb::FaceInfo| face.families.iter().any(|(name, _)| name == "Noto Sans Symbols 2");
+        assert!(faces.db.faces().any(|face| symbols(face) && from_fixture(face)), "looked up under the fixture");
+        let mut fds = [nix::poll::PollFd::new(waker.fd(), nix::poll::PollFlags::POLLIN)];
+        assert_eq!(nix::poll::poll(&mut fds, nix::poll::PollTimeout::ZERO), Ok(1), "and is woken for it");
+        assert!(covered(&handle.shape_glyphs(request())), "the cached boxes are reshaped");
     }
 }

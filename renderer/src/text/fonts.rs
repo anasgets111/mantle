@@ -61,17 +61,20 @@ pub fn resolve_chain(chain: &[&str]) -> ResolvedFonts {
     }
 }
 
-/// Loads a face covering `ch`, for a codepoint every face the chain loaded drew as a box
-/// (ADR-0239). `true` when the database gained one and the caller must shape again.
+/// The file fontconfig ranks first for `ch`, a codepoint every face the chain loaded drew as a
+/// box (ADR-0239). The shaping worker runs it on its probe thread, or inline without one (#55).
 ///
 /// ponytail: the face is fontconfig's own first-ranked answer -- the system's declared font
 /// policy, not a designer's pick. With Font Awesome installed, `:charset=1f600` resolves to it
 /// rather than to an emoji face. A shell that cares names the family in its chain.
-pub fn load_covering(db: &mut Database, ch: char, loaded_paths: &mut HashSet<PathBuf>) -> bool {
+pub fn covering_file(ch: char) -> Option<PathBuf> {
+    fc_match_raw(&format!(":charset={:x}", ch as u32)).map(|(path, _)| path)
+}
+
+/// Loads `path`, the file [`covering_file`] answered for `ch`. `true` when the database gained a
+/// face and the caller must shape again.
+pub fn load_cover(db: &mut Database, ch: char, path: PathBuf, loaded_paths: &mut HashSet<PathBuf>) -> bool {
     let cp = ch as u32;
-    let Some((path, _)) = fc_match_raw(&format!(":charset={cp:x}")) else {
-        return false;
-    };
     // The shaper tried every loaded face before reaching here, so fontconfig answering with one of
     // them is it declining rather than helping -- this query's substitution check (ADR-0239).
     if loaded_paths.contains(&path) {
@@ -236,7 +239,7 @@ fn fc_match(name: &str) -> Option<(PathBuf, String)> {
 }
 
 /// The file `fc-match` answers `pattern` with, and the families that file holds, before any check
-/// that the answer is a hit rather than fontconfig's substitution -- which [`load_covering`],
+/// that the answer is a hit rather than fontconfig's substitution -- which [`covering_file`],
 /// asking by codepoint, has no family name to make.
 fn fc_match_raw(pattern: &str) -> Option<(PathBuf, String)> {
     let mut command = Command::new("fc-match");

@@ -1753,6 +1753,27 @@ pub(super) mod tests {
         assert_ne!(memo(), first);
     }
 
+    /// A face that lands after a box was measured re-measures the unchanged text (#55).
+    #[test]
+    fn a_face_landing_remeasures_unchanged_text() {
+        // Held until the first pass is measured, so the face cannot land part way through it.
+        let shaping = crate::text::shaping::tests::gated_shots_fixture(crate::text::fonts::covering_file);
+        let Some((shaping, open)) = shaping else { return };
+        let before = shaping.font_generation();
+        let mut scene = Scene::new();
+        let (lua, surface) = surface_from(r#"return panel { id = "bar", child = text { content = "●●●●●●●●" } }"#);
+        let width = |scene: &mut Scene| {
+            apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            scene.surface("bar@TEST").unwrap().children[0].rect.width
+        };
+        let boxed = width(&mut scene);
+        drop(open);
+        crate::lua::calls::poll_until(|| (), || shaping.font_generation() > before);
+        let fresh = width(&mut Scene::new());
+        assert_ne!(fresh, boxed, "a fresh scene measures the landed face");
+        assert_eq!(width(&mut scene), fresh, "and so does the kept one");
+    }
+
     /// A stacking parent has no main axis (ADR-0023), and `Fill` there means the whole box.
     #[test]
     fn fill_under_a_stacking_parent_is_still_the_whole_box() {

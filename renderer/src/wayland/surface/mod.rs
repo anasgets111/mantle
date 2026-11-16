@@ -27,6 +27,9 @@ pub(super) struct PaintKey {
     physical: (u32, u32),
     scale_120: u32,
     logical: (u32, u32),
+    /// A face loaded since the last paint can fill what it drew as boxes, though a list holds text
+    /// rather than glyphs and so shows no damage (#55).
+    fonts: u64,
 }
 
 /// Logs a bind-time failure; `surface_id` is `"{id}@{output}"` (ADR-0038).
@@ -777,7 +780,7 @@ mod tests {
         );
         tracked.map_state = MapState::Mapped;
         tracked.last_painted = Some((
-            PaintKey { physical: (640, 480), scale_120: 120, logical: (640, 480) },
+            PaintKey { physical: (640, 480), scale_120: 120, logical: (640, 480), fonts: 0 },
             layout::paint::DisplayList::default(),
         ));
         tracked.last_blur_region.push(crate::text::snap::PhysicalRect { x0: 0, y0: 0, x1: 4, y1: 4 });

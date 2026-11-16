@@ -47,6 +47,12 @@ impl Scene {
         lines.rows(before) != lines.rows(after)
     }
 
+    /// Makes every draft wrap again at its next set, recounting the rows it had: they were counted
+    /// in faces that have changed since (#55). No width equals NaN, so a focused field refits too.
+    pub(super) fn rewrap_fields(&mut self) {
+        self.field_drafts.values_mut().for_each(|draft| draft.wrapped.0 = f32::NAN);
+    }
+
     /// The width the field `id`'s draft last wrapped at, `None` without one.
     pub fn field_wrap_width(&self, id: NodeId) -> Option<f32> {
         self.field_drafts.get(&id).map(|draft| draft.wrapped.0)
@@ -93,6 +99,7 @@ fn find_mut(node: &mut ResolvedNode, id: NodeId) -> Option<&mut ResolvedNode> {
 mod tests {
     use super::super::tests::{apply_at, full, surface_from};
     use super::*;
+    use crate::text::shaping::tests::gated_shots_fixture;
 
     const FIELD: &str = r#"return panel { id = "bar", child = column { children = { textfield { width = 80,
         font_size = 10, line_height = 1, multiline = true, max_lines = 3, on_change = function() end } } } }"#;
@@ -118,6 +125,24 @@ mod tests {
         assert!(scene.set_field_scroll("bar@TEST", id, 10.0));
         apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
         assert_eq!(field(&scene).scrolled, 10.0, "a pass keeps the rows where the app scrolled them");
+    }
+
+    /// Rows counted with boxes are recounted once the face lands (#55): at 10 px a box is 6 px
+    /// wide and `●` 8.94, so ten of them wrap to one row, then two.
+    #[test]
+    fn a_draft_wrapped_before_a_face_landed_is_recounted() {
+        let Some((shaping, open)) = gated_shots_fixture(crate::text::fonts::covering_file) else { return };
+        let (lua, surface) = surface_from(FIELD);
+        let mut scene = Scene::new();
+        let surfaces = std::slice::from_ref(&surface);
+        apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
+        let id = scene.surface("bar@TEST").unwrap().children[0].children[0].id;
+        assert!(!scene.set_field_draft("bar@TEST", id, "●●●●● ●●●●●", &shaping), "one row of boxes");
+        let before = shaping.font_generation();
+        drop(open);
+        crate::lua::calls::poll_until(|| (), || shaping.font_generation() > before);
+        apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
+        assert!(scene.set_field_draft("bar@TEST", id, "●●●●●", &shaping), "two rows shrink to one");
     }
 
     #[test]

@@ -1470,6 +1470,10 @@ pub(crate) mod tests {
         let (first, layers) = kept(10);
         assert!(first.is_some() && layers == 1, "one raster kept: {layers}");
         assert_eq!(kept(25), (first, 1), "the new angle composites the same image");
+        // Any new face can fill a box the raster holds (#55).
+        shaping.set_chain(&["sans-serif".into()]);
+        painter.sync();
+        assert_eq!(painter.census().2, 0, "a new face set drops every kept raster");
     }
 
     #[test]
@@ -1560,7 +1564,8 @@ pub(crate) mod tests {
         assert_eq!(painter.font_generation(), shaping.font_generation());
         assert_eq!(painter.font_id(declared_face), declared_id);
 
-        shaping.ensure_family(&std::sync::Arc::from("ZZ No Such Family 9184"));
+        // Remaps a generic, here to the loaded mono face: a bump that may add no face.
+        shaping.ensure_family(&std::sync::Arc::from("monospace"));
         assert_ne!(shaping.font_generation(), painter.font_generation(), "the second sync must not be a no-op");
         painter.sync();
         assert_eq!(painter.font_id(declared_face), declared_id);

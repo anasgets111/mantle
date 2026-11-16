@@ -76,6 +76,7 @@ pub fn run(
     // One process-wide shaping handle; `RendererClient` gets a clone (ADR-0039 decision 3).
     // `Loader::new()` stays here because `mlua::Lua` is `!Send`.
     let shaping = ShapingHandle::spawn();
+    shaping.probe_in_background(waker.clone());
     let client = RendererClient::start(shaping.clone(), outbound_tx.clone(), generation_id, waker.clone())?;
 
     let mut app = App {
@@ -174,6 +175,9 @@ pub fn run(
     // lazily, and `set_chain` rebuilds instead of respawning. No declaration keeps the default.
     // A family a node names by hand is not resolved here: it lands on first sight (ADR-0144).
     app.shaping.set_chain(&crate::lua::fonts::declared_chain(app.client.lua()));
+    // What the startup pass below measures against. The loop keeps its own count: a narrowed pass
+    // re-lays only its instances, so the scene's own record cannot say the rest are current.
+    let mut font_generation = app.shaping.font_generation();
     let instances = expand_instances(&specs, &outputs);
     warn_unmatched_outputs(&specs, &outputs);
     app.client.set_instances(instances.clone());
@@ -302,6 +306,12 @@ pub fn run(
         app.client.fire_due_timers();
         app.process_accessibility_actions();
         app.client.poll_off_thread();
+        // Text shaped with boxes before a face landed measures differently now (#55).
+        let fonts = app.shaping.font_generation();
+        if fonts != font_generation {
+            font_generation = fonts;
+            app.client.mark_dirty();
+        }
         app.client.wake_due_signals();
         // A frame callback is the tween clock (ADR-0145). Taken every turn so a callback that
         // arrives with a push is answered by this repaint, not repeated next turn.
