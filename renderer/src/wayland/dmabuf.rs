@@ -17,6 +17,7 @@ use wayland_protocols::wp::linux_dmabuf::zv1::client::{zwp_linux_buffer_params_v
 use super::App;
 use super::egl::EglState;
 use super::egl_ext::{DmabufEntryPoints, DmabufPlane};
+use crate::layout::scene::NodeId;
 
 /// wl_shm's `Xrgb8888`/`Argb8888` preference (`wayland::capture::pick_format`), as the DRM fourcc
 /// codes `gbm`/`zwp_linux_dmabuf_v1` use instead.
@@ -86,11 +87,13 @@ fn open_gbm(node: &Path) -> Result<gbm::Device<File>, String> {
     gbm::Device::new(file).map_err(|e| format!("gbm cannot use {}: {e}", node.display()))
 }
 
-/// A dma-buf-backed capture buffer: the gbm allocation, its `wl_buffer`, and, once imported at a
-/// canvas-current point, the texture every later frame into this same buffer reuses.
+/// A dma-buf-backed capture buffer: the gbm allocation, its `wl_buffer` once the compositor
+/// answers `created`, and, once imported at a canvas-current point, the texture every later frame
+/// into this same buffer reuses.
 pub struct DmabufBuffer {
-    bo: gbm::BufferObject<()>,
-    wl_buffer: wayland_client::protocol::wl_buffer::WlBuffer,
+    /// `None` only for a test buffer, which never reaches `import`.
+    bo: Option<gbm::BufferObject<()>>,
+    wl_buffer: Option<wayland_client::protocol::wl_buffer::WlBuffer>,
     shape: DmabufShape,
     texture: Option<(egl::Image, ImageId, glow::NativeTexture)>,
 }
@@ -100,8 +103,9 @@ impl DmabufBuffer {
         self.shape
     }
 
+    /// Only for a buffer [`DmabufSwapchain::back`] returned: one still pending has no `wl_buffer`.
     pub fn wl_buffer(&self) -> &wayland_client::protocol::wl_buffer::WlBuffer {
-        &self.wl_buffer
+        self.wl_buffer.as_ref().expect("the swapchain hands out only created buffers")
     }
 
     pub fn image(&self) -> Option<ImageId> {
@@ -118,19 +122,24 @@ impl DmabufBuffer {
 
 impl Drop for DmabufBuffer {
     fn drop(&mut self) {
-        self.wl_buffer.destroy();
+        if let Some(wl_buffer) = &self.wl_buffer {
+            wl_buffer.destroy();
+        }
     }
 }
 
-/// Allocates a gbm buffer object and its `wl_buffer` for `shape`. Any failure (no format support,
-/// no plane fd, the compositor rejecting the params) returns `None`; the caller falls back to shm
-/// for this source (amendment decision 4).
+/// Allocates a gbm buffer object for `shape` and asks the compositor to import it with `create`,
+/// whose `created`/`failed` answer reaches `id`'s params handler (#65): `create_immed` would turn
+/// a rejection into a protocol error that ends the connection. `None` means the local allocation
+/// failed (no format support, no plane fd); the caller falls back to shm for this source
+/// (amendment decision 4).
 pub fn allocate(
     support: &DmabufSupport,
     dmabuf: &zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1,
     qh: &QueueHandle<App>,
     shape: DmabufShape,
-) -> Option<DmabufBuffer> {
+    id: NodeId,
+) -> Option<(DmabufBuffer, zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1)> {
     let format = gbm::Format::try_from(shape.format.fourcc).ok()?;
     let modifier = gbm::Modifier::from(shape.format.modifier);
     let bo: gbm::BufferObject<()> = support
@@ -144,7 +153,7 @@ pub fn allocate(
         )
         .ok()?;
 
-    let params = dmabuf.create_params(qh, ());
+    let params = dmabuf.create_params(qh, id);
     let plane_count = bo.plane_count();
     let mut fds = Vec::with_capacity(plane_count as usize);
     for plane in 0..plane_count {
@@ -160,18 +169,15 @@ pub fn allocate(
         );
         fds.push(fd);
     }
-    let wl_buffer = params.create_immed(
+    params.create(
         shape.width as i32,
         shape.height as i32,
         shape.format.fourcc,
         zwp_linux_buffer_params_v1::Flags::empty(),
-        qh,
-        (),
     );
-    params.destroy();
     drop(fds);
 
-    Some(DmabufBuffer { bo, wl_buffer, shape, texture: None })
+    Some((DmabufBuffer { bo: Some(bo), wl_buffer: None, shape, texture: None }, params))
 }
 
 /// Imports `buffer`'s gbm allocation as a `GL_TEXTURE_2D` and wraps it for femtovg, once per
@@ -189,19 +195,20 @@ pub fn import(
     if buffer.texture.is_some() {
         return Some(());
     }
-    let plane_count = buffer.bo.plane_count();
+    let bo = buffer.bo.as_ref()?;
+    let plane_count = bo.plane_count();
     let mut fds = Vec::with_capacity(plane_count as usize);
     let mut planes = Vec::with_capacity(plane_count as usize);
     for plane in 0..plane_count {
-        let fd = buffer.bo.fd_for_plane(plane as i32).ok()?;
+        let fd = bo.fd_for_plane(plane as i32).ok()?;
         planes.push(DmabufPlane {
             fd: std::os::unix::io::AsRawFd::as_raw_fd(&fd),
-            offset: buffer.bo.offset(plane as i32),
-            pitch: buffer.bo.stride_for_plane(plane as i32),
+            offset: bo.offset(plane as i32),
+            pitch: bo.stride_for_plane(plane as i32),
         });
         fds.push(fd);
     }
-    let modifier: u64 = buffer.bo.modifier().into();
+    let modifier: u64 = bo.modifier().into();
     let egl_image = support.entry_points.create_dmabuf_image(
         egl,
         buffer.shape.width,
@@ -269,6 +276,8 @@ pub fn free_texture(
 pub struct DmabufSwapchain {
     slots: [Option<DmabufBuffer>; 2],
     front: Option<usize>,
+    /// The params of the back slot's allocation still awaiting `created`/`failed`, and that slot.
+    pub(super) pending: Option<(zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1, usize)>,
 }
 
 impl DmabufSwapchain {
@@ -278,24 +287,50 @@ impl DmabufSwapchain {
 
     /// Ensures the back slot matches `wanted`, reallocating through `alloc` if it does not. Any
     /// buffer a reallocation discards is returned so the caller can queue its texture for a
-    /// canvas-current free.
+    /// canvas-current free. `false` means the allocation failed; `true` covers one still awaiting
+    /// `created`, whose [`Self::back`] is `None` until then. A replaced pending allocation is not
+    /// destroyed here: its answer still arrives, and [`Self::answer`] reports it stale.
     pub fn ensure_back(
         &mut self,
         wanted: DmabufShape,
-        alloc: impl FnOnce() -> Option<DmabufBuffer>,
+        alloc: impl FnOnce() -> Option<(DmabufBuffer, zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1)>,
     ) -> (bool, Option<DmabufBuffer>) {
         let index = self.back_index();
         if self.slots[index].as_ref().map(DmabufBuffer::shape) == Some(wanted) {
             return (true, None);
         }
         match alloc() {
-            Some(fresh) => (true, self.slots[index].replace(fresh)),
+            Some((fresh, params)) => {
+                self.pending = Some((params, index));
+                (true, self.slots[index].replace(fresh))
+            }
             None => (false, self.slots[index].take()),
         }
     }
 
+    /// The compositor answered `params`: `Some(buffer)` (`created`) completes the pending slot,
+    /// `None` (`failed`) drops it. `false` for an answer to anything but the current pending
+    /// allocation, which the caller cleans up.
+    pub fn answer(
+        &mut self,
+        params: &zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1,
+        buffer: Option<&wayland_client::protocol::wl_buffer::WlBuffer>,
+    ) -> bool {
+        use wayland_client::Proxy;
+        let Some((_, index)) = self.pending.take_if(|(pending, _)| pending.id() == params.id()) else {
+            return false;
+        };
+        match (buffer, self.slots[index].as_mut()) {
+            (Some(buffer), Some(slot)) => slot.wl_buffer = Some(buffer.clone()),
+            (Some(_), None) => return false,
+            (None, _) => self.slots[index] = None,
+        }
+        true
+    }
+
+    /// The back slot, once the compositor has created its `wl_buffer`.
     pub fn back(&self) -> Option<&DmabufBuffer> {
-        self.slots[self.back_index()].as_ref()
+        self.slots[self.back_index()].as_ref().filter(|slot| slot.wl_buffer.is_some())
     }
 
     /// The back slot just landed a frame: it becomes the front (what `image()` reads); the
@@ -318,12 +353,21 @@ impl DmabufSwapchain {
     }
 }
 
+#[cfg(test)]
+impl DmabufSwapchain {
+    /// A back slot of `shape` awaiting `params`, with no gbm buffer behind it.
+    pub(super) fn pending_for_test(
+        shape: DmabufShape,
+        params: zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1,
+    ) -> Self {
+        let buffer = DmabufBuffer { bo: None, wl_buffer: None, shape, texture: None };
+        DmabufSwapchain { slots: [Some(buffer), None], front: None, pending: Some((params, 0)) }
+    }
+}
+
 // `format`/`modifier` do fire (legacy pre-feedback advertisement); modifiers come from
 // `eglQueryDmaBufModifiersEXT` instead, so both are ignored rather than asserted unreachable.
 delegate_noop!(App: ignore zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1);
-// `create_immed` never asks for `created`/`failed`; a rejected immediate buffer instead raises a
-// protocol error, so these truly never fire.
-delegate_noop!(App: zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1);
 // `release` does fire: `ext_image_copy_capture_frame_v1`'s own doc says it is unused, and
 // wlr-screencopy destroys its frame right after `ready` regardless.
 delegate_noop!(App: ignore wayland_client::protocol::wl_buffer::WlBuffer);

@@ -87,6 +87,10 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, NodeId> for App {
                 };
                 wlr.dmabuf_active = false;
                 // No usable shm offer fails the source: retrying would get the same offer back.
+                // ponytail: this includes a frame copied through shm while its dma-buf allocation
+                // awaits `created`, failing a dma-buf-only source for good. Hyprland, niri and
+                // Pinnacle all offer shm; the upgrade is to skip the frame and re-request it on
+                // the answer, as ext does.
                 let Some((width, height, stride, format)) = shm_negotiating else {
                     proxy.destroy();
                     fail_source(&mut state.captures, id);

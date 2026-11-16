@@ -348,12 +348,17 @@ mod test_support {
             reqs.iter().filter_map(|&(id, op, arg)| (id == effect_id && op == 1).then_some(arg)).collect()
         }
 
+        /// Sends one event, `payload` already wire-encoded.
+        pub(in crate::wayland) fn send(&self, object_id: u32, opcode: u16, payload: &[u8]) {
+            let mut msg = Vec::new();
+            push_wire_msg(&mut msg, object_id, opcode, payload);
+            self.writer.lock().unwrap().write_all(&msg).unwrap();
+        }
+
         pub(in crate::wayland) fn send_lock_finished(&self) {
             let id = self.lock_id.load(Ordering::Acquire);
             assert_ne!(id, 0);
-            let mut msg = Vec::new();
-            push_wire_msg(&mut msg, id, 1, &[]);
-            self.writer.lock().unwrap().write_all(&msg).unwrap();
+            self.send(id, 1, &[]);
         }
     }
 
