@@ -217,6 +217,16 @@ mod tests {
         assert_eq!(gate.set_blocked(false), Some(vec![event(2, 30, IdleState::Idled)]));
     }
 
+    #[test]
+    fn forgetting_a_generation_keeps_another_generations_pending_input_resume() {
+        let mut gate = IdleGate::default();
+        gate.observe(event(2, 30, IdleState::Idled));
+        gate.observe(event(2, 30, resumed(ResumeCause::Activity)));
+        gate.forget(1);
+        let input = event(2, 30, resumed(ResumeCause::Input));
+        assert_eq!(gate.observe(input), Some(input));
+    }
+
     /// ADR-0299: idle -> inhibitor -> input -> release delivers an input resume during the hold
     /// and nothing on release, because activity already resumed the seat.
     #[test]

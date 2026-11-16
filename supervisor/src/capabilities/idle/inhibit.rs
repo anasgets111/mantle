@@ -225,6 +225,8 @@ pub(in crate::capabilities) mod tests {
         assert!(!apply_release_inhibit(&mut counts, 42));
         assert!(!counts.contains_key(&42));
         assert!(apply_release_inhibit(&mut counts, 2));
+        assert!(!apply_release_inhibit(&mut counts, 2), "nothing was held, so nothing closes");
+        assert!(!cleanup_generation_inhibit(&mut counts, 2), "nothing was held, so nothing closes");
     }
 
     /// What the portal sends: no application name, a reason worth drawing.
@@ -379,6 +381,23 @@ pub(in crate::capabilities) mod tests {
             let (lock, held) = std::io::pipe().expect("a pipe to stand in for the lock");
             let _ = self.calls.send(((what, who, why, mode), lock));
             Ok(std::os::fd::OwnedFd::from(held).into())
+        }
+    }
+
+    /// logind's `BlockInhibited`, its holders a foreign one and this shell's own.
+    pub(in crate::capabilities::idle) struct HeldLogind(pub(in crate::capabilities::idle) &'static str);
+
+    #[zbus::interface(name = "org.freedesktop.login1.Manager")]
+    impl HeldLogind {
+        #[zbus(property, name = "BlockInhibited")]
+        fn block_inhibited(&self) -> String {
+            self.0.into()
+        }
+
+        #[zbus(name = "ListInhibitors")]
+        fn list_inhibitors(&self) -> Vec<super::super::state::InhibitorRow> {
+            let row = |who: &str| ("idle".into(), who.into(), "Playing video".into(), "block".into(), 1000, 42);
+            vec![row("mpv"), row(INHIBIT_WHO)]
         }
     }
 

@@ -562,9 +562,10 @@ mod tests {
     use tokio::io::AsyncReadExt;
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
-    use super::super::inhibit::tests::{REFUSED, StubLogin1Manager};
+    use super::super::inhibit::tests::{HeldLogind, REFUSED, StubLogin1Manager};
     use super::*;
-    use crate::capabilities::test_support::{p2p_pair_serving, private_bus, within};
+    use crate::capabilities::test_support::{envelope, p2p_pair_serving, poll_until, private_bus, within};
+    use serde_json::json;
 
     type Inhibited = ((String, String, String, String), std::io::PipeReader);
 
@@ -671,5 +672,92 @@ mod tests {
         assert!(controller.screensaver_release(refused, ":1.1").await);
 
         assert!(controller.inhibit.state.lock().await.fd.is_some(), "the refused hold closed the video's lock");
+    }
+
+    /// Each arm acts for the envelope's generation. Notify is inert, so the threshold arms show in
+    /// the queue a live notifier replays.
+    #[tokio::test]
+    async fn dispatch_acts_for_the_envelopes_generation() {
+        let (controller, mut locks, _logind) = controller().await;
+        let send = |generation_id, action: &str, arguments: serde_json::Value| {
+            let mut envelope =
+                envelope(shared::Capability::Idle, action, arguments.as_array().expect("a list").clone());
+            envelope.params.generation_id = generation_id;
+            super::super::dispatch(&controller, &envelope);
+        };
+        let queued = || controller.pending.lock().expect("mutex poisoned").clone();
+
+        send(7, "register", json!([20]));
+        send(7, "register", json!([60]));
+        send(8, "register", json!([20]));
+        assert_eq!(queued(), [(7, 20), (7, 60), (8, 20)]);
+        send(7, "cancel", json!([20]));
+        assert_eq!(queued(), [(7, 60), (8, 20)], "only generation 7's 20s goes");
+        send(8, "forget_thresholds", json!([]));
+        assert_eq!(queued(), [(7, 60)], "only generation 8's go");
+
+        send(7, "inhibit", json!(["presenting"]));
+        let ((_, _, why, _), lock) = within(locks.recv()).await.expect("logind was asked for a lock");
+        assert_eq!(why, "presenting");
+        // The spawned arms report nothing back; each is done once its generation's count moves.
+        let state = &controller.inhibit.state;
+        let counted = |generation, count| {
+            poll_until(move || (state.try_lock().ok()?.counts.get(&generation) == Some(&count)).then_some(()))
+        };
+        counted(7, 1).await;
+        send(8, "inhibit", json!(["presenting too"]));
+        counted(8, 1).await;
+        send(8, "release_inhibit", json!([]));
+        counted(8, 0).await;
+        assert_eq!(state.lock().await.counts.get(&7), Some(&1), "generation 8 released 7's hold");
+        assert!(state.lock().await.fd.is_some(), "generation 7 still holds the lock");
+        send(7, "release_inhibit", json!([]));
+        released(lock).await;
+    }
+
+    /// A ScreenSaver hold reaches the pushed state and the start snapshot, and leaves both on release.
+    #[tokio::test]
+    async fn a_screensaver_hold_is_published_and_snapshotted_until_released() {
+        let (controller, mut locks, _logind) = controller().await;
+        let (state_tx, mut pushed) = unbounded_channel();
+        let controller = IdleController { state_tx, ..controller };
+        let video = super::super::state::IdleInhibitor { who: "firefox".into(), why: "Playing video".into() };
+
+        let cookie = controller.screensaver_inhibit(":1.1".into(), video.who.clone(), video.why.clone()).await;
+        let _lock = taken(&mut locks).await;
+        let held = IdleState { inhibited: true, compositor_hold_stale: false, inhibitors: vec![video] };
+        assert_eq!(within(pushed.recv()).await, Some(held.clone()));
+        assert_eq!(controller.snapshot(), held);
+
+        assert!(controller.screensaver_release(cookie.expect("a cookie"), ":1.1").await);
+        assert_eq!(within(pushed.recv()).await, Some(IdleState::default()));
+        assert_eq!(controller.snapshot(), IdleState::default());
+    }
+
+    /// An inhibitor held before the watch starts takes back an announced idle and is published;
+    /// its release, a later change, announces the idle again and clears the roster.
+    #[tokio::test]
+    async fn logind_inhibitors_held_at_startup_and_released_later_reach_the_gate_and_the_published_state() {
+        let (system_bus, logind) =
+            p2p_pair_serving(|peer| peer.serve_at("/org/freedesktop/login1", HeldLogind("sleep:idle"))).await;
+        let event = |state| shared::IdleEvent { generation_id: 1, threshold_sec: 30, state };
+        let gate = Arc::new(std::sync::Mutex::new(IdleGate::default()));
+        gate.lock().expect("mutex poisoned").observe(event(shared::IdleState::Idled));
+        let (events_tx, mut events) = unbounded_channel();
+        let (state_tx, mut pushed) = unbounded_channel();
+        tokio::spawn(watch_idle_inhibitors(system_bus, gate, events_tx, state_tx, Arc::default()));
+
+        let inhibitor = shared::IdleState::Resumed { cause: shared::ResumeCause::Inhibitor };
+        assert_eq!(within(events.recv()).await, Some(event(inhibitor)));
+        let mpv = super::super::state::IdleInhibitor { who: "mpv".into(), why: "Playing video".into() };
+        let held = IdleState { inhibited: true, compositor_hold_stale: false, inhibitors: vec![mpv] };
+        assert_eq!(within(pushed.recv()).await, Some(held));
+
+        let manager =
+            logind.object_server().interface::<_, HeldLogind>("/org/freedesktop/login1").await.expect("served");
+        manager.get_mut().await.0 = "sleep";
+        manager.get().await.block_inhibited_changed(manager.signal_emitter()).await.expect("emit the change");
+        assert_eq!(within(events.recv()).await, Some(event(shared::IdleState::Idled)));
+        assert_eq!(within(pushed.recv()).await, Some(IdleState::default()));
     }
 }
