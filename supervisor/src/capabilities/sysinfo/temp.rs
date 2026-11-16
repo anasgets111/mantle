@@ -135,7 +135,7 @@ pub fn read_temp_gpu(input: Option<&Path>) -> Option<i64> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     /// Test-only resolve-and-read convenience; production resolves once and reads per tick.
@@ -145,7 +145,7 @@ mod tests {
 
     /// Builds fake `hwmon_root` chips under `dir`, each with only a `name` file, for
     /// [`resolve_chip`] tests.
-    fn write_chip(dir: &Path, dir_name: &str, chip_name: &str) {
+    pub(crate) fn write_chip(dir: &Path, dir_name: &str, chip_name: &str) {
         let chip_dir = dir.join(dir_name);
         std::fs::create_dir_all(&chip_dir).unwrap();
         std::fs::write(chip_dir.join("name"), format!("{chip_name}\n")).unwrap();
@@ -153,7 +153,7 @@ mod tests {
 
     /// Writes one `tempN_input`/`tempN_label` pair in milli-Celsius, the real hwmon convention;
     /// values came from this machine's `coretemp`.
-    fn write_sensor(chip_dir: &Path, n: u32, label: &str, milli_c: i64) {
+    pub(crate) fn write_sensor(chip_dir: &Path, n: u32, label: &str, milli_c: i64) {
         std::fs::write(chip_dir.join(format!("temp{n}_input")), format!("{milli_c}\n")).unwrap();
         std::fs::write(chip_dir.join(format!("temp{n}_label")), format!("{label}\n")).unwrap();
     }

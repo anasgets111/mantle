@@ -293,6 +293,11 @@ async fn run_net_task(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use super::super::temp::tests::{write_chip, write_sensor};
+    use crate::capabilities::test_support::{dispatcher, envelope};
+
     #[tokio::test(start_paused = true)]
     async fn the_first_sample_is_immediate_and_a_reconfigure_does_not_resample() {
         let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -341,5 +346,134 @@ mod tests {
             assert_eq!(rx.try_recv().is_ok(), publishes, "measured {measured}");
         }
         assert_eq!(state.lock().unwrap().cpu_percent, 42);
+    }
+
+    #[test]
+    fn dispatch_sets_each_present_interval_and_ignores_the_rest() {
+        let channels: [_; 6] = std::array::from_fn(|_| tokio::sync::watch::channel(Duration::ZERO));
+        let [cpu, ram, temp, disk, gpu, net] = channels.each_ref().map(|(tx, _)| tx.clone());
+        let controller = super::SysinfoController {
+            state: Default::default(),
+            cpu_interval: cpu,
+            ram_interval: ram,
+            temp_interval: temp,
+            disk_interval: disk,
+            gpu_interval: gpu,
+            net_interval: net,
+        };
+        let dispatch = dispatcher(shared::Capability::Sysinfo, super::super::dispatch, &controller);
+        let intervals = || channels.each_ref().map(|(_, rx)| rx.borrow().as_secs());
+
+        let all = serde_json::json!({
+            "cpu_interval": 1, "ram_interval": 2, "temp_interval": 3,
+            "disk_interval": 4, "gpu_interval": 5, "net_interval": 6,
+        });
+        dispatch("configure", vec![all]);
+        assert_eq!(intervals(), [1, 2, 3, 4, 5, 6]);
+        dispatch("configure", vec![serde_json::json!({ "cpu_interval": "often" })]);
+        dispatch("configure", vec![]);
+        dispatch("nonsense", vec![serde_json::json!({ "cpu_interval": 9 })]);
+        dispatch("configure", vec![serde_json::json!({ "net_interval": 0 })]);
+        assert_eq!(intervals(), [1, 2, 3, 4, 5, 0], "an absent interval keeps the current one");
+    }
+
+    /// A controller over `root`'s `proc` and `hwmon`, polling only what `intervals` sets, and the
+    /// receiver of its publishes.
+    fn polling(
+        root: &std::path::Path,
+        intervals: serde_json::Value,
+    ) -> (super::SysinfoController, tokio::sync::mpsc::UnboundedReceiver<()>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let controller = super::SysinfoController::new(root.join("proc"), root.join("hwmon"), tx);
+        super::super::dispatch(&controller, &envelope(shared::Capability::Sysinfo, "configure", vec![intervals]));
+        (controller, rx)
+    }
+
+    /// The next publish, within two of the tests' 60 s intervals: the ticks sit on the wall clock's
+    /// second, so the first can come up to one second late.
+    async fn published(rx: &mut tokio::sync::mpsc::UnboundedReceiver<()>) {
+        let next = tokio::time::timeout(Duration::from_secs(120), rx.recv()).await;
+        assert_eq!(next, Ok(Some(())), "a tick that moved a field publishes");
+    }
+
+    /// Lets the first tick run, which takes its sample at once: the paused clock advances only once
+    /// every task is idle, and the next tick is a whole interval away.
+    async fn first_tick() {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
+    fn write(path: std::path::PathBuf, text: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
+    // Each sample below moves both of a task's fields, then only one: a publish that needed both,
+    // or either but not both, fails one of the two.
+
+    #[tokio::test(start_paused = true)]
+    async fn the_cpu_task_publishes_the_busy_share_between_two_ticks() {
+        let root = tempfile::tempdir().unwrap();
+        let stat = root.path().join("proc/stat");
+        write(stat.clone(), "cpu 100 0 0 900 0 0 0 0\n");
+        let (controller, mut rx) = polling(root.path(), serde_json::json!({ "cpu_interval": 60 }));
+        first_tick().await;
+        write(stat, "cpu 400 0 0 1600 0 0 0 0\n"); // busy 300 of 1000
+        published(&mut rx).await;
+        assert_eq!(controller.snapshot().cpu_percent, 30);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_ram_task_publishes_ram_and_swap() {
+        let root = tempfile::tempdir().unwrap();
+        let meminfo = root.path().join("proc/meminfo");
+        let fields = |available| {
+            format!("MemTotal: 1000 kB\nMemAvailable: {available} kB\nSwapTotal: 1000 kB\nSwapFree: 750 kB\n")
+        };
+        write(meminfo.clone(), &fields(500));
+        let (controller, mut rx) = polling(root.path(), serde_json::json!({ "ram_interval": 60 }));
+        published(&mut rx).await;
+        let percents = |state: shared::state::sysinfo::SysinfoState| (state.ram_percent, state.swap_percent);
+        assert_eq!(percents(controller.snapshot()), (50, 25));
+        write(meminfo, &fields(250));
+        published(&mut rx).await;
+        assert_eq!(percents(controller.snapshot()), (75, 25));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_temp_task_publishes_core_and_gpu_temperatures() {
+        let root = tempfile::tempdir().unwrap();
+        let hwmon = root.path().join("hwmon");
+        write_chip(&hwmon, "hwmon0", "coretemp");
+        write_sensor(&hwmon.join("hwmon0"), 2, "Core 0", 40_000);
+        write_chip(&hwmon, "hwmon1", "amdgpu");
+        write_sensor(&hwmon.join("hwmon1"), 1, "edge", 51_000);
+        let (controller, mut rx) = polling(root.path(), serde_json::json!({ "temp_interval": 60 }));
+        published(&mut rx).await;
+        let temps = |state: shared::state::sysinfo::SysinfoState| (state.temp_cores, state.temp_gpu);
+        assert_eq!(temps(controller.snapshot()), (vec![40], Some(51)));
+        write_sensor(&hwmon.join("hwmon0"), 2, "Core 0", 45_000);
+        published(&mut rx).await;
+        assert_eq!(temps(controller.snapshot()), (vec![45], Some(51)));
+    }
+
+    /// Rates divide by real elapsed time, which the paused clock does not hold still, so only
+    /// zero against non-zero is asserted.
+    #[tokio::test(start_paused = true)]
+    async fn the_net_task_publishes_receive_and_transmit_rates() {
+        let root = tempfile::tempdir().unwrap();
+        let dev = root.path().join("proc/net/dev");
+        let counters = |rx: u64, tx: u64| format!("eth0: {rx} 0 0 0 0 0 0 0 {tx} 0 0 0 0 0 0 0\n");
+        write(dev.clone(), &counters(100, 100));
+        let (controller, mut rx) = polling(root.path(), serde_json::json!({ "net_interval": 60 }));
+        first_tick().await;
+        let moving =
+            |state: shared::state::sysinfo::SysinfoState| (state.net_rx_bytes_sec > 0, state.net_tx_bytes_sec > 0);
+        for (received, sent, expected) in
+            [(200, 200, (true, true)), (200, 200, (false, false)), (300, 200, (true, false))]
+        {
+            write(dev.clone(), &counters(received, sent));
+            published(&mut rx).await;
+            assert_eq!(moving(controller.snapshot()), expected, "{received} received, {sent} sent");
+        }
     }
 }
