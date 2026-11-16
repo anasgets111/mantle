@@ -9,8 +9,8 @@ pub mod controller;
 pub use controller::StorageController;
 use shared::action::StorageAction;
 
-/// `mantle.storage` action dispatch (ADR-0037). Synchronous: actions touch memory and schedule the
-/// save task.
+/// `mantle.storage` action dispatch (ADR-0037). Returns at once: a first `open` reads its file and
+/// every save runs on a blocking thread.
 pub fn dispatch(controller: &StorageController, envelope: &shared::CommandEnvelope) {
     let Some(action) = crate::parse_action::<StorageAction>(&envelope.params) else { return };
     match action {

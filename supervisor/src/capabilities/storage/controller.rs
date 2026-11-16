@@ -34,13 +34,19 @@ struct Store {
     on_disk: Option<Map<String, Value>>,
     /// The parse error last logged, so a file left broken logs once.
     error: Option<String>,
+    /// `Some` while the first read is in flight: the writes made meanwhile, `null` deleting, to
+    /// replay over the file's contents. The store publishes nothing until then.
+    pending: Option<Map<String, Value>>,
+    /// A watch event arrived while `pending`, so the first read may predate the file.
+    stale: bool,
 }
 
+#[derive(Clone)]
 pub struct StorageController {
     stores: Arc<Mutex<Stores>>,
     /// One pending save per file, replaced by its next write. Files debounce independently; one
     /// file written every second cannot starve another's save.
-    saves: Mutex<HashMap<PathBuf, JoinHandle<()>>>,
+    saves: Arc<Mutex<HashMap<PathBuf, JoinHandle<()>>>>,
     signal_tx: UnboundedSender<()>,
 }
 
@@ -79,18 +85,24 @@ impl StorageController {
             }
             Err(err) => warn!("cannot watch stores, so other writers go unseen: {err}"),
         }
-        Self { stores, saves: Mutex::new(HashMap::new()), signal_tx }
+        Self { stores, saves: Arc::default(), signal_tx }
     }
 
     pub fn snapshot(&self) -> StorageState {
         let guard = self.stores.lock().expect("storage state mutex poisoned");
         StorageState {
-            contents: guard.stores.iter().map(|(key, store)| (key.clone(), store.values.clone().into())).collect(),
+            contents: guard
+                .stores
+                .iter()
+                .filter(|(_, store)| store.pending.is_none())
+                .map(|(key, store)| (key.clone(), store.values.clone().into()))
+                .collect(),
         }
     }
 
     /// `persistent_table { path, defaults }`, re-sent each evaluation (ADR-0136 decision 1).
-    /// The first declaration reads the file; later ones use the newer in-memory copy.
+    /// The first declaration reads the file off the Supervisor loop (see [`Self::land`]); later
+    /// ones use the newer in-memory copy.
     ///
     /// `defaults` fills missing keys without overwriting stored ones, so adding a default is a new
     /// key, not a reset. A changed merge schedules a save, creating the file on first run.
@@ -98,28 +110,59 @@ impl StorageController {
         let path = PathBuf::from(path);
         let key = path.to_string_lossy().into_owned();
 
-        let (declared, changed) = {
+        let changed = {
             let mut guard = self.stores.lock().expect("storage state mutex poisoned");
-            let Stores { stores, watches } = &mut *guard;
-            let declared = !stores.contains_key(&key);
-            let store = stores.entry(key).or_default();
-            if declared {
-                watch(watches.as_mut(), &path);
-                store.on_disk = load(&path).unwrap_or_else(|err| {
-                    log_parse_error(store, &path, err);
-                    None
-                });
-                store.values = store.on_disk.clone().unwrap_or_default();
-            }
+            let Some(store) = guard.stores.get_mut(&key) else {
+                let watches = guard.watches.clone();
+                let store = Store { defaults: defaults.clone(), pending: Some(Map::new()), ..Store::default() };
+                guard.stores.insert(key, store);
+                let this = self.clone();
+                tokio::task::spawn_blocking(move || this.land(watches, &path));
+                return;
+            };
             store.defaults = defaults.clone();
-            (declared, fill_missing(&mut store.values, defaults))
+            // A store still loading merges the latest defaults when it lands.
+            store.pending.is_none() && fill_missing(&mut store.values, defaults)
         };
 
         if changed {
             self.schedule_save(path);
-        }
-        if declared || changed {
             let _ = self.signal_tx.send(());
+        }
+    }
+
+    /// The first read of `path`: the file, then its defaults, then the writes made while it read,
+    /// so a write wins over the file. Reads again while a watch event flags it stale. Pushes once,
+    /// even for a broken file.
+    fn land(&self, mut watches: Option<Watches>, path: &Path) {
+        watch(watches.as_mut(), path);
+        let changed = loop {
+            let disk = load(path);
+            let mut guard = self.stores.lock().expect("storage state mutex poisoned");
+            let Some(store) = guard.stores.get_mut(&*path.to_string_lossy()) else { return };
+            // ponytail: re-reads while events keep coming, so a file rewritten faster than it reads
+            // never lands. Upgrade: cap the retries, then land and run one `sync`.
+            if std::mem::take(&mut store.stale) {
+                continue;
+            }
+            let writes = store.pending.take().unwrap_or_default();
+            store.on_disk = disk.unwrap_or_else(|err| {
+                log_parse_error(store, path, err);
+                None
+            });
+            store.values = store.on_disk.clone().unwrap_or_default();
+            let filled = fill_missing(&mut store.values, &store.defaults);
+            let written = !writes.is_empty();
+            for (key, value) in writes {
+                write(&mut store.values, &key, value);
+            }
+            // Under the lock, so the push is queued by the time a snapshot shows the store.
+            let _ = self.signal_tx.send(());
+            break filled || written;
+        };
+        if changed {
+            // `tokio::spawn` from a blocking thread: `spawn_blocking` runs it inside the runtime.
+            self.schedule_save(path.to_path_buf());
         }
     }
 
@@ -132,6 +175,8 @@ impl StorageController {
     /// renderer it would dirty; configs need no equality guard of their own around each write.
     ///
     /// The save stays unconditional: rewriting is the only repair for a deleted file.
+    ///
+    /// While the first read is in flight, the write is held, then pushed and saved when it lands.
     pub fn set(&self, path: &str, key: &str, value: Value) {
         let path = PathBuf::from(path);
         if key.is_empty() {
@@ -145,14 +190,12 @@ impl StorageController {
                 debug!("refused a write to {}; no persistent_table declared it", path.display());
                 return;
             };
-            match value {
-                Value::Null => store.values.remove(key).is_some(),
-                value if store.values.get(key) == Some(&value) => false,
-                value => {
-                    store.values.insert(key.to_string(), value);
-                    true
-                }
+            if let Some(writes) = &mut store.pending {
+                // Replayed and saved when the first read lands.
+                writes.insert(key.to_string(), value);
+                return;
             }
+            write(&mut store.values, key, value)
         };
 
         if changed {
@@ -190,10 +233,15 @@ fn sync(stores: &Mutex<Stores>, path: &Path, save: bool, signal_tx: &UnboundedSe
     let _serial = SERIAL.lock().expect("storage sync mutex poisoned");
     let key = path.to_string_lossy();
     let disk = load(path);
-    let contents = {
+    let (contents, mut watches) = {
         let mut guard = stores.lock().expect("storage state mutex poisoned");
         let Stores { stores, watches } = &mut *guard;
         let Some(store) = stores.get_mut(&*key) else { return };
+        if store.pending.is_some() {
+            // Its first read may have missed this write; it reads again before landing.
+            store.stale = true;
+            return;
+        }
         let disk = match disk {
             Ok(disk) => disk,
             Err(err) => return log_parse_error(store, path, err),
@@ -214,9 +262,9 @@ fn sync(stores: &Mutex<Stores>, path: &Path, save: bool, signal_tx: &UnboundedSe
         if !(save || fixed && Some(&store.values) != store.on_disk.as_ref()) {
             return;
         }
-        watch(watches.as_mut(), path);
-        store.values.clone()
+        (store.values.clone(), watches.clone())
     };
+    watch(watches.as_mut(), path);
     let saved = serde_json::to_vec_pretty(&contents).map_err(std::io::Error::other).and_then(|mut json| {
         json.push(b'\n');
         shared::write_atomic(path, &json)
@@ -259,6 +307,18 @@ fn load(path: &Path) -> Result<Option<Map<String, Value>>, String> {
     }
 }
 
+/// Stores one key, `null` deleting it, and reports whether it changed.
+fn write(values: &mut Map<String, Value>, key: &str, value: Value) -> bool {
+    match value {
+        Value::Null => values.remove(key).is_some(),
+        value if values.get(key) == Some(&value) => false,
+        value => {
+            values.insert(key.to_string(), value);
+            true
+        }
+    }
+}
+
 /// Copies missing top-level keys from `defaults` into `stored` and reports whether it changed.
 /// Values, including tables, replace as one key; nested tables do not merge.
 fn fill_missing(stored: &mut Map<String, Value>, defaults: &Value) -> bool {
@@ -276,12 +336,19 @@ fn fill_missing(stored: &mut Map<String, Value>, defaults: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capabilities::test_support::{dispatcher, within};
+    use crate::capabilities::test_support::{dispatcher, poll_until, within};
     use serde_json::json;
+    use std::os::unix::fs::OpenOptionsExt;
 
     fn controller() -> (StorageController, tokio::sync::mpsc::UnboundedReceiver<()>) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         (StorageController::new(tx), rx)
+    }
+
+    /// `open`, then waits for the first read to land.
+    async fn opened(controller: &StorageController, path: &str, defaults: Value) {
+        controller.open(path, &defaults);
+        poll_until(|| controller.snapshot().contents.contains_key(path).then_some(())).await;
     }
 
     #[test]
@@ -302,9 +369,9 @@ mod tests {
         let stored = stored.to_string_lossy().into_owned();
         let (controller, _rx) = controller();
 
-        controller.open(&fresh, &json!({ "theme": "mocha", "dnd": false }));
+        opened(&controller, &fresh, json!({ "theme": "mocha", "dnd": false })).await;
         // Reload: an author adds a default after the config already ran.
-        controller.open(&stored, &json!({ "theme": "mocha", "dnd": true }));
+        opened(&controller, &stored, json!({ "theme": "mocha", "dnd": true })).await;
 
         assert_eq!(controller.snapshot().contents[&fresh], json!({ "theme": "mocha", "dnd": false }));
         assert_eq!(controller.snapshot().contents[&stored], json!({ "theme": "latte", "dnd": true }));
@@ -315,7 +382,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json").to_string_lossy().into_owned();
         let (controller, _rx) = controller();
-        controller.open(&path, &json!({ "theme": "mocha" }));
+        opened(&controller, &path, json!({ "theme": "mocha" })).await;
 
         controller.set(&path, "theme", json!("latte"));
         controller.open(&path, &json!({ "theme": "mocha" }));
@@ -335,7 +402,7 @@ mod tests {
         let path = path.to_string_lossy().into_owned();
         let (controller, mut rx) = controller();
 
-        controller.open(&path, &json!({ "theme": "mocha" }));
+        opened(&controller, &path, json!({ "theme": "mocha" })).await;
         assert!(rx.try_recv().is_ok(), "a first declaration pushes even when the file already holds every default");
         controller.open(&path, &json!({ "theme": "mocha" }));
         assert!(rx.try_recv().is_err(), "re-declaring on each evaluation pushes nothing");
@@ -348,7 +415,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json").to_string_lossy().into_owned();
         let (controller, _rx) = controller();
-        controller.open(&path, &json!({}));
+        opened(&controller, &path, json!({})).await;
 
         controller.set(&path, "wallpaper", json!({ "path": "/w/1.jpg", "fit": "cover" }));
         assert_eq!(controller.snapshot().contents[&path]["wallpaper"]["fit"], json!("cover"));
@@ -380,7 +447,7 @@ mod tests {
         // and only the writes below can recreate the file removed here.
         std::fs::write(&path, r#"{"fit":"cover"}"#).unwrap();
         let (controller, mut rx) = controller();
-        controller.open(&path, &json!({}));
+        opened(&controller, &path, json!({})).await;
         while rx.try_recv().is_ok() {}
         std::fs::remove_file(&path).unwrap();
 
@@ -424,7 +491,7 @@ mod tests {
         assert!(controller.snapshot().contents.is_empty());
 
         dispatch("open", vec![path.clone().into(), defaults()]);
-        assert_eq!(controller.snapshot().contents[&path], defaults());
+        assert_eq!(poll_until(|| controller.snapshot().contents.get(&path).cloned()).await, defaults());
         dispatch("set", vec![path.clone().into(), 7.into(), "latte".into()]);
         dispatch("set", vec![path.clone().into(), "theme".into(), "latte".into()]);
         dispatch("set", vec![path.clone().into(), "dnd".into(), true.into()]);
@@ -439,7 +506,7 @@ mod tests {
         let file = dir.path().join("a").join("b").join("state.json");
         let (controller, _rx) = controller();
 
-        controller.open(&file.to_string_lossy(), &json!({}));
+        opened(&controller, &file.to_string_lossy(), json!({})).await;
 
         assert!(file.parent().unwrap().is_dir());
     }
@@ -450,7 +517,7 @@ mod tests {
         let file = dir.path().join("nested").join("state.json");
         let path = file.to_string_lossy().into_owned();
         let (controller, _rx) = controller();
-        controller.open(&path, &json!({}));
+        opened(&controller, &path, json!({})).await;
 
         for value in 1..=5 {
             controller.set(&path, "scroll", json!(value));
@@ -475,13 +542,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json").to_string_lossy().into_owned();
         let (first, _rx) = controller();
-        first.open(&path, &json!({}));
+        opened(&first, &path, json!({})).await;
         first.set(&path, "theme", json!("latte"));
         tokio::time::sleep(SAVE_DEBOUNCE * 2).await;
         saved(Path::new(&path)).await;
 
         let (second, _rx) = controller();
-        second.open(&path, &json!({ "theme": "mocha" }));
+        opened(&second, &path, json!({ "theme": "mocha" })).await;
 
         assert_eq!(second.snapshot().contents[&path]["theme"], json!("latte"), "the round trip is the contract");
     }
@@ -497,8 +564,8 @@ mod tests {
         let file = dir.path().join("state.json");
         let path = file.to_string_lossy().into_owned();
         let ((first, mut a), (second, mut b)) = (controller(), controller());
-        first.open(&path, &json!({}));
-        second.open(&path, &json!({}));
+        opened(&first, &path, json!({})).await;
+        opened(&second, &path, json!({})).await;
         while b.try_recv().is_ok() {}
 
         first.set(&path, "wallpaper", json!("/w/1.jpg"));
@@ -518,7 +585,7 @@ mod tests {
         let path = file.to_string_lossy().into_owned();
         std::fs::write(&file, r#"{"theme":"mocha"}"#).unwrap();
         let (controller, mut rx) = controller();
-        controller.open(&path, &json!({ "dnd": false }));
+        opened(&controller, &path, json!({ "dnd": false })).await;
         pushed(&mut rx).await;
 
         let renamed = dir.path().join("sedXYZ");
@@ -539,7 +606,7 @@ mod tests {
         std::fs::write(&file, "{oops").unwrap();
         let path = file.to_string_lossy().into_owned();
         let (controller, mut rx) = controller();
-        controller.open(&path, &json!({}));
+        opened(&controller, &path, json!({})).await;
         controller.set(&path, "theme", json!("latte"));
         tokio::time::sleep(SAVE_DEBOUNCE + Duration::from_millis(150)).await;
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "{oops", "a hand edit gone wrong is the owner's to fix");
@@ -551,6 +618,71 @@ mod tests {
         assert_eq!(controller.snapshot().contents[&path], json!({ "wallpaper": "/w/1.jpg" }), "the newer edit wins");
         tokio::time::sleep(SAVE_DEBOUNCE + Duration::from_millis(150)).await;
         assert_eq!(std::fs::read_to_string(&file).unwrap(), fixed, "nothing rewrites a file the shell agrees with");
+    }
+
+    /// A FIFO with no writer holds the first read open until the test writes the file. Real time:
+    /// a paused clock stops while that read blocks, so a poll waiting for it would never wake.
+    #[tokio::test]
+    async fn a_first_read_blocks_no_other_store_and_writes_made_while_it_reads_win() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, other) = (dir.path().join("slow.json"), dir.path().join("other.json"));
+        let (path, other) = (file.to_string_lossy().into_owned(), other.to_string_lossy().into_owned());
+        nix::unistd::mkfifo(&file, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
+        let (controller, mut rx) = controller();
+        let dispatch = dispatcher(shared::Capability::Storage, super::super::dispatch, &controller);
+        opened(&controller, &other, json!({})).await;
+
+        dispatch("open", vec![path.clone().into(), json!({ "dnd": true })]);
+        // The write end opens once the read has opened the read end, so the read has begun.
+        let open = || std::fs::File::options().write(true).custom_flags(libc::O_NONBLOCK).open(&file).ok();
+        let mut writer = poll_until(open).await;
+        while rx.try_recv().is_ok() {}
+        dispatch("set", vec![other.clone().into(), "theme".into(), "latte".into()]);
+        assert!(rx.try_recv().is_ok(), "a loaded store still writes and pushes");
+        assert_eq!(controller.snapshot().contents[&other], json!({ "theme": "latte" }));
+        dispatch("set", vec![path.clone().into(), "theme".into(), "latte".into()]);
+        dispatch("set", vec![path.clone().into(), "gone".into(), serde_json::Value::Null]);
+        dispatch("open", vec![path.clone().into(), json!({ "theme": "frappe" })]);
+        assert!(rx.try_recv().is_err(), "a loading store publishes nothing");
+        assert!(!controller.snapshot().contents.contains_key(&path));
+
+        let disk = r#"{"theme":"mocha","gone":1,"kept":2}"#;
+        // A regular file at the path first, so no later read waits on the FIFO.
+        std::fs::write(dir.path().join("swap"), disk).unwrap();
+        std::fs::rename(dir.path().join("swap"), &file).unwrap();
+        std::io::Write::write_all(&mut writer, disk.as_bytes()).unwrap();
+        drop(writer);
+        let landed = poll_until(|| controller.snapshot().contents.get(&path).cloned()).await;
+
+        let merged = json!({ "theme": "latte", "kept": 2 });
+        assert_eq!(landed, merged, "the writes win, and the latest defaults fill");
+        assert!(rx.try_recv().is_ok());
+        let written = || serde_json::from_str::<Value>(&std::fs::read_to_string(&file).ok()?).ok();
+        poll_until(|| written().filter(|written| *written == merged)).await;
+    }
+
+    /// A write that lands while the first read is in flight wins over what that read returns.
+    #[tokio::test]
+    async fn a_write_seen_during_the_first_read_is_read_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("slow.json");
+        let path = file.to_string_lossy().into_owned();
+        nix::unistd::mkfifo(&file, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
+        // No watcher: a real watch event landing afterwards would sync the newer file in anyway.
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let controller = StorageController { stores: Arc::default(), saves: Arc::default(), signal_tx: tx };
+        controller.open(&path, &json!({}));
+        let open = || std::fs::File::options().write(true).custom_flags(libc::O_NONBLOCK).open(&file).ok();
+        let mut writer = poll_until(open).await;
+
+        std::fs::write(dir.path().join("swap"), r#"{"theme":"latte"}"#).unwrap();
+        std::fs::rename(dir.path().join("swap"), &file).unwrap();
+        sync(&controller.stores, &file, false, &controller.signal_tx);
+        std::io::Write::write_all(&mut writer, br#"{"theme":"mocha"}"#).unwrap();
+        drop(writer);
+
+        let landed = poll_until(|| controller.snapshot().contents.get(&path).cloned()).await;
+        assert_eq!(landed, json!({ "theme": "latte" }), "the stale first read is read again");
     }
 
     #[test]
