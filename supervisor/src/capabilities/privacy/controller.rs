@@ -431,6 +431,21 @@ mod tests {
         assert_eq!(controller.snapshot().camera_users, vec![user(2222), user(3333)]);
     }
 
+    #[tokio::test]
+    async fn a_recheck_reports_only_a_dropped_opener() {
+        let proc_root = tempfile::tempdir().unwrap();
+        let node = PathBuf::from("/dev/video0");
+        write_fd_symlink(proc_root.path(), 1111, 5, &node);
+        write_fd_symlink(proc_root.path(), 2222, 5, &node);
+        let mut pids = vec![1111, 2222];
+
+        assert!(!recheck_openers(proc_root.path(), vec![node.clone()], &mut pids).await, "both still hold it");
+        assert_eq!(pids, [1111, 2222]);
+        std::fs::remove_dir_all(proc_root.path().join("1111")).unwrap();
+        assert!(recheck_openers(proc_root.path(), vec![node], &mut pids).await);
+        assert_eq!(pids, [2222]);
+    }
+
     /// A webcam plugged in after start, or an unplugged and replugged node (a new inode), must
     /// still be watched, or `camera_users` stays empty while it is live.
     #[tokio::test]
