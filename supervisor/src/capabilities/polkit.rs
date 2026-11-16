@@ -174,6 +174,7 @@ mod tests {
     use zbus::zvariant::{OwnedValue, Value};
 
     use super::*;
+    use crate::capabilities::test_support::envelope;
 
     fn challenge(cookie: &str) -> BeginAuthenticationCall {
         offering(cookie, &[1000])
@@ -219,9 +220,7 @@ mod tests {
             c.begin(offering("a", &[1000, 2000]), reply, 1000);
             answer
         };
-        let select = |uid: u32| {
-            crate::capabilities::test_support::envelope(shared::Capability::Polkit, "select_identity", vec![uid.into()])
-        };
+        let select = |uid: u32| envelope(shared::Capability::Polkit, "select_identity", vec![uid.into()]);
         assert!(!dispatch(&mut c, &select(1000)), "already the identity");
         assert!(!c.select_identity(4000), "not offered");
         let mut old = None;
@@ -308,7 +307,10 @@ mod tests {
         let mut started = None;
         submit(&mut c, &mut started);
         assert!(!c.cancel(Some("other")), "polkitd cancelling a different cookie changes nothing");
-        assert!(c.cancel(None));
+        let cancel = |arguments| envelope(shared::Capability::Polkit, "cancel", arguments);
+        assert!(!dispatch(&mut c, &cancel(vec![true.into()])), "a surplus argument");
+        assert!(answer.try_recv().is_err());
+        assert!(dispatch(&mut c, &cancel(vec![])));
         assert!(matches!(answer.try_recv(), Ok(Err(AgentError::Cancelled))));
         assert!(!c.snapshot().active);
         let success = shared::PamMessage::Outcome(shared::PamOutcome::Success);
