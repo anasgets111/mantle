@@ -188,7 +188,7 @@ async fn run_brightness_poll_loop(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::capabilities::test_support::{dispatcher, p2p_pair, p2p_pair_serving, within};
 
@@ -281,13 +281,21 @@ mod tests {
         }
     }
 
+    /// A bus whose logind `session/auto` reports each `SetBrightness(subsystem, name, raw)` on the
+    /// receiver, and the stub's own end, which must outlive the calls.
+    pub(crate) async fn logind_session()
+    -> (zbus::Connection, zbus::Connection, tokio::sync::mpsc::UnboundedReceiver<(String, String, u32)>) {
+        let (calls, received) = tokio::sync::mpsc::unbounded_channel();
+        let (bus, logind) =
+            p2p_pair_serving(|peer| peer.serve_at("/org/freedesktop/login1/session/auto", Session(calls))).await;
+        (bus, logind, received)
+    }
+
     #[tokio::test]
     async fn dispatch_routes_set_to_logind_on_the_raw_scale_and_drops_the_rest() {
         let root = tempfile::tempdir().unwrap();
         write_entry(root.path(), "intel_backlight", &[("max_brightness", "200"), ("brightness", "100")]);
-        let (calls, mut received) = tokio::sync::mpsc::unbounded_channel();
-        let (bus, _logind) =
-            p2p_pair_serving(|peer| peer.serve_at("/org/freedesktop/login1/session/auto", Session(calls))).await;
+        let (bus, _logind, mut received) = logind_session().await;
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
         let controller = BrightnessController::new(root.path().to_path_buf(), bus, events_tx);
         within(events_rx.recv()).await;

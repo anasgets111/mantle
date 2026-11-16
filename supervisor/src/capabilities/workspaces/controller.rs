@@ -179,6 +179,7 @@ impl WorkspacesController {
 mod tests {
     use super::*;
     use crate::capabilities::test_support::dispatcher;
+    use crate::compositor::test_support::Recorder;
 
     fn workspace(id: u64, number: u32, output: &str, is_active: bool, is_focused: bool) -> WorkspaceRow {
         WorkspaceRow {
@@ -410,33 +411,6 @@ mod tests {
 
         assert!(matches!(rx.try_recv(), Ok(())));
         assert_eq!(controller.snapshot().compositor, "niri", "a snapshot reads the shared state");
-    }
-
-    /// Records each write instead of sending it. The real backends read their socket path from the
-    /// session's env, so a real one would reach the live compositor of the session running tests.
-    #[derive(Default)]
-    struct Recorder(Mutex<Vec<String>>);
-
-    impl Compositor for Recorder {
-        fn spawn_reader(
-            &self,
-            _: StatePublisher,
-            _: crate::capabilities::windows::controller::StatePublisher,
-            _: crate::capabilities::keyboard::controller::LayoutSink,
-        ) {
-        }
-        fn focus_workspace(&self, id: &str) {
-            self.0.lock().unwrap().push(format!("focus_workspace {id}"));
-        }
-        fn toggle_special(&self, name: &str) {
-            self.0.lock().unwrap().push(format!("toggle_special {name}"));
-        }
-        fn focus_window(&self, id: &str) {
-            self.0.lock().unwrap().push(format!("focus_window {id}"));
-        }
-        fn close_window(&self, id: &str) {
-            self.0.lock().unwrap().push(format!("close_window {id}"));
-        }
     }
 
     #[test]

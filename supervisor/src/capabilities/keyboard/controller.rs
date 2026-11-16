@@ -161,6 +161,70 @@ impl LayoutSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::brightness::controller::tests::logind_session;
+    use crate::capabilities::test_support::{dispatcher, within};
+    use crate::compositor::test_support::Recorder;
+
+    /// A `*::kbd_backlight` LED at 2 of 3, which reads as 67%.
+    fn backlight(root: &Path) -> LedBacklight {
+        let dir = root.join("tpacpi::kbd_backlight");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("max_brightness"), "3\n").unwrap();
+        std::fs::write(dir.join("brightness"), "2\n").unwrap();
+        LedBacklight { dir, max: 3 }
+    }
+
+    /// Built from parts: `new` would watch the host's `/dev/input` for lock state.
+    #[tokio::test]
+    async fn dispatch_routes_layout_to_the_compositor_and_backlight_to_logind() {
+        let root = tempfile::tempdir().unwrap();
+        let (system_bus, _logind, mut received) = logind_session().await;
+        let (events, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let recorder: &'static Recorder = Box::leak(Box::default());
+        let state = KeyboardState { active_layout: "German".to_string(), ..KeyboardState::default() };
+        let controller = KeyboardController {
+            state: Arc::new(Mutex::new(state)),
+            backlight: Some(backlight(root.path())),
+            compositor: recorder,
+            system_bus,
+            events,
+            writes: Default::default(),
+        };
+        let dispatch = dispatcher(shared::Capability::Keyboard, super::super::dispatch, &controller);
+
+        // Both layout calls are routed; a missing or mistyped index and an unknown action are dropped.
+        dispatch("switch_layout", vec![1.into()]);
+        dispatch("switch_layout", vec![]);
+        dispatch("switch_layout", vec!["1".into()]);
+        dispatch("switch_layout", vec![(-1).into()]);
+        dispatch("nonsense", vec![1.into()]);
+        dispatch("switch_layout", vec![0.into()]);
+        assert_eq!(*recorder.0.lock().unwrap(), ["switch_layout 1", "switch_layout 0"]);
+
+        dispatch("set_backlight", vec![100.into()]);
+        assert_eq!(within(received.recv()).await, Some(("leds".into(), "tpacpi::kbd_backlight".into(), 3)));
+        within(events_rx.recv()).await.expect("the write reads the LED back and signals");
+        let expected = KeyboardState {
+            active_layout: "German".to_string(),
+            backlight_percent: Some(67),
+            ..KeyboardState::default()
+        };
+        assert_eq!(controller.snapshot(), expected, "the stub left the file at 2 of 3");
+    }
+
+    /// The fixture has no `brightness_hw_changed`, so `watch_backlight` returns after its first read
+    /// and never reaches the `POLLPRI` loop, which needs kernfs. Creating that file would not help:
+    /// `AsyncFd::register` panics outside a tokio runtime, and this test has none.
+    #[test]
+    fn watch_backlight_publishes_the_level_before_watching() {
+        let root = tempfile::tempdir().unwrap();
+        let state = Arc::new(Mutex::new(KeyboardState::default()));
+        let (events, _events_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        watch_backlight(backlight(root.path()), Arc::clone(&state), events);
+
+        assert_eq!(state.lock().unwrap().backlight_percent, Some(67));
+    }
 
     #[test]
     fn find_backlight_skips_lock_leds_and_scales_brightness() {
@@ -172,11 +236,8 @@ mod tests {
         assert_eq!(find_backlight(root.path()), None);
 
         // Sorts after the dead one, which must not hide it.
-        let dir = root.path().join("tpacpi::kbd_backlight");
-        std::fs::create_dir(&dir).unwrap();
-        std::fs::write(dir.join("max_brightness"), "3\n").unwrap();
-        std::fs::write(dir.join("brightness"), "2\n").unwrap();
-        let led = find_backlight(root.path()).expect("kbd_backlight with max > 0");
+        let led = backlight(root.path());
+        assert_eq!(find_backlight(root.path()), Some(led.clone()));
         assert_eq!(read_percent(&led.dir, led.max), Some(67));
     }
 }

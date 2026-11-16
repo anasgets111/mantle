@@ -511,6 +511,57 @@ mod tests {
     }
 
     #[test]
+    fn bit_set_reads_one_bit_of_a_little_endian_bitmap() {
+        let bits = [0b0000_0010, 0b0000_0100];
+        let set: Vec<u16> = (0..20).filter(|&index| bit_set(&bits, index)).collect();
+        assert_eq!(set, [1, 10], "bit 10 is byte 1, bit 2; past the slice reads as clear");
+    }
+
+    /// Runs [`pump_leds`] over `packets` sent down a socket that then closes: a stand-in for an
+    /// evdev fd, which no tempdir can make. Returns its result, the state and the signals sent.
+    async fn pump(packets: &[[u8; INPUT_EVENT_SIZE]], listening: bool) -> (bool, KeyboardState, usize) {
+        let (read, mut write) = std::os::unix::net::UnixStream::pair().unwrap();
+        read.set_nonblocking(true).unwrap();
+        // SAFETY: the AsyncFd owns the file, so its fd stays open and unchanged until the AsyncFd drops.
+        let fd = unsafe { AsyncFd::register(File::from(std::os::fd::OwnedFd::from(read))) }.unwrap();
+        io::Write::write_all(&mut write, packets.as_flattened()).unwrap();
+        drop(write);
+        let state = Mutex::new(KeyboardState::default());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        if !listening {
+            rx.close();
+        }
+        let live = within(pump_leds(&fd, &state, &tx)).await;
+        let mut sent = 0;
+        while rx.try_recv().is_ok() {
+            sent += 1;
+        }
+        (live, state.into_inner().unwrap(), sent)
+    }
+
+    #[tokio::test]
+    async fn pump_leds_applies_lock_events_until_the_stream_ends() {
+        // Forty events overrun one 32-event read, so the second read must start on an event boundary.
+        let mut packets = vec![input_event(0x11, 0x01, 1); 38];
+        packets.extend([input_event(0x11, 0x00, 1), input_event(0x11, 0x02, 1)]);
+        let (live, state, sent) = pump(&packets, true).await;
+        assert!(live, "an ended stream waits for the next keyboard");
+        assert!(state.caps_lock && state.num_lock && state.scroll_lock);
+        assert_eq!(sent, 2, "one signal per read that changed a lock");
+
+        let (live, state, sent) = pump(&[input_event(0x01, 0x1e, 1)], true).await;
+        assert_eq!((live, state, sent), (true, KeyboardState::default(), 0), "a key press changes no lock");
+
+        // The resync's `EVIOCGLED` fails on a socket, so the dropped window changes nothing.
+        let dropped = [input_event(0, 3, 0), input_event(0x11, 0x01, 1), input_event(0, 0, 0)];
+        let (live, state, sent) = pump(&dropped, true).await;
+        assert_eq!((live, state, sent), (true, KeyboardState::default(), 0));
+
+        let (live, state, _) = pump(&[input_event(0x11, 0x01, 1)], false).await;
+        assert!(!live && state.caps_lock, "a gone receiver stops the watch for good");
+    }
+
+    #[test]
     fn syn_dropped_ignores_events_until_syn_report_then_resyncs() {
         let mut dropped = false;
         let led = input_event(0x11, 0x01, 1);

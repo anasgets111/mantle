@@ -22,6 +22,8 @@ mod hyprland;
 mod mango;
 mod niri;
 mod sway;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 /// A compositor implemented here, narrower than "a compositor that exists". Other sessions yield
 /// [`detect_compositor`]'s `None`; dependent capabilities degrade rather than guess (ADR-0056).
