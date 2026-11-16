@@ -362,7 +362,7 @@ fn push_log_line(log: &mut Vec<String>, mut line: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capabilities::test_support::{poll_until, within};
+    use crate::capabilities::test_support::{dispatcher, poll_until, within};
     use crate::capabilities::updates::backend::{CheckReport, InstallStep};
     use crate::process;
 
@@ -674,6 +674,57 @@ mod tests {
             "no action may write state on a machine there is no manager to act with"
         );
         assert_eq!(events_rx.try_recv().ok(), None, "and none of them may push");
+    }
+
+    /// Records that an install asked for its command, then unwinds out of the spawned install task,
+    /// so the test sees the install start without `run_install` opening the real
+    /// `$XDG_RUNTIME_DIR/mantle/install.log` or spawning anything. Its `aur_helper` is `Some` so
+    /// the test also sees `with_backend` copy the helper into the state.
+    struct Asked(std::sync::atomic::AtomicBool);
+
+    impl Backend for Asked {
+        fn name(&self) -> &'static str {
+            "asked"
+        }
+        fn check(&self) -> Result<CheckReport, String> {
+            StubBackend.check()
+        }
+        fn install_command(&self) -> InstallCommand {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            std::panic::resume_unwind(Box::new("stopped before the install log"))
+        }
+        fn parse_install_step(&self, _: &str) -> Option<InstallStep> {
+            None
+        }
+        fn aur_helper(&self) -> Option<&'static str> {
+            Some("paru")
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_routes_check_configure_and_install() {
+        let backend = Arc::new(Asked(Default::default()));
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let controller = UpdatesController::with_backend(Some(backend.clone()), no_marker(), events_tx);
+        assert_eq!(events_rx.try_recv().ok(), Some(()), "construction pushes");
+        assert_eq!(controller.snapshot().aur_helper.as_deref(), Some("paru"));
+        let dispatch = dispatcher(shared::Capability::Updates, super::super::dispatch, &controller);
+
+        dispatch("check", vec![]);
+        within(await_one_check(&mut events_rx)).await;
+        assert_eq!(controller.snapshot().consecutive_check_failures, 1);
+
+        dispatch("configure", vec![serde_json::json!({ "interval": 0, "checked_at": 1_800_000_000 })]);
+        assert_eq!(controller.snapshot().last_successful_check, Some(1_800_000_000));
+        assert_eq!(events_rx.try_recv().ok(), Some(()), "the seed pushes");
+
+        controller.state.lock().unwrap().install_exit_code = Some(1);
+        dispatch("install", vec![]);
+        poll_until(|| backend.0.load(std::sync::atomic::Ordering::SeqCst).then_some(())).await;
+        let snapshot = controller.snapshot();
+        assert!(snapshot.installing);
+        assert_eq!(snapshot.install_exit_code, None, "a new install clears the last one's result");
+        assert_eq!(events_rx.try_recv().ok(), Some(()), "and pushes before it runs");
     }
 
     /// A fake installer running `script`, logged under a fresh tempdir.

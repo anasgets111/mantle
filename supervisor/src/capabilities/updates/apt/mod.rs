@@ -106,4 +106,12 @@ mod tests {
         assert!(command.arguments[5].starts_with("apt-get update && apt-get -y "));
         assert!(command.arguments[5].ends_with(" upgrade --with-new-pkgs"));
     }
+
+    #[test]
+    fn a_private_option_is_its_name_then_the_path() {
+        assert_eq!(
+            prefixed("Dir::Cache=", Path::new("/run/user/1000/mantle/apt/cache")),
+            "Dir::Cache=/run/user/1000/mantle/apt/cache"
+        );
+    }
 }

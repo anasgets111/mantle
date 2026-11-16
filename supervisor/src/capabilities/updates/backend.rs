@@ -184,5 +184,8 @@ mod tests {
         assert!(!program_is_in(&path, "some-other-manager"));
         assert!(!program_is_in(&path, "pacman"), "a directory is not a program");
         assert!(!program_is_in(std::ffi::OsStr::new(""), "pacman"), "an empty path finds nothing");
+        // `on_path` reads this process's `PATH`, which holds a shell wherever the tests run.
+        assert!(on_path("sh"));
+        assert!(!on_path("mantle-no-such-manager"));
     }
 }

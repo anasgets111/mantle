@@ -251,6 +251,17 @@ mod tests {
     }
 
     #[test]
+    fn a_conf_that_names_no_repo_fails_the_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let conf = dir.path().join("pacman.conf");
+        std::fs::write(&conf, "[options]\n").unwrap();
+
+        // An error either way: "no repos configured" with pacman-conf, "failed to run" without it.
+        assert!(sync(&conf, &dir.path().join("db")).is_err());
+        assert!(dir.path().join("db/sync").is_dir(), "the sync dir is made before pacman-conf runs");
+    }
+
+    #[test]
     fn sizes_read_every_unit_pacman_prints() {
         assert_eq!(parse_size("512.00 B"), Some(512));
         assert_eq!(parse_size("1.50 GiB"), Some(1_610_612_736));

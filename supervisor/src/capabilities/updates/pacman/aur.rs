@@ -119,6 +119,12 @@ mod tests {
         assert_eq!(first_helper(OsStr::new("")), None);
     }
 
+    #[test]
+    fn the_installed_version_is_not_newer_than_itself() {
+        // `vercmp` ships only with pacman, so its orderings are not asserted on every host.
+        assert!(!newer("1:2.0-1", "1:2.0-1"));
+    }
+
     fn foreign() -> Vec<(String, String)> {
         [("newer", "1.0-1"), ("same", "2.0-1"), ("epoch", "9.0-1"), ("older", "3.0-1")]
             .map(|(name, version)| (name.to_string(), version.to_string()))
