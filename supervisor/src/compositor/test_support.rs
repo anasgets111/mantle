@@ -26,6 +26,15 @@ impl Compositor for Recorder {
     fn close_window(&self, id: &str) {
         self.0.lock().unwrap().push(format!("close_window {id}"));
     }
+    fn set_fullscreen(&self, id: &str, fullscreen: bool, current: Option<bool>) {
+        self.0.lock().unwrap().push(format!("set_fullscreen {id} {fullscreen} {current:?}"));
+    }
+    fn set_maximized(&self, id: &str, maximized: bool, current: Option<bool>) {
+        self.0.lock().unwrap().push(format!("set_maximized {id} {maximized} {current:?}"));
+    }
+    fn move_window(&self, id: &str, workspace_id: &str) {
+        self.0.lock().unwrap().push(format!("move_window {id} {workspace_id}"));
+    }
     fn switch_layout(&self, index: usize) {
         self.0.lock().unwrap().push(format!("switch_layout {index}"));
     }

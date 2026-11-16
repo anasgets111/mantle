@@ -136,6 +136,8 @@ impl WindowsController {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::test_support::dispatcher;
+    use crate::compositor::test_support::Recorder;
 
     fn entry(id: &str, workspace_id: Option<i64>) -> WindowEntry {
         WindowEntry {
@@ -222,5 +224,45 @@ mod tests {
         let _controller =
             WindowsController::new(Arc::new(Mutex::new(WindowsState::default())), Some(CompositorKind::Niri), tx).await;
         assert!(rx.try_recv().is_err(), "nothing to catch up on while the state is still default");
+    }
+
+    /// Built from parts: `new` without a compositor reaches the host's Wayland socket. The wlr
+    /// arms need a live `zwlr_foreign_toplevel_handle_v1`, which no test here can build.
+    #[test]
+    fn dispatch_routes_each_action_to_the_compositor_with_that_windows_published_state() {
+        let recorder: &'static Recorder = Box::leak(Box::default());
+        // Opposite flags on the two windows, and each request the opposite of its `current`, so a
+        // swapped field, a wrong window or a dropped argument changes the record.
+        let five = WindowEntry { fullscreen: Some(false), maximized: Some(true), ..entry("5", None) };
+        let six = WindowEntry { fullscreen: Some(true), maximized: Some(false), ..entry("6", None) };
+        let state = Arc::new(Mutex::new(WindowsState { source: "niri".to_string(), windows: vec![five, six] }));
+        let controller = WindowsController { state, backend: Backend::Compositor(recorder) };
+        let dispatch = dispatcher(shared::Capability::Windows, super::super::dispatch, &controller);
+
+        dispatch("focus", vec!["5".into()]);
+        dispatch("focus", vec!["".into()]);
+        dispatch("close", vec!["6".into()]);
+        dispatch("close", vec![]);
+        dispatch("set_fullscreen", vec!["5".into(), true.into()]);
+        dispatch("set_fullscreen", vec!["5".into(), "yes".into()]);
+        dispatch("set_maximized", vec!["5".into(), false.into()]);
+        // The compositor gets an id no window has published, with nothing to toggle from.
+        dispatch("set_maximized", vec!["9".into(), true.into()]);
+        // No compositor here can minimize: logged and dropped.
+        dispatch("set_minimized", vec!["5".into(), true.into()]);
+        dispatch("move_to_workspace", vec!["6".into(), "2".into()]);
+        dispatch("nonsense", vec!["5".into()]);
+
+        assert_eq!(
+            *recorder.0.lock().unwrap(),
+            [
+                "focus_window 5",
+                "close_window 6",
+                "set_fullscreen 5 true Some(false)",
+                "set_maximized 5 false Some(true)",
+                "set_maximized 9 true None",
+                "move_window 6 2",
+            ]
+        );
     }
 }
