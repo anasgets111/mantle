@@ -420,21 +420,22 @@ impl Supervisor {
             }
         };
         let generation_id = self.authoritative.generation_id;
+        // A refused Renderer leaves on the hangup's exit 70 or the kill after it, so the record
+        // decides, not the code. Before the brake: every replacement would find the same
+        // compositor, gone or unable to host the shell, or would be the same refused binary.
+        let refused = self.registry.take_protocol_refusal(generation_id);
+        let stop = refused.then_some("it speaks another protocol").or_else(|| unrespawnable(departure));
         let was_locked = self.lock.snapshot().active;
-        warn!("{}", departure_report(departure, generation_id, was_locked));
+        warn!("{}", departure_report(departure, generation_id, was_locked, stop.is_none()));
         self.renderer_departed = true;
         // At departure rather than respawn: from here the pid is reaped and must not be signalled.
         self.registry.forget_generation(generation_id);
 
-        // A refused Renderer leaves on the hangup's exit 70 or the kill after it, so the record
-        // decides, not the code. Before the brake: every replacement would find the same
-        // compositor, gone or unable to host the shell, or would be the same refused binary. Stop
-        // the way a SIGTERM does.
-        let refused = self.registry.take_protocol_refusal(generation_id);
-        if refused {
-            self.exit_code = shared::EXIT_PROTOCOL_MISMATCH;
-        }
-        if let Some(reason) = refused.then_some("it speaks another protocol").or_else(|| unrespawnable(departure)) {
+        // Stop the way a SIGTERM does.
+        if let Some(reason) = stop {
+            if refused {
+                self.exit_code = shared::EXIT_PROTOCOL_MISMATCH;
+            }
             error!("{reason}, so a replacement renderer cannot help; shutting down");
             return true;
         }

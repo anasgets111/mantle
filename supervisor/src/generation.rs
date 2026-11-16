@@ -176,13 +176,21 @@ impl RestartBrake {
 
 /// Human-readable Renderer departure with lock state (ADR-0058 decision 2). The compositor does
 /// not unlock when a lock client dies, so losing a Renderer holding `ext_session_lock_v1` costs the
-/// session, not just the bar.
-pub(super) fn departure_report(departure: RendererDeparture, generation_id: u32, lock_active: bool) -> String {
+/// session, not just the bar. `replaced` says whether a replacement follows to take the lock over.
+pub(super) fn departure_report(
+    departure: RendererDeparture,
+    generation_id: u32,
+    lock_active: bool,
+    replaced: bool,
+) -> String {
+    let until = if replaced { "a replacement takes the lock over (ADR-0058)" } else { "mantle starts again" };
     let lock = if lock_active {
-        ", and it held the session lock: the compositor does not unlock when a lock client dies, so the session stays \
-         locked until a replacement takes the lock over (ADR-0058)"
+        format!(
+            ", and it held the session lock: the compositor does not unlock when a lock client dies, so the \
+             session stays locked until {until}"
+        )
     } else {
-        ""
+        String::new()
     };
     format!("generation {generation_id}'s renderer {departure}{lock}")
 }
@@ -259,7 +267,7 @@ mod tests {
 
     #[test]
     fn a_departure_says_the_session_stays_locked_only_when_it_was() {
-        let locked = departure_report(RendererDeparture::Signalled { signal: 9 }, 3, true);
+        let locked = departure_report(RendererDeparture::Signalled { signal: 9 }, 3, true, true);
         assert!(locked.contains("signal 9"), "the signal has to survive into the message: {locked}");
         assert!(
             locked.contains("session stays locked"),
@@ -267,9 +275,15 @@ mod tests {
              that distinction reaches a human: {locked}"
         );
 
-        let unlocked = departure_report(RendererDeparture::Failed { code: 101 }, 3, false);
+        assert!(locked.contains("replacement takes the lock over"), "{locked}");
+
+        let unlocked = departure_report(RendererDeparture::Failed { code: 101 }, 3, false, true);
         assert!(unlocked.contains("code 101"), "{unlocked}");
         assert!(!unlocked.contains("locked"), "an unlocked crash must not cry lock: {unlocked}");
+
+        // A stop promises no replacement.
+        let stopped = departure_report(RendererDeparture::Failed { code: 69 }, 3, true, false);
+        assert!(stopped.contains("locked until mantle starts again"), "{stopped}");
     }
 
     #[test]
