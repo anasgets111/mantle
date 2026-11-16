@@ -83,12 +83,6 @@ fn request_slot(last_request: Option<Instant>, fps: f32, now: Instant) -> Instan
     next_request_at(last_request, fps).filter(|due| now.saturating_duration_since(*due) < period).unwrap_or(now)
 }
 
-/// The draw-time crop `region` needs on an ext source (ADR-0263), `None` on a rotated or flipped
-/// output, whose buffer its logical coordinates do not map onto.
-fn ext_crop(region: LogicalRect, output: (f32, f32), transform: wl_output::Transform) -> Option<LogicalRect> {
-    (transform == wl_output::Transform::Normal).then(|| crop_fraction(region, output))
-}
-
 /// One `Done` batch, held while a frame is outstanding (ADR-0248 amendment decision 6).
 struct DoneOffer {
     width: u32,
@@ -116,6 +110,8 @@ struct ExtProto {
     pending_done: Option<DoneOffer>,
     damage: Vec<DamageRect>,
     dmabuf_formats: Vec<FormatModifier>,
+    /// This frame's `transform` event; `Ready` hands it to the cache, `Normal` when none came.
+    transform: Option<wl_output::Transform>,
 }
 
 /// wlr has no persistent session object; `buffer` is this source's own cross-frame state instead.
@@ -179,7 +175,6 @@ struct CaptureSource {
     /// windows need a new target or node, so a reused address cannot revive a closed source.
     failed: bool,
     warned_missing_output: bool,
-    warned_rotated: bool,
     /// This source's dma-buf double buffer (ADR-0248 amendment decision 3). Unused unless
     /// `dmabuf_state` is `Shaped`.
     dmabuf: DmabufSwapchain,
@@ -207,7 +202,6 @@ impl CaptureSource {
             proto: None,
             failed: false,
             warned_missing_output: false,
-            warned_rotated: false,
             dmabuf: DmabufSwapchain::default(),
             dmabuf_state: DmabufState::Untried,
             desktop: None,
@@ -394,23 +388,16 @@ impl App {
                 }
                 CaptureTarget::Window(_) => None,
             };
-            let crop = match (protocol, node.region, info) {
+            let crop = match (protocol, node.region, &info) {
                 (Protocol::Ext, Some(region), Some(info)) => {
                     let (width, height) = info.logical_size.unwrap_or_default();
-                    let crop = ext_crop(region, (width as f32, height as f32), info.transform);
-                    if crop.is_none()
-                        && let Some(source) = self.captures.sources.get_mut(&id)
-                        && !std::mem::replace(&mut source.warned_rotated, true)
-                    {
-                        warn!(
-                            "capture on `{}` cannot crop a rotated or flipped output; drawing all of it",
-                            node.target.name()
-                        );
-                    }
-                    crop
+                    Some(crop_fraction(region, (width as f32, height as f32)))
                 }
                 _ => None,
             };
+            // ponytail: wlr-screencopy carries no transform, so a wlr source stays `Normal`: Hyprland
+            // sends upright buffers, niri and Pinnacle native ones, which draw turned. Upgrade path:
+            // per-compositor detection, or ext, which declares the transform per frame.
             self.capture_cache.set_crop(id, crop);
             let source = &self.captures.sources[&id];
             if !source.failed && !source.in_flight && (node.live.is_some() || !source.captured) {
@@ -578,6 +565,7 @@ fn fail_source(captures: &mut CaptureRegistry, id: &NodeId) {
     match source.proto.as_mut() {
         Some(Proto::Ext(ext)) => {
             ext.damage.clear();
+            ext.transform = None;
             ext.frame = None;
             ext.pending_done = None;
         }
@@ -638,6 +626,7 @@ fn constraints_changed(captures: &mut CaptureRegistry, id: &NodeId) -> Option<Do
     let source = captures.sources.get_mut(id)?;
     let Some(Proto::Ext(ext)) = source.proto.as_mut() else { return None };
     ext.damage.clear();
+    ext.transform = None;
     ext.frame = None;
     let offer = ext.pending_done.take();
     // The offer's frame keeps `in_flight` until it lands.
@@ -739,14 +728,26 @@ mod tests {
             let source = registry.sources.get_mut(&node.node).unwrap();
             source.in_flight = true;
             let offer = DoneOffer { width: 640, height: 480, shm_format: None, dmabuf_formats: Vec::new() };
-            source.proto = Some(Proto::Ext(ExtProto { pending_done: Some(offer), ..Default::default() }));
+            let transform = Some(wl_output::Transform::_90);
+            source.proto = Some(Proto::Ext(ExtProto { pending_done: Some(offer), transform, ..Default::default() }));
             let offer = constraints_changed(&mut registry, &node.node).expect("the parked offer");
+            let source = &registry.sources[&node.node];
+            assert!(
+                matches!(&source.proto, Some(Proto::Ext(ext)) if ext.transform.is_none()),
+                "a failed frame's transform is dropped"
+            );
             assert_eq!((offer.width, offer.height), (640, 480));
             let source = &registry.sources[&node.node];
             assert!(!source.failed && source.in_flight, "{:?}: the renegotiated frame is in flight", node.target);
             assert!(constraints_changed(&mut registry, &node.node).is_none());
             let source = &registry.sources[&node.node];
             assert!(!source.failed && !source.in_flight, "{:?}: no offer re-arms normal pacing", node.target);
+            let source = registry.sources.get_mut(&node.node).unwrap();
+            source.proto = Some(Proto::Ext(ExtProto { transform, ..Default::default() }));
+            fail_source(&mut registry, &node.node);
+            let source = &registry.sources[&node.node];
+            assert!(source.failed, "{:?}: any other failure pauses", node.target);
+            assert!(matches!(&source.proto, Some(Proto::Ext(ext)) if ext.transform.is_none()));
         }
     }
 
@@ -878,16 +879,6 @@ mod tests {
         }
         // ext frame `destroy` is opcode 0, session `destroy` 1, wlr frame `destroy` 1.
         assert_eq!(sent, vec![(ext_frame_id, 0), (session_id, 1), (wlr_frame_id, 1)]);
-    }
-
-    #[test]
-    fn a_rotated_or_flipped_output_gets_no_ext_crop() {
-        let region = LogicalRect { x: 860.0, y: 360.0, width: 1720.0, height: 720.0 };
-        let crop = LogicalRect { x: 0.25, y: 0.25, width: 0.5, height: 0.5 };
-        assert_eq!(ext_crop(region, (3440.0, 1440.0), wl_output::Transform::Normal), Some(crop));
-        for transform in [wl_output::Transform::_90, wl_output::Transform::_180, wl_output::Transform::Flipped] {
-            assert_eq!(ext_crop(region, (1440.0, 3440.0), transform), None, "{transform:?}");
-        }
     }
 
     #[test]

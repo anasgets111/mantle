@@ -5,8 +5,9 @@ use std::collections::HashMap;
 
 use femtovg::renderer::OpenGl;
 use femtovg::rgb::FromSlice;
-use femtovg::{Canvas, ImageFlags, ImageId, ImageSource};
+use femtovg::{Canvas, ImageFlags, ImageId, ImageSource, Transform2D};
 use shared::warn;
+use wayland_client::protocol::wl_output::Transform;
 
 use crate::image::{Fit, fitted_rect};
 use crate::layout::node::CaptureTarget;
@@ -86,20 +87,50 @@ pub(crate) fn crop_fraction(region: LogicalRect, output: (f32, f32)) -> LogicalR
     LogicalRect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
 }
 
-/// Where a `width` x `height` frame draws in `box_rect`: the rect filled, and the rect the whole
-/// frame is patterned over so that only `crop` (fractions, `None` for all of it) shows, placed by
-/// `fit` as if it were the whole image (ADR-0263). `None` for an empty crop, which draws nothing.
+/// Where a point of an upright frame, as fractions of it, sits in a buffer `transform` was applied
+/// to. wayland.xml `wl_output.transform`: "The flipped values correspond to an initial flip around
+/// a vertical axis followed by rotation", each rotation "counter-clockwise".
+fn apply(transform: Transform, (u, v): (f32, f32)) -> (f32, f32) {
+    match transform {
+        Transform::_90 => (v, 1.0 - u),
+        Transform::_180 => (1.0 - u, 1.0 - v),
+        Transform::_270 => (1.0 - v, u),
+        Transform::Flipped => (1.0 - u, v),
+        Transform::Flipped90 => (v, u),
+        Transform::Flipped180 => (u, 1.0 - v),
+        Transform::Flipped270 => (1.0 - v, 1.0 - u),
+        _ => (u, v),
+    }
+}
+
+/// Whether `transform` turns the buffer a quarter, swapping its width and height.
+fn quarter_turn(transform: Transform) -> bool {
+    matches!(transform, Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270)
+}
+
+/// Where a `width` x `height` buffer draws upright in `box_rect`: the rect filled, and the rect
+/// the whole frame is patterned over so that only `crop` (fractions of the upright frame, `None`
+/// for all of it) shows, placed by `fit` as if it were the whole image (ADR-0263). `None` for an
+/// empty crop, which draws nothing.
+///
+/// ext-image-copy-capture-v1 `frame.transform` is "the transform that the compositor has applied to
+/// the buffer contents", as `wl_surface.set_buffer_transform`'s, whose inverse the compositor
+/// "applies [...] whenever it uses the buffer contents". Past `Normal`, the matrix applies that
+/// inverse: both rects are then in the buffer's orientation, drawn under it.
 pub(crate) fn placement(
     box_rect: LogicalRect,
     width: u32,
     height: u32,
     crop: Option<LogicalRect>,
     fit: Fit,
-) -> Option<(LogicalRect, LogicalRect)> {
+    transform: Transform,
+) -> Option<(LogicalRect, LogicalRect, Option<Transform2D>)> {
     let crop = crop.unwrap_or(LogicalRect { x: 0.0, y: 0.0, width: 1.0, height: 1.0 });
     if crop.is_empty() {
         return None;
     }
+    let turned = quarter_turn(transform);
+    let (width, height) = if turned { (height, width) } else { (width, height) };
     let fill = fitted_rect(box_rect, crop.width * width as f32, crop.height * height as f32, fit);
     let (frame_width, frame_height) = (fill.width / crop.width, fill.height / crop.height);
     let at = LogicalRect {
@@ -108,7 +139,31 @@ pub(crate) fn placement(
         width: frame_width,
         height: frame_height,
     };
-    Some((fill, at))
+    if transform == Transform::Normal {
+        return Some((fill, at, None));
+    }
+    // Buffer fractions to the upright frame's, then to `at`: a linear part of only 0 and +-1.
+    let inverse = match transform {
+        Transform::_90 => Transform::_270,
+        Transform::_270 => Transform::_90,
+        other => other,
+    };
+    let (w, h) = if turned { (at.height, at.width) } else { (at.width, at.height) };
+    let o = apply(inverse, (0.0, 0.0));
+    let (x, y) = (apply(inverse, (1.0, 0.0)), apply(inverse, (0.0, 1.0)));
+    let matrix = Transform2D([
+        (x.0 - o.0) * at.width / w,
+        (x.1 - o.1) * at.height / w,
+        (y.0 - o.0) * at.width / h,
+        (y.1 - o.1) * at.height / h,
+        at.x + o.0 * at.width,
+        at.y + o.1 * at.height,
+    ]);
+    let back = matrix.inverse();
+    let (x0, y0) = back.transform_point(fill.x, fill.y);
+    let (x1, y1) = back.transform_point(fill.x + fill.width, fill.y + fill.height);
+    let fill = LogicalRect { x: x0.min(x1), y: y0.min(y1), width: (x1 - x0).abs(), height: (y1 - y0).abs() };
+    Some((fill, LogicalRect { x: 0.0, y: 0.0, width: w, height: h }, Some(matrix)))
 }
 
 /// Pixels a capture source landed, awaiting upload once a GL context is current (ADR-0039).
@@ -152,6 +207,8 @@ pub struct CaptureCache {
     landed: Vec<NodeId>,
     /// Draw-time crops as fractions of the frame, for a region the protocol cannot crop (ADR-0263).
     crops: HashMap<NodeId, LogicalRect>,
+    /// What the compositor applied to each node's buffer; absent is `Normal`.
+    transforms: HashMap<NodeId, Transform>,
 }
 
 impl CaptureCache {
@@ -187,6 +244,17 @@ impl CaptureCache {
 
     pub(crate) fn crop(&self, node: NodeId) -> Option<LogicalRect> {
         self.crops.get(&node).copied()
+    }
+
+    /// A changed transform is a repaint cue, as a changed crop is.
+    pub(crate) fn set_transform(&mut self, node: NodeId, transform: Transform) {
+        if self.transforms.insert(node, transform).unwrap_or(Transform::Normal) != transform {
+            self.invalidate(node);
+        }
+    }
+
+    pub(crate) fn transform(&self, node: NodeId) -> Transform {
+        self.transforms.get(&node).copied().unwrap_or(Transform::Normal)
     }
 
     pub fn set_texture_budget(&mut self, budget: usize) {
@@ -285,6 +353,7 @@ impl CaptureCache {
         self.pending.remove(&node);
         self.over_budget_warned.remove(&node);
         self.crops.remove(&node);
+        self.transforms.remove(&node);
         if let Some(entry) = self.entries.remove(&node)
             && entry.owned
         {
@@ -458,7 +527,11 @@ mod tests {
         let box_rect = rect(10.0, 20.0, 100.0, 50.0);
         for fit in [Fit::Cover, Fit::Contain, Fit::Stretch] {
             let fitted = fitted_rect(box_rect, 640.0, 480.0, fit);
-            assert_eq!(placement(box_rect, 640, 480, None, fit), Some((fitted, fitted)), "{fit:?}");
+            assert_eq!(
+                placement(box_rect, 640, 480, None, fit, Transform::Normal),
+                Some((fitted, fitted, None)),
+                "{fit:?}"
+            );
         }
     }
 
@@ -469,30 +542,105 @@ mod tests {
         let box_rect = rect(10.0, 20.0, 100.0, 100.0);
         let quarter = Some(rect(0.0, 0.0, 0.5, 0.5));
         assert_eq!(
-            placement(box_rect, 400, 200, quarter, Fit::Contain),
-            Some((rect(10.0, 45.0, 100.0, 50.0), rect(10.0, 45.0, 200.0, 100.0)))
+            placement(box_rect, 400, 200, quarter, Fit::Contain, Transform::Normal),
+            Some((rect(10.0, 45.0, 100.0, 50.0), rect(10.0, 45.0, 200.0, 100.0), None))
         );
         assert_eq!(
-            placement(box_rect, 400, 200, quarter, Fit::Cover),
-            Some((rect(-40.0, 20.0, 200.0, 100.0), rect(-40.0, 20.0, 400.0, 200.0)))
+            placement(box_rect, 400, 200, quarter, Fit::Cover, Transform::Normal),
+            Some((rect(-40.0, 20.0, 200.0, 100.0), rect(-40.0, 20.0, 400.0, 200.0), None))
         );
         let right_half = Some(rect(0.5, 0.0, 0.5, 1.0));
         assert_eq!(
-            placement(box_rect, 400, 200, right_half, Fit::Stretch),
-            Some((box_rect, rect(-90.0, 20.0, 200.0, 100.0)))
+            placement(box_rect, 400, 200, right_half, Fit::Stretch, Transform::Normal),
+            Some((box_rect, rect(-90.0, 20.0, 200.0, 100.0), None))
         );
-        assert_eq!(placement(box_rect, 400, 200, Some(rect(1.0, 0.0, 0.0, 1.0)), Fit::Contain), None, "empty");
+        let empty = Some(rect(1.0, 0.0, 0.0, 1.0));
+        assert_eq!(placement(box_rect, 400, 200, empty, Fit::Contain, Transform::Normal), None, "empty");
     }
 
     #[test]
     fn a_hidpi_frame_places_a_crop_where_a_one_x_frame_does() {
         let box_rect = rect(0.0, 0.0, 300.0, 200.0);
         let crop = Some(rect(0.25, 0.25, 0.5, 0.5));
-        let corners = |(a, b): (LogicalRect, LogicalRect)| [a.x, a.y, a.width, a.height, b.x, b.y, b.width, b.height];
+        let corners =
+            |(a, b, _): (LogicalRect, LogicalRect, _)| [a.x, a.y, a.width, a.height, b.x, b.y, b.width, b.height];
         for fit in [Fit::Cover, Fit::Contain, Fit::Stretch] {
-            let one_x = corners(placement(box_rect, 3440, 1440, crop, fit).unwrap());
-            let one_and_a_half = corners(placement(box_rect, 5160, 2160, crop, fit).unwrap());
+            let one_x = corners(placement(box_rect, 3440, 1440, crop, fit, Transform::Normal).unwrap());
+            let one_and_a_half = corners(placement(box_rect, 5160, 2160, crop, fit, Transform::Normal).unwrap());
             assert!(one_x.iter().zip(one_and_a_half).all(|(a, b)| (a - b).abs() < 1e-3), "{fit:?}");
+        }
+    }
+
+    /// Every transform from wayland.xml: the buffer is the upright frame with the transform applied,
+    /// a flip around the vertical axis first, then a counter-clockwise turn. So at 90 the upright
+    /// top-right corner turns to the buffer's top-left and the bottom-right to its top-right.
+    const TRANSFORMS: [Transform; 8] = [
+        Transform::Normal,
+        Transform::_90,
+        Transform::_180,
+        Transform::_270,
+        Transform::Flipped,
+        Transform::Flipped90,
+        Transform::Flipped180,
+        Transform::Flipped270,
+    ];
+
+    #[test]
+    fn a_changed_transform_repaints_and_forget_clears_it() {
+        let (node, mut cache) = (NodeId::test(1), CaptureCache::default());
+        cache.set_transform(node, Transform::Normal);
+        assert!(cache.poll().is_empty(), "`Normal` is the default");
+        cache.set_transform(node, Transform::_90);
+        assert_eq!((cache.poll(), cache.transform(node)), (vec![node], Transform::_90));
+        cache.forget(node);
+        assert_eq!(cache.transform(node), Transform::Normal);
+    }
+
+    /// Where the buffer's top-left and top-right corners draw, as corners of the upright box.
+    #[test]
+    fn a_transformed_buffer_draws_upright() {
+        let (tl, tr, br, bl) = ((10.0, 20.0), (310.0, 20.0), (310.0, 120.0), (10.0, 120.0));
+        let expected = [(tl, tr), (tr, br), (br, bl), (bl, tl), (tr, tl), (tl, bl), (bl, br), (br, tr)];
+        // The buffer is the 300x100 box's frame, portrait where the transform turns it a quarter.
+        let sizes = [(300, 100), (100, 300), (300, 100), (100, 300), (300, 100), (100, 300), (300, 100), (100, 300)];
+        let box_rect = rect(10.0, 20.0, 300.0, 100.0);
+        for ((transform, (top_left, top_right)), (width, height)) in TRANSFORMS.into_iter().zip(expected).zip(sizes) {
+            let (_, at, matrix) = placement(box_rect, width, height, None, Fit::Contain, transform).unwrap();
+            let matrix = matrix.unwrap_or_else(Transform2D::identity);
+            let land = |x, y| {
+                let (x, y) = matrix.transform_point(x, y);
+                ((x * 1e3).round() / 1e3, (y * 1e3).round() / 1e3)
+            };
+            assert_eq!(land(at.x, at.y), top_left, "{transform:?} top-left");
+            assert_eq!(land(at.x + at.width, at.y), top_right, "{transform:?} top-right");
+        }
+    }
+
+    /// An upright crop of x 0.1..0.4, y 0.2..0.6 shows these fractions of the buffer.
+    #[test]
+    fn a_crop_shows_the_buffer_pixels_the_transform_moved_it_to() {
+        let expected = [
+            rect(0.1, 0.2, 0.3, 0.4),
+            rect(0.2, 0.6, 0.4, 0.3),
+            rect(0.6, 0.4, 0.3, 0.4),
+            rect(0.4, 0.1, 0.4, 0.3),
+            rect(0.6, 0.2, 0.3, 0.4),
+            rect(0.2, 0.1, 0.4, 0.3),
+            rect(0.1, 0.4, 0.3, 0.4),
+            rect(0.4, 0.6, 0.4, 0.3),
+        ];
+        let box_rect = rect(0.0, 0.0, 300.0, 200.0);
+        let crop = Some(rect(0.1, 0.2, 0.3, 0.4));
+        for (transform, expected) in TRANSFORMS.into_iter().zip(expected) {
+            let (fill, at, _) = placement(box_rect, 1000, 1000, crop, Fit::Contain, transform).unwrap();
+            let shown = [
+                (fill.x - at.x) / at.width,
+                (fill.y - at.y) / at.height,
+                fill.width / at.width,
+                fill.height / at.height,
+            ];
+            let want = [expected.x, expected.y, expected.width, expected.height];
+            assert!(shown.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-4), "{transform:?}: {shown:?}");
         }
     }
 }

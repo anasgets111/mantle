@@ -95,8 +95,17 @@ impl Dispatch<ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1, NodeI
                     });
                 }
             }
+            Event::Transform { transform: WEnum::Value(transform) } => {
+                if let Some(CaptureSource { proto: Some(Proto::Ext(ext)), .. }) = state.captures.sources.get_mut(id) {
+                    ext.transform = Some(transform);
+                }
+            }
             Event::Ready => {
                 proxy.destroy();
+                if let Some(CaptureSource { proto: Some(Proto::Ext(ext)), .. }) = state.captures.sources.get_mut(id) {
+                    let transform = ext.transform.take().unwrap_or(wl_output::Transform::Normal);
+                    state.capture_cache.set_transform(*id, transform);
+                }
                 land_ready_frame(&mut state.captures, &mut state.capture_cache, id);
                 let pending = state.captures.sources.get_mut(id).and_then(|source| match source.proto.as_mut() {
                     Some(Proto::Ext(ext)) => ext.pending_done.take(),

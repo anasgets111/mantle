@@ -329,14 +329,23 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
             // (unknown output, or no frame has arrived) draws nothing, matching `image`'s empty
             // `source`.
             Draw::Capture { node, target, fit, alpha, .. } => {
+                let (crop, transform) = (walk.captures.crop(*node), walk.captures.transform(*node));
                 if let Some((id, width, height)) = walk.captures.get_for_target(*node, target)
-                    && let Some((fill, at)) =
-                        image::capture::placement(rect, width, height, walk.captures.crop(*node), *fit)
+                    && let Some((fill, at, matrix)) =
+                        image::capture::placement(rect, width, height, crop, *fit, transform)
                 {
+                    let canvas = painter.canvas_mut();
+                    if let Some(matrix) = matrix {
+                        canvas.save();
+                        canvas.set_transform(&matrix);
+                    }
                     let mut path = Path::new();
                     path.rect(fill.x, fill.y, fill.width, fill.height);
                     let paint = Paint::image(id, at.x, at.y, at.width, at.height, 0.0, *alpha);
-                    painter.canvas_mut().fill_path(&path, &paint);
+                    canvas.fill_path(&path, &paint);
+                    if matrix.is_some() {
+                        canvas.restore();
+                    }
                 }
             }
             Draw::Shader { source, progress, params, images, alpha, .. } => {
@@ -856,6 +865,16 @@ pub(crate) mod tests {
         let region = [PhysicalRect { x0: 0, y0: 0, x1: 64, y1: 64 }];
         execute("preview", &mut painter, &mut images, &mut captures, &before, 1.0, (64.0, 64.0), &region, None);
         assert_eq!(pixel_at(painter.canvas_mut(), 32, 32), (255, 0, 0, 255));
+        // A buffer red on its left, blue on its right, turned 90: its left is the upright top.
+        let row = [[0, 0, 255, 255].repeat(32), [255, 0, 0, 255].repeat(32)].concat();
+        let full = vec![DamageRect::full(64, 64)];
+        let pixels = row.repeat(64);
+        let frame = PendingFrame { has_alpha: false, width: 64, height: 64, y_offset: 0, pixels, damage: full };
+        captures.stage(old.node, frame);
+        captures.set_transform(old.node, wayland_client::protocol::wl_output::Transform::_90);
+        execute("preview", &mut painter, &mut images, &mut captures, &before, 1.0, (64.0, 64.0), &region, None);
+        assert_eq!(pixel_at(painter.canvas_mut(), 48, 16), (255, 0, 0, 255), "top right");
+        assert_eq!(pixel_at(painter.canvas_mut(), 16, 48), (0, 0, 255, 255), "bottom left");
         execute("preview", &mut painter, &mut images, &mut captures, &after, 1.0, (64.0, 64.0), &region, None);
         assert_eq!(pixel_at(painter.canvas_mut(), 32, 32), (0, 0, 0, 0));
         assert!(captures.get(old.node).is_some(), "the old texture still exists before protocol reconciliation");
