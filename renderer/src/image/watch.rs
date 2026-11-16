@@ -201,6 +201,7 @@ impl Watcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lua::calls::poll_until;
 
     #[test]
     fn a_directory_is_watched_once_for_all_its_paths_and_released_with_the_last() {
@@ -378,9 +379,10 @@ mod tests {
         // Removing the target directory drops target_wd via IN_IGNORED and releases link_wd too.
         std::fs::remove_file(&target).unwrap();
         std::fs::remove_dir(target_dir.path()).unwrap();
-        let drained = watcher.drain();
-        assert_eq!(drained.lost, std::slice::from_ref(&link));
-        assert!(watcher.dirs.is_empty(), "paired link watch was also released");
+        // `IN_IGNORED` waits until no one else (another process too) holds the removed directory.
+        let (polled, lost) = (std::cell::RefCell::new(&mut watcher), std::cell::RefCell::new(Vec::new()));
+        poll_until(|| lost.borrow_mut().extend(polled.borrow_mut().drain().lost), || polled.borrow().dirs.is_empty());
+        assert_eq!(lost.into_inner(), std::slice::from_ref(&link), "paired link watch was also released");
 
         // Re-create target and re-watch cleanly; simulate both descriptors receiving IN_IGNORED in one batch.
         std::fs::create_dir(target_dir.path()).unwrap();

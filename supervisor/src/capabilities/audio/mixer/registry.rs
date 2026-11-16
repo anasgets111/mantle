@@ -911,6 +911,8 @@ mod tests {
     fn a_loopback_in_the_generated_conf_loads_as_a_sink() {
         let dir = tempfile::tempdir().unwrap();
         let _pipewire = daemon(dir.path());
+        // A client started before the daemon's socket listens loses its `nofail` loopback for good.
+        until_nodes(dir.path(), "Audio/Sink", |found| found.iter().any(|(_, name)| name == "test-sink"));
         let device = shared::action::VirtualDevice {
             kind: shared::action::VirtualKind::Loopback,
             name: "mantle-test-loop".to_string(),
