@@ -228,7 +228,7 @@ pub(super) fn spawn_collections_forwarder(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::capabilities::mpris::proxies::{MprisPlaylistsProxy, MprisTrackListProxy};
     use crate::capabilities::test_support::{p2p_pair_serving, within};
@@ -237,15 +237,23 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
-    struct TrackPeer {
+    pub(in crate::capabilities::mpris) struct TrackPeer {
         edits: Arc<Mutex<Vec<String>>>,
         metadata_requests: Arc<Mutex<Vec<usize>>>,
         track_count: Arc<AtomicUsize>,
         short_metadata: Arc<AtomicBool>,
     }
 
-    struct PlaylistPeer {
-        edits: Arc<Mutex<Vec<String>>>,
+    impl TrackPeer {
+        /// `tracks` tracks, each edit logged to `edits`: the controller's tests share one log.
+        pub(in crate::capabilities::mpris) fn new(edits: Arc<Mutex<Vec<String>>>, tracks: usize) -> Self {
+            let track_count = Arc::new(AtomicUsize::new(tracks));
+            Self { edits, metadata_requests: Arc::default(), track_count, short_metadata: Arc::default() }
+        }
+    }
+
+    pub(in crate::capabilities::mpris) struct PlaylistPeer {
+        pub(in crate::capabilities::mpris) edits: Arc<Mutex<Vec<String>>>,
     }
 
     fn path(value: &str) -> OwnedObjectPath {

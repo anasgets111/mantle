@@ -414,30 +414,77 @@ struct SeekContext {
 
 #[cfg(test)]
 mod tests {
+    use super::super::collections::tests::{PlaylistPeer, TrackPeer};
     use super::*;
-    use crate::capabilities::test_support::{p2p_pair_serving, poll_until};
+    use crate::capabilities::test_support::{p2p_pair_serving, poll_until, properties};
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    /// A player with no `mpris:trackid`, so an absolute seek converts against `Position`, which
-    /// fails once `refusing` is set. `seeks` records every `Seek` offset.
+    /// A player recording each call it answers in `calls`, which its root, track list and
+    /// playlists share. Without `track` it has no `mpris:trackid`, so an absolute seek converts
+    /// against `Position`, which fails once `refusing` is set.
     #[derive(Clone, Default)]
     struct Player {
         refusing: Arc<AtomicBool>,
-        seeks: Arc<Mutex<Vec<i64>>>,
-        /// `Next` records `-1` in `seeks`, then never answers.
+        calls: Arc<Mutex<Vec<String>>>,
+        /// `Next` records, then never answers.
         hung: Arc<AtomicBool>,
+        /// `mpris:trackid` and `mpris:length`.
+        track: Option<(&'static str, i64)>,
+        /// `MinimumRate` and `MaximumRate`; zero is unspecified.
+        rates: (f64, f64),
+    }
+
+    impl Player {
+        fn record(&self, call: String) {
+            self.calls.lock().unwrap().push(call);
+        }
+
+        /// What commands sent, without `GetPlaylists`.
+        fn calls(&self) -> Vec<String> {
+            // Registration's collections forwarder re-reads four times on zbus's cached replays (#102);
+            // drop this filter when that is fixed.
+            self.calls.lock().unwrap().iter().filter(|call| !call.starts_with("get:")).cloned().collect()
+        }
     }
 
     #[zbus::interface(name = "org.mpris.MediaPlayer2.Player")]
     impl Player {
-        fn seek(&self, offset: i64) {
-            self.seeks.lock().unwrap().push(offset);
+        fn play(&self) {
+            self.record("Play".into());
+        }
+        fn pause(&self) {
+            self.record("Pause".into());
+        }
+        fn play_pause(&self) {
+            self.record("PlayPause".into());
         }
         async fn next(&self) {
-            self.seeks.lock().unwrap().push(-1);
+            self.record("Next".into());
             if self.hung.load(Ordering::Relaxed) {
                 std::future::pending::<()>().await;
             }
+        }
+        fn previous(&self) {
+            self.record("Previous".into());
+        }
+        fn stop(&self) {
+            self.record("Stop".into());
+        }
+        fn open_uri(&self, uri: &str) {
+            self.record(format!("OpenUri:{uri}"));
+        }
+        fn seek(&self, offset: i64) {
+            self.record(format!("Seek:{offset}"));
+        }
+        fn set_position(&self, track_id: zbus::zvariant::ObjectPath<'_>, position: i64) {
+            self.record(format!("SetPosition:{}:{position}", track_id.as_str()));
+        }
+        #[zbus(property)]
+        fn metadata(&self) -> HashMap<String, zbus::zvariant::OwnedValue> {
+            use zbus::zvariant::{ObjectPath, Value};
+            let Some((trackid, length)) = self.track else { return HashMap::new() };
+            let trackid = Value::from(ObjectPath::try_from(trackid).unwrap());
+            properties(&[("mpris:trackid", trackid), ("mpris:length", Value::from(length))])
         }
         #[zbus(property)]
         fn position(&self) -> zbus::fdo::Result<i64> {
@@ -450,50 +497,78 @@ mod tests {
         fn can_seek(&self) -> bool {
             true
         }
+        #[zbus(property)]
+        fn minimum_rate(&self) -> f64 {
+            self.rates.0
+        }
+        #[zbus(property)]
+        fn maximum_rate(&self) -> f64 {
+            self.rates.1
+        }
+        #[zbus(property)]
+        fn volume(&self) -> f64 {
+            1.0
+        }
+        #[zbus(property)]
+        fn set_volume(&self, value: f64) {
+            self.record(format!("Volume:{value}"));
+        }
+        #[zbus(property)]
+        fn loop_status(&self) -> String {
+            "None".into()
+        }
+        #[zbus(property)]
+        fn set_loop_status(&self, value: String) {
+            self.record(format!("LoopStatus:{value}"));
+        }
+        #[zbus(property)]
+        fn shuffle(&self) -> bool {
+            false
+        }
+        #[zbus(property)]
+        fn set_shuffle(&self, value: bool) {
+            self.record(format!("Shuffle:{value}"));
+        }
+        #[zbus(property)]
+        fn rate(&self) -> f64 {
+            1.0
+        }
+        #[zbus(property)]
+        fn set_rate(&self, value: f64) {
+            self.record(format!("Rate:{value}"));
+        }
     }
 
-    struct Root;
+    struct Root(Player);
 
     #[zbus::interface(name = "org.mpris.MediaPlayer2")]
     impl Root {
+        fn raise(&self) {
+            self.0.record("Raise".into());
+        }
+        fn quit(&self) {
+            self.0.record("Quit".into());
+        }
         #[zbus(property)]
         fn identity(&self) -> String {
             "Fixture".into()
         }
     }
 
-    /// The cached position is a snapshot from the last signal, seconds old while playing: an
-    /// offset from it lands somewhere else, so a failed live read refuses the seek instead.
-    #[tokio::test]
-    async fn an_absolute_seek_converts_against_a_live_position_and_without_one_sends_nothing() {
-        let player = Player::default();
-        let served = player.clone();
-        let (connection, _peer) = p2p_pair_serving(|builder| {
-            builder.serve_at("/org/mpris/MediaPlayer2", served)?.serve_at("/org/mpris/MediaPlayer2", Root)
-        })
-        .await;
-        let controller = MprisController::inert();
-        let name = "org.mpris.MediaPlayer2.fixture";
-        super::super::player::register_player(&connection, &controller.registry, &controller.events, name.into()).await;
-        assert_eq!(controller.registry.lock().unwrap()[name].last_known.position, Some(5_000_000));
-
-        controller.seek("fixture", 60_000_000).await;
-        player.refusing.store(true, Ordering::Relaxed);
-        controller.seek("fixture", 60_000_000).await;
-
-        assert_eq!(*player.seeks.lock().unwrap(), [55_000_000], "only the seek with a live position goes out");
-    }
-
-    /// A player served on its own p2p pair and tracked as `org.mpris.MediaPlayer2.<id>`.
-    async fn tracked_player(controller: &MprisController, id: &str) -> (Player, zbus::Connection) {
-        let player = Player::default();
-        let served = player.clone();
+    /// `player` served on its own p2p pair with a root, three tracks and two playlists, tracked as
+    /// `org.mpris.MediaPlayer2.<id>`, its log cleared of what registering read.
+    async fn tracked_player(controller: &MprisController, id: &str, player: Player) -> (Player, zbus::Connection) {
+        let (served, root) = (player.clone(), Root(player.clone()));
+        let (tracks, playlists) =
+            (TrackPeer::new(player.calls.clone(), 3), PlaylistPeer { edits: player.calls.clone() });
+        let path = "/org/mpris/MediaPlayer2";
         let (connection, peer) = p2p_pair_serving(|builder| {
-            builder.serve_at("/org/mpris/MediaPlayer2", served)?.serve_at("/org/mpris/MediaPlayer2", Root)
+            builder.serve_at(path, served)?.serve_at(path, root)?.serve_at(path, tracks)?.serve_at(path, playlists)
         })
         .await;
         let name = format!("org.mpris.MediaPlayer2.{id}");
         super::super::player::register_player(&connection, &controller.registry, &controller.events, name).await;
+        player.calls.lock().unwrap().clear();
         (player, peer)
     }
 
@@ -502,16 +577,127 @@ mod tests {
         crate::capabilities::test_support::envelope(shared::Capability::Mpris, action, arguments)
     }
 
+    /// `cases` dispatched in order, each with the call the player should record or `""` when the
+    /// controller declines it. One player's commands run in dispatch order, so the last case
+    /// recording proves every decline before it ran.
+    async fn dispatch_in_order(
+        controller: &MprisController,
+        player: &Player,
+        cases: &[(&str, serde_json::Value, &str)],
+    ) {
+        for (action, arguments, _) in cases {
+            super::super::dispatch(controller, &command(action, arguments.clone()));
+        }
+        let expected: Vec<&str> = cases.iter().map(|(.., call)| *call).filter(|call| !call.is_empty()).collect();
+        poll_until(|| (player.calls().len() >= expected.len()).then_some(())).await;
+        assert_eq!(player.calls(), expected);
+    }
+
+    /// The cached position is a snapshot from the last signal, seconds old while playing: an
+    /// offset from it lands somewhere else, so a failed live read refuses the seek instead.
+    #[tokio::test]
+    async fn an_absolute_seek_converts_against_a_live_position_and_without_one_sends_nothing() {
+        let controller = MprisController::inert();
+        let (player, _peer) = tracked_player(&controller, "fixture", Player::default()).await;
+        assert_eq!(
+            controller.registry.lock().unwrap()["org.mpris.MediaPlayer2.fixture"].last_known.position,
+            Some(5_000_000)
+        );
+
+        controller.seek("fixture", 60_000_000).await;
+        player.refusing.store(true, Ordering::Relaxed);
+        controller.seek("fixture", 60_000_000).await;
+
+        assert_eq!(player.calls(), ["Seek:55000000"], "only the seek with a live position goes out");
+    }
+
+    /// Every action reaches its own player method through `dispatch`; an argument the player
+    /// would reject or misread, an unknown player and a malformed command send nothing.
+    #[tokio::test]
+    async fn dispatch_routes_every_action_to_its_player_method_and_declines_bad_arguments() {
+        use serde_json::json;
+        let controller = MprisController::inert();
+        let (player, _peer) =
+            tracked_player(&controller, "fixture", Player { rates: (0.5, 2.0), ..Player::default() }).await;
+        #[rustfmt::skip]
+        let cases = [
+            ("control", json!(["fixture", "play"]), "Play"),
+            ("control", json!(["fixture", "pause"]), "Pause"),
+            ("control", json!(["fixture", "play_pause"]), "PlayPause"),
+            ("control", json!(["fixture", "next"]), "Next"),
+            ("control", json!(["fixture", "previous"]), "Previous"),
+            // Before the start clamps to it: 0 from a live 5 s.
+            ("seek", json!(["fixture", -1]), "Seek:-5000000"),
+            ("seek_relative", json!(["fixture", -2_000_000]), "Seek:-2000000"),
+            ("raise", json!(["fixture"]), "Raise"),
+            ("quit", json!(["fixture"]), "Quit"),
+            ("open_uri", json!(["fixture", "file:///a.ogg"]), "OpenUri:file:///a.ogg"),
+            ("open_uri", json!(["fixture", "not a uri"]), ""),
+            ("set_volume", json!(["fixture", 50]), "Volume:0.5"),
+            ("set_volume", json!(["fixture", -1]), ""),
+            ("set_volume", json!(["fixture", 0]), "Volume:0"),
+            ("set_loop_status", json!(["fixture", "track"]), "LoopStatus:Track"),
+            ("set_shuffle", json!(["fixture", true]), "Shuffle:true"),
+            ("set_rate", json!(["fixture", 1.5]), "Rate:1.5"),
+            ("set_rate", json!(["fixture", 3]), ""),
+            ("set_rate", json!(["fixture", 0.25]), ""),
+            ("set_rate", json!(["fixture", 2]), "Rate:2"),
+            ("track_list_add_track", json!(["fixture", "file:///b.ogg", NO_TRACK, true]), "add:file:///b.ogg:/org/mpris/MediaPlayer2/TrackList/NoTrack:true"),
+            ("track_list_add_track", json!(["fixture", "file:///b.ogg", "after", true]), ""),
+            ("track_list_remove_track", json!(["fixture", "/track/0"]), "remove:/track/0"),
+            ("track_list_remove_track", json!(["fixture", NO_TRACK]), ""),
+            ("track_list_remove_track", json!(["fixture", "track"]), ""),
+            ("track_list_go_to", json!(["fixture", "/track/1"]), "goto:/track/1"),
+            ("track_list_go_to", json!(["fixture", NO_TRACK]), ""),
+            ("track_list_go_to", json!(["fixture", "track"]), ""),
+            ("playlists_activate", json!(["fixture", "/playlist/1"]), "activate:/playlist/1"),
+            ("playlists_activate", json!(["fixture", "playlist"]), ""),
+            ("control", json!(["absent", "stop"]), ""),
+            ("seek", json!(["fixture", "soon"]), ""),
+            ("control", json!(["fixture", "stop"]), "Stop"),
+        ];
+        dispatch_in_order(&controller, &player, &cases).await;
+
+        let revision = || controller.registry.lock().unwrap()["org.mpris.MediaPlayer2.fixture"].playlist_revision;
+        let before = revision();
+        super::super::dispatch(&controller, &command("playlists_get", json!(["fixture", 4, 10, "Alphabetical", true])));
+        let page = |state: MprisState| state.players[0].playlists.clone();
+        let page = poll_until(|| Some(page(controller.snapshot())).filter(|page| page.index == 4)).await;
+        assert_eq!((page.page_size, page.order.as_str(), page.reverse), (10, "Alphabetical", true));
+        // A refresh started before the request must not land over its page.
+        assert_ne!(revision(), before);
+    }
+
+    /// A player with a trackid seeks with `SetPosition` on it, clamped to the track; one without
+    /// rate limits still never gets a rate of zero.
+    #[tokio::test]
+    async fn a_seek_sets_the_position_within_the_track_and_a_zero_rate_is_refused() {
+        use serde_json::json;
+        let controller = MprisController::inert();
+        let (player, _peer) = tracked_player(
+            &controller,
+            "fixture",
+            Player { track: Some(("/track/1", 10_000_000)), ..Player::default() },
+        )
+        .await;
+        let cases = [
+            ("seek", json!(["fixture", 60_000_000]), "SetPosition:/track/1:10000000"),
+            ("set_rate", json!(["fixture", 0]), ""),
+            ("set_rate", json!(["fixture", 4]), "Rate:4"),
+        ];
+        dispatch_in_order(&controller, &player, &cases).await;
+    }
+
     /// The seek reads `Position` first; spawned apart, the `Next` behind it overtook it and the seek
     /// landed on the next track.
     #[tokio::test]
     async fn one_players_commands_land_in_dispatch_order() {
         let controller = MprisController::inert();
-        let (player, _peer) = tracked_player(&controller, "fixture").await;
+        let (player, _peer) = tracked_player(&controller, "fixture", Player::default()).await;
         super::super::dispatch(&controller, &command("seek", serde_json::json!(["fixture", 60_000_000])));
         super::super::dispatch(&controller, &command("control", serde_json::json!(["fixture", "next"])));
-        poll_until(|| (player.seeks.lock().unwrap().len() == 2).then_some(())).await;
-        assert_eq!(*player.seeks.lock().unwrap(), [55_000_000, -1], "the seek was dispatched first");
+        poll_until(|| (player.calls().len() == 2).then_some(())).await;
+        assert_eq!(player.calls(), ["Seek:55000000", "Next"], "the seek was dispatched first");
     }
 
     /// The abort handle of `id`'s command queue task, which ends only by being aborted.
@@ -540,14 +726,14 @@ mod tests {
     #[tokio::test]
     async fn a_hung_player_holds_up_only_its_own_commands_until_it_leaves() {
         let controller = MprisController::inert();
-        let (hung, _hung_peer) = tracked_player(&controller, "hung").await;
-        let (other, _other_peer) = tracked_player(&controller, "other").await;
+        let (hung, _hung_peer) = tracked_player(&controller, "hung", Player::default()).await;
+        let (other, _other_peer) = tracked_player(&controller, "other", Player::default()).await;
         hung.hung.store(true, Ordering::Relaxed);
         for id in ["hung", "hung", "other"] {
             super::super::dispatch(&controller, &command("control", serde_json::json!([id, "next"])));
         }
-        poll_until(|| (other.seeks.lock().unwrap().len() == 1).then_some(())).await;
-        assert_eq!(*hung.seeks.lock().unwrap(), [-1], "the second waits behind the first");
+        poll_until(|| (other.calls().len() == 1).then_some(())).await;
+        assert_eq!(hung.calls(), ["Next"], "the second waits behind the first");
         let queue = queue_task(&controller, "hung");
 
         super::super::player::unregister_player(
@@ -563,13 +749,13 @@ mod tests {
     #[tokio::test]
     async fn a_re_registered_player_drops_its_old_queue() {
         let controller = MprisController::inert();
-        let (hung, _peer) = tracked_player(&controller, "hung").await;
+        let (hung, _peer) = tracked_player(&controller, "hung", Player::default()).await;
         hung.hung.store(true, Ordering::Relaxed);
         super::super::dispatch(&controller, &command("control", serde_json::json!(["hung", "next"])));
-        poll_until(|| (hung.seeks.lock().unwrap().len() == 1).then_some(())).await;
+        poll_until(|| (hung.calls().len() == 1).then_some(())).await;
         let queue = queue_task(&controller, "hung");
 
-        let _again = tracked_player(&controller, "hung").await;
+        let _again = tracked_player(&controller, "hung", Player::default()).await;
         ends_promptly(&queue).await;
     }
 
@@ -578,11 +764,11 @@ mod tests {
     async fn a_full_queue_refuses_the_newest_command_and_warns_once() {
         let controller = MprisController::inert();
         for (id, sent, warned) in [("fits", 33, false), ("overflows", 34, true)] {
-            let (hung, _peer) = tracked_player(&controller, id).await;
+            let (hung, _peer) = tracked_player(&controller, id, Player::default()).await;
             hung.hung.store(true, Ordering::Relaxed);
             let next = command("control", serde_json::json!([id, "next"]));
             super::super::dispatch(&controller, &next);
-            poll_until(|| (hung.seeks.lock().unwrap().len() == 1).then_some(())).await;
+            poll_until(|| (hung.calls().len() == 1).then_some(())).await;
             (1..sent).for_each(|_| super::super::dispatch(&controller, &next));
             // `first_failure` is true only for a key nothing has warned under yet.
             assert_eq!(!shared::log::first_failure(&format!("mpris-queue-{id}")), warned, "{id}");
@@ -591,11 +777,18 @@ mod tests {
 
     #[test]
     fn open_uri_requires_an_absolute_uri_without_control_characters() {
-        for uri in ["https://example.test/track", "file:///tmp/song.flac", "spotify:track:abc"] {
+        for uri in ["https://example.test/track", "file:///tmp/a%20song.flac", "spotify:track:abc"] {
             assert!(valid_uri(uri), "{uri:?}");
         }
-        for uri in ["", "relative/path", ":missing-scheme", "1bad:value", "https://bad.test/\n", "https://bad.test/%Q0"]
-        {
+        for uri in [
+            "",
+            "relative/path",
+            ":missing-scheme",
+            "1bad:value",
+            "https://bad.test/\n",
+            "https://bad.test/a b",
+            "https://bad.test/%Q0",
+        ] {
             assert!(!valid_uri(uri), "{uri:?}");
         }
     }
