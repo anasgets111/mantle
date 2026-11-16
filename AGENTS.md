@@ -177,11 +177,14 @@ Any agent may coordinate others. The coordinator owns the result: it reviews, la
   commit is a full build: commits and builds take one machine-wide lock, so only one runs at a
   time. The hook and the justfile's build recipes take it when `git config mantle.buildWrapper`
   names the lock command (shared by every worktree).
-- **Land.** Send gaps back to the same delegate, which keeps its context and amends. Land one
-  branch at a time: if `main` has not moved since its base, `git merge --ff-only wt/<name>`, with
-  no second check. If it has, the delegate rebases onto `main`, then runs `git reset --soft main
-  && git commit -C ORIG_HEAD`: the hook picks its checks from staged paths, so an amend that stages
-  nothing checks nothing. Then fast-forward, and remove the worktree, branch and target dir.
+- **Land.** Send real gaps back to the same delegate, which keeps its context and amends on its
+  own base; the coordinator fixes small findings (a trailer, a rewrap, a few lines) itself. A
+  single branch whose base is still `main` lands with `git merge --ff-only wt/<name>`, no second
+  check. Otherwise land as a stack: in one landing worktree on `main`, cherry-pick each approved
+  branch's commits (cherry-pick runs no pre-commit hook; each passed it on its own base), run `just
+  check` once on the tip, then fast-forward `main`. A failure there is fixed and the stack
+  rechecked; a cherry-pick conflict goes back to that branch's delegate. Then remove each
+  worktree, branch and target dir.
 
 ## Skills
 
