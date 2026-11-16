@@ -2520,6 +2520,13 @@ Reject machine-written TOML, which loses comments, and a broad FileView clone wi
 Protocol/runtime files and interoperable thumbnail locations remain framework-owned.
 
 Amended by ADR-0223: stores are watched, and a change on disk wins whole.
+Amended by #60: a store's first read runs off the Supervisor loop, in `spawn_blocking`. Until it
+lands the store is absent from `storage` pushes, so configs read their declared defaults, and
+decision 2's writes are buffered instead of pushed. A watch event during the read marks the store
+stale and the read repeats. On landing the buffered writes replay over the file as read and its
+defaults, then the store pushes and saves; a disk change seen after landing wins whole (ADR-0223).
+ponytail: a file rewritten faster than it reads never lands; upgrade: cap the retries, then land
+and run one sync.
 
 ## 0137. Privacy reports every capture; telling a video from a song stays in Lua
 
@@ -6048,6 +6055,15 @@ ponytail: a live source's next request, issued straight from `Ready`, has no fra
 pacing of its own; it runs as fast as the compositor answers. Upgrade path if that ever floods a
 slow output: gate it behind `wl_surface::frame` the way an ordinary repaint already is.
 
+Amendment (#65): dma-buf `wl_buffer`s are imported with `zwp_linux_buffer_params_v1.create`, not
+`create_immed`, whose rejection may be the fatal `invalid_wl_buffer` protocol error that killed the
+connection on every start. A pending allocation keeps the back slot with no `wl_buffer`; `created`
+completes it, and `failed` falls the source back to shm as in decision 4. While pending, ext skips
+the frame and requests it on the answer; wlr copies that frame through shm. Rejected: a roundtrip
+inside dispatch, which the event loop cannot re-enter. ponytail: a wlr offer with no shm fails the
+source while an allocation is pending (Hyprland, niri and Pinnacle all offer shm); upgrade: skip and
+re-request as ext does.
+
 ## 0249. `palette.quantize` extracts dominant colours in the Renderer
 
 Quickshell's `ColorQuantizer` parity, for theming from a wallpaper or album art.
@@ -6561,7 +6577,16 @@ the compositor's copy.
    and patterns the whole texture around it. The compositor still copies the whole output.
 7. **A rotated or flipped output gets no ext crop.** Its buffer is untransformed, and the frame's
    `transform` event is applied nowhere yet, so the region's logical coordinates do not map onto
-   it. The whole frame draws and a warning logs once per source.
+   it. The whole frame draws and a warning logs once per source. Amended by #64: an ext capture of
+   a rotated or flipped output draws upright. The frame's `transform` event is kept per node
+   (`Normal` when absent; a failed frame drops it), and the draw applies its inverse, as
+   `wl_surface.set_buffer_transform` defines it, through a canvas matrix. The region stays in
+   upright fractions and maps through the same matrix, so the ext crop works on any transform.
+   wlr-screencopy carries no transform and compositors disagree: Hyprland 0.57 sends upright
+   buffers, niri and Pinnacle native ones. wlr stays `Normal`, so on those two a wlr capture of a
+   rotated output draws turned. Rejected: applying the output's `wl_output` transform to wlr, which
+   turns Hyprland's upright buffer a second time. The 90 and 270 directions are unverified on
+   hardware, since Hyprland reports `Normal` for ext frames too.
 
 Measured on Hyprland 0.56.2, release build, dma-buf path: a 480x200 overlay previewing the
 3440x1440@165 output under it, 10 s windows, Hyprland's CPU above an interleaved baseline (7-10%).
