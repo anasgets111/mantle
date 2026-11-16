@@ -230,7 +230,7 @@ mod tests {
     use tokio::sync::mpsc;
     use zbus::zvariant::Value;
 
-    use crate::capabilities::test_support::{PrivateBus, private_bus, properties as entry, within};
+    use crate::capabilities::test_support::{PrivateBus, dispatcher, private_bus, properties as entry, within};
 
     struct FakeUPower {
         on_battery: bool,
@@ -364,8 +364,7 @@ mod tests {
     async fn dispatch_routes_set_profile_to_the_daemon_and_drops_the_rest() {
         let bus = private_bus().await;
         let (_daemon, power, _fake, mut sets) = serve_profiles(&bus).await;
-        let dispatch =
-            crate::capabilities::test_support::dispatcher(shared::Capability::Power, super::super::dispatch, &power);
+        let dispatch = dispatcher(shared::Capability::Power, super::super::dispatch, &power);
 
         dispatch("nonsense", vec!["power-saver".into()]);
         dispatch("set_profile", vec![]);

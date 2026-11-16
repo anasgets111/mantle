@@ -190,7 +190,7 @@ async fn run_brightness_poll_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capabilities::test_support::{p2p_pair, p2p_pair_serving, within};
+    use crate::capabilities::test_support::{dispatcher, p2p_pair, p2p_pair_serving, within};
 
     fn write_entry(root: &Path, name: &str, attrs: &[(&str, &str)]) {
         let dir = root.join(name);
@@ -291,11 +291,7 @@ mod tests {
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
         let controller = BrightnessController::new(root.path().to_path_buf(), bus, events_tx);
         within(events_rx.recv()).await;
-        let dispatch = crate::capabilities::test_support::dispatcher(
-            shared::Capability::Brightness,
-            super::super::dispatch,
-            &controller,
-        );
+        let dispatch = dispatcher(shared::Capability::Brightness, super::super::dispatch, &controller);
 
         // `LatestWrites` keeps only the newest value, so each yield lets a wrongly started write take
         // its value before the next dispatch could replace it; that write would arrive first.

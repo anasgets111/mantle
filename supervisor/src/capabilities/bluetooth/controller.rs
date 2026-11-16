@@ -445,7 +445,7 @@ impl BluetoothController {
 mod tests {
     use super::super::registry::DeviceEntry;
     use super::*;
-    use crate::capabilities::test_support::{PrivateBus, poll_until, private_bus, within};
+    use crate::capabilities::test_support::{PrivateBus, dispatcher, poll_until, private_bus, within};
 
     fn controller() -> (BluetoothController, tokio::sync::mpsc::UnboundedReceiver<BluetoothSignal>) {
         let (events, receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -905,11 +905,7 @@ mod tests {
         let (events, mut signals) = tokio::sync::mpsc::unbounded_channel();
         let controller = BluetoothController::new(bus.connection().await, events).await;
         assert_eq!(within(received.recv()).await.as_deref(), Some("KeyboardDisplay"));
-        let dispatch = crate::capabilities::test_support::dispatcher(
-            shared::Capability::Bluetooth,
-            super::super::dispatch,
-            &controller,
-        );
+        let dispatch = dispatcher(shared::Capability::Bluetooth, super::super::dispatch, &controller);
         let mut next = async || within(received.recv()).await.expect("bluez is alive");
 
         dispatch("set_enabled", vec![true.into()]);
