@@ -223,6 +223,19 @@ mod tests {
         assert!(!serde_json::to_string(&done).unwrap().contains("marker-secret"));
     }
 
+    /// `store` marks the name pending before it touches the bus. Nothing drives this runtime, so its
+    /// spawned session-bus write is dropped unpolled and never reaches the user's real keyring.
+    #[test]
+    fn store_marks_the_name_pending_before_the_write() {
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let _entered = runtime.enter();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let controller = SecretsController::new(tx);
+        assert!(rx.try_recv().unwrap().entries.is_empty());
+        controller.store("mail".into(), Zeroizing::new(b"never-sent".to_vec()));
+        assert!(matches!(rx.try_recv().unwrap().entries["mail"], SecretStatus::Pending));
+    }
+
     #[tokio::test]
     async fn failure_has_a_fixed_public_code() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
