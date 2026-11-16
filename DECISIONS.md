@@ -9001,3 +9001,16 @@ and `hover_rect` then, and `reset_on_close` stays the reliable reset. Rejected: 
 ponytail: `has_selection` is exempt, because no node binds it and `write_selection` writes by name,
 so its names still grow with each distinct `focus_target`. Upgrade: sweep it against the text
 fields' focus targets.
+
+## 0393. An offscreen layer past the GPU's texture limit paints unfiltered
+
+`TextPainter` reads `GL_MAX_TEXTURE_SIZE` once from the surface's glow context, and `scratch`
+refuses a target with a side past it (after the 64 px rounding). femtovg 0.27 checks neither: its
+framebuffer comes out incomplete, `set_target` binds nothing, and the parent stays bound, so the
+layer's draws landed in the parent with no clip, mask or effect. A refused layer now
+takes the `None` path an allocation failure already takes: a clip, `mask` or `effect` paints its
+subtree unfiltered inside the parent's scissor, a single pass (blur, blend, shader, inset shadow)
+is dropped, and a node mask draws nothing (ADR-0297). A gradient or image mask past the limit
+leaves its subtree unmasked, as ADR-0255 decision 7 allows. The development GPU's limit is
+32768 px; the test lowers it to 32. Rejected: rendering the layer downscaled to fit, which threads
+a scale through every pass for a case only a huge subtree on a HiDPI output reaches.
