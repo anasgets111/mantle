@@ -276,7 +276,7 @@ fn fill_missing(stored: &mut Map<String, Value>, defaults: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capabilities::test_support::within;
+    use crate::capabilities::test_support::{dispatcher, within};
     use serde_json::json;
 
     fn controller() -> (StorageController, tokio::sync::mpsc::UnboundedReceiver<()>) {
@@ -409,6 +409,28 @@ mod tests {
         controller.set("/tmp/never-opened.json", "key", json!(1));
 
         assert!(controller.snapshot().contents.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dispatch_routes_open_and_set_and_drops_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json").to_string_lossy().into_owned();
+        let (controller, _rx) = controller();
+        let dispatch = dispatcher(shared::Capability::Storage, super::super::dispatch, &controller);
+
+        let defaults = || json!({ "theme": "mocha" });
+        dispatch("open", vec!["relative.json".into(), defaults()]);
+        dispatch("nonsense", vec![path.clone().into(), defaults()]);
+        assert!(controller.snapshot().contents.is_empty());
+
+        dispatch("open", vec![path.clone().into(), defaults()]);
+        assert_eq!(controller.snapshot().contents[&path], defaults());
+        dispatch("set", vec![path.clone().into(), 7.into(), "latte".into()]);
+        dispatch("set", vec![path.clone().into(), "theme".into(), "latte".into()]);
+        dispatch("set", vec![path.clone().into(), "dnd".into(), true.into()]);
+        assert_eq!(controller.snapshot().contents[&path], json!({ "theme": "latte", "dnd": true }));
+        dispatch("set", vec![path.clone().into(), "dnd".into(), serde_json::Value::Null]);
+        assert_eq!(controller.snapshot().contents[&path], json!({ "theme": "latte" }), "a nil value deletes the key");
     }
 
     #[tokio::test]
