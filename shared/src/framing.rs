@@ -29,7 +29,26 @@ pub enum FramingError {
     #[error("frame length {len} exceeds the {MAX_FRAME_LEN}-byte limit")]
     FrameTooLarge { len: usize },
     #[error("failed to decode frame payload as JSON: {0}")]
-    Decode(#[from] serde_json::Error),
+    Decode(DecodeError),
+    /// Without serde's message, which quotes the value, as [`DecodeError`] does.
+    #[error("failed to encode frame payload as JSON")]
+    Encode,
+}
+
+/// Where a payload failed to decode: all of a `serde_json::Error` this keeps. Its message quotes the
+/// offending value, which on these sockets can be a password or a pairing PIN (#121).
+#[derive(Debug, Error)]
+#[error("{category:?} error at line {line} column {column}")]
+pub struct DecodeError {
+    category: serde_json::error::Category,
+    line: usize,
+    column: usize,
+}
+
+impl From<serde_json::Error> for FramingError {
+    fn from(err: serde_json::Error) -> Self {
+        Self::Decode(DecodeError { category: err.classify(), line: err.line(), column: err.column() })
+    }
 }
 
 impl From<FramingError> for std::io::Error {
@@ -158,7 +177,7 @@ pub async fn write_json_frame<W: AsyncWrite + Unpin, T: Serialize>(
     value: &T,
 ) -> Result<(), FramingError> {
     let mut scrubbing = ScrubbingWriter(crate::secure_buffer::SecureBuffer::with_capacity(256));
-    serde_json::to_writer(&mut scrubbing, value)?;
+    serde_json::to_writer(&mut scrubbing, value).map_err(|_| FramingError::Encode)?;
     // `SecureBuffer` is `ZeroizeOnDrop`, so the serialized copy is cleared when this returns --
     // including on the `?` above and on cancellation mid-write.
     write_frame(writer, scrubbing.0.expose_secret()).await
@@ -268,5 +287,22 @@ mod tests {
         write_frame(&mut a, b"not json").await.unwrap();
         let err = read_json_frame::<_, ConnectionHandshake>(&mut b).await.unwrap_err();
         assert!(matches!(err, FramingError::Decode(_)));
+    }
+
+    #[tokio::test]
+    async fn a_decode_error_never_shows_the_value_that_failed() {
+        let (mut a, mut b) = tokio::io::duplex(256);
+        write_frame(&mut a, br#"{"generation_id":"hunter2"}"#).await.unwrap();
+        let err = read_json_frame::<_, ConnectionHandshake>(&mut b).await.unwrap_err();
+        assert_eq!(err.to_string(), "failed to decode frame payload as JSON: Data error at line 1 column 26");
+        assert!(!format!("{err:?}").contains("hunter2"));
+        assert!(!std::io::Error::from(err).to_string().contains("hunter2"));
+    }
+
+    #[tokio::test]
+    async fn an_encode_error_is_not_reported_as_a_decode_error() {
+        let unencodable = std::collections::HashMap::from([((1, 2), "hunter2")]);
+        let err = write_json_frame(&mut tokio::io::sink(), &unencodable).await.unwrap_err();
+        assert_eq!(err.to_string(), "failed to encode frame payload as JSON");
     }
 }
