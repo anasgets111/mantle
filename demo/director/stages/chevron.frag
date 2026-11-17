@@ -9,6 +9,7 @@ void main() {
     float edge = mix(-SOFT * 2.0, far + SOFT * 2.0, u_progress);
     float behind = smoothstep(edge - SOFT, edge + SOFT, shape);
     vec4 color = mix(mantle_to(v_uv), mantle_from(v_uv), behind);
-    float seam = exp(-pow((shape - edge) / (SOFT * 0.6), 2.0));
+    float d = (shape - edge) / (SOFT * 0.6);
+    float seam = exp(-d * d);
     fragColor = vec4(color.rgb + vec3(0.18) * seam * color.a, color.a);
 }

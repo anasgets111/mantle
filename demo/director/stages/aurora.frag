@@ -12,7 +12,8 @@ void main() {
         float wave = 0.30 + 0.06 * fi
             + 0.06 * sin(x * 1.3 + t + fi * 1.7)
             + 0.03 * sin(x * 3.1 - 2.0 * t + fi);
-        float band = exp(-pow((v_uv.y - wave) * (8.0 + 3.0 * fi), 2.0));
+        float d = (v_uv.y - wave) * (8.0 + 3.0 * fi);
+        float band = exp(-d * d);
         float shimmer = 0.6 + 0.4 * sin(x * 9.0 + 3.0 * t + fi * 2.0);
         vec3 tint = mix(tint_a, tint_b, 0.5 + 0.5 * sin(x * 0.8 + t + fi));
         float a = band * shimmer * (0.24 - 0.05 * fi);
