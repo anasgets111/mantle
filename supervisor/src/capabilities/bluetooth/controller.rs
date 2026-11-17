@@ -442,7 +442,7 @@ impl BluetoothController {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::super::registry::DeviceEntry;
     use super::*;
     use crate::capabilities::test_support::{PrivateBus, dispatcher, poll_until, private_bus, within};
@@ -685,7 +685,7 @@ mod tests {
     }
 
     /// Every call the fake `bluetoothd` receives, as `Name` or `Name argument`.
-    type Calls = tokio::sync::mpsc::UnboundedSender<String>;
+    pub(crate) type Calls = tokio::sync::mpsc::UnboundedSender<String>;
 
     /// A powered adapter recording each write, and whether it is scanning.
     struct FakeAdapter(Calls, AtomicBool);
@@ -784,7 +784,7 @@ mod tests {
 
     /// A `bluetoothd` with one adapter and `devices` as `(mac, paired)`, reporting each call to
     /// `calls`; `RegisterAgent` sends only its capability.
-    async fn serve_bluez(
+    pub(crate) async fn serve_bluez(
         bus: &PrivateBus,
         devices: &[(&'static str, bool)],
         calls: Calls,
@@ -846,12 +846,7 @@ mod tests {
         assert!(state.available);
         assert_eq!(macs(&state), ["AA:AA:AA:AA:AA:AA", "BB:BB:BB:BB:BB:BB"]);
 
-        let (reply, _answer) = tokio::sync::oneshot::channel();
-        let mut pending = agent::PendingPrompt::display("BB:BB:BB:BB:BB:BB");
-        pending.request.kind = super::super::PairingKind::PinEntry;
-        pending.request.id = "old".to_string();
-        pending.reply = Some(reply);
-        *controller.prompts.lock().unwrap() = Some(pending);
+        let _answer = pin_entry(&controller, "old", "BB:BB:BB:BB:BB:BB");
         controller.handle_signal(BluetoothSignal::PairingChanged).await;
 
         drop(first);
@@ -981,5 +976,21 @@ mod tests {
             &(),
         );
         within(release).await.expect("the agent is exported");
+    }
+
+    /// Puts a PIN entry prompt with `id` for `mac` on screen, as BlueZ's `RequestPinCode` does, and
+    /// returns where BlueZ hears the answer. For `lifecycle`'s tests, which cannot build a prompt.
+    pub(crate) fn pin_entry(
+        controller: &BluetoothController,
+        id: &str,
+        mac: &str,
+    ) -> tokio::sync::oneshot::Receiver<Option<shared::Zeroizing<Vec<u8>>>> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        let mut pending = agent::PendingPrompt::display(mac);
+        pending.request.kind = super::super::PairingKind::PinEntry;
+        pending.request.id = id.to_string();
+        pending.reply = Some(reply);
+        *controller.prompts.lock().unwrap() = Some(pending);
+        answer
     }
 }

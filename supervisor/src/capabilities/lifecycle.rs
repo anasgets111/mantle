@@ -649,3 +649,268 @@ impl Capabilities {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use futures_util::FutureExt;
+    use shared::{SupervisorFrame, Zeroizing};
+    use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::capabilities::bluetooth::controller::tests::{pin_entry, serve_bluez};
+    use crate::capabilities::network::tests::prompted;
+    use crate::capabilities::test_support::{PrivateBus, envelope, private_bus, within};
+
+    /// The generation every test speaks for, as `envelope` stamps it.
+    const GENERATION: u32 = 7;
+
+    /// `Capabilities` as `main.rs` holds it, plus a registered Renderer for generation 7 that
+    /// [`Shell::until`] reads its snapshots from.
+    struct Shell {
+        capabilities: Capabilities,
+        signals: Signals,
+        registry: socket::GenerationRegistry,
+        frames: mpsc::Receiver<Vec<u8>>,
+        last_snapshots: HashMap<Capability, crate::snapshot::Published>,
+    }
+
+    impl Shell {
+        fn new(connection: zbus::Connection) -> Self {
+            let (sound_tx, _) = std::sync::mpsc::sync_channel(1);
+            let (idle_tx, _) = unbounded_channel();
+            let (capabilities, signals) = Capabilities::new(connection, sound_tx, idle_tx);
+            let registry = socket::GenerationRegistry::default();
+            let (tx, frames) = mpsc::channel(64);
+            registry.register(GENERATION, tx, Default::default());
+            Self { capabilities, signals, registry, frames, last_snapshots: HashMap::new() }
+        }
+
+        fn dispatch(&mut self, capability: Capability, action: &str, arguments: Vec<serde_json::Value>) {
+            let (lock_tx, _) = unbounded_channel();
+            let lock = LockController::new(lock_tx);
+            self.capabilities.dispatch(capability, &envelope(capability, action, arguments), &lock);
+        }
+
+        fn push(&mut self, signal: Signal) {
+            self.capabilities.push(signal, &self.registry, GENERATION, &mut self.last_snapshots);
+        }
+
+        /// Snapshots that reached the Renderer since the last read, as `(capability, payload)`.
+        fn received(&mut self) -> Vec<(String, serde_json::Value)> {
+            let mut received = Vec::new();
+            while let Ok(bytes) = self.frames.try_recv() {
+                if let SupervisorFrame::StateSnapshot(snapshot) = serde_json::from_slice(&bytes).unwrap() {
+                    received.push((snapshot.capability, snapshot.payload));
+                }
+            }
+            received
+        }
+
+        /// Pushes each signal as the main loop does until `capability`'s snapshot satisfies `done`,
+        /// and returns that payload. Equal payloads are deduplicated and bursts fold, so this waits
+        /// on state, never on a count of frames.
+        async fn until(
+            &mut self,
+            capability: Capability,
+            done: impl Fn(&serde_json::Value) -> bool,
+        ) -> serde_json::Value {
+            within(async {
+                loop {
+                    let signal = self.signals.next().await.expect("Capabilities holds every sender");
+                    self.push(signal);
+                    let wanted = self.received().into_iter().rev().find(|(name, _)| name == capability.as_str());
+                    if let Some((_, payload)) = wanted
+                        && done(&payload)
+                    {
+                        return payload;
+                    }
+                }
+            })
+            .await
+        }
+    }
+
+    async fn shell() -> (Shell, PrivateBus) {
+        let bus = private_bus().await;
+        (Shell::new(bus.connection().await), bus)
+    }
+
+    /// A command reaches a capability only once it started; its state then reaches the Renderer, and
+    /// a departed generation's watches are dropped.
+    #[tokio::test]
+    async fn folders_start_on_demand_take_commands_push_and_forget_a_departed_generation() {
+        let (mut shell, _bus) = shell().await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap().to_owned();
+
+        shell.dispatch(Capability::Folders, "watch", vec![path.clone().into()]);
+        shell.capabilities.start(Capability::Folders).await;
+        shell.push(Signal::Folders);
+        assert_eq!(
+            shell.received(),
+            [("folders".into(), serde_json::json!({ "watched": {} }))],
+            "nothing was watched before the start"
+        );
+
+        shell.dispatch(Capability::Folders, "watch", vec![path.clone().into()]);
+        shell.until(Capability::Folders, |payload| payload["watched"].get(&path).is_some()).await;
+
+        shell.capabilities.forget_departed_requests(GENERATION);
+        shell.until(Capability::Folders, |payload| payload["watched"].as_object().is_some_and(|w| w.is_empty())).await;
+    }
+
+    /// `reap_sessions` stops a running session process and waits for it, so its exit is recorded
+    /// before the Supervisor goes.
+    #[tokio::test]
+    async fn reap_sessions_stops_and_awaits_every_session_process() {
+        let (mut shell, _bus) = shell().await;
+        shell.capabilities.start(Capability::Processes).await;
+        shell.dispatch(Capability::Processes, "declare", vec!["spin".into()]);
+        // Builtins only, and it ends by itself (in seconds) should a broken reap leave it running.
+        let spin = "i=0; while [ $i -lt 3000000 ]; do i=$((i+1)); done";
+        shell.dispatch(
+            Capability::Processes,
+            "start",
+            vec!["spin".into(), "/bin/sh".into(), serde_json::json!(["-c", spin])],
+        );
+        shell.until(Capability::Processes, |payload| payload["sessions"]["spin"]["running"] == true).await;
+
+        shell.capabilities.reap_sessions().await;
+        shell.push(Signal::Processes);
+        let (_, payload) = shell.received().pop().expect("the reaped state reaches the Renderer");
+        let spin = &payload["sessions"]["spin"];
+        assert_eq!(
+            (&spin["running"], &spin["exit_code"]),
+            (&false.into(), &serde_json::Value::Null),
+            "killed, not finished: {spin}"
+        );
+    }
+
+    /// `lock` is boot-built and passed in, so its commands need no start.
+    #[tokio::test]
+    async fn lock_commands_go_to_the_boot_built_controller() {
+        let (mut shell, _bus) = shell().await;
+        let (lock_tx, mut locks) = unbounded_channel();
+        let lock = LockController::new(lock_tx);
+        shell.capabilities.dispatch(Capability::Lock, &envelope(Capability::Lock, "lock", vec![]), &lock);
+        assert_eq!(locks.try_recv().ok(), Some(shared::SetSessionLock { locked: true }));
+    }
+
+    /// `main.rs` reaches the idle controller through `idle()`. The controller is planted:
+    /// `start(Idle)` would dial the session bus and the session's compositor.
+    #[tokio::test]
+    async fn idle_hands_out_the_started_controller() {
+        let (mut shell, _bus) = shell().await;
+        let (controller, mut locks, _logind) = idle::controller::tests::controller().await;
+        shell.capabilities.idle = Some(controller);
+        shell.capabilities.idle().expect("idle started").inhibit(GENERATION, "test").await;
+        within(locks.recv()).await.expect("logind was asked for a lock");
+    }
+
+    /// State-carrying signals push under their own capability's name.
+    #[tokio::test]
+    async fn a_signal_carrying_state_reaches_the_renderer_as_its_capability() {
+        let (mut shell, _bus) = shell().await;
+        shell.push(Signal::Secrets(shared::state::secrets::SecretsState::default()));
+        shell.push(Signal::Keyboard(shared::state::keyboard::KeyboardState::default()));
+        let names: Vec<String> = shell.received().into_iter().map(|(name, _)| name).collect();
+        assert_eq!(names, ["secrets", "keyboard"]);
+    }
+
+    const MAC: &str = "AA:AA:AA:AA:AA:AA";
+
+    /// Bluetooth builds in a worker that queues commands, takes a PIN from `secure_submit`, and stops
+    /// the discovery a departed generation started.
+    #[tokio::test]
+    async fn bluetooth_queues_commands_takes_a_pin_and_stops_a_departed_generations_discovery() {
+        let (mut shell, bus) = shell().await;
+        let (calls, mut received) = mpsc::unbounded_channel();
+        let _bluez = serve_bluez(&bus, &[(MAC, false)], calls, false).await;
+        shell.capabilities.start(Capability::Bluetooth).await;
+        assert_eq!(within(received.recv()).await.as_deref(), Some("KeyboardDisplay"));
+
+        shell.dispatch(Capability::Bluetooth, "start_discovery", vec![]);
+        assert_eq!(within(received.recv()).await.as_deref(), Some("StartDiscovery"));
+        // `set_discovery(false)` reconciles from the adapter's cached `Discovering`.
+        shell.until(Capability::Bluetooth, |payload| payload["discovering"] == true).await;
+        shell.capabilities.forget_departed_requests(GENERATION);
+        // Each adapter signal the worker handles reconciles discovery as well, so another
+        // `StartDiscovery` may come first.
+        within(async { while received.recv().await.expect("bluez is alive") != "StopDiscovery" {} }).await;
+
+        let (planted, prompt) = tokio::sync::oneshot::channel();
+        let worker = shell.capabilities.bluetooth.as_ref().unwrap();
+        worker.send(Box::new(move |controller| planted.send(pin_entry(controller, "1", MAC)).unwrap())).unwrap();
+        let answer = within(prompt).await.unwrap();
+        shell.capabilities.submit_pairing(format!("1/{MAC}"), Zeroizing::new(b"1234".to_vec()));
+        let pin = within(answer).await.unwrap().expect("a valid PIN is passed on");
+        assert_eq!(pin.as_slice(), b"1234");
+    }
+
+    /// The network worker around `network`'s fixture, with a password prompt up for `home` and a
+    /// VPN secret request pending, and the state that showed both; the handle resolves to whether
+    /// the user declined that request.
+    async fn network_shell() -> (Shell, serde_json::Value, tokio::task::JoinHandle<bool>, zbus::Connection) {
+        let (controller, events, peer, vpn) = prompted().await;
+        let mut shell = Shell::new(peer.clone());
+        let handle = |network: NetworkController, signal| async move { network.handle_signal(signal).await };
+        let build = async move { Some(controller) };
+        shell.capabilities.network =
+            Some(spawn_worker(build, events, handle, shell.capabilities.senders.network.clone()));
+        let prompting =
+            |payload: &serde_json::Value| payload["password_ssid"] == "home" && !payload["vpn_secret"].is_null();
+        let payload = shell.until(Capability::Network, prompting).await;
+        (shell, payload, vpn, peer)
+    }
+
+    /// The typed key goes to NetworkManager with the join; the fake has no `UpdateUnsaved`, so the
+    /// join fails there, which is how its arrival shows.
+    #[tokio::test]
+    async fn a_prompted_password_runs_the_join_it_was_typed_for() {
+        let (mut shell, _, _vpn, _peer) = network_shell().await;
+        shell.capabilities.connect_prompted(GENERATION, Zeroizing::new(b"hunter22".to_vec()));
+        let payload = shell.until(Capability::Network, |payload| !payload["connect_error"].is_null()).await;
+        assert!(payload["password_ssid"].is_null(), "{payload}");
+        let error = &payload["connect_error"];
+        assert_eq!(error["ssid"], "home");
+        assert!(error["message"].as_str().unwrap().contains("UpdateUnsaved"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_vpn_secret_answers_networkmanager() {
+        let (shell, payload, vpn, _peer) = network_shell().await;
+        let id = payload["vpn_secret"]["id"].as_str().unwrap();
+        shell.capabilities.submit_vpn_secret(format!("{id}/password"), Zeroizing::new(b"hunter22".to_vec()));
+        assert!(!within(vpn).await.unwrap(), "NetworkManager is answered, not declined");
+    }
+
+    #[tokio::test]
+    async fn a_departed_generations_password_prompt_and_vpn_request_are_dropped() {
+        let (mut shell, _, vpn, _peer) = network_shell().await;
+        shell.capabilities.forget_departed_requests(GENERATION);
+        assert!(within(vpn).await.unwrap(), "NetworkManager hears the request declined");
+        shell.until(Capability::Network, |payload| payload["password_ssid"].is_null()).await;
+    }
+
+    /// `store` spawns the keyring write; this runtime is never driven, so it is dropped unpolled and
+    /// never reaches the user's real session bus. Only the synchronous `Pending` is observed.
+    #[test]
+    fn a_stored_secret_is_pending_before_the_keyring_write() {
+        let driven = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let bus = driven.block_on(private_bus());
+        let connection = driven.block_on(bus.connection());
+        let mut shell = Shell::new(connection);
+        let undriven = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let _context = undriven.enter();
+
+        shell.capabilities.store_secret("mail".into(), Zeroizing::new(b"x".to_vec()));
+        shell.capabilities.start(Capability::Secrets).now_or_never().expect("secrets starts without awaiting");
+        shell.capabilities.store_secret("mail".into(), Zeroizing::new(b"x".to_vec()));
+        let mut latest = None;
+        while let Some(Some(signal)) = shell.signals.next().now_or_never() {
+            latest = Some(signal);
+        }
+        let Some(Signal::Secrets(state)) = latest else { panic!("no secrets state: {latest:?}") };
+        assert!(matches!(state.entries.get("mail"), Some(shared::state::secrets::SecretStatus::Pending)), "{state:?}");
+    }
+}

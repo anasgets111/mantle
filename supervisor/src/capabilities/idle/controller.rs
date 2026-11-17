@@ -558,7 +558,7 @@ async fn watch_idle_inhibitors(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use tokio::io::AsyncReadExt;
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
@@ -590,7 +590,7 @@ mod tests {
 
     /// The inhibit half on a stub logind, with notify left inert: `new` would dial the session's
     /// compositor. The connection keeps logind answering.
-    async fn controller() -> (IdleController, UnboundedReceiver<Inhibited>, zbus::Connection) {
+    pub(crate) async fn controller() -> (IdleController, UnboundedReceiver<Inhibited>, zbus::Connection) {
         let (locks, taken) = unbounded_channel();
         let (system_bus, logind) =
             p2p_pair_serving(|peer| peer.serve_at("/org/freedesktop/login1", StubLogin1Manager { calls: locks })).await;

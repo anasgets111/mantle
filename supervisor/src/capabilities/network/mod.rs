@@ -111,7 +111,7 @@ pub fn dispatch(controller: &NetworkController, envelope: &shared::CommandEnvelo
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -333,5 +333,22 @@ mod tests {
 
         assert!(controller.vpn.lock().unwrap().secret.is_none(), "the request is taken down at once");
         assert!(within(declined).await.unwrap(), "NetworkManager hears the user declined");
+    }
+
+    /// [`fixture`] with a password prompt up for `home` on wlan0 and a VPN secret request
+    /// pending, for `lifecycle`'s tests; the handle resolves to whether the user declined that
+    /// request.
+    pub(crate) async fn prompted()
+    -> (NetworkController, UnboundedReceiver<NetworkSignal>, zbus::Connection, tokio::task::JoinHandle<bool>) {
+        let (controller, _asked, events, peer) = fixture().await;
+        {
+            let mut join = controller.join.lock().unwrap();
+            join.stash(home_on(WLAN0));
+            let pending = join.pending().unwrap();
+            assert!(join.request_password(&pending));
+        }
+        let vpn = secret_agent::tests::asking(Arc::clone(&controller.vpn), controller.events.clone());
+        poll_until(|| controller.vpn.lock().unwrap().secret.is_some().then_some(())).await;
+        (controller, events, peer, vpn)
     }
 }
