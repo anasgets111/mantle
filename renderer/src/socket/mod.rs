@@ -18,8 +18,8 @@ pub use client::{FrameOutcome, RendererClient};
 
 use std::path::Path;
 
-use shared::framing::{self, write_json_frame};
-use shared::{ConnectionHandshake, RendererFrame, SupervisorFrame, Zeroize, debug, error};
+use shared::framing::{self, FramingError, write_json_frame};
+use shared::{ConnectionHandshake, RendererFrame, SupervisorFrame, Zeroize, Zeroizing, debug, error, warn};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
@@ -109,11 +109,47 @@ fn supervisor_state(proc_root: &Path, pid: i32) -> String {
     }
 }
 
+/// The kinds whose loss is safe, so one that fails to decode is skipped rather than ending the
+/// connection, which respawns the Renderer to be sent the same frame again (#63). Every other kind
+/// ends it: `SetSessionLock` and `IdleEvent`, which a config can lock from, and an unknown kind,
+/// which the wire-shape test in `shared::frame` keeps out of a matching protocol version.
+const SKIPPABLE: &[&str] = &[
+    "StateSnapshot",
+    "Reevaluate",
+    "ProcessOutput",
+    "ProcessExited",
+    "SetState",
+    "Call",
+    "ListDeclared",
+    "Inject",
+    "CallResult",
+    "IconTheme",
+];
+
+/// Reads one frame, or `None` for a [`SKIPPABLE`] one that failed to decode. The wire bytes are
+/// scrubbed on return, before the caller's `send` can park. A kind that fails once fails on every
+/// frame, so only its first skip warns.
+async fn next_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<SupervisorFrame>, FramingError> {
+    let payload = Zeroizing::new(framing::read_frame(reader).await?);
+    let err = match serde_json::from_slice(&payload) {
+        Ok(frame) => return Ok(Some(frame)),
+        Err(err) => FramingError::from(err),
+    };
+    let Some(kind) = SupervisorFrame::kind_of(&payload).filter(|kind| SKIPPABLE.contains(&kind.as_str())) else {
+        return Err(err);
+    };
+    if shared::log::first_failure(&format!("undecodable frame {kind}")) {
+        warn!("skipped a {kind} frame, and will skip the rest quietly: {err}");
+    } else {
+        debug!("skipped a {kind} frame: {err}");
+    }
+    Ok(None)
+}
+
 /// After handshake, forward decoded `SupervisorFrame`s to Wayland and queued `RendererFrame`s to
-/// the wire (ADR-0039). Decode failure is transport failure: one sender and fixed shapes mean
-/// desync. Read and write are separate long-lived futures. `read_json_frame` has two sequential
-/// `read_exact`s; racing one frame read against `outbound_rx.recv()` would drop partial bytes when
-/// outbound wins and desync the stream.
+/// the wire. A frame [`next_frame`] can't read ends the connection. Read and write are separate
+/// long-lived futures. `read_frame` has two sequential `read_exact`s; racing one frame read against
+/// `outbound_rx.recv()` would drop partial bytes when outbound wins and desync the stream.
 async fn pump<R, W>(
     read_half: &mut R,
     write_half: &mut W,
@@ -127,8 +163,8 @@ async fn pump<R, W>(
 {
     let reader = async {
         loop {
-            match framing::read_json_frame::<_, SupervisorFrame>(read_half).await {
-                Ok(frame) => {
+            match next_frame(read_half).await {
+                Ok(Some(frame)) => {
                     // Awaited, so a Supervisor pushing faster than the Wayland thread drains parks
                     // this reader rather than growing the queue. `Sender::send` is cancel-safe --
                     // if the `select!` below drops this future, the frame was not delivered and
@@ -141,6 +177,7 @@ async fn pump<R, W>(
                         waker.wake();
                     }
                 }
+                Ok(None) => {}
                 Err(err) => {
                     let state = supervisor.map(|pid| supervisor_state(Path::new("/proc"), pid));
                     error!("connection ended: {err}{}", state.map(|state| format!("; {state}")).unwrap_or_default());
@@ -292,21 +329,87 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn pump_forwards_a_decoded_supervisor_frame_to_the_wayland_thread() {
+    /// Pumps raw `payloads` and then a `Reevaluate` through a closed wire, returning every frame
+    /// forwarded. The trailing frame is the barrier: it arrives only if `pump` read past the others.
+    async fn forwarded_after(payloads: &[&[u8]]) -> Vec<SupervisorFrame> {
         let (mut wire, server) = tokio::io::duplex(4096);
         let (mut server_read, mut server_write) = tokio::io::split(server);
-
-        // Close the write half so `pump`'s *second* read hits EOF after forwarding one frame.
+        for payload in payloads {
+            framing::write_frame(&mut wire, payload).await.unwrap();
+        }
         write_json_frame(&mut wire, &SupervisorFrame::Reevaluate).await.unwrap();
         wire.shutdown().await.unwrap();
 
         let (inbound_tx, mut inbound_rx) = tokio::sync::mpsc::channel(INBOUND_CAPACITY);
         let (_outbound_tx, mut outbound_rx) = mpsc::unbounded_channel();
-
         pump(&mut server_read, &mut server_write, &inbound_tx, &mut outbound_rx, None, None).await;
+        std::iter::from_fn(|| inbound_rx.try_recv().ok()).collect()
+    }
 
-        assert_eq!(inbound_rx.try_recv(), Ok(SupervisorFrame::Reevaluate));
+    #[tokio::test]
+    async fn pump_reads_past_a_skippable_frame_whose_body_does_not_decode() {
+        let frames = forwarded_after(&[br#"{"kind":"IconTheme","data":7}"#]).await;
+        assert_eq!(frames, [SupervisorFrame::Reevaluate]);
+    }
+
+    #[tokio::test]
+    async fn pump_records_a_skipped_kind_so_only_its_first_skip_warns() {
+        let bad = br#"{"kind":"ProcessExited","data":{}}"#;
+        assert_eq!(forwarded_after(&[bad, bad]).await, [SupervisorFrame::Reevaluate]);
+        assert!(!shared::log::first_failure("undecodable frame ProcessExited"), "the first skip must record its kind");
+    }
+
+    #[tokio::test]
+    async fn pump_forwards_a_valid_stream_unchanged() {
+        let theme = br#"{"kind":"IconTheme","data":"Adwaita"}"#;
+        let frames = forwarded_after(&[theme]).await;
+        assert_eq!(frames, [SupervisorFrame::IconTheme(Some("Adwaita".into())), SupervisorFrame::Reevaluate]);
+    }
+
+    #[tokio::test]
+    async fn pump_ends_on_a_frame_it_cannot_read_safely() {
+        for (why, payload) in [
+            ("a lock request", &br#"{"kind":"SetSessionLock","data":{"locked":"yes"}}"#[..]),
+            ("an idle event, which a config can lock from", br#"{"kind":"IdleEvent","data":{}}"#),
+            ("an unknown kind", br#"{"kind":"FromANewerBuild","data":{"x":1}}"#),
+            ("unparseable JSON", b"{\"kind\":\"IconTheme\""),
+            ("a missing kind", br#"{"data":{"locked":true}}"#),
+            ("a kind that is not a string", br#"{"kind":3,"data":null}"#),
+            ("a repeated kind", br#"{"kind":"IconTheme","kind":"SetSessionLock","data":7}"#),
+        ] {
+            assert_eq!(forwarded_after(&[payload]).await, [], "{why} must end the connection");
+        }
+    }
+
+    #[test]
+    fn every_supervisor_frame_kind_is_classified() {
+        // serde's unknown-variant error lists every kind this build decodes, so a new variant fails
+        // here until it is classified below.
+        let err = serde_json::from_slice::<SupervisorFrame>(br#"{"kind":"?"}"#).unwrap_err().to_string();
+        let (_, listed) = err.split_once("expected one of").unwrap();
+        let mut kinds: Vec<&str> = listed.split('`').skip(1).step_by(2).collect();
+        let classified = [
+            ("SetSessionLock", false),
+            ("IdleEvent", false),
+            ("StateSnapshot", true),
+            ("Reevaluate", true),
+            ("ProcessOutput", true),
+            ("ProcessExited", true),
+            ("SetState", true),
+            ("Call", true),
+            ("ListDeclared", true),
+            ("Inject", true),
+            ("CallResult", true),
+            ("IconTheme", true),
+        ];
+        let mut names: Vec<&str> = classified.iter().map(|(kind, _)| *kind).collect();
+        kinds.sort_unstable();
+        names.sort_unstable();
+        assert_eq!(kinds, names);
+        for (kind, skip) in classified {
+            assert_eq!(SKIPPABLE.contains(&kind), skip, "{kind}");
+        }
+        assert!(!SKIPPABLE.contains(&"FromANewerBuild"), "an unknown kind must end the connection");
     }
 
     /// Advances `pumping` for up to `millis`. If `pump` completes first, a loop broke, which is a

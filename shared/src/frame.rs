@@ -382,6 +382,18 @@ pub enum SupervisorFrame {
     IconTheme(Option<String>),
 }
 
+impl SupervisorFrame {
+    /// The `kind` tag of a payload that failed to decode, or `None` when the payload is not JSON or
+    /// its tag is missing, repeated or not a string.
+    pub fn kind_of(payload: &[u8]) -> Option<String> {
+        #[derive(Deserialize)]
+        struct Tag {
+            kind: String,
+        }
+        serde_json::from_slice::<Tag>(payload).ok().map(|tag| tag.kind)
+    }
+}
+
 /// Renderer -> Supervisor frames, tagged like [`SupervisorFrame`]. `Command` is the Lua-write
 /// envelope.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -636,6 +648,15 @@ mod tests {
 
         let parsed: SupervisorFrame = serde_json::from_value(wire).unwrap();
         assert_eq!(parsed, frame);
+    }
+
+    #[test]
+    fn kind_of_reads_only_a_single_string_tag() {
+        assert_eq!(SupervisorFrame::kind_of(br#"{"kind":"Later","data":{"x":1}}"#).as_deref(), Some("Later"));
+        assert_eq!(SupervisorFrame::kind_of(br#"{"data":1}"#), None);
+        assert_eq!(SupervisorFrame::kind_of(br#"{"kind":"IconTheme","kind":"SetSessionLock"}"#), None);
+        assert_eq!(SupervisorFrame::kind_of(br#"{"kind":3}"#), None);
+        assert_eq!(SupervisorFrame::kind_of(b"{\"kind\":\"IconTheme\""), None);
     }
 
     #[test]
