@@ -128,15 +128,16 @@ impl App {
         let Some((view, _)) = self.field_view(surface_id, id) else { return };
         let text = self.draft_of(surface_id, id).to_owned();
         let focused = self.focused_text_field.as_ref().filter(|field| field.surface_id == surface_id && field.id == id);
-        let scroll = field_rows::with_rows(&text, view.face, view.width, &self.shaping, |rows| {
+        let (scroll, top) = field_rows::with_rows(&text, view.face, view.width, &self.shaping, |rows| {
             let caret = focused.map(|field| field_rows::row_of(rows, field.selection.1, field.upstream));
-            field_rows::fitted(view.scrolled, caret, rows.len(), view.face.line_height, view.height)
+            let scroll = field_rows::fitted(view.scrolled, caret, rows.len(), view.face.line_height, view.height);
+            (scroll, field_rows::top(rows, scroll, view.face.line_height))
         });
         // ponytail: the box resizes in the next pass, so this frame scrolls against the old height; paint clamps it.
         if self.client.set_field_draft(surface_id, id, &text) {
             self.waker.wake();
         }
-        self.client.set_field_scroll(surface_id, id, scroll);
+        self.client.set_field_scroll(surface_id, id, scroll, top);
     }
 
     /// [`App::fit_field`] for the focused field.
@@ -166,11 +167,14 @@ impl App {
         delta: f32,
     ) -> bool {
         let Some((view, _)) = self.field_view(surface_id, id) else { return false };
-        let rows = field_rows::count(self.draft_of(surface_id, id), view.face, view.width, &self.shaping);
-        let Some(scroll) = field_rows::wheeled(view.scrolled, delta, rows, view.face.line_height, view.height) else {
-            return false;
-        };
-        self.client.set_field_scroll(surface_id, id, scroll);
+        let line_height = view.face.line_height;
+        let wheeled =
+            field_rows::with_rows(self.draft_of(surface_id, id), view.face, view.width, &self.shaping, |rows| {
+                let scroll = field_rows::wheeled(view.scrolled, delta, rows.len(), line_height, view.height)?;
+                Some((scroll, field_rows::top(rows, scroll, line_height)))
+            });
+        let Some((scroll, top)) = wheeled else { return false };
+        self.client.set_field_scroll(surface_id, id, scroll, top);
         self.mark_field_input_changed(surface_id);
         true
     }
@@ -285,5 +289,28 @@ mod tests {
             assert_eq!(row.start, end, "the full row 0 sent the new \"w\" to row 1");
             assert!(row.caret_x(caret) > 0.0, "and the caret follows it there");
         });
+    }
+
+    /// A focused field's draft resizes it and scrolls its caret row into view; the wheel then
+    /// scrolls within the rows the resized box overflows by, and goes on outward at the limit.
+    #[test]
+    fn a_fitted_field_scrolls_to_its_caret_and_the_wheel_stops_at_its_last_row() {
+        let (mut app, _dir) = App::test_app(
+            r#"return panel { id = "p", layer = "top", output = "active", width = 200, height = 80,
+                child = textfield { width = 80, font_size = 10, line_height = 1, multiline = true,
+                    max_lines = 3, on_change = function() end } }"#,
+        );
+        let field = |app: &App| app.client.scene().surface("p").unwrap().children[0].clone();
+        let id = field(&app).id;
+        app.focused_text_field = Some(FocusedTextField { surface_id: "p".into(), id, ..draft(0, "a\nb\nc\nd\ne") });
+        app.fit_focused_field();
+        assert_eq!(field(&app).scrolled, 40.0, "caret row 4 ends the one-row box");
+        assert_eq!(app.client.scene().field_top(id), Some((8, 0.0)), "anchored at `e`");
+        assert!(app.client.re_resolve_if_dirty());
+        assert_eq!(field(&app).rect.height, 30.0, "three rows, capped at max_lines");
+        assert!(app.wheel_field("p", id, -15.0));
+        assert_eq!(field(&app).scrolled, 20.0, "held to the two rows past the box");
+        assert_eq!(app.client.scene().field_top(id), Some((4, 0.0)), "anchored at `c`");
+        assert!(!app.wheel_field("p", id, 15.0), "at the limit the wheel goes outward");
     }
 }

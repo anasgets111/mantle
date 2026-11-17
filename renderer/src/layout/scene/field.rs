@@ -8,11 +8,14 @@ use crate::layout::node::PaintStyle;
 use crate::layout::{field_rows, hit};
 use crate::text::shaping::ShapingHandle;
 
-/// A multiline field's draft, and the rows it wrapped to at a width, so a change re-wraps once.
+/// A multiline field's draft, the rows it wrapped to at a width, so a change re-wraps once, and the
+/// byte its scroll's top row starts at with the px scrolled past it, which new faces re-wrap to,
+/// and the width they were taken at.
 #[derive(Default)]
 pub(super) struct FieldDraft {
     pub(super) text: String,
     wrapped: (f32, usize),
+    top: Option<(usize, f32, f32)>,
 }
 
 /// By node: an id is never reused, so a re-created node starts from nothing, as its draft does.
@@ -38,7 +41,9 @@ impl Scene {
         let after = count(text);
         match text.is_empty() {
             true => self.field_drafts.remove(&id),
-            false => self.field_drafts.insert(id, FieldDraft { text: text.to_owned(), wrapped: (width, after) }),
+            false => {
+                self.field_drafts.insert(id, FieldDraft { text: text.to_owned(), wrapped: (width, after), top: None })
+            }
         };
         // The measure reads the draft, not its inputs, so taffy's cache must be told.
         if let (Some(taffy), Some(tree)) = (node.taffy, self.solver_trees.get_mut(instance_id)) {
@@ -47,10 +52,36 @@ impl Scene {
         lines.rows(before) != lines.rows(after)
     }
 
-    /// Makes every draft wrap again at its next set, recounting the rows it had: they were counted
-    /// in faces that have changed since (#55). No width equals NaN, so a focused field refits too.
-    pub(super) fn rewrap_fields(&mut self) {
+    /// After faces changed (#55): every draft wraps again at its next set, recounting the rows it
+    /// had in the old faces (no width equals NaN, so a focused field refits too); each multiline
+    /// field scrolls back to the text its top row showed. A top taken at another width, before a
+    /// resize no scroll followed, no longer names the row shown: it is dropped and the px stay.
+    pub(super) fn faces_changed(&mut self, shaping: &ShapingHandle) {
         self.field_drafts.values_mut().for_each(|draft| draft.wrapped.0 = f32::NAN);
+        let mut stack: Vec<&mut ResolvedNode> = self.surfaces.values_mut().collect();
+        while let Some(node) = stack.pop() {
+            if let Some(PaintStyle::TextField { face, caret, multiline: Some(_), .. }) = &node.paint
+                && let Some(FieldDraft { text, top: top @ Some(_), .. }) = self.field_drafts.get_mut(&node.id)
+            {
+                let width = field_rows::wrap_width(node.content_box(node.rect).width, caret.width);
+                match *top {
+                    Some((at, past, taken)) if taken == width => {
+                        let row = field_rows::with_rows(text, face, width, shaping, |rows| {
+                            field_rows::row_of(rows, at, false)
+                        });
+                        node.scrolled = row as f32 * face.line_height + past;
+                    }
+                    _ => *top = None,
+                }
+            }
+            stack.extend(&mut node.children);
+        }
+    }
+
+    /// The byte and px of the field `id`'s scroll anchor.
+    #[cfg(test)]
+    pub fn field_top(&self, id: NodeId) -> Option<(usize, f32)> {
+        self.field_drafts.get(&id)?.top.map(|(at, past, _)| (at, past))
     }
 
     /// The width the field `id`'s draft last wrapped at, `None` without one.
@@ -79,9 +110,15 @@ impl Scene {
         names
     }
 
-    /// Scrolls the field `id`'s rows to `scroll` px; whether that moved them.
-    pub fn set_field_scroll(&mut self, instance_id: &str, id: NodeId, scroll: f32) -> bool {
+    /// Scrolls the field `id`'s rows to `scroll` px, `top` its [`field_rows::top`]; whether that
+    /// moved them.
+    pub fn set_field_scroll(&mut self, instance_id: &str, id: NodeId, scroll: f32, top: Option<(usize, f32)>) -> bool {
         let Some(node) = self.surfaces.get_mut(instance_id).and_then(|tree| find_mut(tree, id)) else { return false };
+        if let (Some(draft), Some(PaintStyle::TextField { caret, .. })) = (self.field_drafts.get_mut(&id), &node.paint)
+        {
+            let width = field_rows::wrap_width(node.content_box(node.rect).width, caret.width);
+            draft.top = top.map(|(at, past)| (at, past, width));
+        }
         let moved = node.scrolled != scroll;
         node.scrolled = scroll;
         moved
@@ -122,7 +159,8 @@ mod tests {
         assert_eq!(grow("a\nb"), (true, 20.0));
         assert_eq!(grow("a\nb\nc\nd\ne"), (true, 30.0), "capped at max_lines");
         assert_eq!(grow("a\nb\nc\nd"), (false, 30.0), "still past the cap: no pass owed");
-        assert!(scene.set_field_scroll("bar@TEST", id, 10.0));
+        // An anchor at row 0 that a walk on every pass would scroll back to.
+        assert!(scene.set_field_scroll("bar@TEST", id, 10.0, Some((0, 0.0))));
         apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
         assert_eq!(field(&scene).scrolled, 10.0, "a pass keeps the rows where the app scrolled them");
     }
@@ -143,6 +181,33 @@ mod tests {
         crate::lua::calls::poll_until(|| (), || shaping.font_generation() > before);
         apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
         assert!(scene.set_field_draft("bar@TEST", id, "●●●●●", &shaping), "two rows shrink to one");
+    }
+
+    /// #111: an unfocused field scrolled before a face landed keeps the text its top row showed:
+    /// `x` tops the box at row 2 in boxes and at row 4 once each `●` line wraps in two, 5 px down.
+    /// Resized since, the anchor names another row: the px stay.
+    #[test]
+    fn a_field_scrolled_before_a_face_landed_keeps_its_top_row() {
+        for (resize, scrolled, top) in [("", 45.0, Some((64, 5.0))), ("w:set(40)", 25.0, None)] {
+            let Some((shaping, open)) = gated_shots_fixture(crate::text::fonts::covering_file) else { return };
+            let (lua, surface) = surface_from(&format!("w = state(\"w\", 80)\n{}", FIELD.replace("80", "w")));
+            let mut scene = Scene::new();
+            let surfaces = std::slice::from_ref(&surface);
+            apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
+            let id = scene.surface("bar@TEST").unwrap().children[0].children[0].id;
+            scene.set_field_draft("bar@TEST", id, "●●●●● ●●●●●\n●●●●● ●●●●●\nx\ny\nz", &shaping);
+            apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
+            // Row 2, `x`, starts past two lines of ten 3-byte `●`, a space and a newline.
+            assert!(scene.set_field_scroll("bar@TEST", id, 25.0, Some((64, 5.0))));
+            lua.load(resize).exec().unwrap();
+            apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
+            let before = shaping.font_generation();
+            drop(open);
+            crate::lua::calls::poll_until(|| (), || shaping.font_generation() > before);
+            apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
+            assert_eq!(scene.surface("bar@TEST").unwrap().children[0].children[0].scrolled, scrolled, "{resize}");
+            assert_eq!(scene.field_top(id), top, "{resize}: an anchor at another width is dropped");
+        }
     }
 
     #[test]

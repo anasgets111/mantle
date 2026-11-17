@@ -427,8 +427,14 @@ impl RendererClient {
     }
 
     /// [`Scene::set_field_scroll`].
-    pub fn set_field_scroll(&mut self, instance_id: &str, id: layout::NodeId, scroll: f32) -> bool {
-        self.scene.set_field_scroll(instance_id, id, scroll)
+    pub fn set_field_scroll(
+        &mut self,
+        instance_id: &str,
+        id: layout::NodeId,
+        scroll: f32,
+        top: Option<(usize, f32)>,
+    ) -> bool {
+        self.scene.set_field_scroll(instance_id, id, scroll, top)
     }
 
     /// `initial_text` of the fields created since the last call; see [`Scene::take_seeds`].

@@ -80,6 +80,13 @@ pub(crate) fn clamp_scroll(scroll: f32, rows: usize, line_height: f32, height: f
     scroll.clamp(0.0, (rows as f32 * line_height - height).max(0.0))
 }
 
+/// The byte the row `scroll` px down starts at and the px scrolled past it: what new faces scroll
+/// back to (#111). `None` past the last row.
+pub(crate) fn top(rows: &[Row<'_>], scroll: f32, line_height: f32) -> Option<(usize, f32)> {
+    let row = (scroll / line_height).floor();
+    rows.get(row as usize).map(|at| (at.start, scroll - row * line_height))
+}
+
 /// `scroll` after an edit: moved the least that shows row `caret` whole, if given, then clamped.
 pub(crate) fn fitted(scroll: f32, caret: Option<usize>, rows: usize, line_height: f32, height: f32) -> f32 {
     let scroll = caret.map_or(scroll, |row| {
@@ -150,6 +157,18 @@ mod tests {
         assert_eq!(fitted(20.0, Some(1), 5, 10.0, 30.0), 10.0, "row 1 at the top");
         assert_eq!(fitted(50.0, None, 4, 10.0, 30.0), 10.0, "held inside the overflow");
         assert_eq!(fitted(20.0, None, 2, 10.0, 30.0), 0.0, "rows that fit again do not scroll");
+    }
+
+    #[test]
+    fn top_names_the_row_a_scroll_starts_in_and_the_px_past_its_start() {
+        let shaping = ShapingHandle::spawn();
+        let face = crate::layout::hit::tests::face(14.0, 0.0);
+        let text = "ab\ncd\nef";
+        let paragraphs = shaping.shape_lines(text, &[], face.shaping_style(), None, None);
+        let rows = rows(text, &paragraphs);
+        assert_eq!(top(&rows, 0.0, 10.0), Some((0, 0.0)));
+        assert_eq!(top(&rows, 25.0, 10.0), Some((6, 5.0)), "half way down row 2");
+        assert_eq!(top(&rows, 30.0, 10.0), None, "past the last row");
     }
 
     #[test]
