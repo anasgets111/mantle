@@ -574,4 +574,40 @@ mod tests {
         assert!(read.unmix_into(&mut known, &rows, (3, 2), 16), "past the capture clamps to its edge");
         assert_eq!(known[4..], [120, 120, 120, 255]);
     }
+
+    /// Each request counts toward the read's steadiness; a landed capture that moved the desktop
+    /// keeps the source's rate, and one that shows nothing new drops it to the idle rate.
+    #[test]
+    fn a_desktop_source_counts_requests_and_idles_once_a_capture_shows_no_change() {
+        use super::super::tests::{ID, Wire, id};
+        let region = Some(LogicalRect { x: 0.0, y: 0.0, width: 2.0, height: 1.0 });
+        let target = CaptureTarget::Output("TEST".into());
+        let node = CaptureNode { node: ID, target, live: Some(f32::INFINITY), paint_cursor: false, region };
+        let mut w = Wire::with(Protocol::Wlr, &node);
+        w.app.captures.desktops.insert(ID, bare(vec![0; 8], 2));
+        w.source_mut().desktop = Some(Vec::new());
+        let land = |w: &mut Wire, pixels: Option<[u8; 8]>| {
+            let frame = match &w.source().proto {
+                Some(Proto::Wlr(wlr)) => id(wlr.frame.as_ref()),
+                _ => panic!("a wlr frame"),
+            };
+            // wlr `buffer` (XRGB 2x1, 8-byte rows), `buffer_done`, then `ready`.
+            w.send(frame, 0, &[wl_shm::Format::Xrgb8888 as u32, 2, 1, 8]);
+            w.send(frame, 6, &[]);
+            if let (Some(pixels), Some(Proto::Wlr(wlr))) = (pixels, &mut w.source_mut().proto) {
+                wlr.buffer.as_mut().unwrap().canvas_for_test()[..8].copy_from_slice(&pixels);
+            }
+            w.send(frame, 2, &[0, 0, 0]);
+        };
+        w.app.request_frame(ID);
+        w.settle();
+        assert_eq!(w.app.captures.desktops[&ID].requests, 3);
+        land(&mut w, Some([10, 20, 30, 255, 40, 50, 60, 255]));
+        assert_eq!(w.source().live, Some(f32::INFINITY), "the desktop moved");
+        assert_eq!(w.app.capture_cache.poll(), [ID]);
+        assert_eq!(w.app.captures.desktops[&ID].requests, 4, "the next request");
+        land(&mut w, None);
+        assert_eq!(w.source().live, Some(DESKTOP_IDLE_FPS), "the same pixels again");
+        assert!(w.app.capture_cache.poll().is_empty(), "stage nothing");
+    }
 }

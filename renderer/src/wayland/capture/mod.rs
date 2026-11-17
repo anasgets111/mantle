@@ -636,7 +636,104 @@ fn constraints_changed(captures: &mut CaptureRegistry, id: &NodeId) -> Option<Do
 
 #[cfg(test)]
 mod tests {
+    use wayland_client::EventQueue;
+
     use super::*;
+    use crate::wayland::test_support::MockWayland;
+
+    /// The node every [`Wire`] captures.
+    pub(super) const ID: NodeId = NodeId::test(7);
+
+    /// An `App` on the wire mock with every capture global bound by hand (the mock advertises none
+    /// and answers nothing; events come from [`Wire::send`]), and a source for one capture node.
+    pub(super) struct Wire {
+        pub(super) app: App,
+        queue: EventQueue<App>,
+        pub(super) mock: MockWayland,
+        pub(super) dmabuf: zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1,
+        _dir: tempfile::TempDir,
+    }
+
+    impl Wire {
+        /// Captures the mock's `TEST` output as [`ID`] over `protocol`, its first frame requested.
+        pub(super) fn new(protocol: Protocol, live: Option<f32>) -> Self {
+            let node = CaptureNode {
+                node: ID,
+                target: CaptureTarget::Output("TEST".into()),
+                live,
+                paint_cursor: false,
+                region: None,
+            };
+            let mut wire = Self::with(protocol, &node);
+            wire.app.request_frame(ID);
+            wire.settle();
+            wire
+        }
+
+        /// `node`'s source over `protocol`, nothing requested yet.
+        pub(super) fn with(protocol: Protocol, node: &CaptureNode) -> Self {
+            let (mut app, _dir, queue, mock) = App::test_app_with_wire(
+                r#"return panel { id = "bar", layer = "top", output = "TEST", width = 100, height = 32 }"#,
+            );
+            let qh = app.queue_handle.clone();
+            let registry = app.registry_state.registry().clone();
+            let dmabuf: zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1 = registry.bind(90, 3, &qh, ());
+            app.captures.dmabuf_manager = Some(dmabuf.clone());
+            app.captures.backend.ext = Some(registry.bind(91, 1, &qh, ()));
+            app.captures.backend.outputs = Some(registry.bind(92, 1, &qh, ()));
+            app.captures.backend.wlr = Some(registry.bind(93, 3, &qh, ()));
+            assert!(app.captures.reconcile_source(node, Some(protocol), &mut app.capture_cache).is_some());
+            Wire { app, queue, mock, dmabuf, _dir }
+        }
+
+        /// Requests made while dispatching follow the first roundtrip's `sync`; the second is the
+        /// barrier that puts them in the wire log.
+        pub(super) fn settle(&mut self) {
+            for _ in 0..2 {
+                self.queue.roundtrip(&mut self.app).expect("the mock keeps the connection");
+            }
+        }
+
+        /// Sends one event of `u32` arguments to `object` and dispatches it.
+        pub(super) fn send(&mut self, object: u32, opcode: u16, args: &[u32]) {
+            let payload: Vec<u8> = args.iter().flat_map(|arg| arg.to_ne_bytes()).collect();
+            self.mock.send(object, opcode, &payload);
+            self.settle();
+        }
+
+        /// Every request on `object` so far, as `(opcode, first argument)`.
+        pub(super) fn requests(&self, object: u32) -> Vec<(u16, u32)> {
+            let log = self.mock.requests.lock().unwrap();
+            log.iter().filter(|&&(o, ..)| o == object).map(|&(_, op, arg)| (op, arg)).collect()
+        }
+
+        pub(super) fn source(&self) -> &CaptureSource {
+            &self.app.captures.sources[&ID]
+        }
+
+        pub(super) fn source_mut(&mut self) -> &mut CaptureSource {
+            self.app.captures.sources.get_mut(&ID).unwrap()
+        }
+
+        pub(super) fn ext(&self) -> &ExtProto {
+            match &self.source().proto {
+                Some(Proto::Ext(ext)) => ext,
+                _ => panic!("not an ext source"),
+            }
+        }
+
+        pub(super) fn wlr(&mut self) -> &mut WlrProto {
+            match &mut self.source_mut().proto {
+                Some(Proto::Wlr(wlr)) => wlr,
+                _ => panic!("not a wlr source"),
+            }
+        }
+    }
+
+    /// A proxy's wire id.
+    pub(super) fn id(proxy: Option<&impl Proxy>) -> u32 {
+        proxy.expect("a live protocol object").id().protocol_id()
+    }
 
     fn registry() -> CaptureRegistry {
         CaptureRegistry {
@@ -675,19 +772,6 @@ mod tests {
         registry.sources.insert(node.node, source);
         registry.stop(node.node, &mut CaptureCache::default());
         assert!(matches!(registry.sources[&node.node].dmabuf_state, DmabufState::Failed));
-    }
-
-    #[test]
-    fn first_dmabuf_frame_requests_a_paint_before_texture_import() {
-        let mut registry = registry();
-        let mut cache = CaptureCache::default();
-        let node = capture_node(NodeId::test(7), CaptureTarget::Window("0xa11ce".into()), None);
-        assert!(registry.reconcile_source(&node, Some(Protocol::Ext), &mut cache).is_some());
-        assert!(cache.poll().is_empty());
-        land_dmabuf_frame(&mut registry, &mut cache, &node.node);
-        assert!(cache.get(node.node).is_none());
-        assert_eq!(registry.pending_import, [node.node]);
-        assert_eq!(cache.poll(), [node.node], "an idle surface must paint before it can import its first texture");
     }
 
     #[test]

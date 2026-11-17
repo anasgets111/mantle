@@ -174,7 +174,53 @@ delegate_noop!(App: ExtForeignToplevelImageCaptureSourceManagerV1);
 
 #[cfg(test)]
 mod tests {
-    use super::address;
+    use super::super::tests::{ID, Wire, id};
+    use super::*;
+
+    /// A window target captures once its toplevel's mapping names the address, through the
+    /// toplevel's own capture source, and stops for good when the toplevel closes.
+    #[test]
+    fn a_window_capture_waits_for_its_address_then_stops_when_the_toplevel_closes() {
+        let target = CaptureTarget::Window("0x10000a11ce".into());
+        let node = CaptureNode { node: ID, target, live: None, paint_cursor: false, region: None };
+        let mut w = Wire::with(Protocol::Ext, &node);
+        let qh = w.app.queue_handle.clone();
+        let registry = w.app.registry_state.registry().clone();
+        let list: ExtForeignToplevelListV1 = registry.bind(94, 1, &qh, ());
+        let windows = Windows {
+            mapping: registry.bind(95, 1, &qh, ()),
+            sources: registry.bind(96, 1, &qh, ()),
+            _list: list.clone(),
+            toplevels: HashMap::new(),
+        };
+        let (mapping_manager, sources) = (windows.mapping.id().protocol_id(), windows.sources.id().protocol_id());
+        w.app.captures.backend.windows = Some(windows);
+        w.app.request_frame(ID);
+        w.settle();
+        assert!(w.source().proto.is_none() && !w.source().in_flight, "no such window yet");
+
+        // `ext_foreign_toplevel_list_v1.toplevel` is event 0 with a server id; the mapping's
+        // `window_address` is event 0 (high, low); `closed` is the handle's event 0.
+        w.send(list.id().protocol_id(), 0, &[0xff00_0000]);
+        let mapping = w.app.captures.backend.windows.as_ref().unwrap().toplevels.values().next().unwrap();
+        let mapping = id(mapping.mapping.as_ref());
+        assert_eq!(w.requests(mapping_manager), [(0, mapping)]);
+        w.send(mapping, 0, &[0x10, 0xa11ce]);
+        assert_eq!(w.requests(mapping), [(0, 0)], "the answered mapping is destroyed");
+        let source = w.requests(sources);
+        assert_eq!(source.len(), 1, "a capture source for the toplevel");
+        let manager = id(w.app.captures.backend.ext.as_ref());
+        let session = match &w.source().proto {
+            Some(Proto::Ext(ext)) => id(ext.session.as_ref()),
+            _ => panic!("an ext session"),
+        };
+        assert_eq!(w.requests(manager), [(0, session)]);
+        assert!(w.source().in_flight);
+
+        w.send(0xff00_0000, 0, &[]);
+        assert_eq!(w.requests(session), [(1, 0)], "the closed window's session is destroyed");
+        assert!(w.source().failed && w.source().proto.is_none());
+    }
 
     #[test]
     fn mapping_preserves_all_64_address_bits() {

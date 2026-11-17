@@ -115,6 +115,14 @@ pub(super) fn stage_landed(
 }
 
 #[cfg(test)]
+impl NegotiatedBuffer {
+    /// The pool memory, for a test to write what a compositor would.
+    pub(super) fn canvas_for_test(&mut self) -> &mut [u8] {
+        self.pool.canvas(&self.buffer).expect("a buffer the client never attached")
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
