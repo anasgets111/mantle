@@ -2161,6 +2161,11 @@ Later amendment, refining decisions 7 and 8:
     surface teardown update, and `on_hover` fires when that answer changes. Layout still writes the
     signal silently and a still pointer still never fires; the next motion reports the crossing
     layout made, and its `on_hover(true)` reads the `hover_rect` the layout write left.
+Amended by #120: a panel whose bound `keyboard_interactivity` turns on from `"none"` gets no
+`wl_keyboard.enter` on Hyprland, so on that edge its shown autofocus field arms in the panel's own
+scope under the same conditions `enter` checks. The caret, text-input and control focus
+(`focused(name)`) still wait for the keyboard; `focused()` reading true for one turn before that is
+#130.
 
 ## 0113. What a code review is worth: four fixes out of two hundred findings, and the two that were the review's own doc drift
 
@@ -8080,6 +8085,13 @@ a shader over a subtree. The roadmap's won't-do row now covers only the desktop 
 
 Rejected: a `shader` node with a child input, which cannot read a sibling's pixels and repeats the
 layer's offscreen; reading the desktop, which the compositor owns.
+Amended by #117: decision 4's "the content already carries opacity" is reversed. The subtree draws
+into the layer unfaded and the program's output is composited once at the node's inherited opacity,
+so alpha a shader adds (an outline, a glow) fades too, and overlapping children fade as one group.
+When the layer cannot get an offscreen target (ADR-0393) the fallback paints the subtree at that
+opacity through global alpha; ponytail: GL-stage draws there (a `shader` node, an image
+mid-dissolve, a backdrop shader) stay unfaded, upgrade path is multiplying the fade into their run's
+alpha.
 
 ## 0337. A `toplevel(id)` handle moves, resizes and opens the menu of a window the app frames itself
 
@@ -9090,6 +9102,12 @@ Amended by #105: the delayed kill is sent to the main loop instead of signalled 
 It kills the group only while the generation is the authoritative `Child` and unreaped, because only
 that loop reaps it and an unreaped pid cannot be reused. Rejected: `pidfd_send_signal`, which
 reaches a whole group only from Linux 6.9.
+Amended by the wire guard: the frame types derive `JsonSchema` under `shared`'s `schema` feature,
+and a test hashes their schemas (keys sorted, descriptions dropped, FNV-1a) against a recorded
+`(PROTOCOL_VERSION, hash)` pair, so a shape change without a bump fails `just test`. It is a
+constant, not a `check_generated` golden, because `UPDATE_STUBS` would rewrite a golden and pass a
+missed bump. A compatible `#[serde(default)]` field needs a bump too. This retires the ponytail
+above.
 
 ## 0395. Uncovered codepoints are looked up after the reply
 
@@ -9112,3 +9130,30 @@ deadline shared by all of startup (about 6 `fc-match` calls), spent once per pro
 frame draws fallback text in its face. Past the deadline, or after the first frame, they go to the
 probe thread as above. Measured: 5 fallback files cost 40 ms once; 100 uncoverable codepoints stop at
 109 ms.
+Amended by #111: a landing also scrolls each multiline field back to the byte its top row started
+at, from an anchor the app passes with each scroll it sets; an anchor taken at another wrap width is
+dropped and the px offset kept. Windowed-list sizes off the window move to #125.
+
+## 0396. An undecodable Supervisor frame is skipped only when its kind's loss is safe
+
+Amends ADR-0394. Any decode failure in the Renderer's pump ended the connection, and the respawned
+Renderer was sent the same frame, so one unreadable frame restarted the shell in a loop. A frame
+that fails to decode is now skipped when its `kind` tag reads as a string on `SKIPPABLE`, ten kinds
+listed by hand; the first skip per kind is a `warn!`, later ones `debug!`. Everything else still
+ends the connection: `SetSessionLock` and `IdleEvent` (either can lock the screen), unknown kinds,
+unparseable JSON, a missing or non-string `kind`, and length or I/O errors. A skipped `Call` or
+`SetState` leaves its control client to time out (5 s). Rejected: skipping any decode failure (fails
+open on lock frames) and a deny-list (a new kind would default to skippable). Still open: a
+malformed first `SetSessionLock` loops with the session unlocked (#123).
+
+## 0397. A reload's surfaces are drawn first, then swapped back to back
+
+`eglSwapBuffers` commits, and a reload painted and swapped each changed surface in turn, so one
+reload's commits landed spread over the turn and full-screen panels could show old and new looks in
+different frames (#116). On the reload turn every changed surface is drawn, then all are swapped in
+one run; surfaces the reload removes are skipped and destroyed after the swaps, not before. Other
+turns keep paint-and-swap per surface. Batched draws skip `EGL_KHR_partial_update`, since nothing
+promises a damage region survives other surfaces becoming current; buffer age keeps repaints
+correct. Measured live on Hyprland/NVIDIA (spread of a reload that commits 3 surfaces and removes
+1): median 0.90 ms, max 4.21 ms before; 0.22 ms and 1.84 ms after. Rejected: batching every turn;
+only a reload changes several surfaces' looks at once.
