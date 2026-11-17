@@ -645,4 +645,74 @@ mod tests {
 
         assert_eq!(parse_sway_inputs(json), Some(("Arabic (Egypt)".to_string(), 1, 2)));
     }
+
+    #[test]
+    #[ignore = "run by every_sway_write_sends_its_command_and_logs_sways_verdict"]
+    fn sway_writes_child() {
+        crate::compositor::test_support::writes_child(|| {
+            Sway.focus_workspace("2");
+            Sway.focus_window("7");
+            Sway.close_window("7");
+            Sway.set_fullscreen("7", true, Some(true));
+            Sway.set_fullscreen("7", false, Some(false));
+            Sway.move_window("7", "web");
+            Sway.switch_layout(1);
+            Sway.focus_window("x");
+            Sway.set_maximized("7", true, None);
+            Sway.toggle_special("scratch");
+        });
+    }
+
+    /// Each write is one `RUN_COMMAND` frame on its own connection, in call order. sway answers
+    /// one result per command; any `success: false` among them is a refusal.
+    #[test]
+    fn every_sway_write_sends_its_command_and_logs_sways_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("sway.sock");
+        let (requests, log) = crate::compositor::test_support::run_writes(
+            "compositor::sway::tests::sway_writes_child",
+            &socket,
+            &[("SWAYSOCK", socket.as_os_str())],
+            |stream| {
+                sway_read(stream)
+                    .map(|(kind, payload)| [format!("{kind} ").into_bytes(), payload].concat())
+                    .unwrap_or_default()
+            },
+            |request| {
+                let results: &[u8] = if request.ends_with(b" kill") {
+                    br#"[{"success":false,"error":"no such window"}]"#
+                } else if request.ends_with(br#""web""#) {
+                    br#"[{"success":true},{"success":false,"error":"half"}]"#
+                } else {
+                    br#"[{"success":true}]"#
+                };
+                let mut frame = Vec::new();
+                sway_write(&mut frame, SWAY_RUN_COMMAND, results).unwrap();
+                frame
+            },
+        );
+
+        assert_eq!(
+            requests,
+            [
+                r#"0 workspace --no-auto-back-and-forth "2""#,
+                "0 [con_id=7] focus",
+                "0 [con_id=7] kill",
+                "0 [con_id=7] fullscreen enable",
+                "0 [con_id=7] fullscreen disable",
+                r#"0 [con_id=7] move --no-auto-back-and-forth container to workspace "web""#,
+                "0 input type:keyboard xkb_switch_layout 1",
+            ]
+        );
+        for line in [
+            r#"workspaces: sway command `workspace --no-auto-back-and-forth "2"` succeeded"#,
+            "windows: sway refused `[con_id=7] kill`",
+            "windows: sway refused `[con_id=7] move",
+            r#"set_maximized("7", true) is not supported"#,
+            r#"toggle_special("scratch") is not supported"#,
+        ] {
+            assert!(log.contains(line), "{line:?} missing from {log}");
+        }
+        assert!(!log.contains("refused `[con_id=7] focus`"), "a lone success is not a refusal: {log}");
+    }
 }

@@ -565,4 +565,61 @@ mod tests {
         assert_eq!(read(b"a\xffb").unwrap().as_deref(), Some("a\u{fffd}b"));
         assert_eq!(read(b"").unwrap(), None);
     }
+
+    #[test]
+    #[ignore = "run by every_mango_write_sends_its_dispatch_and_logs_mangos_verdict"]
+    fn mango_writes_child() {
+        crate::compositor::test_support::writes_child(|| {
+            Mango.focus_workspace("eDP-1:2");
+            Mango.focus_workspace("eDP-1:0");
+            Mango.focus_window("7");
+            Mango.close_window("7");
+            Mango.set_fullscreen("7", true, Some(true));
+            Mango.set_fullscreen("7", true, Some(false));
+            Mango.focus_window("0");
+            Mango.move_window("7", "eDP-1:1");
+            Mango.switch_layout(1);
+        });
+    }
+
+    /// Every write is one `dispatch` line on its own connection, in call order; mango answers
+    /// `{"success":true}` or `{"error":...}`.
+    #[test]
+    fn every_mango_write_sends_its_dispatch_and_logs_mangos_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("mango.sock");
+        let (requests, log) = crate::compositor::test_support::run_writes(
+            "compositor::mango::tests::mango_writes_child",
+            &socket,
+            &[("MANGO_INSTANCE_SIGNATURE", socket.as_os_str())],
+            crate::compositor::test_support::read_line,
+            |request| {
+                if request.starts_with(b"dispatch killclient") {
+                    b"{\"error\":\"no such client\"}\n".to_vec()
+                } else {
+                    b"{\"success\":true}\n".to_vec()
+                }
+            },
+        );
+
+        assert_eq!(
+            requests,
+            [
+                "dispatch viewcrossmon,2,^eDP-1$\n",
+                "dispatch focusid client,7\n",
+                "dispatch killclient client,7\n",
+                "dispatch togglefullscreen client,7\n",
+            ]
+        );
+        for line in [
+            "workspaces: mango `viewcrossmon,2,^eDP-1$` succeeded",
+            r#"windows: mango refused `killclient client,7`: {"error":"no such client"}"#,
+            r#""eDP-1:0" is not a mango workspace id"#,
+            r#"focusid("0") is not a mango window id"#,
+            r#"move_window("7", "eDP-1:1") is not supported"#,
+            "switch_layout(1) is not supported",
+        ] {
+            assert!(log.contains(line), "{line:?} missing from {log}");
+        }
+    }
 }

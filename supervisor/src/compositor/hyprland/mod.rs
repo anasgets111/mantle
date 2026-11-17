@@ -465,4 +465,80 @@ mod tests {
         assert_eq!(run(false, true), (End::Lost, 0));
         assert_eq!(run(false, false), (End::Unwanted, 1), "the first read published the monitor");
     }
+
+    #[test]
+    #[ignore = "run by every_hyprland_write_sends_its_command_and_logs_hyprlands_verdict"]
+    fn hyprland_writes_child() {
+        crate::compositor::test_support::writes_child(|| {
+            Hyprland.focus_workspace("3");
+            Hyprland.focus_workspace("-98");
+            Hyprland.focus_workspace("-5");
+            Hyprland.focus_workspace("bad");
+            Hyprland.focus_window("0xa");
+            Hyprland.close_window("0xa");
+            Hyprland.set_fullscreen("0xa", true, Some(true));
+            Hyprland.set_fullscreen("0xa", true, None);
+            Hyprland.set_maximized("0xa", false, Some(false));
+            Hyprland.set_maximized("0xa", true, Some(false));
+            Hyprland.move_window("0xa", "2");
+            Hyprland.move_window("0xa", "-98");
+            Hyprland.toggle_special("special:term");
+            Hyprland.switch_layout(1);
+        });
+    }
+
+    /// Every write is one `.socket.sock` connection under `$XDG_RUNTIME_DIR/hypr/<signature>/`,
+    /// in call order; a named workspace costs a `j/workspaces` read first. Hyprland answers `ok`
+    /// or why it refused.
+    #[test]
+    fn every_hyprland_write_sends_its_command_and_logs_hyprlands_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("hypr/sig")).unwrap();
+        let socket = dir.path().join("hypr/sig/.socket.sock");
+        let (requests, log) = crate::compositor::test_support::run_writes(
+            "compositor::hyprland::tests::hyprland_writes_child",
+            &socket,
+            &[("HYPRLAND_INSTANCE_SIGNATURE", "sig".as_ref()), ("XDG_RUNTIME_DIR", dir.path().as_os_str())],
+            |stream| {
+                // Hyprland's client never shuts its write half, so the request is one read.
+                let mut request = vec![0; 4096];
+                let read = stream.read(&mut request).unwrap();
+                request.truncate(read);
+                request
+            },
+            |request| match request {
+                b"j/workspaces" => br#"[{"id":-98,"name":"chat"},{"id":2,"name":"2"}]"#.to_vec(),
+                _ if request.starts_with(b"dispatch hl.dsp.window.close") => b"Invalid window".to_vec(),
+                _ => b"ok".to_vec(),
+            },
+        );
+
+        assert_eq!(
+            requests,
+            [
+                "dispatch hl.dsp.focus({ workspace = 3 })",
+                "j/workspaces",
+                r#"dispatch hl.dsp.focus({ workspace = "name:chat" })"#,
+                "j/workspaces",
+                r#"dispatch hl.dsp.focus({ window = "address:0xa" })"#,
+                r#"dispatch hl.dsp.window.close({ window = "address:0xa" })"#,
+                r#"dispatch hl.dsp.window.fullscreen({ window = "address:0xa" })"#,
+                r#"dispatch hl.dsp.window.fullscreen({ window = "address:0xa", mode = "maximized" })"#,
+                r#"dispatch hl.dsp.window.move({ window = "address:0xa", workspace = 2, follow = false })"#,
+                "j/workspaces",
+                r#"dispatch hl.dsp.window.move({ window = "address:0xa", workspace = "name:chat", follow = false })"#,
+                r#"dispatch hl.dsp.workspace.toggle_special("term")"#,
+                "switchxkblayout main 1",
+            ]
+        );
+        for line in [
+            "workspaces: Hyprland command `dispatch hl.dsp.focus({ workspace = 3 })` succeeded",
+            r#"windows: Hyprland refused `dispatch hl.dsp.window.close({ window = "address:0xa" })`: Invalid window"#,
+            "keyboard: Hyprland command `switchxkblayout main 1` succeeded",
+            "no Hyprland workspace has id -5",
+            r#""bad" is not a Hyprland workspace id"#,
+        ] {
+            assert!(log.contains(line), "{line:?} missing from {log}");
+        }
+    }
 }

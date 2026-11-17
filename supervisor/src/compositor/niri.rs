@@ -673,4 +673,52 @@ mod tests {
         assert_eq!(signals.try_recv(), Ok(()));
         assert!(signals.try_recv().is_err(), "the write before `keyboard` started sent nothing");
     }
+
+    #[test]
+    #[ignore = "run by every_niri_write_sends_its_action_as_one_json_line"]
+    fn niri_writes_child() {
+        crate::compositor::test_support::writes_child(|| {
+            Niri.focus_workspace("5");
+            Niri.focus_window("7");
+            Niri.close_window("7");
+            Niri.move_window("7", "5");
+            Niri.switch_layout(2);
+            Niri.switch_layout(256);
+            Niri.focus_window("x");
+            Niri.set_fullscreen("7", true, None);
+        });
+    }
+
+    /// The lines are niri's `Request::Action` wire form, written out by hand from `niri-ipc`'s
+    /// externally tagged enums. niri's reply carries no verdict a write acts on.
+    #[test]
+    fn every_niri_write_sends_its_action_as_one_json_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("niri.sock");
+        let (requests, log) = crate::compositor::test_support::run_writes(
+            "compositor::niri::tests::niri_writes_child",
+            &socket,
+            &[(niri_ipc::socket::SOCKET_PATH_ENV, socket.as_os_str())],
+            crate::compositor::test_support::read_line,
+            |_| b"{\"Ok\":\"Handled\"}\n".to_vec(),
+        );
+
+        assert_eq!(
+            requests,
+            [
+                "{\"Action\":{\"FocusWorkspace\":{\"reference\":{\"Id\":5}}}}\n",
+                "{\"Action\":{\"FocusWindow\":{\"id\":7}}}\n",
+                "{\"Action\":{\"CloseWindow\":{\"id\":7}}}\n",
+                "{\"Action\":{\"MoveWindowToWorkspace\":{\"window_id\":7,\"reference\":{\"Id\":5},\"focus\":false}}}\n",
+                "{\"Action\":{\"SwitchLayout\":{\"layout\":{\"Index\":2}}}}\n",
+            ]
+        );
+        for line in [
+            "switch_layout index 256 is out of range for niri",
+            r#""x" is not a niri window id"#,
+            r#"set_fullscreen("7", true) is not supported"#,
+        ] {
+            assert!(log.contains(line), "{line:?} missing from {log}");
+        }
+    }
 }
