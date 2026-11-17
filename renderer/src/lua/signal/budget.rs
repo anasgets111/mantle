@@ -376,32 +376,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn computed_aborts_a_runaway_closure_instead_of_hanging_or_returning_a_wrong_value() {
-        let lua = lua_with_signal("a", Value::Integer(1));
-
-        let start = Instant::now();
-        let result: mlua::Result<i64> =
-            lua.load("return computed({a}, function(x) while true do end end):get()").eval();
-        let elapsed = start.elapsed();
-
-        assert!(result.is_err(), "a busy-loop computed must error, not return a value");
-        assert!(elapsed < Duration::from_secs(1), "the 50ms cap must abort well under a second, took {elapsed:?}");
-    }
-
-    #[test]
     fn a_nested_get_call_inside_a_computed_body_does_not_strip_the_outer_calls_cap() {
-        // A body reading a second Signal re-enters the budget; inner return must preserve the outer
-        // cap.
-        let lua = lua_with_signal("a", Value::Integer(1));
-        lua.globals().set("other", Signal::new_state(Value::Integer(2), DirtyFlag::new()).unwrap()).unwrap();
-
-        let start = Instant::now();
-        let result: mlua::Result<i64> =
-            lua.load("return computed({a}, function(x) local y = other:get(); while true do end end):get()").eval();
-        let elapsed = start.elapsed();
-
-        assert!(result.is_err(), "the outer computed must still abort even though its body read a second Signal");
-        assert!(elapsed < Duration::from_secs(1), "the cap must still fire near 50ms, took {elapsed:?}");
+        // A body reading a second computed re-enters the budget (a state read does not); the inner
+        // return must preserve the outer cap.
+        let lua = lua_with_burners();
+        let err = lua
+            .load("local other = computed({a}, function(v) return v + 1 end) return computed({a}, function(x) local y = other:get() spin(200) return y end):get()")
+            .eval::<i64>()
+            .unwrap_err();
+        assert!(err.to_string().contains(CPU_CAP_EXCEEDED), "the outer computed must still hit the cap: {err}");
     }
 
     #[test]
@@ -415,15 +398,10 @@ mod tests {
                 "mutually recursive",
             ),
         ] {
-            let lua = lua_with_state().0;
-            let start = Instant::now();
-            let result: mlua::Result<i64> = lua.load(source).eval();
-            let elapsed = start.elapsed();
-
-            assert!(result.is_err(), "a {case} computed must error, not abort the process");
+            let err = lua_with_state().0.load(source).eval::<i64>().unwrap_err();
             assert!(
-                elapsed < Duration::from_secs(1),
-                "{case}: the depth cap must trip well under a second, took {elapsed:?}"
+                err.to_string().contains(&format!("maximum depth of {MAX_SIGNAL_NESTING_DEPTH} levels")),
+                "a {case} computed must trip the depth cap: {err}"
             );
         }
     }
@@ -528,67 +506,38 @@ mod tests {
 
     #[test]
     fn a_coroutine_is_covered_by_the_cpu_cap_whether_made_before_any_budget_or_inside_one() {
-        let lua = lua_with_signal("a", Value::Integer(1));
+        let lua = lua_with_burners();
         // Before: created while nothing is budgeted -- at the top level of `shell.lua`, before any
         // getter runs -- so it inherited no hook, because installing one does not retrofit threads
         // that already exist. Resuming it later from inside a budget then spun with nothing to
         // stop it, and `mantle call` made that reachable from outside the process.
-        lua.load(
-            r#"
-            spin = coroutine.wrap(function()
-                local n = 0
-                for _ = 1, 500000000 do n = n + 1 end
-                return n
-            end)
-            "#,
-        )
-        .exec()
-        .unwrap();
+        lua.load("spin_then_finish = coroutine.wrap(function() spin(200) finished = true end)").exec().unwrap();
         for (row, body) in [
-            ("made before any budget", "return computed({a}, function(x) return spin() end):get()"),
+            ("made before any budget", "return computed({a}, function(x) return spin_then_finish() end):get()"),
             // Inside: it inherits the hook that body installed. Per-thread `Lua::set_hook` left
-            // coroutine work unhooked: measured 5.75s returning `Ok`. Elapsed assertion catches the
-            // escape; Rust-boundary gate would error either way.
+            // coroutine work unhooked: measured 5.75s returning `Ok`. Unhooked, both rows here
+            // return `Ok` with `finished` set; the CPU clock never anchored, so no gate fired.
             (
                 "made inside the body",
-                r#"
-                return computed({a}, function(x)
-                    local step = coroutine.wrap(function()
-                        local n = 0
-                        for _ = 1, 500000000 do n = n + 1 end
-                        return n
-                    end)
-                    return step()
-                end):get()
-                "#,
+                "return computed({a}, function(x) return coroutine.wrap(function() spin(200) finished = true end)() end):get()",
             ),
         ] {
-            let start = Instant::now();
-            let result: mlua::Result<i64> = lua.load(body).eval();
-            let elapsed = start.elapsed();
+            let result: mlua::Result<Value> = lua.load(body).eval();
 
             assert!(result.is_err(), "{row}: work inside a coroutine must still hit the CPU cap: {result:?}");
-            assert!(elapsed < Duration::from_secs(1), "{row}: the hook must reach the coroutine, took {elapsed:?}");
+            let finished: Option<bool> = lua.globals().get("finished").unwrap();
+            assert_eq!(finished, None, "{row}: the hook must stop the coroutine before it finishes");
         }
     }
 
     #[test]
     fn a_cap_abort_does_not_leave_the_hook_installed_for_later_unrelated_evaluation() {
-        let lua = lua_with_signal("a", Value::Integer(1));
-        let _: mlua::Result<i64> = lua.load("return computed({a}, function(x) while true do end end):get()").eval();
+        let lua = lua_with_burners();
+        runaway(&lua);
 
         // A legitimate top-level script slower than the cap must not inherit an aborted hook.
-        let result: i64 = lua
-            .load(
-                r#"
-                local sum = 0
-                for i = 1, 2000000 do sum = sum + i end
-                return sum
-                "#,
-            )
-            .eval()
-            .unwrap();
-        assert_eq!(result, 2_000_001_000_000);
+        let result: i64 = lua.load("spin(100) return 7").eval().unwrap();
+        assert_eq!(result, 7);
     }
 
     /// `lua_with_signal` plus two ways to spend `ms` of thread CPU, which a loaded machine cannot
@@ -610,6 +559,14 @@ mod tests {
         lua.globals().set("cpu_ms", cpu_ms).unwrap();
         lua.load("function spin(ms) local t = cpu_ms() while cpu_ms() - t < ms do end end").exec().unwrap();
         lua
+    }
+
+    /// Runs a computed that spins 200ms of thread CPU and asserts it hits the cap. Bounded in CPU, not
+    /// wall time: pinned to one core beside 30 busy processes, the cap fired 1.57s after entry
+    /// (#109). A missing cap returns the value instead of hanging.
+    fn runaway(lua: &Lua) {
+        let err = lua.load("return computed({a}, function(x) spin(200) return x end):get()").eval::<i64>().unwrap_err();
+        assert!(err.to_string().contains(CPU_CAP_EXCEEDED), "the runaway must hit the CPU cap: {err}");
     }
 
     fn frame_warnings() -> Vec<String> {
@@ -707,7 +664,7 @@ mod tests {
     #[test]
     fn a_runaway_raises_and_logs_no_frame_warning() {
         let lua = lua_with_burners();
-        lua.load("return computed({a}, function(x) while true do end end):get()").eval::<i64>().unwrap_err();
+        runaway(&lua);
         assert!(frame_warnings().is_empty(), "one fault, one message");
     }
 
@@ -734,7 +691,7 @@ mod tests {
 
     #[test]
     fn a_long_getter_anchors_the_cpu_clock_and_a_runaway_still_names_its_error() {
-        let lua = lua_with_signal("a", Value::Integer(1));
+        let lua = lua_with_burners();
         let before = clock_reads();
         let n: i64 = lua
             // About 40 hook batches, and a tenth of the cap: a debug build under a loaded suite ran
@@ -745,8 +702,7 @@ mod tests {
         assert_eq!(n, 10_000);
         assert!(clock_reads() - before >= 1, "the first hook tick must anchor the CPU clock");
 
-        let err = lua.load("return computed({a}, function(x) while true do end end):get()").eval::<i64>().unwrap_err();
-        assert!(err.to_string().contains(CPU_CAP_EXCEEDED), "the runaway must name the CPU budget: {err}");
+        runaway(&lua);
     }
 
     #[test]
