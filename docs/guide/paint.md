@@ -610,7 +610,10 @@ Four blurs read four different things. Sigmas are in logical px, `[0, 8192]`, 0 
 **`compositor_blur = true`.** Mantle sends the compositor a region, through `ext-background-effect-v1`, made
 of every `compositor_blur = true` box on the surface: rounded to `radius`, scooped or shaped as its `shape`, cut by ancestor
 clips, followed through transforms (a rotated box gets a rotated region; ancestor clips stay upright), and dropped while the node is
-invisible or at `opacity` 0. It ignores `mask`. The compositor decides strength, noise, xray and whether to blur at all; a compositor
+invisible or at `opacity` 0. The protocol's blur is on or off, so a node whose `opacity` tweens in
+from 0 or out to 0, including `from = 0`, an exit and keyframes through 0, switches it at half the
+highest value the tween reaches; for blur that fades with the node, use `effect.backdrop`. It
+ignores `mask`. The compositor decides strength, noise, xray and whether to blur at all; a compositor
 without the protocol or its blur capability gives nothing, and no error. It is never inferred from
 a translucent `background`; the `background` alpha only decides how much of the blurred desktop
 shows through.

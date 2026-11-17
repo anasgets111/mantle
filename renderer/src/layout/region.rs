@@ -72,7 +72,7 @@ pub fn overlay_input_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<Phy
 /// and a rounded parent that does not clip can have children painting outside its corners.
 pub fn blur_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<PhysicalRect> {
     let mut regions = Vec::new();
-    collect_blur_regions(surface_root, 0.0, 0.0, scale, node::IDENTITY_AFFINE, EVERYTHING, 1.0, &mut regions);
+    collect_blur_regions(surface_root, 0.0, 0.0, scale, node::IDENTITY_AFFINE, EVERYTHING, &mut regions);
     regions
 }
 
@@ -96,7 +96,6 @@ fn clip_frame(
     (matrix, parent_clip, child_clip)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn collect_blur_regions(
     node: &ResolvedNode,
     origin_x: f32,
@@ -104,12 +103,11 @@ fn collect_blur_regions(
     scale: f32,
     matrix: node::Affine,
     clip: LogicalRect,
-    opacity: f32,
     out: &mut Vec<PhysicalRect>,
 ) {
     // `visible`, not `in_flow`: a leaving node is still painted (ADR-0150) and its glass is still
-    // on the glass. A fully faded subtree paints nothing, so it asks for nothing.
-    if !node.visible || opacity * node.opacity <= 0.0 {
+    // on the glass. A node at opacity 0 paints no subtree, so it asks for nothing.
+    if !node.visible || node.opacity <= fade_cut(node) {
         return;
     }
     let rect = node.at(origin_x, origin_y);
@@ -127,7 +125,26 @@ fn collect_blur_regions(
         push_shape(rect, radius, (matrix, scale, clip), out);
     }
     for child in node.content_children() {
-        collect_blur_regions(child, rect.x, rect.y, scale, matrix, child_clip, opacity * node.opacity, out);
+        collect_blur_regions(child, rect.x, rect.y, scale, matrix, child_clip, out);
+    }
+}
+
+/// The protocol's blur is on or off, so a node whose `opacity` run touches 0 asks only past half
+/// the highest value the run reaches (its higher end, or its highest keyframe): the blur arrives
+/// and leaves mid-fade rather than on its first or last frame (#114). Static ancestors scale both
+/// sides alike. A node at rest, or running between values above 0, is cut at 0 as before.
+///
+/// ponytail: a spring, or a retarget to a third value mid-fade, starts its run from the shown
+/// value, so it switches where that run puts the cut. A finite keyframe run ending above 0 but
+/// under its cut, such as `{ 0, 1, 0.1 }`, drops the blur on the way down and gets it back when it
+/// settles, because a node at rest keeps its blur. Below the cut no region is sent, so a
+/// blanket compositor blur rule applies until the crossing; sending an empty one needs the walk to
+/// report a cut node.
+fn fade_cut(node: &ResolvedNode) -> f32 {
+    let fade = node.tweens.iter().find(|tween| tween.property == "opacity" && !tween.resting);
+    match fade.and_then(node::Tween::span) {
+        Some((low, high)) if low <= 0.0 => high / 2.0,
+        _ => 0.0,
     }
 }
 
@@ -635,6 +652,18 @@ mod tests {
         faded.opacity = 0.0;
         let root = region_node(5, "panel", (0.0, 0.0, 400.0, 100.0), None, vec![faded]);
         assert!(blur_regions(&root, 1.0).is_empty(), "nothing is painted at zero opacity, so nothing is blurred");
+    }
+
+    /// A box at rest keeps its blur at any opacity above 0: only a running fade is cut (#114).
+    #[test]
+    fn a_box_resting_at_low_opacity_still_asks_for_blur() {
+        let mut card = region_node(3, "rect", (0.0, 0.0, 100.0, 40.0), solid_paint(), Vec::new());
+        card.compositor_blur = true;
+        card.opacity = 0.8;
+        let mut dim = region_node(4, "column", (0.0, 0.0, 100.0, 40.0), None, vec![card]);
+        dim.opacity = 0.5;
+        let root = region_node(5, "panel", (0.0, 0.0, 400.0, 100.0), None, vec![dim]);
+        assert!(!blur_regions(&root, 1.0).is_empty(), "0.4 effective, not tweening");
     }
 
     /// `wl_region` carries no radius, so a rounded card is sent as strips. The cost matters: this

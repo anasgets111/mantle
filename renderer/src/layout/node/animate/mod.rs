@@ -149,6 +149,22 @@ impl Tween {
         Tween { property, from, to, started, spec, reversal: None, resting: false, shown: None }
     }
 
+    /// The lowest and highest number the run passes through: every frame of a keyframe run, else
+    /// where it logically began (which a reversal keeps across its turn) and where it ends. `None`
+    /// for a property that is not a number.
+    pub fn span(&self) -> Option<(f32, f32)> {
+        let widen = |span: Option<(f32, f32)>, value: &Animatable| match (span, value) {
+            (Some((low, high)), Animatable::Number(value)) => Some((low.min(*value), high.max(*value))),
+            _ => None,
+        };
+        let empty = Some((f32::INFINITY, f32::NEG_INFINITY));
+        let origin = self.reversal.as_ref().map_or(&self.from, |reversal| &reversal.origin);
+        match &self.spec.motion {
+            Motion::Sequence(sequence) => sequence.frames.iter().map(|frame| &frame.value).fold(empty, widen),
+            _ => [origin, &self.to].into_iter().fold(empty, widen),
+        }
+    }
+
     fn eased_duration(&self, duration: Duration) -> Duration {
         duration.mul_f64(f64::from(self.reversal.as_ref().map_or(1.0, |reversal| reversal.factor)))
     }
@@ -991,6 +1007,7 @@ mod tests {
         let back = retarget("rect", Some((&forward, &shown)), &mut back_props, turn, &lua, false).unwrap().0;
         assert_eq!(at(&back[0], turn + Duration::from_millis(135)), 45.0);
         assert!(back[0].done(turn + Duration::from_millis(270)));
+        assert_eq!(back[0].span(), Some((0.0, 100.0)), "the turned run still spans the fade, not 0 to 90");
 
         let turn_again = turn + Duration::from_millis(135);
         let shown = PropMap::from_iter([("width", back[0].at(turn_again).to_value(&lua).unwrap())]);
@@ -1000,6 +1017,7 @@ mod tests {
             retarget("rect", Some((&back, &shown)), &mut forward_props, turn_again, &lua, false).unwrap().0;
         assert!(!forward_again[0].done(turn_again + Duration::from_millis(164)));
         assert!(forward_again[0].done(turn_again + Duration::from_millis(166)));
+        assert_eq!(forward_again[0].span(), Some((0.0, 100.0)));
     }
 
     #[test]

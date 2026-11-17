@@ -407,4 +407,94 @@ mod tests {
         assert_eq!(app.surfaces[lock_idx].map_state, MapState::AwaitingConfigure);
         assert_ne!(app.surfaces[lock_idx].role.wl_surface().unwrap().id().protocol_id(), lwl);
     }
+
+    /// For the fade tests: optionally a Lua edit, then a tick at `ms` into the one tween running on
+    /// the card in `bar@TEST`'s column; then (regions sent, whether the last is empty).
+    fn fade_step(
+        app: &mut App,
+        queue: &mut wayland_client::EventQueue<App>,
+        mock: &crate::wayland::test_support::MockWayland,
+        lua: &str,
+        ms: u64,
+    ) -> (Option<usize>, bool) {
+        assert_eq!(app.surfaces[0].surface_id, "bar@TEST");
+        if !lua.is_empty() {
+            resolve_lua(app, lua);
+        }
+        let bar = ["bar@TEST".to_string()];
+        let card = &app.client.scene().surface(&bar[0]).unwrap().children[0].children[0];
+        let [tween] = &card.tweens[..] else { panic!("one tween at a time: {:?}", card.tweens) };
+        let ticked = app.client.tick_animations(&bar, tween.started + std::time::Duration::from_millis(ms));
+        app.apply_resolved_surface_state_for(&[&ticked]);
+        queue.roundtrip(app).unwrap();
+        let sent = app.surfaces[0].blur_effect.as_ref().map(|fx| mock.blur_regions_for(fx.id().protocol_id()));
+        (sent.map(|sent| sent.len()), app.surfaces[0].last_blur_region.is_empty())
+    }
+
+    /// A keyframe fade is cut at half its highest frame, not half its first or last: `{ 0, 1, 0 }`
+    /// gains the blur on the way up and loses it on the way down.
+    #[test]
+    fn a_keyframe_fade_switches_the_blur_region_at_half_its_highest_frame() {
+        let (mut app, _dir, mut queue, mock) = App::test_app_with_wire(
+            r#"return panel { id = "bar", layer = "top", output = "TEST", width = 100, height = 32,
+                child = column { children = { rect { width = 100, height = 32, compositor_blur = true,
+                    animate = { opacity = { duration = 1000, easing = "linear", keyframes = { 0, 1, 0 } } } } } } }"#,
+        );
+        app.surfaces[0].map_state = MapState::Mapped;
+        for (ms, want) in
+            [(400, (None, true)), (600, (Some(1), false)), (1400, (Some(1), false)), (1600, (Some(2), true))]
+        {
+            assert_eq!(fade_step(&mut app, &mut queue, &mock, "", ms), want, "at {ms} ms");
+        }
+    }
+
+    /// Issue #114. The region is on or off, so a fade from or to 0 sends it once, on the tick that
+    /// carries the opacity past half the fade's higher end, and not on the ticks either side of it.
+    /// A fade between two values above 0 sends nothing, and an ancestor's fade cuts its subtree the
+    /// same. A reversal's span is `Tween::span`'s test: a pass runs on the real clock, so these
+    /// synthetic ticks cannot time one.
+    #[test]
+    fn an_opacity_fade_sends_the_blur_region_once_each_way_on_the_tick_that_crosses_half() {
+        // `nested` fades the box's parent instead of the box.
+        for nested in [false, true] {
+            let (mut app, _dir, mut queue, mock) = App::test_app_with_wire(
+                &r#"local nested = NESTED
+                local card = rect { width = 100, height = 32, compositor_blur = not nested, opacity = state("o", 1),
+                    children = nested and { rect { width = "fill", height = "fill", compositor_blur = true } } or {},
+                    border_width = state("bw", 0),
+                    animate = { opacity = { duration = 1000, easing = "linear", from = 0 },
+                                border_width = { duration = 1000, easing = "linear" },
+                                exit = { duration = 1000, easing = "linear", opacity = 0 } } }
+                return panel { id = "bar", layer = "top", output = "TEST", width = 100, height = 32,
+                    child = column { children = state("kids", false):map(function(on) return on and { card } or {} end) } }"#
+                    .replace("NESTED", &nested.to_string()),
+            );
+            app.surfaces[0].map_state = MapState::Mapped;
+            let (on, off) = (false, true);
+            for (lua, ms, want, why) in [
+                (r#"state("kids", false):set(true)"#, 400, (None, off), "an enter from 0 at 0.4 asks for nothing"),
+                ("", 600, (Some(1), on), "and is sent at 0.6"),
+                ("", 900, (Some(1), on), "once"),
+                (r#"state("o", 1):set(0.3)"#, 800, (Some(1), on), "1 to 0.3 keeps it throughout"),
+                (r#"state("o", 1):set(1)"#, 500, (Some(1), on), "and 0.3 to 1"),
+                ("", 1000, (Some(1), on), "the box at rest at 1"),
+                (r#"state("o", 1):set(0)"#, 400, (Some(1), on), "1 to 0 keeps it at 0.6"),
+                ("", 600, (Some(2), off), "and empties it at 0.4, mid-fade"),
+                ("", 1000, (Some(2), off), "the end resends nothing"),
+                (r#"state("o", 1):set(0.4)"#, 400, (Some(2), off), "0 to 0.4 cuts at 0.2: not at 0.16"),
+                ("", 600, (Some(3), on), "but at 0.24"),
+                ("", 1000, (Some(3), on), "and at rest at 0.4"),
+                (r#"state("o", 1):set(0)"#, 400, (Some(3), on), "0.4 to 0 keeps it at 0.24"),
+                ("", 600, (Some(4), off), "and empties it at 0.16"),
+                ("", 1000, (Some(4), off), ""),
+                (r#"state("o", 1):set(1)"#, 1000, (Some(5), on), ""),
+                (r#"state("bw", 0):set(4)"#, 400, (Some(5), on), "a tween on another property cuts nothing"),
+                ("", 1000, (Some(5), on), ""),
+                (r#"state("kids", false):set(false)"#, 400, (Some(5), on), "an exit at 0.6 keeps it"),
+                ("", 600, (Some(6), off), "and at 0.4 empties it before the node goes"),
+            ] {
+                assert_eq!(fade_step(&mut app, &mut queue, &mock, lua, ms), want, "{why}, nested: {nested}");
+            }
+        }
+    }
 }
