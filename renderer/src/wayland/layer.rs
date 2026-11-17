@@ -417,6 +417,8 @@ impl App {
             return;
         };
         let update = spec_update(applied, &fresh, *requested, *output_size, *measured);
+        let gained_keyboard = applied.keyboard_interactivity == node::KeyboardInteractivity::None
+            && update.keyboard_interactivity.is_some();
 
         if let Some(margin) = update.margin {
             set_margin(layer, margin);
@@ -465,6 +467,10 @@ impl App {
             && let TrackedRole::Panel { layer: Some(layer), .. } = &self.surfaces[index].role
         {
             layer.commit();
+        }
+        if gained_keyboard {
+            let surface_id = self.surfaces[index].surface_id.clone();
+            self.arm_autofocus_on_interactivity(&surface_id);
         }
     }
 }

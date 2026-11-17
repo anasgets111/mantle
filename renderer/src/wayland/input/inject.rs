@@ -259,4 +259,64 @@ mod tests {
             assert!(parse_combo(bad).is_err(), "{bad}");
         }
     }
+
+    /// A launcher (`keyboard_interactivity = mode`) with fields `a` (shown with `open`) and `b`; notes with `n`.
+    fn launcher(mode: &str) -> (App, tempfile::TempDir) {
+        let (app, dir, _queue, _mock) = App::test_app_with_wire(&format!(
+            r#"open, log, w = state("open", false), {{}}, state("w", 200)
+            local function field(name) return textfield {{ width = 100, height = 20, autofocus = true,
+                on_change = function(t) log[#log + 1] = name .. ":" .. t end }} end
+            return {{ panel {{ id = "launcher", layer = "top", output = "TEST", width = 200, height = 80,
+                keyboard_interactivity = {mode},
+                child = column {{ children = {{ column {{ visible = open, children = {{ field("a") }} }}, field("b") }} }} }},
+              panel {{ id = "notes", layer = "top", output = "TEST", width = w, height = 80,
+                keyboard_interactivity = "on_demand", child = field("n") }} }}"#
+        ));
+        (app, dir)
+    }
+
+    /// One main-loop turn's focus upkeep and protocol state after `code`.
+    fn turn(app: &mut App, code: &str) {
+        app.client.lua().load(code).exec().unwrap();
+        assert!(app.client.re_resolve_if_dirty());
+        app.drop_unusable_text_field_focus();
+        app.prune_control_focus();
+        app.apply_resolved_surface_state();
+    }
+
+    fn lua_log(app: &App) -> Vec<String> {
+        app.client.lua().load("return log").eval().unwrap()
+    }
+
+    #[test]
+    fn a_bound_keyboard_interactivity_turning_on_arms_autofocus_without_an_enter() {
+        let (mut app, _dir) = launcher(r#"open:map(function(o) return o and "on_demand" or "none" end)"#);
+        turn(&mut app, "open:set(true)");
+        turn(&mut app, "w:set(300)"); // #120: a later re-resolve limits control focus to the keyboard's surface
+        assert_eq!(app.inject_text("launcher@TEST", "ze"), Ok(()));
+        assert_eq!(lua_log(&app), ["a:", "a:ze"]);
+        turn(&mut app, "open:set(false)");
+        turn(&mut app, "open:set(true)");
+        assert_eq!(lua_log(&app), ["a:", "a:ze"], "closing arms nothing, not even `b`; reopening keeps the draft");
+    }
+
+    #[test]
+    fn keyboard_interactivity_turning_on_never_takes_a_focused_field() {
+        let (mut app, _dir) = launcher(r#"open:map(function(o) return o and "on_demand" or "none" end)"#);
+        app.keyboard_focus = Some("notes@TEST".to_string());
+        app.arm_autofocus_if_unfocused(&app.keyboard_focus_scope());
+        turn(&mut app, "open:set(true)");
+        assert_eq!(lua_log(&app), ["n:"], "the notes field keeps the keys");
+        (app.keyboard_focus, app.focused_control) = (None, None); // `leave` keeps the draft typing
+        turn(&mut app, "open:set(false)");
+        turn(&mut app, "open:set(true)");
+        assert_eq!(lua_log(&app), ["n:", "a:"], "a draft without the keyboard holds nothing");
+    }
+
+    #[test]
+    fn a_fixed_on_demand_panel_still_waits_for_the_keyboard_to_autofocus() {
+        let (mut app, _dir) = launcher(r#""on_demand""#);
+        turn(&mut app, "open:set(true)");
+        assert!(app.focused_text_field.is_none(), "only `enter` or a click arms it, as before");
+    }
 }

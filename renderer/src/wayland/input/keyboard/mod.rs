@@ -440,9 +440,11 @@ impl App {
     /// "shown under this surface" has one definition. Ids rather than trees: the per-keystroke
     /// caller ([`App::prune_secure_focus`]) needs only the ids.
     pub(in crate::wayland) fn keyboard_focus_scope(&self) -> Vec<String> {
-        let Some(focused) = self.keyboard_focus.as_deref() else {
-            return Vec::new();
-        };
+        self.keyboard_focus.as_deref().map(|focused| self.scope_of(focused)).unwrap_or_default()
+    }
+
+    /// `focused` and every popup shown under it: the scope a keystroke would reach if it held the keyboard.
+    fn scope_of(&self, focused: &str) -> Vec<String> {
         let Some(index) = self.surfaces.iter().position(|tracked| tracked.surface_id == focused) else {
             return Vec::new();
         };

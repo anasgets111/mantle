@@ -318,6 +318,17 @@ impl App {
         self.arm_autofocus(scope);
     }
 
+    /// `keyboard_interactivity` turned on, which need not bring an `enter` (`on_demand` may wait for a
+    /// click): arm the surface's `autofocus` as `enter` would, keeping a control's focus or a draft
+    /// still typing there (#120).
+    pub(in crate::wayland) fn arm_autofocus_on_interactivity(&mut self, surface_id: &str) {
+        let scope = self.scope_of(surface_id);
+        let typing = self.focused_text_field.as_ref().is_some_and(|f| f.typing && scope.contains(&f.surface_id));
+        if should_arm_autofocus(self.focused_secure_submit.is_some(), typing, self.focused_control.as_ref()) {
+            self.arm_autofocus(&scope);
+        }
+    }
+
     pub(in crate::wayland) fn restore_typing_control_on_enter(&mut self, scope: &[String]) -> bool {
         let held = self.focused_text_field.as_ref();
         let live = held.is_some_and(|field| self.surface_is_live(&field.surface_id));

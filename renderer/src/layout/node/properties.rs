@@ -281,7 +281,8 @@ props! {
         /// request from a key callback shows the focus outline, one from a click does not. Inert on a node that
         /// takes no focus. Any other value fails the pass.
         focus_target: Focus;
-        /// Takes keyboard focus when the surface gets the keyboard or this node appears; the first in document
+        /// Takes keyboard focus when the surface gets the keyboard or this node appears, or when a panel's
+        /// `keyboard_interactivity` turns on from `"none"` and no control holds focus; the first in document
         /// order wins, field or control. A plain `textfield` arms under existing control focus unless a field is
         /// typing or a press just left it; its draft resets to `initial_text` (`""` when unset) and `on_change`
         /// is called with it (ADR-0112). Any other control arms only while no control holds focus, and once: it
