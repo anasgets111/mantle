@@ -8086,10 +8086,10 @@ a shader over a subtree. The roadmap's won't-do row now covers only the desktop 
 Rejected: a `shader` node with a child input, which cannot read a sibling's pixels and repeats the
 layer's offscreen; reading the desktop, which the compositor owns.
 Amended by #117: decision 4's "the content already carries opacity" is reversed. The subtree draws
-into the layer unfaded and the program's output is composited once at the node's inherited opacity,
-so alpha a shader adds (an outline, a glow) fades too, and overlapping children fade as one group.
-When the layer cannot get an offscreen target (ADR-0393) the fallback paints the subtree at that
-opacity through global alpha; ponytail: GL-stage draws there (a `shader` node, an image
+into the layer unfaded and the program's output is composited once at the node's opacity times its
+ancestors', so alpha a shader adds (an outline, a glow) fades too, and overlapping children fade as
+one group. When the layer cannot get an offscreen target (ADR-0393) the fallback paints the subtree
+at that opacity through global alpha; ponytail: GL-stage draws there (a `shader` node, an image
 mid-dissolve, a backdrop shader) stay unfaded, upgrade path is multiplying the fade into their run's
 alpha.
 
@@ -9136,15 +9136,15 @@ dropped and the px offset kept. Windowed-list sizes off the window move to #125.
 
 ## 0396. An undecodable Supervisor frame is skipped only when its kind's loss is safe
 
-Amends ADR-0394. Any decode failure in the Renderer's pump ended the connection, and the respawned
-Renderer was sent the same frame, so one unreadable frame restarted the shell in a loop. A frame
-that fails to decode is now skipped when its `kind` tag reads as a string on `SKIPPABLE`, ten kinds
-listed by hand; the first skip per kind is a `warn!`, later ones `debug!`. Everything else still
-ends the connection: `SetSessionLock` and `IdleEvent` (either can lock the screen), unknown kinds,
-unparseable JSON, a missing or non-string `kind`, and length or I/O errors. A skipped `Call` or
-`SetState` leaves its control client to time out (5 s). Rejected: skipping any decode failure (fails
-open on lock frames) and a deny-list (a new kind would default to skippable). Still open: a
-malformed first `SetSessionLock` loops with the session unlocked (#123).
+Any decode failure in the Renderer's pump ended the connection, and the respawned Renderer was sent
+the same frame, so one unreadable frame restarted the shell in a loop. A frame that fails to decode
+is now skipped when its `kind` tag reads as a string on `SKIPPABLE`, ten kinds listed by hand; the
+first skip per kind is a `warn!`, later ones `debug!`. Everything else still ends the connection:
+`SetSessionLock` and `IdleEvent` (either can lock the screen), unknown kinds, unparseable JSON, a
+missing or non-string `kind`, and length or I/O errors. A skipped `Call` or `SetState` leaves its
+control client to time out (5 s). Rejected: skipping any decode failure (fails open on lock frames)
+and a deny-list (a new kind would default to skippable). Still open: a malformed first
+`SetSessionLock` loops with the session unlocked (#123).
 
 ## 0397. A reload's surfaces are drawn first, then swapped back to back
 
