@@ -6,6 +6,7 @@
 //! outputs. Evaluation matches a boot's, before the first `StateSnapshot`: every capability signal
 //! reads `nil` (ADR-0044). Layout then runs again on each sample set (ADR-0267).
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::layout::instance::{OutputGeometry, SurfaceInstance, expand_instances};
@@ -77,7 +78,7 @@ fn check(config_dir: &Path) -> Result<String, String> {
 /// Lays out with every capability `nil`, then after [`push_samples`] of each sample set; each
 /// failing pass is one `<error>` entry, which may span lines, then `(<passes>)` on its own line,
 /// unless every pass failed alike: a static error does not depend on the data. On success, the
-/// warnings of every pass, one per cut shadow ([`shadow_cuts`]).
+/// warnings of every pass, one per cut shadow ([`shadow_cuts`]) and per hidden panel that fails shown.
 fn lay_out_passes(
     output: &crate::lua::LoadOutput,
     specs: &[SurfaceSpec],
@@ -86,7 +87,7 @@ fn lay_out_passes(
     shaping: &ShapingHandle,
     size: LogicalSize,
 ) -> Result<Vec<String>, Vec<String>> {
-    let mut cuts = Cuts::new();
+    let (mut cuts, mut skipped, mut checked) = (Cuts::new(), BTreeMap::new(), BTreeSet::new());
     let mut failures: Vec<(String, Vec<&str>)> = Vec::new();
     let passes = [
         ("before capability data", None),
@@ -101,7 +102,31 @@ fn lay_out_passes(
                 .map_err(|err| vec![format!("{pass}: {}", crate::lua::location::describe(&err))])?;
         }
         match lay_out(output, specs, loader, shaping, size) {
-            Ok((scene, instances)) => shadow_cuts(&scene, &instances, specs, &mut cuts),
+            Ok((scene, instances)) => {
+                shadow_cuts(&scene, &instances, specs, &mut cuts);
+                // A hidden panel resolves no children, so each is linted again laid out shown, alone
+                // so one that fails shown (content valid only once opened) skips only itself, and
+                // only when no pass checked it. ponytail: panels only; a closed popup or window
+                // stays unchecked until its shown layout is known not to fail on ordinary configs.
+                for instance in &instances {
+                    let id = instance.declared_id.as_str();
+                    match scene.surface(&instance.instance_id).filter(|root| root.kind == "panel") {
+                        Some(root) if root.visible => _ = checked.insert(id.to_owned()),
+                        Some(_) => match lay_out(&shown(output, specs, id), specs, loader, shaping, size) {
+                            Ok((scene, instances)) => {
+                                shadow_cuts(&scene, &instances, specs, &mut cuts);
+                                checked.insert(id.to_owned());
+                            }
+                            Err(err) => {
+                                _ = skipped
+                                    .entry(id.to_owned())
+                                    .or_insert(format!("hidden panel \"{id}\" not checked: {err}"))
+                            }
+                        },
+                        None => {}
+                    }
+                }
+            }
             Err(err) => match failures.iter_mut().find(|(seen, _)| *seen == err) {
                 Some((_, in_passes)) => in_passes.push(pass),
                 None => failures.push((err, vec![pass])),
@@ -114,7 +139,18 @@ fn lay_out_passes(
     if !failures.is_empty() {
         return Err(failures.into_iter().map(each).collect());
     }
-    Ok(cuts.into_iter().map(|(node, sides)| format!("{node}'s {}", cut_line(&sides))).collect())
+    let cut = cuts.into_iter().map(|(node, sides)| format!("{node}'s {}", cut_line(&sides)));
+    let unchecked = skipped.into_iter().filter(|(id, _)| !checked.contains(id)).map(|(_, line)| line);
+    Ok(cut.chain(unchecked).collect())
+}
+
+/// `output` with surface `id`'s `visible` set to `true`; `specs` has one spec per surface, in order.
+fn shown(output: &LoadOutput, specs: &[SurfaceSpec], id: &str) -> LoadOutput {
+    let mut surfaces = output.surfaces.clone();
+    for (surface, _) in surfaces.iter_mut().zip(specs).filter(|(_, spec)| spec.declared_id() == id) {
+        std::rc::Rc::make_mut(&mut surface.properties).insert("visible", mlua::Value::Boolean(true));
+    }
+    LoadOutput { surfaces }
 }
 
 /// A cut under this many px stays quiet. A blurred shadow's 3 sigma tail fades to nothing and a
@@ -416,6 +452,29 @@ mod tests {
         let line = r#"warning: panel "lens": rect "pill"'s shadow is cut: needs 54 px above, 72 right, 90 below, 72 left (the surface has 0 on each); grow the surface and pad the content"#;
         assert!(report.contains(line), "{report}");
         assert_eq!(report.matches("warning:").count(), 1, "four passes and four sides, one line: {report}");
+        let hidden = shadow_report(r#"width = 360, height = 140, visible = state("open", false)"#, DROP);
+        assert!(hidden.contains(line), "a hidden panel is checked as if shown: {hidden}");
+        let dir = tempfile::tempdir().unwrap();
+        let shell = r#"return { panel { id = "bar", layer = "top" }, panel { id = "lens", layer = "top",
+            visible = false, child = rect { shadows = { { blur = "wide" } } } }, panel { id = "pane",
+            layer = "top", width = 360, height = 140, visible = false, child = rect { id = "pill",
+            width = "fill", height = "fill", shadows = { { blur = 48 } } } } }"#;
+        std::fs::write(dir.path().join("shell.lua"), shell).unwrap();
+        let broken = super::run(dir.path()).expect("a hidden panel that fails shown is a warning");
+        let guard = r#"local apps = mantle.applications
+            return { panel { id = "g", layer = "top", visible = apps:map(function(s) return s and #s.entries > 0 end),
+            child = text { content = apps:map(function(s) return s.entries[1].name end) } } }"#;
+        std::fs::write(dir.path().join("shell.lua"), guard).unwrap();
+        let guarded = super::run(dir.path()).expect("a panel shown once its data arrives");
+        assert!(!guarded.contains("warning"), "the passes with data check it: {guarded}");
+        assert!(
+            broken.contains(
+                r#"warning: hidden panel "lens" not checked: shell.lua:2: rect: invalid value for `shadows[1]`"#
+            ),
+            "{broken}"
+        );
+        assert!(broken.contains(r#"warning: panel "pane": rect "pill"'s shadow is cut"#), "{broken}");
+        assert_eq!(broken.matches("warning:").count(), 2, "the shown bar is not skipped: {broken}");
         assert!(!shadow_report("width = 360, height = 140", "{ spread = 1 }").contains("warning"), "a hairline");
         assert!(!shadow_report("width = 360, height = 140", r#"{ blur = 48, inset = true }"#).contains("warning"));
         assert!(
