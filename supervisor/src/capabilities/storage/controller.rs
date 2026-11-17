@@ -232,16 +232,25 @@ fn sync(stores: &Mutex<Stores>, path: &Path, save: bool, signal_tx: &UnboundedSe
     static SERIAL: Mutex<()> = Mutex::new(());
     let _serial = SERIAL.lock().expect("storage sync mutex poisoned");
     let key = path.to_string_lossy();
-    let disk = load(path);
-    let (contents, mut watches) = {
+    // Before the read: a read made while the first one is in flight could otherwise reach the lock
+    // after it lands and replace the writes it replayed.
+    {
         let mut guard = stores.lock().expect("storage state mutex poisoned");
-        let Stores { stores, watches } = &mut *guard;
-        let Some(store) = stores.get_mut(&*key) else { return };
+        let Some(store) = guard.stores.get_mut(&*key) else { return };
         if store.pending.is_some() {
             // Its first read may have missed this write; it reads again before landing.
             store.stale = true;
             return;
         }
+    }
+    let disk = load(path);
+    #[cfg(test)]
+    tests::after_read();
+    let (contents, mut watches) = {
+        let mut guard = stores.lock().expect("storage state mutex poisoned");
+        let Stores { stores, watches } = &mut *guard;
+        // Loaded above, and a store never goes back to loading.
+        let Some(store) = stores.get_mut(&*key) else { return };
         let disk = match disk {
             Ok(disk) => disk,
             Err(err) => return log_parse_error(store, path, err),
@@ -620,6 +629,40 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&file).unwrap(), fixed, "nothing rewrites a file the shell agrees with");
     }
 
+    /// A FIFO at a store's path, which holds its first read open until the test writes it. On an
+    /// unwind it puts a regular file at the path and opens the FIFO for writing, so a read held
+    /// there, or starting soon, sees end of file and the runtime can shut down instead of hanging.
+    struct Fifo {
+        path: PathBuf,
+        link: PathBuf,
+    }
+
+    impl Fifo {
+        fn new(path: &Path) -> Self {
+            nix::unistd::mkfifo(path, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
+            // The test renames a regular file over the path, so release the FIFO through a second name.
+            let link = path.with_extension("fifo");
+            std::fs::hard_link(path, &link).unwrap();
+            Self { path: path.to_path_buf(), link }
+        }
+    }
+
+    impl Drop for Fifo {
+        fn drop(&mut self) {
+            if !std::thread::panicking() {
+                return;
+            }
+            let swap = self.link.with_extension("swap");
+            let _ = std::fs::write(&swap, "{}").and_then(|()| std::fs::rename(&swap, &self.path));
+            // Opening for writing fails until a reader has the FIFO open; the read may not have begun.
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            let open = || std::fs::File::options().write(true).custom_flags(libc::O_NONBLOCK).open(&self.link);
+            while open().is_err() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+
     /// A FIFO with no writer holds the first read open until the test writes the file. Real time:
     /// a paused clock stops while that read blocks, so a poll waiting for it would never wake.
     #[tokio::test]
@@ -627,7 +670,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (file, other) = (dir.path().join("slow.json"), dir.path().join("other.json"));
         let (path, other) = (file.to_string_lossy().into_owned(), other.to_string_lossy().into_owned());
-        nix::unistd::mkfifo(&file, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
+        let _fifo = Fifo::new(&file);
         let (controller, mut rx) = controller();
         let dispatch = dispatcher(shared::Capability::Storage, super::super::dispatch, &controller);
         opened(&controller, &other, json!({})).await;
@@ -661,28 +704,62 @@ mod tests {
         poll_until(|| written().filter(|written| *written == merged)).await;
     }
 
-    /// A write that lands while the first read is in flight wins over what that read returns.
+    thread_local! {
+        /// Runs in `sync` between its read and its lock, on the thread that set it.
+        static AFTER_READ: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = std::cell::RefCell::default();
+    }
+
+    pub(super) fn after_read() {
+        if let Some(hook) = AFTER_READ.take() {
+            hook();
+        }
+    }
+
+    /// A write that lands while the first read is in flight wins over what that read returns, and
+    /// the writes made meanwhile win over that write, even when its `sync` read it before the
+    /// first read landed and reaches the lock after.
     #[tokio::test]
-    async fn a_write_seen_during_the_first_read_is_read_again() {
+    async fn a_write_seen_during_the_first_read_is_read_again_under_the_writes() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("slow.json");
         let path = file.to_string_lossy().into_owned();
-        nix::unistd::mkfifo(&file, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
+        let _fifo = Fifo::new(&file);
         // No watcher: a real watch event landing afterwards would sync the newer file in anyway.
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let controller = StorageController { stores: Arc::default(), saves: Arc::default(), signal_tx: tx };
         controller.open(&path, &json!({}));
         let open = || std::fs::File::options().write(true).custom_flags(libc::O_NONBLOCK).open(&file).ok();
         let mut writer = poll_until(open).await;
+        controller.set(&path, "theme", json!("frappe"));
 
-        std::fs::write(dir.path().join("swap"), r#"{"theme":"latte"}"#).unwrap();
+        std::fs::write(dir.path().join("swap"), r#"{"theme":"latte","dnd":true}"#).unwrap();
         std::fs::rename(dir.path().join("swap"), &file).unwrap();
-        sync(&controller.stores, &file, false, &controller.signal_tx);
+        let (reached_tx, reached) = std::sync::mpsc::channel();
+        // Dropped on a failed assertion, which unparks the sync holding `SERIAL` for other tests.
+        let (go, parked) = std::sync::mpsc::channel::<()>();
+        let (stores, signal_tx, target) = (Arc::clone(&controller.stores), controller.signal_tx.clone(), file.clone());
+        let syncing = std::thread::spawn(move || {
+            AFTER_READ.set(Some(Box::new(move || {
+                let _ = reached_tx.send(());
+                let _ = parked.recv();
+            })));
+            sync(&stores, &target, false, &signal_tx);
+        });
+        let read_before_landing = poll_until(|| match reached.try_recv() {
+            Ok(()) => Some(true),
+            Err(_) => syncing.is_finished().then_some(false),
+        })
+        .await;
         std::io::Write::write_all(&mut writer, br#"{"theme":"mocha"}"#).unwrap();
         drop(writer);
 
-        let landed = poll_until(|| controller.snapshot().contents.get(&path).cloned()).await;
-        assert_eq!(landed, json!({ "theme": "latte" }), "the stale first read is read again");
+        poll_until(|| controller.snapshot().contents.get(&path).cloned()).await;
+        if read_before_landing {
+            go.send(()).unwrap();
+        }
+        syncing.join().unwrap();
+        let after = controller.snapshot().contents[&path].clone();
+        assert_eq!(after, json!({ "theme": "frappe", "dnd": true }), "the newer file read again, under the writes");
     }
 
     #[test]
