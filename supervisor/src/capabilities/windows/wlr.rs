@@ -315,8 +315,65 @@ pub fn set_maximized(handle: &Handle, id: &str, maximized: bool) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
+    use std::io::Read;
+    use std::os::unix::net::UnixStream;
+
+    struct Wire;
+    wayland_client::delegate_noop!(Wire: ignore wl_registry::WlRegistry);
+    wayland_client::delegate_noop!(Wire: ignore WlSeat);
+    wayland_client::delegate_noop!(Wire: ignore ZwlrForeignToplevelHandleV1);
+
+    /// A `Wlr` whose toplevels "5" and "6" are live proxies, and a reader returning each request
+    /// they have sent since the last read as "<request> <id>". Nothing serves the socket, so
+    /// `wl_registry.bind` mints the proxies client-side with no global behind them: a protocol
+    /// error a real compositor would answer, and a `wayland-client` that checked binds would fail
+    /// this fixture loudly.
+    pub(in super::super) fn wired() -> (Handle, impl FnMut() -> Vec<String>) {
+        let (socket, mut peer) = UnixStream::pair().unwrap();
+        peer.set_nonblocking(true).unwrap();
+        let connection = Connection::from_socket(socket).unwrap();
+        let queue = connection.new_event_queue::<Wire>();
+        let qh = queue.handle();
+        let registry = connection.display().get_registry(&qh, ());
+        let seat: WlSeat = registry.bind(0, 1, &qh, ());
+        let seat_id = seat.id().protocol_id();
+        let toplevels = ["5", "6"].map(|id| (id, registry.bind::<ZwlrForeignToplevelHandleV1, _, _>(0, 3, &qh, ())));
+        let ids: HashMap<u32, &str> = toplevels.iter().map(|(id, proxy)| (proxy.id().protocol_id(), *id)).collect();
+        let handles = toplevels.into_iter().map(|(id, proxy)| (id.to_string(), proxy)).collect();
+        let handle = Arc::new(Wlr { connection, seat, handles: Arc::new(Mutex::new(handles)) });
+        let read = move || {
+            use zwlr_foreign_toplevel_handle_v1 as request;
+            let _keep_alive = &queue;
+            let mut bytes = Vec::new();
+            let _ = peer.read_to_end(&mut bytes);
+            let words: Vec<u32> = bytes.as_chunks::<4>().0.iter().copied().map(u32::from_ne_bytes).collect();
+            let mut requests = Vec::new();
+            let mut at = 0;
+            while at < words.len() {
+                let (object, size, opcode) = (words[at], words[at + 1] >> 16, (words[at + 1] & 0xffff) as u16);
+                assert!(size >= 8, "a wire message is at least its 8-byte header");
+                if let Some(id) = ids.get(&object) {
+                    let name = match opcode {
+                        request::REQ_ACTIVATE_OPCODE if words[at + 2] == seat_id => "activate",
+                        request::REQ_CLOSE_OPCODE => "close",
+                        request::REQ_SET_FULLSCREEN_OPCODE if words[at + 2] == 0 => "set_fullscreen",
+                        request::REQ_UNSET_FULLSCREEN_OPCODE => "unset_fullscreen",
+                        request::REQ_SET_MINIMIZED_OPCODE => "set_minimized",
+                        request::REQ_UNSET_MINIMIZED_OPCODE => "unset_minimized",
+                        request::REQ_SET_MAXIMIZED_OPCODE => "set_maximized",
+                        request::REQ_UNSET_MAXIMIZED_OPCODE => "unset_maximized",
+                        _ => "unexpected",
+                    };
+                    requests.push(format!("{name} {id}"));
+                }
+                at += size as usize / 4;
+            }
+            requests
+        };
+        (handle, read)
+    }
 
     fn thread_state(state: Arc<Mutex<WindowsState>>, events: UnboundedSender<()>) -> ThreadState {
         ThreadState {

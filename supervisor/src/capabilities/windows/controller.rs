@@ -226,8 +226,7 @@ mod tests {
         assert!(rx.try_recv().is_err(), "nothing to catch up on while the state is still default");
     }
 
-    /// Built from parts: `new` without a compositor reaches the host's Wayland socket. The wlr
-    /// arms need a live `zwlr_foreign_toplevel_handle_v1`, which no test here can build.
+    /// Built from parts: `new` without a compositor reaches the host's Wayland socket.
     #[test]
     fn dispatch_routes_each_action_to_the_compositor_with_that_windows_published_state() {
         let recorder: &'static Recorder = Box::leak(Box::default());
@@ -262,6 +261,42 @@ mod tests {
                 "set_maximized 5 false Some(true)",
                 "set_maximized 9 true None",
                 "move_window 6 2",
+            ]
+        );
+    }
+
+    /// Each wlr action as the request its toplevel puts on the wire, both polarities per setter.
+    #[test]
+    fn dispatch_sends_each_action_as_its_wlr_toplevel_request() {
+        let (handle, mut sent) = super::super::wlr::tests::wired();
+        let controller = WindowsController { state: Arc::default(), backend: Backend::Wlr(handle) };
+        let dispatch = dispatcher(shared::Capability::Windows, super::super::dispatch, &controller);
+
+        dispatch("focus", vec!["5".into()]);
+        dispatch("close", vec!["6".into()]);
+        dispatch("set_fullscreen", vec!["5".into(), true.into()]);
+        dispatch("set_fullscreen", vec!["6".into(), false.into()]);
+        dispatch("set_minimized", vec!["6".into(), true.into()]);
+        dispatch("set_minimized", vec!["5".into(), false.into()]);
+        dispatch("set_maximized", vec!["5".into(), true.into()]);
+        // No window "9": dropped, not sent to another toplevel.
+        dispatch("set_maximized", vec!["9".into(), true.into()]);
+        dispatch("set_maximized", vec!["5".into(), "yes".into()]);
+        // wlr has no workspaces: logged and dropped.
+        dispatch("move_to_workspace", vec!["6".into(), "2".into()]);
+        dispatch("set_maximized", vec!["6".into(), false.into()]);
+
+        assert_eq!(
+            sent(),
+            [
+                "activate 5",
+                "close 6",
+                "set_fullscreen 5",
+                "unset_fullscreen 6",
+                "set_minimized 6",
+                "unset_minimized 5",
+                "set_maximized 5",
+                "unset_maximized 6",
             ]
         );
     }
