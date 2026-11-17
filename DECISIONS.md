@@ -2527,6 +2527,9 @@ stale and the read repeats. On landing the buffered writes replay over the file 
 defaults, then the store pushes and saves; a disk change seen after landing wins whole (ADR-0223).
 ponytail: a file rewritten faster than it reads never lands; upgrade: cap the retries, then land
 and run one sync.
+Amended by #112: `sync` checks whether a store is still loading before it reads the file, and
+marks it stale instead of reading, so a read can no longer start before the landing and replace the
+replayed writes after it. A write whose watch sync only starts after the landing still wins whole.
 
 ## 0137. Privacy reports every capture; telling a video from a song stays in Lua
 
@@ -4516,6 +4519,15 @@ Verified on the wire against niri: `capabilities(1)`, one `get_background_effect
 `set_blur_region`, and 27 `wl_region.add` calls, with the middle band first
 (`add(200, 280, 620, 220)`) and corner strips inset symmetrically. The lifetime fault was pinned by
 27 tooltip cycles with no protocol error; 14 had killed the previous build.
+
+Amendment (#114): a node whose `opacity` tween touches 0 (a signal fade, `from = 0`, an exit,
+keyframes through 0) asks for blur only above half the highest value the run reaches, read by
+`Tween::span` from every keyframe and from an eased reversal's logical ends. The protocol has no
+strength, so a fade from 0 used to blur at full strength on its first frame. A node at rest, or
+running between values above 0, keeps blur at any opacity above 0. Rejected: a fixed 0.5 cut on
+effective opacity, which took blur from boxes resting at 0.5 or below. The region diff keeps a fade
+to one `set_blur_region` each way. ponytail: a cut-short enter or exit and a spring retarget cut
+wherever the new run puts it.
 
 ## 0196. The name is Obelisk, in the record as well as the code
 
@@ -8660,6 +8672,11 @@ Limit: a shader that changes a pixel before every capture request never unmixes 
 under it freezes; the upgrade is a copy of the presented pixels per request. Memory is about 20
 bytes per read pixel plus the texture.
 
+Amended by #115: unknown pixels are staged as the nearest known pixel by Manhattan distance (two
+raster passes), not the nearest in their row; the row fill streaked under wide opaque paint and left
+fully covered rows unknown. Headless rustc harness with release flags, 3440x1440 with 30% unknown in
+wide blocks: 23.7 to 13.2 ms median.
+
 ## 0369. Signal CPU budget: hard limit only for runaways; the frame target warns (amends ADR-0281)
 
 ADR-0281 decision 2 set one 2.5 ms thread-CPU cap per outermost evaluation and made an overrun an
@@ -8902,6 +8919,11 @@ Rejected: `pw_context_load_module` in the Supervisor (unsafe FFI, DSP and crashe
 idle memory); pipewire-pulse `load-module` (no filter chain, lost when pipewire-pulse restarts);
 `pipewire.conf.d` drop-ins (files left behind, a PipeWire restart to apply).
 
+Amended by #108: the child waits for the mixer's first snapshot, since one started before PipeWire
+runs with no modules; each later connection restarts it once. Every hydration path signals through
+`MixerState::hydrate`. Rejected: restarting on every connection, which started a child declared
+before the first snapshot twice.
+
 ## 0384. SVG `<image>` draws `data:` URLs only, under limits per document
 
 usvg's default href resolver reads any path whole: a FIFO blocks the dispatch thread forever and
@@ -9063,6 +9085,11 @@ are not checked. Rejected: stopping on any crate-version change, which turns eve
 upgrade's next crash into a full stop. Deferred: the Supervisor re-executing its upgraded binary
 (#104). ponytail: a missed bump goes unnoticed; upgrade path is a golden of each frame type's wire
 shape.
+
+Amended by #105: the delayed kill is sent to the main loop instead of signalled from the timer task.
+It kills the group only while the generation is the authoritative `Child` and unreaped, because only
+that loop reaps it and an unreaped pid cannot be reused. Rejected: `pidfd_send_signal`, which
+reaches a whole group only from Linux 6.9.
 
 ## 0395. Uncovered codepoints are looked up after the reply
 
