@@ -8,12 +8,14 @@ use crate::secure_buffer;
 
 /// Guarded envelope for a Lua write action.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CommandEnvelope {
     pub params: CommandParams,
     pub id: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CommandParams {
     pub generation_id: u32,
     pub capability: String,
@@ -30,6 +32,7 @@ pub struct CommandParams {
 /// (`renderer/src/socket/client/frame.rs`) routes by `capability` (ADR-0029). `revision` counts that
 /// capability's published snapshots; the Renderer ignores it (ADR-0305).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct StateSnapshot {
     pub capability: String,
     pub revision: u32,
@@ -39,6 +42,7 @@ pub struct StateSnapshot {
 /// First frame on every control-socket connection, identifying the generation for commands and
 /// pushes.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ConnectionHandshake {
     pub generation_id: u32,
     /// The sender's [`PROTOCOL_VERSION`]. `0` from a Renderer built before the field existed, so
@@ -58,9 +62,10 @@ impl ConnectionHandshake {
 /// refused and the Supervisor stops, since every replacement would be the same binary (#63).
 ///
 /// Bump it in the commit that changes how a [`SupervisorFrame`] or [`RendererFrame`] encodes or
-/// decodes: a variant or required field added, removed, renamed or retyped, including inside the
-/// types they carry. Not for a new `#[serde(default)]` field or a capability's snapshot payload,
-/// which the frame carries as a `serde_json::Value`. Breaking a wire-shape test here needs a bump.
+/// decodes: a variant or field added, removed, renamed or retyped, including inside the types they
+/// carry, and a new `#[serde(default)]` field too. Not for a capability's snapshot payload, which
+/// the frame carries as a `serde_json::Value`. `the_wire_shape_changes_only_with_a_protocol_bump`
+/// fails until the bump is made and its recorded shape updated with it.
 /// `ConnectionHandshake`'s `generation_id` and `protocol` never change shape: they are how a
 /// mismatch is read at all.
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -77,6 +82,7 @@ pub const CONTROL_CLIENT_GENERATION: u32 = u32::MAX;
 /// generation applies the same marshal checks as `signal:set()`, refusing undeclared names. This
 /// is the compositor keybind's only write path into a running config.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SetState {
     /// Name passed to `state(name, initial)`.
     pub name: String,
@@ -85,6 +91,7 @@ pub struct SetState {
 
 /// Operation applied by [`SetState`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum StateWrite {
     /// Store this value, converted to Lua like a capability payload.
     Set(serde_json::Value),
@@ -106,6 +113,7 @@ pub enum StateWrite {
 /// Distinct from [`CommandParams`], which is the config calling *out* to a capability and carries a
 /// `generation_id` describing the Renderer that sent it. An external caller has no generation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Call {
     /// Assigned by the Supervisor, not the client: it owns the pending table and the reply route,
     /// and a client id would let one peer answer another's call.
@@ -117,6 +125,7 @@ pub struct Call {
 /// What a bare `mantle call` or `mantle set`/`toggle` lists. The generation answers with a
 /// [`CallResult`] holding the sorted lines to print.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum Declared {
     /// Every `action(name, fn)` the running config declares.
     Actions,
@@ -128,6 +137,7 @@ pub enum Declared {
 /// through the same handlers as real input. Answered by a [`CallResult`]: `Returned(null)` once every
 /// step ran, or the refusal.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Inject {
     /// A declared surface id, or `id@output` when that id has one instance per output.
     pub surface: String,
@@ -136,6 +146,7 @@ pub struct Inject {
 
 /// One synthetic event. Coordinates are logical pixels in the surface.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum InputStep {
     Move {
         x: f64,
@@ -160,6 +171,7 @@ pub enum InputStep {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum InputButton {
     Left,
     Right,
@@ -168,6 +180,7 @@ pub enum InputButton {
 
 /// The answer to one [`Call`], carrying `id` back so the Supervisor can find the peer that waits.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CallResult {
     pub id: u64,
     pub outcome: CallOutcome,
@@ -177,6 +190,7 @@ pub struct CallResult {
 /// `Returned(null)`: Lua cannot tell them apart, and inventing a difference here would invent one
 /// in every config.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum CallOutcome {
     /// The handler ran and returned this. `null` is a value, not an absence.
     Returned(serde_json::Value),
@@ -186,6 +200,7 @@ pub enum CallOutcome {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ProcessStream {
     Stdout,
     Stderr,
@@ -193,6 +208,7 @@ pub enum ProcessStream {
 
 /// Why an `on_resume` threshold event fired (ADR-0299).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ResumeCause {
     Input,
@@ -213,6 +229,7 @@ impl ResumeCause {
 /// A seat's transition relative to an idle threshold duration (ADR-0032, ADR-0299). The wire
 /// uses `"state": "idled"` or `"state": "resumed"` with a required resume `cause`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum IdleState {
     Idled,
@@ -223,6 +240,7 @@ pub enum IdleState {
 /// (ADR-0032). The Renderer finds the callback by `threshold_sec`, the listener's registration
 /// duration, not through `StateSnapshot`/`revision`; idle is event-shaped, not pollable state.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IdleEvent {
     pub generation_id: u32,
     pub threshold_sec: u64,
@@ -234,6 +252,7 @@ pub struct IdleEvent {
 /// Renderer-assigned spawning `"process"`/`"run"` `CommandEnvelope.id`, not a Supervisor result
 /// (ADR-0026).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProcessOutputLine {
     pub id: u64,
     pub stream: ProcessStream,
@@ -243,6 +262,7 @@ pub struct ProcessOutputLine {
 /// Supervisor -> Renderer: the `process.run` child for `id` exited. `code` is absent when
 /// [`std::process::ExitStatus::code()`] returns `None`, including signal kills and no spawn.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProcessExited {
     pub id: u64,
     pub code: Option<i32>,
@@ -256,6 +276,7 @@ pub struct ProcessExited {
 /// (`renderer/src/socket/mod.rs`). Because the frame crosses an unbounded, unwrapped channel,
 /// `Zeroize`/`ZeroizeOnDrop` also scrub failed sends and buffered frames when `outbound_rx` drops.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SecureSubmit {
     pub generation_id: u32,
     #[zeroize(skip)]
@@ -293,6 +314,7 @@ impl std::fmt::Debug for SecureSubmit {
 /// the outcome. Only `locked = false` may call `unlock_and_destroy`, and only after the
 /// Supervisor's PAM worker returns [`PamOutcome::Success`]; the Renderer does not enforce it.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SetSessionLock {
     pub locked: bool,
 }
@@ -300,6 +322,7 @@ pub struct SetSessionLock {
 /// Renderer report of the lock state (ADR-0052 decision 4): "never acquired" differs from "acquired
 /// then torn down" even though both end unlocked.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum LockOutcome {
     /// `ext_session_lock_v1::locked` arrived; lock surfaces are up.
     Locked,
@@ -316,12 +339,14 @@ pub enum LockOutcome {
 /// Renderer -> Supervisor: one [`LockOutcome`] per lock state change. The connection already
 /// carries the generation id.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct LockReport {
     pub outcome: LockOutcome,
 }
 
 /// Supervisor -> Renderer frames, adjacently tagged so one read loop dispatches on `kind`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", content = "data")]
 pub enum SupervisorFrame {
     StateSnapshot(StateSnapshot),
@@ -360,6 +385,7 @@ pub enum SupervisorFrame {
 /// Renderer -> Supervisor frames, tagged like [`SupervisorFrame`]. `Command` is the Lua-write
 /// envelope.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", content = "data")]
 pub enum RendererFrame {
     Command(CommandEnvelope),
@@ -458,6 +484,74 @@ impl Zeroize for PamMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The [`PROTOCOL_VERSION`] and the frames' wire-shape hash it was bumped for. Change the two
+    /// together, as the test below prints them; a hash changed alone hides a missed bump.
+    /// ponytail: the hash is of schemars' output, so a schemars upgrade, a renamed Rust type or
+    /// reordered variants change it with nothing on the wire changed. Update the hash alone only
+    /// when the frame types' diff shows no wire change; a needless bump makes a running `mantle`
+    /// exit 76 on upgrade. Upgrade path for the schemars case: pin it to an exact version.
+    #[cfg(feature = "schema")]
+    const WIRE_SHAPE: (u32, u64) = (1, 0xc5d4_698d_9690_6661);
+
+    /// `value` as JSON with sorted keys and no doc-comment descriptions, so a reworded comment, or
+    /// a `serde_json` that keeps insertion order, leaves the shape alone.
+    #[cfg(feature = "schema")]
+    fn canonical(value: &serde_json::Value, out: &mut String) {
+        match value {
+            serde_json::Value::Object(map) => {
+                let mut keys: Vec<&String> =
+                    map.keys().filter(|key| *key != "description" || !map[*key].is_string()).collect();
+                keys.sort();
+                out.push('{');
+                for key in keys {
+                    out.push_str(&serde_json::to_string(key).unwrap());
+                    out.push(':');
+                    canonical(&map[key], out);
+                    out.push(',');
+                }
+                out.push('}');
+            }
+            serde_json::Value::Array(items) => {
+                out.push('[');
+                for item in items {
+                    canonical(item, out);
+                    out.push(',');
+                }
+                out.push(']');
+            }
+            other => out.push_str(&other.to_string()),
+        }
+    }
+
+    /// A Supervisor and Renderer agreeing on [`PROTOCOL_VERSION`] must agree on every frame's
+    /// shape (ADR-0394). Not a `check_generated` golden: `UPDATE_STUBS` would rewrite it and a
+    /// missed bump would pass.
+    #[cfg(feature = "schema")]
+    #[test]
+    fn the_wire_shape_changes_only_with_a_protocol_bump() {
+        let mut shape = String::new();
+        for schema in [
+            schemars::schema_for!(SupervisorFrame),
+            schemars::schema_for!(RendererFrame),
+            schemars::schema_for!(ConnectionHandshake),
+        ] {
+            canonical(schema.as_value(), &mut shape);
+        }
+        // FNV-1a: fixed across Rust releases, unlike `DefaultHasher`.
+        let hash = shape
+            .bytes()
+            .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3));
+        let fix = if hash == WIRE_SHAPE.1 {
+            format!("no frame changed shape: set WIRE_SHAPE to ({PROTOCOL_VERSION}, {hash:#018x})")
+        } else {
+            let next = WIRE_SHAPE.0 + 1;
+            format!(
+                "a frame's wire shape changed: bump PROTOCOL_VERSION to {next} and set WIRE_SHAPE to ({next}, {hash:#018x})"
+            )
+        };
+        assert_eq!((PROTOCOL_VERSION, hash), WIRE_SHAPE, "{fix} in shared/src/frame.rs, in the same commit");
+    }
 
     #[test]
     fn rejects_empty_control_and_oversized_names() {

@@ -23,6 +23,7 @@ macro_rules! roster {
     };
     ($($variant:ident => $name:literal, $($state:ident)::+, $($enum:ident,)? $blurb:literal),+ $(,)?) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+        #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
         #[serde(rename_all = "snake_case")]
         pub enum Capability {
             $($variant),+
