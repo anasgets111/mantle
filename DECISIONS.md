@@ -9107,3 +9107,8 @@ Without a waker (`mantle check`, screenshots) shaping still waits. Rejected: a b
 lookups per request (still stalls and reflows); a generation inside `Measure::Text` (unchanged
 nodes never compare it). ponytail: windowed-list sizes off the window and an unfocused field's
 scroll offset keep box widths until relaid (#111).
+Amended by #110: until the first frame is drawn, lookups run before the reply under one 100 ms
+deadline shared by all of startup (about 6 `fc-match` calls), spent once per process, so the first
+frame draws fallback text in its face. Past the deadline, or after the first frame, they go to the
+probe thread as above. Measured: 5 fallback files cost 40 ms once; 100 uncoverable codepoints stop at
+109 ms.
