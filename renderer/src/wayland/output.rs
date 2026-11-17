@@ -214,6 +214,7 @@ impl App {
             // Seed from the initial output burst; `startup_complete` gates the rest.
             return;
         }
+        self.finish_reload();
         info!("outputs changed: {:?}", screens.iter().map(|s| s.name.as_str()).collect::<Vec<_>>());
 
         let specs = self.client.applied_surface_specs();
@@ -246,6 +247,7 @@ impl App {
     ///
     /// `departing` is still in SCTK's list; expanding against it re-creates its instances.
     pub(super) fn apply_pending(&mut self, qh: &QueueHandle<App>, departing: Option<&wl_output::WlOutput>) {
+        self.finish_reload();
         let Some((specs, rebuilt)) = self.client.pending_surfaces() else {
             return;
         };
@@ -275,14 +277,16 @@ impl App {
         }
         // The replaced evaluation's tables are garbage now.
         self.trim.request(std::time::Instant::now());
+        let mut removals = Vec::new();
         for instance_id in &reconcile.removed {
             if reconcile.added.iter().any(|added| &added.instance_id == instance_id) {
                 // Same id: keep the tree the apply just built.
                 self.untrack_surface(instance_id);
             } else {
-                self.destroy_surface_by_id(instance_id);
+                removals.push(instance_id.clone());
             }
         }
+        self.reload_removals = Some(removals);
         self.create_surfaces(qh, &specs, &reconcile.added);
     }
 }

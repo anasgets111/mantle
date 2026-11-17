@@ -53,6 +53,17 @@ fn next_stale(owed: bool, stale: Option<Instant>, deferred: Option<Instant>) -> 
     if owed { deferred } else { stale.into_iter().chain(deferred).min() }
 }
 
+/// What a drawn surface's swap still needs (#116).
+pub(super) struct Drawn {
+    egl_surface: EglSurface,
+    paint_key: PaintKey,
+    list: layout::paint::DisplayList,
+    damage: Option<Vec<PhysicalRect>>,
+    owed: bool,
+    deferred: Option<Instant>,
+    animating: bool,
+}
+
 /// EGL's bottom-left `x, y, w, h` quadruples for `rects` on a surface `height` tall.
 fn egl_rects(rects: &[PhysicalRect], height: u32) -> Vec<i32> {
     rects.iter().flat_map(|r| [r.x0, height as i32 - r.y1, r.x1 - r.x0, r.y1 - r.y0]).collect()
@@ -190,14 +201,21 @@ impl App {
     /// viewport size is per surface, and one canvas per surface is the fallback if that proves wrong.
     /// An absent tree still clears/swaps, or the compositor keeps the last frame.
     pub(super) fn paint_surface(&mut self, index: usize) {
+        if let Some(drawn) = self.draw_surface(index, false) {
+            self.swap_surface(index, drawn);
+            self.trim_images();
+        }
+    }
+
+    /// Draws a surface's display list into its back buffer; `None` when nothing is left to swap.
+    /// `batched` swaps later, after other surfaces drew (#116).
+    fn draw_surface(&mut self, index: usize, batched: bool) -> Option<Drawn> {
         // Unmapped or pre-configure surfaces cannot attach a buffer; `swap_buffers` is both attach
         // and commit, so this prevents `visible = false` from remapping (ADR-0038 decision 2).
         if self.surfaces[index].map_state != MapState::Mapped {
-            return;
+            return None;
         }
-        let Some(egl_surface) = self.surfaces[index].bound.as_ref().map(|b| b.egl_surface) else {
-            return;
-        };
+        let egl_surface = self.surfaces[index].bound.as_ref()?.egl_surface;
         let surface_id = self.surfaces[index].surface_id.clone();
         let logical = self.surfaces[index].configured_size;
         let (width, height) = self.surfaces[index].scale.physical_size(logical);
@@ -230,7 +248,7 @@ impl App {
             if animating && let Some(surface) = self.surfaces[index].request_frame(&self.queue_handle) {
                 surface.commit();
             }
-            return;
+            return None;
         }
 
         // Build before GL work so an unchanged surface costs one tree walk, not make-current,
@@ -292,24 +310,15 @@ impl App {
             if let Some(surface) = surface {
                 surface.commit();
             }
-            return;
+            return None;
         }
 
         let t_gl = timing.then(Instant::now);
         self.place_desktop_reads(index, &list);
-        let Some(egl) = self.egl.as_ref() else {
-            return;
-        };
-        // Re-establish the surface when switching between surfaces; bound surfaces share EGL state.
-        // ponytail: skip make_current when this exact surface is already current on the GL context.
-        if self.current_egl_surface != Some(egl_surface) {
-            if let Err(e) = egl.make_current(Some(egl_surface), Some(egl.context)) {
-                log_bind_failure(&surface_id, "eglMakeCurrent", e);
-                self.exit = true;
-                return;
-            }
-            self.current_egl_surface = Some(egl_surface);
+        if !self.make_surface_current(egl_surface, &surface_id) {
+            return None;
         }
+        let egl = self.egl.as_ref()?;
 
         // 0, unknown, where the driver has no buffer age.
         let age = egl.query_surface(egl_surface, super::egl_ext::EGL_BUFFER_AGE_EXT).unwrap_or(0);
@@ -321,7 +330,10 @@ impl App {
             }
             None => vec![surface_rect],
         };
-        if let Some(set_damage_region) = egl.set_damage_region {
+        // ponytail: a batched surface skips partial update, since nothing promises its region
+        // survives other surfaces becoming current before its swap; buffer age alone stays correct.
+        // Upgrade: set it on batched surfaces too once Mesa and NVIDIA are shown to keep it.
+        if !batched && let Some(set_damage_region) = egl.set_damage_region {
             let rects = egl_rects(&regions, height);
             // SAFETY: `egl_surface` is current on `egl.display` and its age was queried this frame,
             // as `EGL_KHR_partial_update` requires; `rects` holds `regions.len()` whole quadruples.
@@ -345,7 +357,7 @@ impl App {
                 Err(e) => {
                     log_bind_failure(&surface_id, "FemtoVG init", e);
                     self.exit = true;
-                    return;
+                    return None;
                 }
             }
         }
@@ -412,6 +424,23 @@ impl App {
         // Straight after this surface's `execute` and before any other paint runs, which is what
         // scopes a cache-wide flag to the surface that earned it (ADR-0185).
         let deferred = self.image_cache.take_deferred();
+        Some(Drawn { egl_surface, paint_key, list, damage, owed, deferred, animating })
+    }
+
+    /// Swaps what [`App::draw_surface`] drew, which attaches and commits it.
+    fn swap_surface(
+        &mut self,
+        index: usize,
+        Drawn { egl_surface, paint_key, list, damage, owed, deferred, animating }: Drawn,
+    ) {
+        let surface_id = self.surfaces[index].surface_id.clone();
+        let (logical, height) = (paint_key.logical, paint_key.physical.1);
+        // A batch drew other surfaces since; EGL swaps only the current draw surface.
+        if !self.make_surface_current(egl_surface, &surface_id) {
+            return;
+        }
+        let Some(egl) = self.egl.as_ref() else { return };
+        let timing = crate::layout::scene::timing_on();
 
         // Before the swap, which is the commit it has to precede. Requested only while a tween is
         // running, so an idle shell arms nothing and the loop's timeout-free poll stays that way
@@ -460,6 +489,23 @@ impl App {
         self.surfaces[index].stale = next_stale(owed, self.surfaces[index].stale, deferred);
         self.surfaces[index].dirty = false;
         self.surfaces_drawn += 1;
+    }
+
+    /// Makes `egl_surface` current unless it already is; a failure is fatal (`self.exit`).
+    fn make_surface_current(&mut self, egl_surface: EglSurface, surface_id: &str) -> bool {
+        let Some(egl) = self.egl.as_ref() else { return false };
+        if self.current_egl_surface != Some(egl_surface) {
+            if let Err(e) = egl.make_current(Some(egl_surface), Some(egl.context)) {
+                log_bind_failure(surface_id, "eglMakeCurrent", e);
+                self.exit = true;
+                return false;
+            }
+            self.current_egl_surface = Some(egl_surface);
+        }
+        true
+    }
+
+    fn trim_images(&mut self) {
         // Images absent from every current list are idle (ADR-0123); queue eviction for the next
         // paint.
         let surfaces = &self.surfaces;
@@ -555,8 +601,11 @@ impl App {
     /// their own commit in [`App::apply_spec_change`].
     pub(in crate::wayland) fn repaint_mapped_surfaces_where(&mut self, wanted: impl Fn(&TrackedSurface) -> bool) {
         let drawn = self.surfaces_drawn;
+        let mut batch = Vec::new();
         for index in 0..self.surfaces.len() {
-            if self.surfaces[index].map_state != MapState::Mapped || !wanted(&self.surfaces[index]) {
+            let removed =
+                self.reload_removals.as_ref().is_some_and(|ids| ids.contains(&self.surfaces[index].surface_id));
+            if self.surfaces[index].map_state != MapState::Mapped || !wanted(&self.surfaces[index]) || removed {
                 continue;
             }
             // Painted at the callback instead; the compositor still shows this surface's last frame.
@@ -569,10 +618,25 @@ impl App {
             if !self.ensure_bound(index) {
                 continue;
             }
-            self.paint_surface(index);
+            if self.reload_removals.is_some() {
+                batch.extend(self.draw_surface(index, true).map(|drawn| (index, drawn)));
+            } else {
+                self.paint_surface(index);
+            }
             if self.exit {
                 return;
             }
+        }
+        // A reload's surfaces swap back to back, so their commits leave together (#116).
+        let batched = !batch.is_empty();
+        for (index, drawn) in batch {
+            self.swap_surface(index, drawn);
+            if self.exit {
+                return;
+            }
+        }
+        if batched {
+            self.trim_images();
         }
         // Once per repaint rather than per surface: each call walks every surface's list.
         if self.surfaces_drawn != drawn {
@@ -584,6 +648,36 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #116. A reload's removed surface is neither painted nor destroyed until the turn's swaps are
+    /// done. The mock output has no size, so the reload removes every panel; the window survives.
+    #[test]
+    fn a_reload_destroys_its_removed_surfaces_after_the_turns_repaint() {
+        let (mut app, _dir, mut queue, mock) = App::test_app_with_wire(
+            r##"return { panel { id = "gone", layer = "top", output = "TEST", width = 100, height = 32,
+                child = rect { width = "fill", height = "fill", background = "#ff0000ff" } },
+                window { id = "win", child = rect { width = 10, height = 10 } } }"##,
+        );
+        assert_eq!(app.surfaces[0].surface_id, "gone@TEST");
+        // Both await a frame callback, so a repaint that reaches one defers it.
+        for surface in &mut app.surfaces {
+            surface.map_state = MapState::Mapped;
+            surface.frame_pending = true;
+        }
+        let wl = app.surfaces[0].role.wl_surface().unwrap().id().protocol_id();
+        let destroyed = || mock.requests.lock().unwrap().contains(&(wl, 0, 0));
+        assert!(app.client.reevaluate());
+        let qh = app.queue_handle.clone();
+        app.apply_pending(&qh, None);
+        app.repaint_mapped_surfaces_where(|_| true);
+        queue.roundtrip(&mut app).unwrap();
+        assert!(!app.surfaces[0].paint_deferred, "the removed surface was painted");
+        assert!(app.surfaces[1].paint_deferred, "the survivor was not reached");
+        assert!(!destroyed(), "destroyed before the turn's swaps");
+        app.finish_reload();
+        queue.roundtrip(&mut app).unwrap();
+        assert!(destroyed() && app.surfaces.len() == 1);
+    }
 
     /// ADR-0258. An animation's next-frame deadline outlives a paint that did not owe it: that paint's
     /// region may have skipped the animation, which then deferred nothing. A paint it owed draws it,

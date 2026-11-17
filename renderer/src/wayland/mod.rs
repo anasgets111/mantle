@@ -263,6 +263,8 @@ pub struct App {
     surfaces_drawn: usize,
     repaint_split: surface::RepaintSplit,
     current_egl_surface: Option<EglSurface>,
+    /// `Some` for a reload's turn: its repaint swaps after drawing everything, then these ids go.
+    reload_removals: Option<Vec<String>>,
     /// Something freed memory in bulk (startup, a reload, a surface's EGL buffers, a shed tree);
     /// the loop collects Lua garbage and trims glibc once things settle (`trim::Trim`).
     trim: trim::Trim,
@@ -558,6 +560,7 @@ mod test_support {
                 surfaces_drawn: 0,
                 repaint_split: surface::RepaintSplit::default(),
                 current_egl_surface: None,
+                reload_removals: None,
                 trim: trim::Trim::default(),
             };
 

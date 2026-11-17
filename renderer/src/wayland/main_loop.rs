@@ -151,6 +151,7 @@ pub fn run(
         surfaces_drawn: 0,
         repaint_split: surface::RepaintSplit::default(),
         current_egl_surface: None,
+        reload_removals: None,
         trim: {
             let mut trim = trim::Trim::default();
             trim.request(std::time::Instant::now());
@@ -424,6 +425,7 @@ pub fn run(
             turn::Repaint::Everything => app.repaint_mapped_surfaces_where(|_| true),
             turn::Repaint::Nothing => {}
         }
+        app.finish_reload();
         phases.mark_repaint();
         phases.mark_repaint_split(app.take_repaint_split());
         // Skip focus maintenance on a truly idle turn (ADR-0124): it walks the focused scope's trees

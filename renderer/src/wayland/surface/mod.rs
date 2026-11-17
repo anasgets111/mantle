@@ -514,6 +514,18 @@ impl App {
         self.client.forget_surface(instance_id);
     }
 
+    /// Destroys the surfaces a reload removed, after the turn's swaps (#116).
+    pub(in crate::wayland) fn finish_reload(&mut self) {
+        let removals = self.reload_removals.take().unwrap_or_default();
+        for instance_id in &removals {
+            self.destroy_surface_by_id(instance_id);
+        }
+        // This turn's pass and accessibility sync ran while they were alive; the next turn catches up.
+        if !removals.is_empty() {
+            self.waker.wake();
+        }
+    }
+
     /// Once per turn, after this turn's shows and hides: a surface with a role object is shown, so
     /// one that lost it since the last call resets its `reset_on_close` list (ADR-0289).
     pub(in crate::wayland) fn reset_closed_surfaces(&mut self) {
