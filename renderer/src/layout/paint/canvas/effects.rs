@@ -162,7 +162,7 @@ pub(super) fn draw_layer(
     target: RenderTarget,
     frame: Frame,
 ) {
-    let Draw::Layer { effect, shader, silhouette, commands } = &command.draw else { return };
+    let Draw::Layer { effect, shader, silhouette, alpha, commands } = &command.draw else { return };
     let (node::Effect { shadows, blur, tone, .. }, silhouette) = (&**effect, *silhouette);
     let (rect, clip) = (command.rect, command.clip);
     let size = ((clip.x1 - clip.x0) as usize, (clip.y1 - clip.y0) as usize);
@@ -184,12 +184,17 @@ pub(super) fn draw_layer(
     let (casts, content) = match kept {
         Some(kept) => kept,
         None => {
-            // Whole: the blur and the shadow read past the repaint's edge.
-            let Some(content) =
-                offscreen(painter, walk, rect, clip, None, None, commands, target, frame, UNCLIPPED, true)
-            else {
-                return;
-            };
+            // Whole: the blur and the shadow read past the repaint's edge. Without a target the
+            // subtree falls back into the parent, faded there (#117).
+            // ponytail: GL-stage draws (a `shader` node, an image mid-cross, a backdrop shader) skip
+            // femtovg's alpha and stay unfaded there; upgrade: multiply it into their run's alpha.
+            painter.canvas_mut().save();
+            if *alpha < 1.0 {
+                painter.canvas_mut().set_global_alpha(*alpha);
+            }
+            let content = offscreen(painter, walk, rect, clip, None, None, commands, target, frame, UNCLIPPED, true);
+            painter.canvas_mut().restore();
+            let Some(content) = content else { return };
             // The shader's output is what the shadows, blur and colour filters see. A failed build
             // leaves the node as painted, and that frame uncached so only a revision retries.
             let shaded = shader
@@ -229,18 +234,19 @@ pub(super) fn draw_layer(
             [DrawCmd { draw: Draw::Box { radius, .. }, .. }] if silhouette => {
                 painter.canvas_mut().save();
                 painter.canvas_mut().intersect_scissor(at.x, at.y, at.width, at.height);
-                composite(painter, walk, (cast, size), at, &knocked_out(rect, radius, at), clip, blend);
+                composite(painter, walk, (cast, size), at, &knocked_out(rect, radius, at), (clip, blend, *alpha));
                 painter.canvas_mut().restore();
             }
-            _ => composite(painter, walk, (cast, size), at, &box_path(at, &Radii::default()), clip, blend),
+            _ => composite(painter, walk, (cast, size), at, &box_path(at, &Radii::default()), (clip, blend, *alpha)),
         }
     }
     if !silhouette {
-        composite(painter, walk, (content, size), area, &box_path(area, &Radii::default()), clip, effect.blend);
+        let path = box_path(area, &Radii::default());
+        composite(painter, walk, (content, size), area, &path, (clip, effect.blend, *alpha));
     }
 }
 
-/// `image`'s used part laid over `at` and cut to `path`, onto the target by `blend`. A normal one is
+/// `image`'s used part laid over `at` and cut to `path`, onto the target by `blend` at `alpha`. A normal one is
 /// drawn over; any other copies what the target holds under `area`, blends `image` with it in one
 /// pass and puts the result in place of the copy. Drawn over without a GL context or a target.
 fn composite(
@@ -249,8 +255,7 @@ fn composite(
     (image, used): (ImageId, (usize, usize)),
     at: LogicalRect,
     path: &Path,
-    area: PhysicalRect,
-    blend: node::Blend,
+    (area, blend, alpha): (PhysicalRect, node::Blend, f32),
 ) {
     let blended = if blend == node::Blend::Normal {
         None
@@ -268,13 +273,13 @@ fn composite(
             let pass = image_shader::BlendPass { backdrop, source: image, target, sizes, map, mode };
             let Shaders { gl, stage } = walk.shaders.as_mut()?;
             // SAFETY: `Shaders` is built only with `gl` current on this thread and shared with the canvas.
-            unsafe { stage.blend(gl, painter.canvas_mut(), &pass) }.then(|| read.paint(target, 1.0))
+            unsafe { stage.blend(gl, painter.canvas_mut(), &pass) }.then(|| read.paint(target, alpha))
         })
     };
     let canvas = painter.canvas_mut();
     match blended {
-        Some(paint) => replace(canvas, path, &paint, 1.0),
-        None => canvas.fill_path(path, &pooled_paint(canvas, image, used, at, 1.0)),
+        Some(paint) => replace(canvas, path, &paint, alpha),
+        None => canvas.fill_path(path, &pooled_paint(canvas, image, used, at, alpha)),
     }
 }
 
@@ -1654,6 +1659,22 @@ mod tests {
         for (progress, red) in [(0.25, 64), (1.0, 255)] {
             let Some(px) = paint_shader(frag, &format!("progress = {progress}"), "", &[(32, 32)]) else { return };
             assert!(near(px[0], (red, 0, 0)), "progress {progress}: {px:?}");
+        }
+    }
+
+    /// #117. `opacity` fades the program's output, not its input: alpha the program adds over a
+    /// transparent subtree is gone at 0 and half there at 0.5, and a red child fades once.
+    #[test]
+    fn opacity_fades_an_effect_shaders_output_once() {
+        let rim = "void main() { vec4 c = mantle_input(v_uv); fragColor = c.a > 0.0 ? c : vec4(0.0, 1.0, 0.0, 1.0); }";
+        for (opacity, outline, red) in
+            [(0.0, (255, 255, 255), (255, 255, 255)), (0.5, (128, 255, 128), (255, 128, 128))]
+        {
+            let body = format!(
+                r##"opacity = {opacity}, children = {{ rect {{ width = 16, height = 16, background = "#FF0000FF" }} }}"##
+            );
+            let Some(px) = paint_shader(rim, "", &body, &[(40, 40), (20, 20)]) else { return };
+            assert!(near(px[0], outline) && near(px[1], red), "opacity {opacity}: {px:?}");
         }
     }
 

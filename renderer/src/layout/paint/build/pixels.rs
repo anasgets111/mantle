@@ -112,7 +112,7 @@ pub(super) fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
         Draw::InsetShadow { shadow: cast, radius, widths } => {
             Draw::InsetShadow { shadow: shadow(cast), radius: radius * scale, widths: widths.scaled(scale) }
         }
-        Draw::Layer { effect, shader, silhouette, commands } => Draw::Layer {
+        Draw::Layer { effect, shader, silhouette, alpha, commands } => Draw::Layer {
             effect: Box::new(node::Effect {
                 shadows: effect.shadows.into_iter().map(shadow).collect(),
                 blur: effect.blur * scale,
@@ -120,6 +120,7 @@ pub(super) fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
             }),
             shader: scale_shader(shader),
             silhouette,
+            alpha,
             commands,
         },
         Draw::Backdrop { sigma, tone, radius, alpha, shader, mask, desktop } => Draw::Backdrop {
@@ -218,7 +219,13 @@ pub(super) fn blended(blend: Blend, command: DrawCmd) -> DrawCmd {
     DrawCmd {
         rect,
         clip,
-        draw: Draw::Layer { effect: Box::new(effect), shader: None, silhouette: false, commands: vec![command] },
+        draw: Draw::Layer {
+            effect: Box::new(effect),
+            shader: None,
+            silhouette: false,
+            alpha: 1.0,
+            commands: vec![command],
+        },
     }
 }
 

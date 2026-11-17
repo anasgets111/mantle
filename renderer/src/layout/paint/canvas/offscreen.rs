@@ -126,6 +126,7 @@ pub(super) fn scratch(
 /// over its top-left `clear` when given. The caller restores.
 pub(super) fn draw_into(canvas: &mut Canvas<OpenGl>, image: ImageId, clear: Option<(usize, usize)>) {
     canvas.save();
+    canvas.set_global_alpha(1.0);
     canvas.set_render_target(RenderTarget::Image(image));
     canvas.reset_transform();
     canvas.reset_scissor();
@@ -201,6 +202,8 @@ pub(super) fn offscreen(
     let canvas = painter.canvas_mut();
     let size = canvas.image_size(image).unwrap_or((width, height));
     canvas.save();
+    // A fallback's fade (`draw_layer`) is for the parent's target, not this one.
+    canvas.set_global_alpha(1.0);
     canvas.set_render_target(RenderTarget::Image(image));
     canvas.clear_rect(0, 0, width as u32, height as u32, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
     // Set, rather than accumulate, the translation; nested clips otherwise sum offsets. Inner
@@ -328,11 +331,10 @@ mod tests {
             child = rect { width = 64, height = 64, clip = "box", children = {
                 rect { width = 96, height = 64, background = "#0000FFFF", effect = { blur = 4 },
                     children = { rect { width = 32, height = 64, background = "#FFFFFFFF" } } } } } }"##;
-        // The layer is the parent's 64 px box: a cap of 64 holds it, 32 does not.
-        for cap in [64, 32] {
-            let Some(instance) = init_headless_egl(96, 96) else { return };
+        let paint = |src: &str, cap: usize, points: &[(usize, usize)]| {
+            let instance = init_headless_egl(96, 96)?;
             let shaping = ShapingHandle::spawn();
-            let Some(mut painter) = text_painter(&instance, &shaping, 96, 96) else { return };
+            let mut painter = text_painter(&instance, &shaping, 96, 96)?;
             painter.cap_texture(cap);
             let root = resolved_surface(&Lua::new(), src, LogicalSize { width: 96.0, height: 96.0 });
             let gl = test_gl(&instance);
@@ -342,11 +344,29 @@ mod tests {
             let (images, captures) = (&mut ImageCache::inline(), &mut CaptureCache::default());
             let list = super::super::build(&root, 1.0, None);
             let _ = execute("test", &mut painter, images, captures, &list, 1.0, (96.0, 96.0), &[whole], shaders);
-            let canvas = painter.canvas_mut();
-            let edge = pixel_at(canvas, 38, 40);
-            assert_eq!(edge == (255, 255, 255, 255), cap == 32, "cap {cap}: the white child's edge is sharp unblurred");
-            assert_eq!(pixel_at(canvas, 60, 40), (0, 0, 255, 255), "cap {cap}: the subtree paints");
-            assert_eq!(pixel_at(canvas, 80, 40), (255, 0, 0, 255), "cap {cap}: cut to the parent at x = 72");
+            Some(points.iter().map(|&(x, y)| pixel_at(painter.canvas_mut(), x, y)).collect::<Vec<_>>())
+        };
+        // The layer is the parent's 64 px box: a cap of 64 holds it, 32 does not.
+        for cap in [64, 32] {
+            let Some(px) = paint(src, cap, &[(38, 40), (60, 40), (80, 40)]) else { return };
+            assert_eq!(
+                px[0] == (255, 255, 255, 255),
+                cap == 32,
+                "cap {cap}: the white child's edge is sharp unblurred"
+            );
+            assert_eq!(px[1], (0, 0, 255, 255), "cap {cap}: the subtree paints");
+            assert_eq!(px[2], (255, 0, 0, 255), "cap {cap}: cut to the parent at x = 72");
+        }
+        // #117. A faded shader layer that falls back still fades, and the rounded clip inside it,
+        // which a cap of 64 still holds, fades once.
+        let faded = r##"return panel { id = "bar", width = 96, height = 96, background = "#FF0000FF", padding = 8,
+            child = rect { width = 80, height = 80, opacity = 0.5, effect = { shader = { source = "/s.frag" } },
+                children = { rect { width = 32, height = 32, radius = 4, clip = "rounded",
+                    children = { rect { width = 32, height = 32, background = "#0000FFFF" } } } } } }"##;
+        for cap in [128, 64] {
+            let Some(px) = paint(faded, cap, &[(24, 24)]) else { return };
+            let (r, g, b, _) = px[0];
+            assert!(r.abs_diff(128) <= 3 && g == 0 && b.abs_diff(128) <= 3, "cap {cap}: {px:?}");
         }
     }
 

@@ -146,6 +146,9 @@ fn build_node(
         scale,
     );
     let opacity = inherited_opacity * node.opacity;
+    // A shader's layer composites at `opacity`, so what it reads draws whole and fades once, after
+    // the program (#117). At 0 the subtree stays at 0: nothing in it draws or captures.
+    let held = if effect.shader.is_some() && opacity > 0.0 { 1.0 } else { opacity };
     let layers = match &node.paint {
         Some(PaintStyle::Box { background, .. }) => background.as_slice(),
         _ => &[],
@@ -203,7 +206,7 @@ fn build_node(
     // avoids the passwordless black lock screen ADR-0052 decision 3 rejects. Opacity is baked into
     // the list because ADR-0063 skips unchanged lists; applying it in `execute` would be invisible.
     // A fully clipped node draws nothing, and its children cut to its box return on their own.
-    let draw = if clip.is_empty() { None } else { draw_for(node, rect, scale, opacity, focus) };
+    let draw = if clip.is_empty() { None } else { draw_for(node, rect, scale, held, focus) };
 
     // A transformed node paints itself and its subtree as one group under its matrix
     // (ADR-0149), so the group is built into `out` and lifted out of it afterwards. Coordinates
@@ -244,7 +247,9 @@ fn build_node(
     let group = out.len();
     // After the backdrop: CSS's backdrop is what precedes the element, and its shadow is part of it.
     if casts {
-        let faded = effect.shadows.iter().map(|shadow| node::Shadow { color: fade(shadow.color, opacity), ..*shadow });
+        // A blended node's shadows land in its layer.
+        let alpha = if effect.blend == Blend::Normal { opacity } else { held };
+        let faded = effect.shadows.iter().map(|shadow| node::Shadow { color: fade(shadow.color, alpha), ..*shadow });
         if radius.analytic() {
             // CSS paints the first layer on top, so the last draws first.
             for shadow in faded.rev() {
@@ -264,6 +269,7 @@ fn build_node(
                 effect: Box::new(effect),
                 shader: None,
                 silhouette: true,
+                alpha: 1.0,
                 commands: vec![cmd(clip, fill)],
             };
             out.push(cmd(parent_clip.intersect(reach), draw));
@@ -277,7 +283,7 @@ fn build_node(
             .iter()
             .rev()
             .map(|shadow| {
-                let shadow = node::Shadow { color: fade(shadow.color, opacity), ..*shadow };
+                let shadow = node::Shadow { color: fade(shadow.color, held), ..*shadow };
                 blended(shadow.blend, cmd(clip, Draw::InsetShadow { shadow, radius: radius.clone(), widths: *widths }))
             })
             .collect(),
@@ -294,7 +300,7 @@ fn build_node(
             }
             inner.extend(insets);
             for child in node.painted_children() {
-                build_node(child, x, y, scale, (clip, surface), opacity, focus, control, &mut inner);
+                build_node(child, x, y, scale, (clip, surface), held, focus, control, &mut inner);
             }
             inner.extend(border.map(|draw| cmd(clip, draw)));
             if !inner.is_empty() {
@@ -340,7 +346,7 @@ fn build_node(
             out.extend(insets);
             out.extend(border.map(|draw| cmd(clip, draw)));
             for child in node.painted_children() {
-                build_node(child, x, y, scale, (child_clip, surface), opacity, focus, control, out);
+                build_node(child, x, y, scale, (child_clip, surface), held, focus, control, out);
             }
         }
         // Rounded order: fill, masked subtree, border. A child reaching the arc would
@@ -353,7 +359,7 @@ fn build_node(
             out.extend(insets);
             let mut inner = Vec::new();
             for child in node.painted_children() {
-                build_node(child, x, y, scale, (clip, surface), opacity, focus, control, &mut inner);
+                build_node(child, x, y, scale, (clip, surface), held, focus, control, &mut inner);
             }
             // A leaf has nothing to clip, so avoid the render target and composite.
             if !inner.is_empty() {
@@ -365,7 +371,7 @@ fn build_node(
         }
     }
     if let (Some(ring), Some(ring_box)) = (ring, ring_box) {
-        let ring = Ring { color: fade(ring.color, opacity), ..ring };
+        let ring = Ring { color: fade(ring.color, held), ..ring };
         out.extend(ring_cmd(rect, &radius, ring, parent_clip.intersect(ring_box), scale));
     }
     if control == Some(node.id)
@@ -395,7 +401,8 @@ fn build_node(
         );
         let mut layered = shadowless.unwrap_or_else(|| effect.clone());
         let shader = layered.shader.take().map(|shader| layer_shader(*shader, radius));
-        let draw = Draw::Layer { effect: Box::new(layered), shader, silhouette: false, commands };
+        let alpha = if shader.is_some() { opacity } else { 1.0 };
+        let draw = Draw::Layer { effect: Box::new(layered), shader, silhouette: false, alpha, commands };
         out.push(cmd(parent_clip.intersect(bounds).intersect(target), draw));
     }
     if let Some(matrix) = matrix {
@@ -2133,12 +2140,12 @@ mod tests {
         ] {
             let list = effect_surface(child);
             let layer = list.commands.last().unwrap();
-            let Draw::Layer { effect, commands, .. } = &layer.draw else {
+            let Draw::Layer { effect, commands, alpha, .. } = &layer.draw else {
                 panic!("{child}: expected a layer, got {:?}", layer.draw)
             };
             let (shadows, blur) = (&effect.shadows, &effect.blur);
             let [shadow] = shadows.as_slice() else { panic!("{child}: one shadow, got {shadows:?}") };
-            assert_eq!((shadow.color.a, *blur), (1.0, 0.0), "{child}");
+            assert_eq!((shadow.color.a, *blur, *alpha), (1.0, 0.0, 1.0), "{child}");
             assert!(commands.iter().any(|cmd| matches!(cmd.draw, Draw::Text { .. })), "{child}");
             // The blur reaches 3 sigma, 6px, around the box, and the offset shifts its right edge 3.
             let node = snap_to_physical(layer.rect, 1.0);
@@ -2165,6 +2172,26 @@ mod tests {
             "the label unshadowed"
         );
         assert!(!list.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Layer { .. })), "no offscreen");
+    }
+
+    /// #117. A shader node's box shadow fades once: at `opacity` beside its layer, or at full alpha
+    /// inside it when the node blends, since the layer composites at `opacity`.
+    #[test]
+    fn a_shader_nodes_box_shadow_fades_once() {
+        for (blend, cast) in [("normal", 0.5), ("multiply", 1.0)] {
+            let list = effect_surface(&format!(
+                r##"rect {{ width = 40, height = 20, background = "#ffffff40", opacity = 0.5, blend = "{blend}",
+                    shadows = {{ {{ blur = 4 }} }}, effect = {{ shader = {{ source = "/s.frag" }} }} }}"##
+            ));
+            let Some(Draw::Layer { alpha, commands, .. }) = list.commands.last().map(|cmd| &cmd.draw) else {
+                panic!("{blend}: a layer last")
+            };
+            let shadow = list.commands.iter().chain(commands).find_map(|cmd| match &cmd.draw {
+                Draw::Shadow { shadow, .. } => Some(shadow.color.a),
+                _ => None,
+            });
+            assert_eq!((shadow, *alpha), (Some(cast), 0.5), "{blend}");
+        }
     }
 
     /// ADR-0331. An inset shadow draws above every background layer and under the children; the

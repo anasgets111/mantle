@@ -774,9 +774,9 @@ Write `void main()` and set `fragColor` to premultiplied RGBA.
 | `u_progress` | `float` | `progress` |
 | `mantle_opacity` | | Not set |
 
-Unlike a `shader` node, no step follows your `main`: the output is not rounded to `radius` and not
-multiplied by `opacity`, since the subtree already carries its opacity. Cut to the shape yourself
-with `mantle_sdf` when you want to.
+Unlike a `shader` node, your output is not rounded to `radius`. Cut to the shape yourself with
+`mantle_sdf` when you want to. The input is the subtree before the node's `opacity`, which fades
+the layer once, after your program, so alpha it adds where the input is transparent fades too.
 
 <!-- file: shaders/shape.frag -->
 ```glsl
@@ -802,7 +802,7 @@ void main() {
 | Hit testing and input regions | Ignore it: a shader draws pixels, not shape |
 
 Order: the shader reads the node after its fill, children and border, and its output goes through
-`shadows` (content mode), then `effect.blur` and the colour filters. `padding` is cut at the same
+`shadows` (content mode), then `effect.blur` and the colour filters, then `opacity`. `padding` is cut at the same
 clips as a shadow, so a node at a surface's edge has no room to pad into.
 
 #### Backdrop input
@@ -950,8 +950,8 @@ One node paints in this order, each step over the last. The order is fixed: the 
 | Content-mode shadow or `effect.blur` over an `image`, `icon`, `capture`, image `mask` or glass | The layer is redrawn every repaint instead of reused | Keep those out of animated layers, or accept the cost |
 | Anything under a glass changes | The glass repaints, and so does everything in the area it reads (3 sigma past its box) | Keep glass away from constantly animating content, or keep sigma small |
 | Shadow or `effect.blur` near a clipping parent's edge (`clip`, a scroll viewport, the surface) | Cut at that clip, like any child paint | Give that parent padding |
-| `opacity` on a node with effects | Multiplied into every draw once; layers and clips composite at full alpha, so nothing fades twice | Expected |
-| `opacity < 1` on a group whose children overlap | Each child fades on its own, so overlaps show through each other (not CSS group opacity) | For a group fade, give the parent a uniform `mask` (e.g. both stops `"#00000080"`); it costs an offscreen pass |
+| `opacity` on a node with effects | Multiplied into every draw once; layers and clips composite at full alpha, so nothing fades twice. With `effect.shader` the subtree draws without it and the layer composites at `opacity` | Expected |
+| `opacity < 1` on a group whose children overlap | Each child fades on its own, so overlaps show through each other (not CSS group opacity), except under `effect.shader`, whose layer fades as one | For a group fade, give the parent a uniform `mask` (e.g. both stops `"#00000080"`); it costs an offscreen pass |
 | A transform on a node with a glass or shadow | The backdrop, shadow and body move together; the glass reads under its transformed position | Expected |
 
 ## How do I…

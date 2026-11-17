@@ -150,7 +150,14 @@ pub enum Draw {
     /// and through `effect.blur`, by `effect.blend` (ADR-0254, ADR-0336). `rect` is the node's box;
     /// `clip` covers everything the effect reaches, and is what a blend reads under it. A
     /// `silhouette` is a scoop's fill, and only its shadow draws, cut out under the box (ADR-0260).
-    Layer { effect: Box<node::Effect>, shader: Option<LayerShader>, silhouette: bool, commands: Vec<DrawCmd> },
+    /// `alpha` fades the result: a shader layer's opacity, 1 for any other.
+    Layer {
+        effect: Box<node::Effect>,
+        shader: Option<LayerShader>,
+        silhouette: bool,
+        alpha: f32,
+        commands: Vec<DrawCmd>,
+    },
     /// What the target already holds under the node's box, blurred by `sigma`, recoloured by `tone`
     /// and drawn through its `radius` at `alpha` (ADR-0256), then the `shader` reading it drawn over
     /// it. `clip` covers the 3 sigma the blur reads and the shader's padding. A `mask` scales the
@@ -824,6 +831,13 @@ mod tests {
         reads.clear();
         glass(0.0).desktop_reads(UNCLIPPED, &mut reads);
         assert!(reads.is_empty(), "{reads:?}");
+        // A shader layer's subtree draws whole only while the layer does (#117).
+        let hidden = effect_surface(
+            r#"rect { width = 40, height = 20, opacity = 0, effect = { shader = { source = "/s.frag" } },
+                children = { rect { width = 40, height = 20, effect = { shader = { source = "/s.frag", input = "desktop" } } } } }"#,
+        );
+        hidden.desktop_reads(UNCLIPPED, &mut reads);
+        assert!(reads.is_empty(), "under a hidden shader: {reads:?}");
     }
 
     /// A desktop read lies under its own and its ancestors' translate and scale, cut to the
@@ -864,7 +878,8 @@ mod tests {
     #[test]
     fn a_blended_layer_damages_its_whole_read() {
         let effect = node::Effect { blend: node::Blend::Multiply, ..node::Effect::default() };
-        let draw = Draw::Layer { effect: Box::new(effect), shader: None, silhouette: false, commands: Vec::new() };
+        let draw =
+            Draw::Layer { effect: Box::new(effect), shader: None, silhouette: false, alpha: 1.0, commands: Vec::new() };
         let mut damage = vec![PhysicalRect { x0: 30, y0: 0, x1: 31, y1: 1 }];
         DisplayList { commands: vec![DrawCmd { draw, ..glass(0, 40) }] }.expand_backdrops(&mut damage);
         assert_eq!(damage[1..], [PhysicalRect { x0: -2, y0: -2, x1: 42, y1: 12 }]);
