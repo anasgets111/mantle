@@ -297,6 +297,7 @@ async fn run_supervisor(
 
     let socket_path = shared::control_socket_path(&dir);
     let (registry, call_routes, mut inbound_frames, mut connected) = socket::spawn_listener(&socket_path)?;
+    let mut kill_requests = registry.kill_requests();
 
     // Lock (ADR-0042, ADR-0052): the Renderer holds and paints `ext_session_lock_v1`; this side
     // decides whether to take it. The controller must not cache the authoritative generation id,
@@ -385,6 +386,7 @@ async fn run_supervisor(
             Some(request) = agent_requests.recv() => supervisor.handle_polkit_request(request),
             Some((serial, message)) = polkit_events.recv() => supervisor.record_polkit_message(serial, message),
             Some(generation_id) = connected.recv() => supervisor.hydrate(generation_id),
+            Some(generation_id) = kill_requests.recv() => supervisor.kill_hung_up(generation_id),
             Some(theme) = icon_themes.recv() => supervisor.set_icon_theme(theme),
             // One arm per snapshot capability (ADR-0076); `Signals::next` is cancel-safe.
             Some(signal) = signals.next() => supervisor.push_capability_signal(signal),

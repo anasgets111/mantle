@@ -100,6 +100,8 @@ pub struct GenerationRegistry {
     /// Generations whose Renderer spoke another `PROTOCOL_VERSION`: their departure stops the
     /// Supervisor, since every replacement would come from the same binary.
     protocol_refused: Arc<Mutex<HashSet<u32>>>,
+    /// Where [`Self::kill_after_hangup`] asks the loop that owns the Renderer's `Child` to kill it.
+    kill_requests: Arc<Mutex<Option<mpsc::UnboundedSender<u32>>>>,
 }
 
 impl GenerationRegistry {
@@ -135,19 +137,22 @@ impl GenerationRegistry {
         }
     }
 
-    /// Kills `generation_id`'s Renderer group if it is still running [`WEDGED_KILL_AFTER`] after its
-    /// connection closed. A wedged Renderer never sees the EOF, so `child.wait()` would never fire.
-    /// The expectation is dropped once the departure is observed, which keeps this off a reused pid.
+    /// Asks the Renderer's owner to kill `generation_id`'s group if it is still running
+    /// [`WEDGED_KILL_AFTER`] after its connection closed. A wedged Renderer never sees the EOF, so
+    /// `child.wait()` would never fire. `Supervisor::kill_hung_up` says why the owner kills it.
     fn kill_after_hangup(&self, generation_id: u32) {
-        let registry = self.clone();
+        let Some(requests) = self.kill_requests.lock().expect("mutex poisoned").clone() else { return };
         tokio::spawn(async move {
             tokio::time::sleep(WEDGED_KILL_AFTER).await;
-            let pid = registry.expected_pids.lock().expect("mutex poisoned").get(&generation_id).copied();
-            if let Some(pid) = pid {
-                warn!("generation {generation_id} (pid {pid}) is still running after the hangup; killing it");
-                let _ = crate::process::signal_group_best_effort(pid, nix::sys::signal::Signal::SIGKILL);
-            }
+            let _ = requests.send(generation_id);
         });
+    }
+
+    /// The generation ids [`Self::kill_after_hangup`] asks to kill; replaces any earlier receiver.
+    pub fn kill_requests(&self) -> mpsc::UnboundedReceiver<u32> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        *self.kill_requests.lock().expect("mutex poisoned") = Some(tx);
+        rx
     }
 
     /// Queues `process.run` output once the peer's queue has [`OUTPUT_RESERVE`] free slots, waiting
@@ -668,14 +673,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_hung_up_renderer_that_ignores_the_eof_is_killed() {
+    async fn a_hung_up_renderer_is_handed_to_its_owner_to_kill_rather_than_signalled_here() {
         // Hung up as wedged, or refused for its protocol (#63).
         for refused in [false, true] {
             let registry = GenerationRegistry::default();
-            let mut child =
-                crate::process::spawn_group_leader("sh", &crate::process::sh_args("trap '' HUP TERM; sleep 30"), &[])
-                    .unwrap();
-            registry.expect_generation(5, Pid::from_raw(child.id().unwrap() as i32));
+            let mut kill_requests = registry.kill_requests();
             if refused {
                 registry.refuse_protocol(5);
             } else {
@@ -685,8 +687,7 @@ mod tests {
                     registry.send_to(5, b"x".to_vec());
                 }
             }
-            let status = tokio::time::timeout(Duration::from_secs(5), child.wait()).await.expect("killed").unwrap();
-            assert_eq!(std::os::unix::process::ExitStatusExt::signal(&status), Some(9), "refused: {refused}");
+            assert_eq!(within(kill_requests.recv()).await, Some(5), "refused: {refused}");
         }
     }
 

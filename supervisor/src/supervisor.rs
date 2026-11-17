@@ -442,6 +442,22 @@ impl Supervisor {
         self.respawn_renderer().await
     }
 
+    /// Kills `generation_id`'s Renderer group, hung up on and still running (`kill_after_hangup`),
+    /// if it is the authoritative child and not yet reaped. Only this loop reaps it, so an unreaped
+    /// pid is still this Renderer's and its group cannot have been reissued (#105).
+    pub(crate) fn kill_hung_up(&self, generation_id: u32) {
+        if let Some(pgid) = self.hung_up_group(generation_id) {
+            warn!("generation {generation_id} (pid {pgid}) is still running after the hangup; killing it");
+            let _ = process::signal_group_best_effort(pgid, nix::sys::signal::Signal::SIGKILL);
+        }
+    }
+
+    fn hung_up_group(&self, generation_id: u32) -> Option<nix::unistd::Pid> {
+        let child = &self.authoritative.child;
+        let pid = child.id().filter(|_| generation_id == self.authoritative.generation_id)?;
+        Some(nix::unistd::Pid::from_raw(pid as i32))
+    }
+
     /// Spawns the replacement unless the brake defers it to `respawn_at` (ADR-0058 decision 3); `true` stops the loop.
     pub(crate) async fn respawn_renderer(&mut self) -> bool {
         if !self.restart_brake.allow(std::time::Instant::now()) {
@@ -664,7 +680,10 @@ mod tests {
     use crate::capabilities::test_support::{PrivateBus, private_bus, within};
     use tokio::sync::mpsc;
 
-    /// Kills any tracked process groups on drop so a panicking test cannot orphan children.
+    /// Kills any tracked process groups on drop so a panicking test cannot orphan children. A
+    /// tracked child must stay unreaped until then, or be released before the test reaps it: a
+    /// reaped pid may be another group's by the drop. The Supervisor drops a replaced child
+    /// unreaped, and the fake Renderer outlives the test.
     #[derive(Default)]
     struct ChildGuard(Vec<nix::unistd::Pid>);
 
@@ -673,6 +692,12 @@ mod tests {
             if let Some(pid) = child.id() {
                 self.0.push(nix::unistd::Pid::from_raw(pid as i32));
             }
+        }
+
+        fn release(&mut self, child: &tokio::process::Child) {
+            let tracked = self.0.len();
+            self.0.retain(|pid| Some(pid.as_raw() as u32) != child.id());
+            assert!(self.0.len() < tracked, "release a tracked child before reaping it");
         }
     }
 
@@ -953,9 +978,29 @@ mod tests {
 
         // renderer_departed = false ensures shutdown reap kills the live replacement child too, and
         // the stop's exit status is what `run_supervisor` hands `process::exit`.
+        guard.release(&supervisor.authoritative.child);
         assert_eq!(supervisor.reap().await, shared::EXIT_PROTOCOL_MISMATCH);
         assert!(supervisor.authoritative.child.try_wait().unwrap().is_some());
         assert!(supervisor.processes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_hung_up_renderer_is_killed_only_while_it_is_the_unreaped_authoritative_child() {
+        let bus = private_bus().await;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut supervisor, _lock_commands, _open) = booted(&bus, dir.path()).await;
+        let mut guard = ChildGuard::default();
+        assert_eq!(supervisor.hung_up_group(0), None, "a reaped generation is never signalled");
+
+        supervisor.renderer = Renderer::new(make_fake_renderer(dir.path()), dir.path(), dir.path(), None, 0, None);
+        assert!(!supervisor.respawn_renderer().await);
+        guard.track(&supervisor.authoritative.child);
+        assert_eq!(supervisor.hung_up_group(0), None, "a departed generation's request is stale");
+
+        guard.release(&supervisor.authoritative.child);
+        supervisor.kill_hung_up(1);
+        let status = within(supervisor.authoritative.child.wait()).await.unwrap();
+        assert_eq!(std::os::unix::process::ExitStatusExt::signal(&status), Some(9), "the wedged group is killed");
     }
 
     #[tokio::test]
@@ -988,6 +1033,7 @@ mod tests {
         assert_eq!(supervisor.authoritative.generation_id, 3, "brake must defer before spawning");
         assert!(supervisor.respawn_at.is_some_and(|at| at > before_brake));
 
+        guard.release(&supervisor.authoritative.child);
         supervisor.reap().await;
     }
 

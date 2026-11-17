@@ -27,6 +27,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 - Fixed: tearing down a `lock` surface with `compositor_blur = true` before its first configure, such as when the compositor refuses a lock, no longer disconnects the shell.
 - Fixed: an in-place reload stops `mantle.folders:watch` watches that `shell.lua` no longer declares and drops them from `mantle.folders.watched`. They used to keep pushing changes until a restart. Kept watches keep their listings instead of resetting `ready`.
 - Fixed: a `geometry()` signal, and signals derived from it, keep their previous rect when a layout pass fails or a reload is rejected. They used to take the rejected pass's rect.
+- Fixed: `mantle` no longer risks killing an unrelated process that reused a hung shell process's pid, 5 s after the hang.
 - Fixed: the first `persistent_table` for a file reads it in the background, so a slow or network home directory no longer stalls every other `mantle.*` capability while it reads. The store reads its defaults until the file lands; `set` calls made meanwhile are kept and win over the file.
 - Fixed: a popup opened from a panel on one output stays open when that panel hides on another output.
 - Fixed: `mantle.tray` caps the tray at 32 items, 512-byte object paths and 4096 menu nodes across all items, so a flooded session bus cannot push it past the frame limit. An item past 32 logs one warning and enters once another leaves.
