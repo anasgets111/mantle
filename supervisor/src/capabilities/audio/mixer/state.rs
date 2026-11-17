@@ -60,7 +60,8 @@ pub(super) struct MixerState {
     /// payload from the maps and send nothing while it is false, so the first snapshot a config
     /// ever sees is a complete one rather than a default it will watch get corrected.
     ///
-    /// The maps keep updating throughout. This gates sending, not tracking.
+    /// The maps keep updating throughout. This gates sending, not tracking. Set only through
+    /// `MixerState::hydrate`, which also starts the virtual devices' child (#108).
     pub(super) hydrated: bool,
     pub(super) last_sent: Option<AudioState>,
     /// Maps are keyed by node id; `BTreeMap` publishes them in id order.
@@ -103,6 +104,8 @@ pub(super) struct MixerState {
     pub(super) null_sinks: HashMap<String, (shared::action::VirtualDevice, pw::node::Node)>,
     /// Metered sink or source id -> its capture stream.
     pub(super) meters: HashMap<u32, super::meters::Meter>,
+    /// Told once, when this connection hydrates.
+    pub(super) virtual_devices: Option<UnboundedSender<crate::capabilities::audio::virtual_devices::Request>>,
 }
 
 impl MixerState {
@@ -134,6 +137,7 @@ impl MixerState {
             app_pins: HashMap::new(),
             null_sinks: HashMap::new(),
             meters: HashMap::new(),
+            virtual_devices: None,
         }
     }
 

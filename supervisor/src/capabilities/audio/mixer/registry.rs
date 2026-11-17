@@ -70,15 +70,12 @@ fn reconnect(
 ) {
     let mut commands = Some(commands);
     let null_sinks = NullSinks::default();
-    let (mut delay, mut lost) = (RETRY_FIRST, false);
+    let mut delay = RETRY_FIRST;
     loop {
         let started = std::time::Instant::now();
         let levels = Rc::new(RefCell::new(meters::Levels::new(level_updates.clone())));
-        // The virtual devices' child outlives a lost daemon with none of its modules.
-        let restart = lost.then(|| virtual_devices.clone());
-        match run_inner(remote, updates, privacy_updates, &mut commands, &null_sinks, &levels, restart) {
+        match run_inner(remote, updates, privacy_updates, &mut commands, &null_sinks, &levels, virtual_devices) {
             Ok(true) => {
-                lost = true;
                 warn!("lost the PipeWire connection; reconnecting");
                 let _ = updates.send(AudioState::default());
                 privacy_updates.send_replace(PrivacySources::default());
@@ -112,7 +109,7 @@ fn run_inner(
     commands: &mut Option<AudioCommandReceiver>,
     declared: &NullSinks,
     levels: &Rc<RefCell<meters::Levels>>,
-    restart: Option<UnboundedSender<virtual_devices::Request>>,
+    virtual_devices: &UnboundedSender<virtual_devices::Request>,
 ) -> Result<bool, pw::Error> {
     pw::init();
 
@@ -121,9 +118,9 @@ fn run_inner(
     let core = context.connect_rc(remote.map(|remote| pw::properties::properties! { *keys::REMOTE_NAME => remote }))?;
     let registry = core.get_registry_rc()?;
 
-    let state = Rc::new(RefCell::new(MixerState::new(updates.clone(), privacy_updates.clone())));
-    // `done` answers once per barrier, and only the last opens the gate; take, so one restart.
-    let restart = Cell::new(restart);
+    let mut state = MixerState::new(updates.clone(), privacy_updates.clone());
+    state.virtual_devices = Some(virtual_devices.clone());
+    let state = Rc::new(RefCell::new(state));
 
     // Weak: the listener is stored on registry's C object, so a captured strong RegistryRc would
     // keep itself alive forever.
@@ -156,10 +153,7 @@ fn run_inner(
                 if let Some(Err(err)) = other {
                     warn!("core.sync failed ({err}); publishing without waiting for PipeWire to settle");
                 }
-                let mut state = state.borrow_mut();
-                state.hydrated = true;
-                state.publish_audio();
-                state.publish_privacy();
+                state.borrow_mut().hydrate();
             }
         }
     }
@@ -207,15 +201,9 @@ fn run_inner(
             if id != pw::core::PW_ID_CORE || barrier_for_done.get() != Some(seq.seq()) {
                 return;
             }
-            if let Some(restart) = restart.take() {
-                let _ = restart.send(virtual_devices::Request::Restart);
-            }
             // Publish once here even with no sink at all: a machine with no audio hardware still
             // owes the config an answer, and waiting for a nonempty map would never end.
-            let mut state = state_for_done.borrow_mut();
-            state.hydrated = true;
-            state.publish_audio();
-            state.publish_privacy();
+            state_for_done.borrow_mut().hydrate();
         })
         .error(move |id, _seq, res, message| {
             if id != pw::core::PW_ID_CORE {
@@ -230,9 +218,7 @@ fn run_inner(
             let mut state = state_for_error.borrow_mut();
             if !state.hydrated {
                 warn!("PipeWire core error before the first snapshot ({message}); publishing what arrived");
-                state.hydrated = true;
-                state.publish_audio();
-                state.publish_privacy();
+                state.hydrate();
             }
         })
         .register();
@@ -794,6 +780,7 @@ mod tests {
         published: tokio::sync::mpsc::UnboundedReceiver<AudioState>,
         commands: AudioCommandSender,
         levels: tokio::sync::mpsc::UnboundedReceiver<AudioLevelsState>,
+        requests: tokio::sync::mpsc::UnboundedSender<virtual_devices::Request>,
         restarts: tokio::sync::mpsc::UnboundedReceiver<virtual_devices::Request>,
     }
 
@@ -803,11 +790,12 @@ mod tests {
         let (privacy_updates, _privacy) = watch::channel(PrivacySources::default());
         let (commands, receiver) = command_channel();
         let (level_updates, levels) = tokio::sync::mpsc::unbounded_channel();
-        let (restart, restarts) = tokio::sync::mpsc::unbounded_channel();
+        let (requests, restarts) = tokio::sync::mpsc::unbounded_channel();
+        let restart = requests.clone();
         std::thread::spawn(move || {
             reconnect(Some(&remote), &updates, &privacy_updates, &level_updates, receiver, &restart);
         });
-        Mixer { published, commands, levels, restarts }
+        Mixer { published, commands, levels, requests, restarts }
     }
 
     /// No id, no stream: metering the sink opens one capture stream, a repeat call keeps that
@@ -845,8 +833,8 @@ mod tests {
         assert!(audio.is_none_or(|audio| audio.apps.is_empty()), "the meter is not an app");
     }
 
-    /// A declared null sink appears, comes back after a daemon restart, which also asks the
-    /// virtual devices' child to restart, and goes with an empty list.
+    /// A declared null sink appears, comes back after a daemon restart, and goes with an empty
+    /// list. Each connection tells the virtual devices' task once.
     #[test]
     fn a_null_sink_is_made_again_after_a_restart_and_goes_with_an_empty_list() {
         let dir = tempfile::tempdir().unwrap();
@@ -862,13 +850,14 @@ mod tests {
         until(&mut mixer.published, |audio| audio.sinks.len() == 1);
         mixer.commands.send(AudioCommand::SetNullSinks(vec![device])).unwrap();
         until(&mut mixer.published, declared);
-        assert!(mixer.restarts.try_recv().is_err(), "the first connection restarts nothing");
+        let mut restarts = || std::iter::from_fn(|| mixer.restarts.try_recv().ok()).count();
+        assert_eq!(restarts(), 1);
 
         drop(pipewire);
         until(&mut mixer.published, |audio| *audio == AudioState::default());
         let _pipewire = daemon(dir.path());
         until(&mut mixer.published, declared);
-        assert!(matches!(mixer.restarts.try_recv(), Ok(virtual_devices::Request::Restart)));
+        assert_eq!(restarts(), 1);
 
         mixer.commands.send(AudioCommand::SetNullSinks(Vec::new())).unwrap();
         until(&mut mixer.published, |audio| audio.sinks.len() == 1 && !declared(audio));
@@ -906,30 +895,28 @@ mod tests {
         until(&mut mixer.published, |audio| active(audio) == "test-sink");
     }
 
-    /// The conf `set_virtual_devices` writes loads in `pipewire -c`: a loopback is a sink by its name.
+    /// A loopback declared before PipeWire starts appears once it does, as a sink by its name.
     #[test]
-    fn a_loopback_in_the_generated_conf_loads_as_a_sink() {
+    fn a_loopback_declared_before_pipewire_starts_appears_once_it_does() {
         let dir = tempfile::tempdir().unwrap();
-        let _pipewire = daemon(dir.path());
-        // A client started before the daemon's socket listens loses its `nofail` loopback for good.
-        until_nodes(dir.path(), "Audio/Sink", |found| found.iter().any(|(_, name)| name == "test-sink"));
+        let Mixer { mut published, commands, requests, restarts, .. } = mixer(dir.path());
+        let (conf, envs) =
+            (dir.path().join("devices.conf"), [("PIPEWIRE_RUNTIME_DIR".to_string(), dir.path().display().to_string())]);
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        runtime.spawn(virtual_devices::run(restarts, commands, move |modules| {
+            virtual_devices::start(Some(&conf), modules, &envs)
+        }));
         let device = shared::action::VirtualDevice {
             kind: shared::action::VirtualKind::Loopback,
             name: "mantle-test-loop".to_string(),
-            description: Some("Test loop".to_string()),
+            description: None,
             args: serde_json::Map::new(),
         };
-        let conf = dir.path().join("devices.conf");
-        std::fs::write(&conf, virtual_devices::conf_text(&[device])).unwrap();
-        let child = Command::new("pipewire")
-            .arg("-c")
-            .arg(&conf)
-            .env("PIPEWIRE_RUNTIME_DIR", dir.path())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        let _child = Daemon(child);
+        requests.send(virtual_devices::Request::Declare { generation: 1, devices: vec![device] }).unwrap();
+
+        let _pipewire = daemon(dir.path());
+        // Each wait has its own bound: the mixer's backoff has reached 4 s by its third try.
+        until(&mut published, |audio| audio.sinks.len() == 1);
         until_nodes(dir.path(), "Audio/Sink", |found| found.iter().any(|(_, name)| name == "mantle-test-loop"));
     }
 

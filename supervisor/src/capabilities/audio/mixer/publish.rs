@@ -7,6 +7,17 @@ use crate::capabilities::audio::master;
 use crate::capabilities::scale::percent_from_fraction;
 
 impl MixerState {
+    /// Tells the virtual devices' task once, before the snapshot that shows the connection, then
+    /// opens the gate and publishes both payloads.
+    pub(super) fn hydrate(&mut self) {
+        if let Some(devices) = self.virtual_devices.take() {
+            let _ = devices.send(crate::capabilities::audio::virtual_devices::Request::Connected);
+        }
+        self.hydrated = true;
+        self.publish_audio();
+        self.publish_privacy();
+    }
+
     /// Publishes even if the receiver is absent; that is startup or shutdown, not a tracking error.
     ///
     /// Silent until [`MixerState::hydrated`], so the first snapshot is complete: volumes, device and privacy lists.
@@ -278,12 +289,15 @@ mod tests {
         MixerState { hydrated: true, ..MixerState::new(updates, privacy_updates) }
     }
 
+    /// `hydrate` tells the virtual devices' task once per connection, then publishes. That every
+    /// hydration path calls it rests on `hydrated` being set nowhere else outside tests.
     #[test]
     fn a_state_that_has_not_hydrated_publishes_nothing() {
         let (updates, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let (privacy_updates, privacy_rx) = watch::channel(PrivacySources::default());
+        let (virtual_devices, mut connected) = tokio::sync::mpsc::unbounded_channel();
         let mut state = mixer_state(updates, privacy_updates);
-        state.hydrated = false;
+        (state.hydrated, state.virtual_devices) = (false, Some(virtual_devices));
         // A bound sink with no `Props` yet: exactly the shape the first `global` burst leaves.
         state.sinks = HashMap::from([(59, sink_at("alsa_output.pci-...analog-stereo", None, None))]);
         state.default_sink_name = Some("alsa_output.pci-...analog-stereo".to_string());
@@ -294,11 +308,13 @@ mod tests {
         assert!(rx.try_recv().is_err(), "an unhydrated state must not publish its unknown master volume");
         assert!(!privacy_rx.has_changed().unwrap(), "an unhydrated state must not publish its empty privacy lists");
 
-        state.hydrated = true;
-        state.publish_audio();
-        state.publish_privacy();
-        assert!(rx.try_recv().is_ok(), "opening the gate must publish audio on the next call");
-        assert!(privacy_rx.has_changed().unwrap(), "opening the gate must publish privacy on the next call");
+        assert!(connected.try_recv().is_err());
+        state.hydrate();
+        assert!(rx.try_recv().is_ok(), "opening the gate must publish audio");
+        assert!(privacy_rx.has_changed().unwrap(), "opening the gate must publish privacy");
+        state.hydrate();
+        let told = std::iter::from_fn(|| connected.try_recv().ok()).count();
+        assert_eq!(told, 1, "the virtual devices' task hears of a connection once");
     }
 
     #[test]

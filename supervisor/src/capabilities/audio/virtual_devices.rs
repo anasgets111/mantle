@@ -20,9 +20,10 @@ pub enum Request {
     Declare { generation: u32, devices: Vec<VirtualDevice> },
     /// A departed generation; its declaration goes unless a newer one replaced it.
     Forget(u32),
-    /// The mixer reconnected after losing PipeWire: the child's modules went with the daemon, but
-    /// the child lives on, so it is restarted.
-    Restart,
+    /// The mixer has a snapshot from PipeWire. The child waits for the first, as one started with
+    /// no daemon runs with none of its modules; a later one restarts it, since a lost daemon took
+    /// the modules and left the child running.
+    Connected,
 }
 
 /// The conf file the child runs, one per Supervisor; its owner removes it on exit.
@@ -33,7 +34,8 @@ pub fn conf_path() -> Option<PathBuf> {
 /// Starts the task; it ends when the returned sender drops.
 pub fn spawn(commands: AudioCommandSender) -> UnboundedSender<Request> {
     let (requests, receiver) = unbounded_channel();
-    tokio::spawn(run(receiver, commands, conf_path()));
+    let conf = conf_path();
+    tokio::spawn(run(receiver, commands, move |modules| start(conf.as_deref(), modules, &[])));
     requests
 }
 
@@ -48,16 +50,23 @@ fn declared(owner: &mut Option<u32>, request: Request) -> Option<Vec<VirtualDevi
             *owner = None;
             Some(Vec::new())
         }
-        Request::Forget(_) | Request::Restart => None,
+        Request::Forget(_) | Request::Connected => None,
     }
 }
 
-async fn run(mut requests: UnboundedReceiver<Request>, commands: AudioCommandSender, conf: Option<PathBuf>) {
-    let (mut owner, mut modules, mut child) = (None, Vec::new(), None::<Child>);
+/// `start` runs the child for the declared modules; a test counts its calls.
+pub(super) async fn run(
+    mut requests: UnboundedReceiver<Request>,
+    commands: AudioCommandSender,
+    mut start: impl FnMut(&[VirtualDevice]) -> Option<Child>,
+) {
+    let (mut owner, mut modules, mut child, mut connected) = (None, Vec::new(), None::<Child>, false);
     let (mut retry, mut delay, mut started) = (None, RETRY_FIRST, Instant::now());
     loop {
-        if child.is_none() && retry.is_none() && !modules.is_empty() {
-            child = start(conf.as_deref(), &modules);
+        // ponytail: devices wait on the mixer's first snapshot, so a mixer thread that dies before
+        // it leaves them unstarted, silently; upgrade: log a declare held past a deadline.
+        if connected && child.is_none() && retry.is_none() && !modules.is_empty() {
+            child = start(&modules);
             started = Instant::now();
             if child.is_none() {
                 retry = Some(tokio::time::Instant::now() + delay);
@@ -67,11 +76,11 @@ async fn run(mut requests: UnboundedReceiver<Request>, commands: AudioCommandSen
         tokio::select! {
             request = requests.recv() => {
                 let Some(request) = request else { break };
-                if matches!(request, Request::Restart) {
+                if matches!(request, Request::Connected) {
                     if let Some(mut old) = child.take() {
                         let _ = reap_process_group(&mut old, DEFAULT_REAP_GRACE).await;
                     }
-                    (retry, delay) = (None, RETRY_FIRST);
+                    (connected, retry, delay) = (true, None, RETRY_FIRST);
                     continue;
                 }
                 let Some(devices) = declared(&mut owner, request) else { continue };
@@ -107,7 +116,7 @@ async fn run(mut requests: UnboundedReceiver<Request>, commands: AudioCommandSen
 }
 
 /// Writes the conf and runs `pipewire -c` on it, killed with the Supervisor (`PR_SET_PDEATHSIG`).
-fn start(conf: Option<&Path>, modules: &[VirtualDevice]) -> Option<Child> {
+pub(super) fn start(conf: Option<&Path>, modules: &[VirtualDevice], envs: &[(String, String)]) -> Option<Child> {
     let Some(conf) = conf else {
         warn!("XDG_RUNTIME_DIR is not set; the virtual devices have nowhere for their conf");
         return None;
@@ -116,7 +125,7 @@ fn start(conf: Option<&Path>, modules: &[VirtualDevice]) -> Option<Child> {
         warn!("cannot write {}: {err}", conf.display());
         return None;
     }
-    match spawn_group_leader_stdio_piped("pipewire", &["-c".to_string(), conf.display().to_string()], &[]) {
+    match spawn_group_leader_stdio_piped("pipewire", &["-c".to_string(), conf.display().to_string()], envs) {
         Ok(mut child) => {
             // Nothing is read from or written to it; its log goes to the inherited stderr.
             drop((child.stdin.take(), child.stdout.take()));
@@ -173,6 +182,35 @@ fn module(device: &VirtualDevice) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::test_support::within;
+    use crate::process::sh_args;
+
+    /// The module lists `run` starts a child for, given `requests` in order.
+    async fn starts(requests: Vec<Request>) -> Vec<Vec<VirtualDevice>> {
+        let (sender, receiver) = unbounded_channel();
+        requests.into_iter().for_each(|request| sender.send(request).unwrap());
+        drop(sender);
+        let (commands, _receiver) = super::super::mixer::command_channel();
+        let mut started = Vec::new();
+        within(run(receiver, commands, |modules| {
+            started.push(modules.to_vec());
+            spawn_group_leader_stdio_piped("sh", &sh_args("sleep 30"), &[]).ok()
+        }))
+        .await;
+        started
+    }
+
+    /// The child waits for the mixer's first connection, whichever arrives first, and a later
+    /// connection, as after a lost daemon, restarts it once.
+    #[tokio::test]
+    async fn the_child_starts_once_the_mixer_connects_and_restarts_on_a_later_connection() {
+        let loopback = vec![device(VirtualKind::Loopback, "loop", json!({}))];
+        let declare = || Request::Declare { generation: 1, devices: loopback.clone() };
+        assert_eq!(starts(vec![declare(), Request::Connected]).await, [&loopback[..]], "declared first");
+        assert_eq!(starts(vec![Request::Connected, declare()]).await, [&loopback[..]], "connected first");
+        let reconnected = starts(vec![Request::Connected, declare(), Request::Connected]).await;
+        assert_eq!(reconnected, [loopback.clone(), loopback.clone()]);
+    }
 
     fn device(kind: VirtualKind, name: &str, args: Value) -> VirtualDevice {
         let Value::Object(args) = args else { panic!("args must be an object") };
