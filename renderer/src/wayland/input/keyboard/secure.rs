@@ -628,12 +628,129 @@ mod tests {
         assert!(!focus_is_still_armed(&on_popup, &scope(&["bar@TEST"]), true), "the popup is no longer shown");
     }
 
+    impl SecureFocus {
+        /// What was typed, for tests outside this module.
+        pub(in crate::wayland) fn typed(&self) -> &shared::SecureBuffer {
+            &self.buffer
+        }
+    }
+
     fn lua_log(app: &App) -> Vec<String> {
         app.client.lua().globals().get::<mlua::Table>("log").unwrap().sequence_values().map(Result::unwrap).collect()
     }
 
     fn key_a(raw_code: u32) -> KeyEvent {
         KeyEvent { raw_code, ..key(Keysym::a, Some("a")) }
+    }
+
+    /// One panel, `prompt`, holding `child`, with `on_key` logging into `log`; the keyboard on it.
+    fn prompt_app(child: &str) -> (App, tempfile::TempDir) {
+        let (mut app, dir) = App::test_app(&format!(
+            r#"
+            log = {{}}
+            masked = state("masked", true)
+            return panel {{
+                id = "prompt",
+                layer = "top",
+                output = "active",
+                width = 200,
+                height = 80,
+                on_key = function(k) log[#log + 1] = k.name; return true end,
+                child = {child},
+            }}
+            "#
+        ));
+        app.keyboard_focus = Some("prompt".to_string());
+        (app, dir)
+    }
+
+    fn arm(app: &mut App) {
+        let scope = app.keyboard_focus_scope();
+        app.arm_secure_focus_if_the_scope_now_declares_one(&scope);
+        assert!(app.focused_secure_submit.is_some());
+    }
+
+    fn press(app: &mut App, keysym: Keysym, utf8: &str) {
+        app.apply_key(&key(keysym, Some(utf8)), false, Some(1));
+    }
+
+    #[test]
+    fn enter_sends_the_typed_bytes_to_the_supervisor_once_and_none_to_lua() {
+        let (mut app, _dir) =
+            prompt_app(r#"textfield { secure_submit = { capability = "polkit", action = "authenticate" } }"#);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        app.outbound_tx = tx;
+        app.generation_id = 9;
+        arm(&mut app);
+        for text in ["p", "w", "x"] {
+            press(&mut app, Keysym::a, text);
+        }
+        press(&mut app, Keysym::BackSpace, "\u{8}");
+        press(&mut app, Keysym::Return, "\r");
+
+        let Ok(RendererFrame::SecureSubmit(submit)) = rx.try_recv() else { panic!("Enter queued no SecureSubmit") };
+        assert_eq!(
+            (submit.generation_id, submit.capability, submit.action.as_str(), submit.name.as_deref()),
+            (9, shared::Capability::Polkit, "authenticate", None)
+        );
+        assert!(submit.secret == b"pw", "the frame must carry exactly what was typed, less the erased key");
+        assert!(app.focused_secure_submit.as_ref().is_some_and(|f| f.buffer.is_empty()), "armed and scrubbed");
+        press(&mut app, Keysym::Return, "\r");
+        assert!(rx.try_recv().is_err(), "an Enter on the emptied field sends nothing");
+        assert!(lua_log(&app).is_empty(), "no key of a secure field reaches on_key");
+    }
+
+    #[test]
+    fn escape_scrubs_the_field_keeps_it_armed_and_tells_on_cancel_whether_it_held_text() {
+        let (mut app, _dir) = prompt_app(
+            r#"textfield {
+                secure_submit = { capability = "lock", action = "authenticate" },
+                on_cancel = function(cleared) log[#log + 1] = "cancel:" .. tostring(cleared) end,
+            }"#,
+        );
+        arm(&mut app);
+        press(&mut app, Keysym::a, "a");
+        press(&mut app, Keysym::Escape, "\u{1b}");
+        assert!(app.focused_secure_submit.as_ref().is_some_and(|f| f.buffer.is_empty()), "armed and scrubbed");
+        press(&mut app, Keysym::Escape, "\u{1b}");
+        assert_eq!(lua_log(&app), ["cancel:true", "cancel:false"]);
+    }
+
+    #[test]
+    fn the_fields_masked_is_followed_on_arming_and_on_every_resolve() {
+        let (mut app, _dir) = prompt_app(
+            r#"textfield { masked = masked, secure_submit = { capability = "lock", action = "authenticate" } }"#,
+        );
+        arm(&mut app);
+        press(&mut app, Keysym::a, "a");
+        let revealed = |app: &App| app.focused_secure_submit.as_ref().unwrap().revealed;
+        assert!(!revealed(&app));
+
+        app.client.lua().load("masked:set(false)").exec().unwrap();
+        assert!(app.client.re_resolve_if_dirty());
+        let edits = app.field_edits;
+        app.prune_secure_focus_after_resolve();
+        assert!(revealed(&app));
+        assert_ne!(app.field_edits, edits, "the field repaints without its mask");
+
+        app.focus_secure_submit(None);
+        arm(&mut app);
+        assert!(revealed(&app), "arming an unmasked field reveals it");
+        press(&mut app, Keysym::a, "b");
+        app.client.lua().load("masked:set(true)").exec().unwrap();
+        assert!(app.client.re_resolve_if_dirty());
+        app.prune_secure_focus_after_resolve();
+        assert!(!revealed(&app));
+    }
+
+    #[test]
+    fn a_field_arms_only_under_the_keyboard() {
+        // The main loop checks this before calling; the method holds it too.
+        let (mut app, _dir) =
+            prompt_app(r#"textfield { secure_submit = { capability = "lock", action = "authenticate" } }"#);
+        app.keyboard_focus = None;
+        app.arm_secure_focus_if_the_scope_now_declares_one(&["prompt".to_string()]);
+        assert!(app.focused_secure_submit.is_none(), "no keyboard, no armed field");
     }
 
     #[test]
@@ -664,9 +781,7 @@ mod tests {
 
         app.keyboard_focus = Some("prompt".to_string());
         app.repeat_info = Some((std::time::Duration::ZERO, std::time::Duration::ZERO));
-        let scope = app.keyboard_focus_scope();
-        app.arm_secure_focus_if_the_scope_now_declares_one(&scope);
-        assert!(app.focused_secure_submit.is_some());
+        arm(&mut app);
 
         let event = key_a(30);
         app.apply_key(&event, false, Some(1));
@@ -721,8 +836,7 @@ mod tests {
 
         app.keyboard_focus = Some("prompt".to_string());
         app.repeat_info = Some((std::time::Duration::ZERO, std::time::Duration::ZERO));
-        let scope = app.keyboard_focus_scope();
-        app.arm_secure_focus_if_the_scope_now_declares_one(&scope);
+        arm(&mut app);
 
         let event = key_a(30);
         app.apply_key(&event, false, Some(1));
@@ -739,8 +853,7 @@ mod tests {
 
         // A fresh press while secure focus is stale prunes secure focus and reaches the new surface.
         app.keyboard_focus = Some("prompt".to_string());
-        app.arm_secure_focus_if_the_scope_now_declares_one(&app.keyboard_focus_scope());
-        assert!(app.focused_secure_submit.is_some());
+        arm(&mut app);
         app.keyboard_focus = Some("other".to_string());
         app.apply_key(&event, false, Some(2));
         assert!(app.focused_secure_submit.is_none());
@@ -749,27 +862,14 @@ mod tests {
 
     #[test]
     fn focus_secure_submit_clears_repeat_only_when_the_secure_target_changes() {
-        let (mut app, _dir) = App::test_app(
-            r#"
-            log = {}
-            return panel {
-                id = "prompt",
-                layer = "top",
-                output = "active",
-                width = 200,
-                height = 80,
-                on_key = function(k) log[#log + 1] = k.name; return true end,
-                child = column {
-                    children = {
-                        textfield { secure_submit = { capability = "lock", action = "authenticate" } },
-                        textfield { secure_submit = { capability = "polkit", action = "authenticate" } },
-                    },
+        let (mut app, _dir) = prompt_app(
+            r#"column {
+                children = {
+                    textfield { secure_submit = { capability = "lock", action = "authenticate" } },
+                    textfield { secure_submit = { capability = "polkit", action = "authenticate" } },
                 },
-            }
-            "#,
+            }"#,
         );
-
-        app.keyboard_focus = Some("prompt".to_string());
         app.repeat_info = Some((std::time::Duration::ZERO, std::time::Duration::from_secs(60)));
 
         // Plain/on_key repeat survives `focus_secure_submit(None)` when no secure field was armed.

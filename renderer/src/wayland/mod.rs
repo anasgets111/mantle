@@ -391,9 +391,11 @@ mod test_support {
                 (5, "wl_output", 4),
                 (6, "ext_background_effect_manager_v1", 1),
                 (7, "ext_session_lock_manager_v1", 1),
+                (8, "wl_seat", 7),
+                (9, "wl_data_device_manager", 3),
             ];
             let mut reply = Vec::new();
-            for &(name, iface, version) in &all_globals[..if wire.is_some() { 7 } else { 4 }] {
+            for &(name, iface, version) in &all_globals[..if wire.is_some() { all_globals.len() } else { 4 }] {
                 let mut payload = name.to_ne_bytes().to_vec();
                 push_wire_str(&mut payload, iface);
                 payload.extend_from_slice(&version.to_ne_bytes());
@@ -490,7 +492,7 @@ mod test_support {
                 compositor_state,
                 scale_globals: None,
                 seat_state,
-                data_device_manager: None,
+                data_device_manager: DataDeviceManagerState::bind(&globals, &qh).ok(),
                 data_device: None,
                 clipboard_sources: Vec::new(),
                 clipboard_writers: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -581,7 +583,8 @@ mod test_support {
         }
 
         /// Same as [`App::test_app`], with `wl_output`, `ext_background_effect_manager_v1` (Blur),
-        /// `ext_session_lock_manager_v1`, and a wire request log synchronized via `event_queue.roundtrip`.
+        /// `ext_session_lock_manager_v1`, a `wl_seat` that announces nothing, `wl_data_device_manager`,
+        /// and a wire request log synchronized via `event_queue.roundtrip`.
         pub(in crate::wayland) fn test_app_with_wire(
             source: &str,
         ) -> (Self, tempfile::TempDir, EventQueue<App>, MockWayland) {

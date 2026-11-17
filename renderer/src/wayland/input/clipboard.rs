@@ -284,7 +284,11 @@ impl DataSourceHandler for App {
 
 #[cfg(test)]
 mod tests {
+    use wayland_client::{EventQueue, Proxy};
+
+    use super::super::keyboard::{ControlKind, FocusedControl};
     use super::*;
+    use crate::wayland::test_support::MockWayland;
 
     fn offered(bytes: &[u8], multiline: bool) -> Option<Zeroizing<Vec<u8>>> {
         let (read, write) = nix::unistd::pipe().unwrap();
@@ -363,5 +367,105 @@ mod tests {
         assert!(!claim_writer(&active));
         active.fetch_sub(1, Ordering::AcqRel);
         assert!(claim_writer(&active));
+    }
+
+    const PASTE_CONFIG: &str = r#"
+        local function prompt(id, child)
+            return panel { id = id, layer = "top", output = "active", width = 200, height = 80, child = child }
+        end
+        return {
+            prompt("lock", textfield { secure_submit = { capability = "lock", action = "authenticate" } }),
+            prompt("polkit", textfield { secure_submit = { capability = "polkit", action = "authenticate" } }),
+            prompt("search", textfield { width = 100, autofocus = true, on_change = function() end }),
+        }
+    "#;
+
+    /// A wire `App` whose seat has a data device holding a selection.
+    fn paste_app() -> (App, tempfile::TempDir, EventQueue<App>, MockWayland) {
+        let (mut app, dir, mut queue, mock) = App::test_app_with_wire(PASTE_CONFIG);
+        let seat = app.seat_state.seats().next().unwrap();
+        app.data_device = app.data_device_manager.as_ref().map(|m| m.get_data_device(&queue.handle(), &seat));
+        offer_selection(&mut app, &mut queue, &mock, 0xff00_0000);
+        (app, dir, queue, mock)
+    }
+
+    /// The compositor announcing a new selection as offer `id`, from the server's id range.
+    fn offer_selection(app: &mut App, queue: &mut EventQueue<App>, mock: &MockWayland, id: u32) {
+        let device = app.data_device.as_ref().unwrap().inner().id().protocol_id();
+        mock.send(device, 0, &id.to_ne_bytes()); // wl_data_device.data_offer
+        mock.send(device, 5, &id.to_ne_bytes()); // wl_data_device.selection
+        queue.roundtrip(app).unwrap();
+        let current = app.data_device.as_ref().unwrap().data().selection_offer();
+        assert_eq!(current.map(|offer| offer.inner().id().protocol_id()), Some(id));
+    }
+
+    fn arm_on(app: &mut App, surface_id: &str) -> FocusedField {
+        app.focus_secure_submit(None);
+        app.keyboard_focus = Some(surface_id.to_string());
+        let scope = app.keyboard_focus_scope();
+        app.arm_secure_focus_if_the_scope_now_declares_one(&scope);
+        (**app.focused_secure_submit.as_ref().unwrap()).clone()
+    }
+
+    /// `text` read from the current selection for `target`, as `start_paste` leaves it.
+    fn pending(app: &mut App, target: PasteTarget, text: &str) {
+        let offer = app.data_device.as_ref().unwrap().data().selection_offer().unwrap().inner().clone();
+        let (tx, result) = std::sync::mpsc::channel();
+        tx.send(Some(Zeroizing::new(text.as_bytes().to_vec()))).unwrap();
+        app.paste = Some(PendingPaste { target, edits: app.field_edits, offer, result });
+    }
+
+    fn secure_len(app: &App) -> usize {
+        app.focused_secure_submit.as_ref().unwrap().typed().grapheme_count()
+    }
+
+    #[test]
+    fn a_paste_reaches_only_the_secure_field_it_was_read_for_from_the_current_selection() {
+        let (mut app, _dir, mut queue, mock) = paste_app();
+        let polkit = arm_on(&mut app, "polkit");
+        let lock = arm_on(&mut app, "lock");
+
+        pending(&mut app, PasteTarget::Masked(lock.clone()), "pw");
+        app.finish_paste();
+        assert!(app.paste.is_none());
+        assert!(app.focused_secure_submit.as_ref().unwrap().typed().expose_secret() == b"pw", "the paste landed whole");
+
+        pending(&mut app, PasteTarget::Masked(polkit), "x");
+        app.finish_paste();
+        assert_eq!(secure_len(&app), 2, "a paste read for the polkit field must not land in the lock field");
+
+        pending(&mut app, PasteTarget::Masked(lock.clone()), "x");
+        offer_selection(&mut app, &mut queue, &mock, 0xff00_0001);
+        app.finish_paste();
+        assert!(app.paste.is_none());
+        assert_eq!(secure_len(&app), 2, "a selection replaced since the read is not what was pasted");
+
+        // A focused button holds the keys against a paste as against typing.
+        let root = app.client.scene().surface("lock").unwrap().id;
+        app.set_control_focus(Some(FocusedControl { surface_id: "lock".into(), id: root, kind: ControlKind::Button }));
+        pending(&mut app, PasteTarget::Masked(lock), "x");
+        app.finish_paste();
+        assert_eq!(secure_len(&app), 2, "a paste must not reach a field a focused button holds the keys from");
+    }
+
+    #[test]
+    fn a_paste_reaches_a_plain_field_only_while_its_surface_holds_the_keyboard() {
+        let (mut app, _dir, _queue, _mock) = paste_app();
+        app.keyboard_focus = Some("search".to_string());
+        let scope = app.keyboard_focus_scope();
+        app.arm_autofocus_if_unfocused(&scope);
+        let field = app.focused_text_field.as_ref().unwrap();
+        let target = PasteTarget::Plain { surface_id: field.surface_id.clone(), id: field.id };
+
+        pending(&mut app, target.clone(), "hi");
+        app.finish_paste();
+        assert_eq!(app.focused_text_field.as_ref().unwrap().buffer, "hi");
+
+        // The field keeps its draft off the keyboard (ADR-0108), and takes no paste there.
+        app.keyboard_focus = Some("lock".to_string());
+        pending(&mut app, target, "!");
+        app.finish_paste();
+        assert!(app.paste.is_none());
+        assert_eq!(app.focused_text_field.as_ref().unwrap().buffer, "hi");
     }
 }
