@@ -166,30 +166,53 @@ fn unmix(c: &[u8; 4], f: &[u8; 4], d: &mut [u8; 4]) -> bool {
     true
 }
 
-/// `known` in rows of `width` pixels, each unknown pixel (alpha 0) taking the nearest known one in
-/// its row: a shader that reads under opaque paint gets a plausible desktop, not black.
-/// ponytail: along rows only; a row with no known pixel stays unknown.
+/// `known` in rows of `width` pixels, each unknown pixel (alpha 0) taking the nearest known one by
+/// Manhattan distance, a tie taking either: a shader that reads under opaque paint gets a plausible
+/// desktop, not black. Two raster passes, each pixel taking its neighbours' pick.
+/// ponytail: copies, so a block shows seams where picks from different edges meet and bands where
+/// one edge pixel spreads; upgrade path: interpolate between the edges.
 fn filled(known: &[u8], width: usize) -> Vec<u8> {
     let mut out = known.to_vec();
     if width == 0 {
         return out;
     }
-    let (mut left, mut right) = (vec![None; width], vec![None; width]);
-    for (row, src) in out.chunks_exact_mut(width * 4).zip(known.chunks_exact(width * 4)) {
-        let seen = |x: usize| src[x * 4 + 3] != 0;
-        let mut last = None;
-        for (x, slot) in left.iter_mut().enumerate() {
-            last = if seen(x) { Some(x) } else { last };
-            *slot = last;
+    // Distance to each pixel's pick; MAX until it has one.
+    let mut far: Vec<u32> = known.as_chunks::<4>().0.iter().map(|p| if p[3] == 0 { u32::MAX } else { 0 }).collect();
+    if !far.contains(&u32::MAX) {
+        return out;
+    }
+    let height = far.len() / width;
+    let mut take = |far: &mut [u32], to: usize, from: usize| {
+        if far[from].saturating_add(1) < far[to] {
+            far[to] = far[from] + 1;
+            out.copy_within(from * 4..from * 4 + 4, to * 4);
         }
-        last = None;
-        for (x, slot) in right.iter_mut().enumerate().rev() {
-            last = if seen(x) { Some(x) } else { last };
-            *slot = last;
+    };
+    for y in 0..height {
+        for x in 0..width {
+            let p = y * width + x;
+            if far[p] == 0 {
+                continue;
+            }
+            if x > 0 {
+                take(&mut far, p, p - 1);
+            }
+            if y > 0 {
+                take(&mut far, p, p - width);
+            }
         }
-        for x in (0..width).filter(|x| !seen(*x)) {
-            if let Some(pick) = [left[x], right[x]].into_iter().flatten().min_by_key(|p| p.abs_diff(x)) {
-                row[x * 4..][..4].copy_from_slice(&src[pick * 4..][..4]);
+    }
+    for y in (0..height).rev() {
+        for x in (0..width).rev() {
+            let p = y * width + x;
+            if far[p] == 0 {
+                continue;
+            }
+            if x + 1 < width {
+                take(&mut far, p, p + 1);
+            }
+            if y + 1 < height {
+                take(&mut far, p, p + width);
             }
         }
     }
@@ -373,14 +396,34 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_pixel_reads_as_the_nearest_known_one_in_its_row() {
+    fn an_unknown_pixel_reads_as_the_nearest_known_one() {
         let (a, b, none) = ([1, 2, 3, 255], [9, 9, 9, 255], [0; 4]);
         let row = [none, none, a, none, none, none, b, none].concat();
         assert_eq!(filled(&row, 8), [a, a, a, a, a, b, b, b].concat());
         assert_eq!(filled(&[none; 3].concat(), 3), [0; 12], "nothing known stays unknown");
-        let two = [[a, none].concat(), [none, b].concat()].concat();
-        assert_eq!(filled(&two, 2), [[a, a].concat(), [b, b].concat()].concat(), "rows do not bleed, edges fill");
+        let two = [[a, none, none].concat(), [none, none, b].concat()].concat();
+        assert_eq!(filled(&two, 3), [[a, a, b].concat(), [a, b, b].concat()].concat(), "rows and columns both reach");
         assert!(filled(&[], 0).is_empty());
+    }
+
+    #[test]
+    fn an_opaque_block_and_unknown_rows_fill_from_the_nearest_known_pixel_in_2d() {
+        // A known gradient 12x6 with rows 0 and 5 unknown and an opaque block over x 2..10, y 2..4.
+        let px = |x: u8, y: u8| [x, y, 7, 255];
+        let block = |x: usize, y: usize| y == 0 || y == 5 || ((2..10).contains(&x) && (2..4).contains(&y));
+        let known: Vec<u8> = (0..72)
+            .flat_map(|p| if block(p % 12, p / 12) { [0; 4] } else { px((p % 12) as u8, (p / 12) as u8) })
+            .collect();
+        let out = filled(&known, 12);
+        let row = |y: usize| out[y * 48..][..48].to_vec();
+        // Not a streak of each edge pixel: away from the block's ends, where an edge column is as
+        // near as a row, it copies the rows above and below it.
+        let middle = [px(3, 1), px(4, 1), px(5, 1), px(6, 1), px(7, 1), px(8, 1)];
+        assert_eq!(row(2)[12..36], middle.concat());
+        let middle = [px(3, 4), px(4, 4), px(5, 4), px(6, 4), px(7, 4), px(8, 4)];
+        assert_eq!(row(3)[12..36], middle.concat());
+        assert_eq!(row(0), row(1), "a row with no known pixel copies the one below");
+        assert_eq!(row(5), row(4), "and above");
     }
 
     #[test]
