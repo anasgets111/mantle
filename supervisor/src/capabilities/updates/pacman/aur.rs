@@ -8,6 +8,7 @@ use std::process::{Command, Stdio};
 use shared::state::updates::UpdateCandidate;
 
 use super::super::backend::program_is_in;
+use super::Programs;
 
 /// Detection order when several are installed.
 const HELPERS: [&str; 2] = ["paru", "yay"];
@@ -33,11 +34,11 @@ pub fn install_arguments(helper: &str) -> Vec<String> {
 }
 
 /// AUR upgrades for `foreign` `(name, installed version)` pairs, in one POST.
-pub fn check(foreign: &[(String, String)]) -> Result<Vec<UpdateCandidate>, String> {
+pub fn check(programs: &Programs, foreign: &[(String, String)]) -> Result<Vec<UpdateCandidate>, String> {
     if foreign.is_empty() {
         return Ok(Vec::new());
     }
-    let mut command = Command::new("curl");
+    let mut command = Command::new(programs.curl);
     command.args(["--silent", "--show-error", "--fail", "--max-time", "30", INFO_URL]);
     for (name, _) in foreign {
         command.arg("--data-urlencode").arg(format!("arg[]={name}"));
@@ -48,14 +49,14 @@ pub fn check(foreign: &[(String, String)]) -> Result<Vec<UpdateCandidate>, Strin
     }
     Ok(parse_info(&output.stdout, foreign)?
         .into_iter()
-        .filter(|candidate| newer(&candidate.new_version, &candidate.old_version))
+        .filter(|candidate| newer(programs.vercmp, &candidate.new_version, &candidate.old_version))
         .collect())
 }
 
 /// pacman's own `vercmp`, so an epoch or pkgrel orders exactly as `-Syu` will.
-fn newer(offered: &str, installed: &str) -> bool {
+fn newer(vercmp: &str, offered: &str, installed: &str) -> bool {
     offered != installed
-        && Command::new("vercmp")
+        && Command::new(vercmp)
             .args([offered, installed])
             .stdin(Stdio::null())
             .output()
@@ -104,6 +105,7 @@ fn parse_info(body: &[u8], foreign: &[(String, String)]) -> Result<Vec<UpdateCan
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::test_support::fake_program;
 
     #[test]
     fn paru_wins_over_yay_and_either_alone_is_found() {
@@ -120,9 +122,18 @@ mod tests {
     }
 
     #[test]
-    fn the_installed_version_is_not_newer_than_itself() {
-        // `vercmp` ships only with pacman, so its orderings are not asserted on every host.
-        assert!(!newer("1:2.0-1", "1:2.0-1"));
+    fn only_vercmp_answering_1_makes_a_version_newer() {
+        let dir = tempfile::tempdir().unwrap();
+        let says_newer = fake_program(dir.path(), "newer", "echo 1");
+        let says_older = fake_program(dir.path(), "older", "echo -1");
+
+        assert!(newer(&says_newer, "1:1.0-1", "9.0-1"));
+        assert!(!newer(&says_newer, "2.0-1", "2.0-1"), "an equal version never asks vercmp");
+        assert!(!newer(&says_older, "2.9-1", "3.0-1"));
+        assert!(!newer("", "1.1-1", "1.0-1"), "a vercmp that cannot run finds nothing newer");
+        // Offered first, as `vercmp a b` orders.
+        let argv = std::fs::read_to_string(dir.path().join("argv")).unwrap();
+        assert_eq!(argv, "newer 1:1.0-1 9.0-1\nolder 2.9-1 3.0-1\n");
     }
 
     fn foreign() -> Vec<(String, String)> {

@@ -674,10 +674,9 @@ impl Supervisor {
 mod tests {
     use super::*;
 
-    use std::os::unix::fs::PermissionsExt;
     use std::sync::{Arc, Mutex};
 
-    use crate::capabilities::test_support::{PrivateBus, private_bus, within};
+    use crate::capabilities::test_support::{PrivateBus, fake_program, private_bus, within};
     use tokio::sync::mpsc;
 
     /// Kills any tracked process groups on drop so a panicking test cannot orphan children. A
@@ -710,10 +709,7 @@ mod tests {
     }
 
     fn make_fake_renderer(dir: &std::path::Path) -> std::path::PathBuf {
-        let path = dir.join("fake-renderer");
-        std::fs::write(&path, "#!/bin/sh\nexec sleep 30\n").unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        path
+        fake_program(dir, "fake-renderer", "exec sleep 30").into()
     }
 
     fn install_pam_spy(supervisor: &mut Supervisor) -> Arc<Mutex<Vec<&'static str>>> {

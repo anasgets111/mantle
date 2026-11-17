@@ -10,37 +10,38 @@ use std::process::{Command, Stdio};
 use shared::state::updates::UpdateCandidate;
 
 use super::super::backend::run;
+use super::Programs;
 
 /// Downloads every repo `conf` names into `db_path/sync/`, like `checkupdates`' `pacman -Sy`: a db
 /// the mirror reports unchanged is not downloaded again.
 ///
 /// ponytail: no `.db.sig` is fetched, so a repo set to `DatabaseRequired` fails the check; fetch
 /// the signature when such a repo turns up.
-pub fn sync(conf: &Path, db_path: &Path) -> Result<(), String> {
+pub fn sync(programs: &Programs, conf: &Path, db_path: &Path) -> Result<(), String> {
     let sync_dir = db_path.join("sync");
     std::fs::create_dir_all(&sync_dir).map_err(|err| format!("failed to create {}: {err}", sync_dir.display()))?;
-    let repos = run(Command::new("pacman-conf").arg("--config").arg(conf).arg("--repo-list"), failed)?;
+    let repos = run(Command::new(programs.pacman_conf).arg("--config").arg(conf).arg("--repo-list"), failed)?;
     if repos.trim().is_empty() {
         return Err(format!("no repos configured in {}", conf.display()));
     }
     for repo in repos.lines() {
         // `pacman-conf` has already expanded `Include`, `$repo` and `$arch`.
         let servers =
-            run(Command::new("pacman-conf").arg("--config").arg(conf).args(["--repo", repo, "Server"]), failed)?;
-        fetch_db(&sync_dir, repo, servers.lines())?;
+            run(Command::new(programs.pacman_conf).arg("--config").arg(conf).args(["--repo", repo, "Server"]), failed)?;
+        fetch_db(programs.curl, &sync_dir, repo, servers.lines())?;
     }
     Ok(())
 }
 
 /// Tries each mirror in order until one answers, as pacman does. Timeouts match libalpm's, plus a
 /// total limit libalpm lacks: a mirror trickling a byte a second would hold the check forever.
-fn fetch_db<'a>(sync_dir: &Path, repo: &str, servers: impl Iterator<Item = &'a str>) -> Result<(), String> {
+fn fetch_db<'a>(curl: &str, sync_dir: &Path, repo: &str, servers: impl Iterator<Item = &'a str>) -> Result<(), String> {
     let db = sync_dir.join(format!("{repo}.db"));
     // A killed download leaves only the part file; the db pacman reads is swapped in whole.
     let part = sync_dir.join(format!("{repo}.db.part"));
     let mut failure = "no Server configured".to_string();
     for server in servers {
-        let mut command = Command::new("curl");
+        let mut command = Command::new(curl);
         command.args(["--silent", "--show-error", "--fail", "--location", "--remote-time"]);
         command.args(["--connect-timeout", "10", "--speed-limit", "1", "--speed-time", "10", "--max-time", "600"]);
         command.arg("--output").arg(&part);
@@ -68,16 +69,16 @@ fn fetch_db<'a>(sync_dir: &Path, repo: &str, servers: impl Iterator<Item = &'a s
 }
 
 /// Diffs the installed packages with the synced repos under `db_path`.
-pub fn outdated(conf: &Path, db_path: &Path) -> Result<Vec<UpdateCandidate>, String> {
-    let upgrades = parse_upgrades(&pacman(conf, db_path, &["-Qu"])?);
+pub fn outdated(programs: &Programs, conf: &Path, db_path: &Path) -> Result<Vec<UpdateCandidate>, String> {
+    let query = |args: &[&str]| pacman(programs.pacman, conf, db_path, args);
+    let upgrades = parse_upgrades(&query(&["-Qu"])?);
     if upgrades.is_empty() {
         return Ok(Vec::new());
     }
     let names: Vec<&str> = upgrades.iter().map(|(name, _, _)| name.as_str()).collect();
     // `-Sp` sizes the download as pacman would, `0` once cached; only `-Si` has the installed size.
-    let downloads =
-        parse_downloads(&pacman(conf, db_path, &[&["-Sddp", "--print-format", "%n %s"], &names[..]].concat())?);
-    let info = parse_info(&pacman(conf, db_path, &[&["-Si"], &names[..]].concat())?);
+    let downloads = parse_downloads(&query(&[&["-Sddp", "--print-format", "%n %s"], &names[..]].concat())?);
+    let info = parse_info(&query(&[&["-Si"], &names[..]].concat())?);
     Ok(upgrades
         .into_iter()
         .map(|(name, old_version, new_version)| {
@@ -96,9 +97,9 @@ pub fn outdated(conf: &Path, db_path: &Path) -> Result<Vec<UpdateCandidate>, Str
 
 /// The installed packages no repo under `db_path` carries, as `(name, installed version)`, less
 /// those `IgnorePkg` names: the AUR helpers' `-Syu` skips them, so they would be reported forever.
-pub fn foreign(conf: &Path, db_path: &Path) -> Result<Vec<(String, String)>, String> {
-    let ignored = run(Command::new("pacman-conf").arg("--config").arg(conf).arg("IgnorePkg"), failed)?;
-    Ok(parse_foreign(&pacman(conf, db_path, &["-Qm"])?, &ignored))
+pub fn foreign(programs: &Programs, conf: &Path, db_path: &Path) -> Result<Vec<(String, String)>, String> {
+    let ignored = run(Command::new(programs.pacman_conf).arg("--config").arg(conf).arg("IgnorePkg"), failed)?;
+    Ok(parse_foreign(&pacman(programs.pacman, conf, db_path, &["-Qm"])?, &ignored))
 }
 
 /// `-Qm` lines, less names an `IgnorePkg` line matches.
@@ -117,9 +118,9 @@ fn fnmatch(pattern: &str, name: &str) -> bool {
     unsafe { libc::fnmatch(pattern.as_ptr(), name.as_ptr(), 0) == 0 }
 }
 
-fn pacman(conf: &Path, db_path: &Path, args: &[&str]) -> Result<String, String> {
+fn pacman(pacman: &str, conf: &Path, db_path: &Path, args: &[&str]) -> Result<String, String> {
     run(
-        Command::new("pacman")
+        Command::new(pacman)
             .arg("--config")
             .arg(conf)
             .arg("--dbpath")
@@ -187,6 +188,7 @@ fn parse_size(text: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::test_support::fake_program;
 
     #[test]
     fn exit_1_is_an_empty_answer_unless_stderr_has_more_than_warnings() {
@@ -236,28 +238,43 @@ mod tests {
     }
 
     #[test]
-    fn a_db_comes_from_the_first_mirror_that_has_it() {
-        let mirror = tempfile::tempdir().unwrap();
-        std::fs::write(mirror.path().join("core.db"), "db").unwrap();
+    fn a_db_comes_from_the_first_mirror_that_has_it_and_an_unchanged_one_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        // `--output`'s file gets `db`, unless `--time-cond` finds it unchanged.
+        let curl = fake_program(
+            dir.path(),
+            "curl",
+            r#"case "$*" in *gone*) echo 'curl: (37) gone' >&2; exit 37 ;; *--time-cond*) exit 0 ;; esac
+            while [ $# -gt 0 ]; do [ "$1" = --output ] && printf db > "$2"; shift; done"#,
+        );
         let sync = tempfile::tempdir().unwrap();
-        let (dead, live) =
-            (format!("file://{}/gone", mirror.path().display()), format!("file://{}", mirror.path().display()));
+        let db = sync.path().join("core.db");
 
-        let failed = fetch_db(sync.path(), "core", [dead.as_str()].into_iter());
-        assert!(failed.unwrap_err().starts_with("failed to sync core: "));
-        fetch_db(sync.path(), "core", [dead.as_str(), live.as_str()].into_iter()).unwrap();
-        assert_eq!(std::fs::read_to_string(sync.path().join("core.db")).unwrap(), "db");
+        let failed = fetch_db(&curl, sync.path(), "core", ["file:///gone"].into_iter());
+        assert_eq!(failed.unwrap_err(), "failed to sync core: curl: (37) gone");
+        fetch_db(&curl, sync.path(), "core", ["file:///gone", "file:///live"].into_iter()).unwrap();
+        assert_eq!(std::fs::read_to_string(&db).unwrap(), "db");
         assert!(!sync.path().join("core.db.part").exists());
+
+        // A part file a killed download left must not be swapped in as the db.
+        std::fs::write(sync.path().join("core.db.part"), "stale").unwrap();
+        fetch_db(&curl, sync.path(), "core", ["file:///live"].into_iter()).unwrap();
+        assert_eq!(std::fs::read_to_string(&db).unwrap(), "db", "an unchanged db is kept");
+        let argv = std::fs::read_to_string(dir.path().join("argv")).unwrap();
+        assert_eq!(argv.lines().count(), 4);
+        assert!(!argv.lines().nth(2).unwrap().contains("--time-cond"), "no db yet, so no time condition");
+        assert!(argv.lines().nth(3).unwrap().contains(&format!("--time-cond {} ", db.display())));
     }
 
     #[test]
     fn a_conf_that_names_no_repo_fails_the_sync() {
         let dir = tempfile::tempdir().unwrap();
+        let pacman_conf = fake_program(dir.path(), "pacman-conf", "exit 0");
+        let programs = Programs { pacman: "", pacman_conf: &pacman_conf, curl: "", vercmp: "" };
         let conf = dir.path().join("pacman.conf");
-        std::fs::write(&conf, "[options]\n").unwrap();
 
-        // An error either way: "no repos configured" with pacman-conf, "failed to run" without it.
-        assert!(sync(&conf, &dir.path().join("db")).is_err());
+        let error = sync(&programs, &conf, &dir.path().join("db")).unwrap_err();
+        assert_eq!(error, format!("no repos configured in {}/pacman.conf", dir.path().display()));
         assert!(dir.path().join("db/sync").is_dir(), "the sync dir is made before pacman-conf runs");
     }
 

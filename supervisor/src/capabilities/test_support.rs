@@ -34,6 +34,26 @@ pub(crate) fn properties(pairs: &[(&str, Value<'static>)]) -> std::collections::
     pairs.iter().map(|(key, value)| ((*key).into(), OwnedValue::try_from(value.clone()).unwrap())).collect()
 }
 
+/// Writes an executable `#!/bin/sh` script at `dir/name` that appends `<name> <its arguments>` to
+/// `dir/argv`, then runs `body`; returns its path. A child shell writes it: a write fd held by this
+/// process leaks into any child another test thread forks meanwhile, and exec then fails with
+/// `ETXTBSY`. Bodies use shell builtins only, so no test depends on the host's programs.
+pub(crate) fn fake_program(dir: &std::path::Path, name: &str, body: &str) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join(name);
+    let log = dir.join("argv");
+    let script = format!("#!/bin/sh\nprintf '%s %s\\n' '{name}' \"$*\" >> '{}'\n{body}\n", log.display());
+    let written = std::process::Command::new("/bin/sh")
+        .args(["-c", r#"printf '%s' "$2" > "$1""#, "sh"])
+        .arg(&path)
+        .arg(script)
+        .status()
+        .unwrap();
+    assert!(written.success());
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path.to_str().unwrap().to_string()
+}
+
 /// A string of `bytes` bytes that JSON escapes to six each (`\u0001`): a string at its cap, as long
 /// as it can serialize.
 pub(crate) fn worst_case_text(bytes: usize) -> String {

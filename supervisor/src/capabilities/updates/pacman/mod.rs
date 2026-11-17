@@ -13,6 +13,16 @@ use shared::warn;
 
 use super::backend::{Backend, CheckReport, InstallCommand, InstallStep};
 
+/// The programs a check runs, looked up in `PATH`; tests point them at fakes.
+pub struct Programs<'a> {
+    pacman: &'a str,
+    pacman_conf: &'a str,
+    curl: &'a str,
+    vercmp: &'a str,
+}
+
+const PROGRAMS: Programs = Programs { pacman: "pacman", pacman_conf: "pacman-conf", curl: "curl", vercmp: "vercmp" };
+
 /// Checks sync into their own db root; installs use the real one. Injected paths let tests use a
 /// tempdir.
 pub struct PacmanBackend {
@@ -47,8 +57,13 @@ impl Backend for PacmanBackend {
         // Per login like `checkupdates`' `/tmp/checkup-db-$UID`, but in the 0700 runtime dir.
         let sync_root =
             shared::runtime_root().map_err(|err| format!("no directory to sync into: {err}"))?.join("pacman");
-        let mut report =
-            check_against_the_sync_root(&self.conf_path, &self.db_root, &sync_root, self.active_helper().is_some())?;
+        let mut report = check_against_the_sync_root(
+            &PROGRAMS,
+            &self.conf_path,
+            &self.db_root,
+            &sync_root,
+            self.active_helper().is_some(),
+        )?;
         report.aur_error = report.aur_error.or_else(|| self.missing_helper());
         Ok(report)
     }
@@ -96,6 +111,7 @@ impl Backend for PacmanBackend {
 /// ponytail: unlike a copy, the symlink can observe a concurrent install mid-write,
 /// causing a transient `check_error`. This matches `checkupdates` and self-heals next check.
 fn check_against_the_sync_root(
+    programs: &Programs,
     conf_path: &Path,
     db_root: &Path,
     sync_root: &Path,
@@ -104,11 +120,11 @@ fn check_against_the_sync_root(
     std::fs::create_dir_all(sync_root).map_err(|err| format!("failed to create {}: {err}", sync_root.display()))?;
     link_local_db(db_root, sync_root)?;
 
-    check::sync(conf_path, sync_root)?;
-    let mut packages = check::outdated(conf_path, sync_root)?;
+    check::sync(programs, conf_path, sync_root)?;
+    let mut packages = check::outdated(programs, conf_path, sync_root)?;
     let aur_error = if aur {
-        check::foreign(conf_path, sync_root)
-            .and_then(|foreign| aur::check(&foreign))
+        check::foreign(programs, conf_path, sync_root)
+            .and_then(|foreign| aur::check(programs, &foreign))
             .map(|found| packages.extend(found))
             .err()
     } else {
@@ -119,8 +135,7 @@ fn check_against_the_sync_root(
 
 /// Links `db_root/local` in as `sync_root/local`, the one name pacman looks for when it reads
 /// installed packages out of a db root. Split out from [`check_against_the_sync_root`] only so the
-/// name and the read-through are testable without a mirror: everything else that function does
-/// needs the network.
+/// name and the read-through are testable on their own.
 fn link_local_db(db_root: &Path, sync_root: &Path) -> Result<(), String> {
     let local_src = db_root.join("local");
     // Refuse a missing source: `symlink` permits a dangling `local/`, which pacman reads as no
@@ -141,6 +156,69 @@ fn link_local_db(db_root: &Path, sync_root: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::test_support::fake_program;
+
+    #[test]
+    fn a_check_runs_each_program_with_its_arguments_and_reads_their_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake =
+            |name: &str, answers: &str| fake_program(dir.path(), name, &format!("case \"$*\" in {answers} esac"));
+        let pacman_conf = fake(
+            "pacman-conf",
+            "*--repo-list) echo core ;; *Server) echo file:///mirror/core ;; *IgnorePkg) echo 'zoom*' ;;",
+        );
+        let curl = fake(
+            "curl",
+            r#"*aur.archlinux.org*) printf '{"results":[{"Name":"paru","Version":"2.1-1"}]}' ;;
+               *) while [ $# -gt 0 ]; do [ "$1" = --output ] && printf db > "$2"; shift; done ;;"#,
+        );
+        let pacman = fake(
+            "pacman",
+            r#"*-Qu) echo 'linux 6.9.1-1 -> 6.9.2-1' ;; *-Sddp*) echo 'linux 1024' ;; *-Qm) printf 'paru 2.0-1\nzoom 1-1\n' ;;
+               *-Si*) printf 'Repository      : core\nName            : linux\nInstalled Size  : 2.00 KiB\n' ;;"#,
+        );
+        let vercmp = fake("vercmp", "*) echo 1 ;;");
+        let programs = Programs { pacman: &pacman, pacman_conf: &pacman_conf, curl: &curl, vercmp: &vercmp };
+        let db_root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(db_root.path().join("local")).unwrap();
+        let sync_root = tempfile::tempdir().unwrap();
+        let conf = Path::new("/etc/pacman.conf");
+
+        let report = check_against_the_sync_root(&programs, conf, db_root.path(), sync_root.path(), true).unwrap();
+
+        let found: Vec<_> = report
+            .packages
+            .iter()
+            .map(|p| {
+                (p.name.as_str(), p.new_version.as_str(), p.repository.as_str(), p.download_size, p.installed_size)
+            })
+            .collect();
+        assert_eq!(found, [("linux", "6.9.2-1", "core", 1024, 2048), ("paru", "2.1-1", "aur", 0, 0)]);
+        assert_eq!(report.aur_error, None);
+        let root = sync_root.path().display();
+        let pacman_args = format!("--config /etc/pacman.conf --dbpath {root} --color never");
+        let expected = [
+            "pacman-conf --config /etc/pacman.conf --repo-list".to_string(),
+            "pacman-conf --config /etc/pacman.conf --repo core Server".to_string(),
+            format!("pacman {pacman_args} -Qu"),
+            format!("pacman {pacman_args} -Sddp --print-format %n %s linux"),
+            format!("pacman {pacman_args} -Si linux"),
+            "pacman-conf --config /etc/pacman.conf IgnorePkg".to_string(),
+            format!("pacman {pacman_args} -Qm"),
+            "curl --silent --show-error --fail --max-time 30 https://aur.archlinux.org/rpc/v5/info \
+             --data-urlencode arg[]=paru"
+                .to_string(),
+            "vercmp 2.1-1 2.0-1".to_string(),
+        ];
+        let argv = std::fs::read_to_string(dir.path().join("argv")).unwrap();
+        let mut argv: Vec<_> = argv.lines().collect();
+        let db = argv.remove(2);
+        assert!(
+            db.starts_with("curl ")
+                && db.ends_with(&format!(" --output {root}/sync/core.db.part file:///mirror/core/core.db"))
+        );
+        assert_eq!(argv, expected);
+    }
 
     #[test]
     fn the_backend_names_itself_after_the_command_a_config_would_recognize() {
