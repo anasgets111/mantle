@@ -175,6 +175,9 @@ pub fn run(
     // lazily, and `set_chain` rebuilds instead of respawning. No declaration keeps the default.
     // A family a node names by hand is not resolved here: it lands on first sight (ADR-0144).
     app.shaping.set_chain(&crate::lua::fonts::declared_chain(app.client.lua()));
+    // 100 ms: about 6 `fc-match` calls at 15 ms each (#110).
+    let mut inline_lookups = true;
+    app.shaping.look_up_inline_until(Some(std::time::Instant::now() + std::time::Duration::from_millis(100)));
     // What the startup pass below measures against. The loop keeps its own count: a narrowed pass
     // re-lays only its instances, so the scene's own record cannot say the rest are current.
     let mut font_generation = app.shaping.font_generation();
@@ -457,6 +460,10 @@ pub fn run(
             {
                 profile.focus(ended.saturating_sub(started), searched);
             }
+        }
+        if inline_lookups && app.surfaces_drawn > 0 {
+            inline_lookups = false;
+            app.shaping.look_up_inline_until(None);
         }
         if let Some(profile) = profile.as_mut() {
             // After focus maintenance so a turn's focus cost reports in its own window, and

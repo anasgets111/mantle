@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak, mpsc};
 use std::thread;
+use std::time::Instant;
 
 use shared::debug;
 
@@ -173,6 +174,8 @@ enum Request {
     /// and wake this waker when one loads a face (#55). Weak, so the probe thread never keeps the
     /// worker alive after the last handle drops.
     Background(Waker, Box<dyn Fn(char) -> Option<PathBuf> + Send>, Weak<mpsc::Sender<Request>>),
+    /// See [`ShapingHandle::look_up_inline_until`].
+    Inline(Option<Instant>),
     /// A probe's answer: the file fontconfig ranks first for the codepoint.
     Covered(char, PathBuf),
     FontChainData(mpsc::Sender<Vec<FontFace>>),
@@ -294,26 +297,31 @@ impl ShapingHandle {
                 let Ok(first) = rx.recv() else { return };
                 let mut fonts = WorkerFonts::new(fonts::DEFAULT_CHAIN);
                 let mut probes: Option<(mpsc::SyncSender<char>, Waker)> = None;
+                // Lookups before this still run before the reply with a probe thread (#110).
+                let mut inline_until: Option<Instant> = None;
                 for request in std::iter::once(first).chain(rx) {
                     match request {
                         Request::Shape(req, glyphs, reply) => {
                             let family = fonts.family_for(req.font.as_ref(), &generation, &worker_ensured);
                             let (mut result, mut missing) = shape(&mut fonts, &family, &req, glyphs);
+                            // Asked before each lookup, an `fc-match` of about 15 ms, so a spent
+                            // deadline overruns by one at most.
+                            let inline = || probes.is_none() || inline_until.is_some_and(|at| Instant::now() < at);
+                            // `any` is the whole loop control: it runs out of codepoints when
+                            // none can be covered, and short-circuits on the first that can,
+                            // which is exactly when shaping again is worth it. A codepoint
+                            // nothing covers is remembered by `cover`, so neither can spin.
+                            while missing.iter().take_while(|_| inline()).any(|&ch| fonts.cover(ch, &generation)) {
+                                (result, missing) = shape(&mut fonts, &family, &req, glyphs);
+                            }
                             if let Some((queue, _)) = &probes {
                                 // Answer with the faces loaded now; an `fc-match` per codepoint
                                 // here stalled the Wayland thread a second for 100 of them (#55).
+                                // A codepoint looked up above is skipped by `first_probe`.
                                 for &ch in &missing {
                                     if fonts.first_probe(ch) && queue.try_send(ch).is_err() {
                                         fonts.unprobe(ch);
                                     }
-                                }
-                            } else {
-                                // `any` is the whole loop control: it runs out of codepoints when
-                                // none can be covered, and short-circuits on the first that can,
-                                // which is exactly when shaping again is worth it. A codepoint
-                                // nothing covers is remembered by `cover`, so neither can spin.
-                                while missing.iter().any(|&ch| fonts.cover(ch, &generation)) {
-                                    (result, missing) = shape(&mut fonts, &family, &req, glyphs);
                                 }
                             }
                             let stamp = (!missing.is_empty()).then(|| generation.load(Ordering::Acquire));
@@ -345,6 +353,7 @@ impl ShapingHandle {
                                 waker.wake();
                             }
                         }
+                        Request::Inline(until) => inline_until = until,
                         Request::EnsureFamily(asked, reply) => {
                             fonts.family_for(Some(&asked), &generation, &worker_ensured);
                             let _ = reply.send(());
@@ -395,6 +404,12 @@ impl ShapingHandle {
     /// is what a single pass with no loop to reshape (`mantle check`, screenshots) wants.
     pub fn probe_in_background(&self, waker: Waker) {
         self.probe_with(waker, fonts::covering_file);
+    }
+
+    /// Even with a probe thread, looks codepoints up before replying until `deadline`, or until
+    /// called with `None`: the Renderer's first frame then draws the faces, not boxes (#110).
+    pub fn look_up_inline_until(&self, deadline: Option<Instant>) {
+        self.requests.send(Request::Inline(deadline)).expect("mantle-text-shaping worker thread died");
     }
 
     fn probe_with(&self, waker: Waker, lookup: impl Fn(char) -> Option<PathBuf> + Send + 'static) {
@@ -1297,6 +1312,25 @@ pub(crate) mod tests {
         Some(handle)
     }
 
+    /// [`gated_shots_fixture`] recording into `looked_up` each codepoint its probe thread looks up,
+    /// then answering with `answer`.
+    fn recorded_gated_fixture(
+        looked_up: &Arc<Mutex<Vec<char>>>,
+        answer: impl Fn(char) -> Option<PathBuf> + Send + 'static,
+    ) -> Option<(ShapingHandle, mpsc::Sender<()>)> {
+        let seen = Arc::clone(looked_up);
+        gated_shots_fixture(move |ch| {
+            seen.lock().unwrap().push(ch);
+            answer(ch)
+        })
+    }
+
+    /// Whether the first line has glyphs in its first `prefix_len` bytes, none of them a box.
+    fn drawn_before(shaped: &ShapeResult, prefix_len: usize) -> bool {
+        let mut glyphs = shaped.shaped[0].glyphs.iter().filter(|glyph| glyph.start < prefix_len).peekable();
+        glyphs.peek().is_some() && glyphs.all(|glyph| glyph.id != 0)
+    }
+
     /// [`shots_fixture`] whose lookups each wait for the returned sender to drop, then run `lookup`.
     pub(crate) fn gated_shots_fixture(
         lookup: impl Fn(char) -> Option<PathBuf> + Send + 'static,
@@ -1316,13 +1350,7 @@ pub(crate) mod tests {
     #[test]
     fn a_shape_replies_before_its_lookups_and_looks_each_codepoint_up_once() {
         let looked_up = Arc::new(Mutex::new(Vec::new()));
-        let seen = Arc::clone(&looked_up);
-        let Some((handle, open)) = gated_shots_fixture(move |ch| {
-            seen.lock().unwrap().push(ch);
-            None
-        }) else {
-            return;
-        };
+        let Some((handle, open)) = recorded_gated_fixture(&looked_up, |_| None) else { return };
         let before = handle.font_generation();
         let text: String = (0..PROBE_QUEUE as u32 + 100).map(|i| char::from_u32(0x10_0000 + i).unwrap()).collect();
 
@@ -1375,9 +1403,7 @@ pub(crate) mod tests {
         });
         let before = handle.font_generation();
         let request = || req(&format!("●✓{barrier}"), 20.0);
-        let covered = |shaped: &ShapeResult| {
-            shaped.shaped[0].glyphs.iter().filter(|glyph| glyph.start < "●✓".len()).all(|glyph| glyph.id != 0)
-        };
+        let covered = |shaped: &ShapeResult| drawn_before(shaped, "●✓".len());
 
         assert!(!covered(&handle.shape_glyphs(request())), "answered before the lookup");
         looked_up.recv_timeout(std::time::Duration::from_secs(5)).expect("the barrier is looked up last");
@@ -1395,5 +1421,55 @@ pub(crate) mod tests {
         let mut fds = [nix::poll::PollFd::new(waker.fd(), nix::poll::PollFlags::POLLIN)];
         assert_eq!(nix::poll::poll(&mut fds, nix::poll::PollTimeout::ZERO), Ok(1), "and is woken for it");
         assert!(covered(&handle.shape_glyphs(request())), "the cached boxes are reshaped");
+    }
+
+    /// #110: before the startup deadline the face loads before the reply, with the probe thread
+    /// shut, so the first frame draws it and nothing lands after. A codepoint looked up then, even
+    /// one nothing covers, is never queued again.
+    #[test]
+    fn before_the_startup_deadline_a_missing_face_loads_before_the_reply() {
+        let looked_up = Arc::new(Mutex::new(Vec::new()));
+        let Some((handle, open)) = recorded_gated_fixture(&looked_up, fonts::covering_file) else { return };
+        handle.look_up_inline_until(Some(Instant::now() + std::time::Duration::from_secs(60)));
+        let before = handle.font_generation();
+        let uncovered = '\u{10_0001}';
+
+        let shaped = handle.shape_glyphs(req(&format!("●{uncovered}"), 20.0));
+        assert!(drawn_before(&shaped, "●".len()), "drawn in the face, not boxes");
+        assert_eq!(handle.font_generation(), before + 1, "the face is in before the first frame");
+
+        handle.look_up_inline_until(None);
+        drop(open);
+        let probed = |barrier: char| {
+            let _ = handle.shape(req(&format!("●{uncovered}{barrier}"), 21.0));
+            crate::lua::calls::poll_until(|| (), || looked_up.lock().unwrap().contains(&barrier));
+        };
+        let (first, second) = ('\u{10_0000}', '\u{10_0002}');
+        probed(first);
+        // The probe thread sends `first`'s answer before it looks `second` up.
+        probed(second);
+        let _ = handle.font_database();
+        assert_eq!(*looked_up.lock().unwrap(), [first, second], "past the first frame, only new codepoints are probed");
+        assert_eq!(handle.font_generation(), before + 1, "no face lands after the first frame");
+    }
+
+    /// #110: once the startup deadline is spent, lookups go to the probe thread as after it (#55).
+    #[test]
+    fn past_the_startup_deadline_lookups_go_to_the_probe_thread() {
+        let looked_up = Arc::new(Mutex::new(Vec::new()));
+        let Some((handle, open)) = recorded_gated_fixture(&looked_up, fonts::covering_file) else { return };
+        handle.look_up_inline_until(Some(Instant::now()));
+        let before = handle.font_generation();
+
+        assert!(!drawn_before(&handle.shape_glyphs(req("●✓", 20.0)), "●✓".len()), "answered with boxes");
+        assert_eq!(handle.font_generation(), before);
+
+        drop(open);
+        crate::lua::calls::poll_until(
+            || (),
+            || handle.font_generation() > before && looked_up.lock().unwrap().len() == 2,
+        );
+        assert_eq!(*looked_up.lock().unwrap(), ['●', '✓'], "both on the probe thread");
+        assert!(drawn_before(&handle.shape_glyphs(req("●✓", 20.0)), "●✓".len()), "reshaped in the face that landed");
     }
 }
