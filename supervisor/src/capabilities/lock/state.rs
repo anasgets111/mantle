@@ -181,6 +181,8 @@ mod tests {
     #[test]
     fn losing_the_renderer_frees_the_lock_for_a_replacement_and_rejects_an_in_flight_answer() {
         let mut state = locked_with_one_failure();
+        // A correct password whose unlock the Renderer could not read (#123).
+        state.unlocking = true;
 
         apply(&mut state, LockEvent::RendererLost);
 
@@ -189,6 +191,7 @@ mod tests {
         assert!(!state.requested, "a request nothing will answer must not stay pending forever");
         // A stranded authenticating flag would refuse every future attempt via may_authenticate.
         assert!(!state.authenticating, "the conversation's answer can no longer be applied, so its slot must be free");
+        assert!(!state.unlocking, "the replacement's lock screen must take a password again");
         // Only a confirmed Locked moves acquisition; bumping here would number a lock never taken.
         assert_eq!(state.acquisition, 4);
     }
