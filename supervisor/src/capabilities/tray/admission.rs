@@ -68,11 +68,9 @@ pub(super) fn admit_waiting(connection: zbus::Connection, registry: ItemRegistry
                 };
                 let Some(resolved) = next else { break };
                 match register_and_announce(&connection, &registry, &events, resolved).await {
-                    (_, RegisterOutcome::Registered) => {}
-                    (_, RegisterOutcome::Deferred) => {
-                        registry.lock().expect("mutex poisoned").admitting = false;
-                        return;
-                    }
+                    // A deferred item is queued again; the check above sees whether a slot freed meanwhile,
+                    // under the lock a departure reads `admitting` under.
+                    (_, RegisterOutcome::Registered | RegisterOutcome::Deferred) => {}
                     (registered_id, RegisterOutcome::Failed(err)) => {
                         debug!("admitting waiting tray item {registered_id} failed: {err}");
                     }
@@ -232,6 +230,49 @@ mod tests {
         assert_eq!(after_second.items.len(), MAX_ITEMS);
         assert!(!after_second.items.iter().any(|item| item.id == dropped2_id));
         assert_eq!(controller.waiting_len(), 0);
+    }
+
+    /// A slot freed while an admission defers its item finds `admitting` still set, so the departure
+    /// wakes nobody: the admitting task must see the room itself. The departure is played by a thread
+    /// that catches the window between the requeue and the task's next lock; a miss proves nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_slot_freed_while_an_admission_defers_is_taken() {
+        use super::super::registry::tests::slow_item_beside_a_tray_one_short;
+        use crate::capabilities::test_support::poll_until;
+        use std::sync::atomic::Ordering;
+        let (_bus, app, conn, registry, fetches, gate) = slow_item_beside_a_tray_one_short().await;
+        let unique = app.unique_name().unwrap().to_string();
+        registry.lock().unwrap().waiting.push_back(resolved(&unique, "/StatusNotifierItem"));
+        registry.lock().unwrap().admitting = true;
+        let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
+        admit_waiting(conn.clone(), registry.clone(), events);
+        poll_until(|| (fetches.load(Ordering::Relaxed) == 1).then_some(())).await;
+        let filler = entry(&conn, "1.999/StatusNotifierItem", 999).await;
+        registry.lock().unwrap().items.insert(key(":1.999"), filler);
+
+        let departure = tokio::task::spawn_blocking({
+            let (registry, deadline) =
+                (registry.clone(), std::time::Instant::now() + std::time::Duration::from_secs(5));
+            move || loop {
+                assert!(std::time::Instant::now() < deadline, "the admission neither deferred nor ended");
+                let mut guard = match registry.try_lock() {
+                    Err(std::sync::TryLockError::WouldBlock) => continue,
+                    guard => guard.unwrap(),
+                };
+                if !guard.admitting {
+                    return false;
+                }
+                if guard.waiting.len() == 1 {
+                    return guard.items.remove(&key(":1.999")).is_some();
+                }
+            }
+        });
+        // One for this fetch, one for the item's admission once the slot frees.
+        gate.add_permits(2);
+        if !departure.await.unwrap() {
+            return;
+        }
+        poll_until(|| registry.lock().unwrap().items.contains_key(&key(&unique)).then_some(())).await;
     }
 
     #[tokio::test]

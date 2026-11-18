@@ -913,6 +913,32 @@ pub(super) mod tests {
         png_bytes: Vec<u8>,
     }
 
+    /// A tray one item short of [`MAX_ITEMS`] on `conn`, and a live item whose `GetLayout` counts
+    /// in `fetches` and waits on `gate`. Hold the bus and the item for the test's length.
+    #[allow(clippy::type_complexity)]
+    pub(in super::super) async fn slow_item_beside_a_tray_one_short() -> (
+        crate::capabilities::test_support::PrivateBus,
+        zbus::Connection,
+        zbus::Connection,
+        ItemRegistry,
+        Arc<std::sync::atomic::AtomicUsize>,
+        Arc<tokio::sync::Semaphore>,
+    ) {
+        shm_icons::init_test_spool();
+        let bus = crate::capabilities::test_support::private_bus().await;
+        let (fetches, gate) = (Arc::default(), Arc::new(tokio::sync::Semaphore::new(0)));
+        let app =
+            bus.builder().serve_at("/MenuBar", CountingMenu { fetches: Arc::clone(&fetches), gate: gate.clone() });
+        let app = app.unwrap().serve_at("/StatusNotifierItem", SlowIconItem { png_bytes: vec![255, 0, 0, 255] });
+        let (app, conn) = (app.unwrap().build().await.unwrap(), bus.connection().await);
+        let registry = ItemRegistry::default();
+        for idx in 1..MAX_ITEMS {
+            let built = entry(&conn, &format!("1.9{idx}/StatusNotifierItem"), idx as u64).await;
+            registry.lock().unwrap().items.insert(key(&format!(":1.9{idx}")), built);
+        }
+        (bus, app, conn, registry, fetches, gate)
+    }
+
     #[zbus::interface(name = "org.kde.StatusNotifierItem")]
     impl SlowIconItem {
         #[zbus(property, name = "Status")]
@@ -931,26 +957,8 @@ pub(super) mod tests {
 
     #[tokio::test]
     async fn post_fetch_cap_check_defers_slow_item_and_cleans_spooled_icons() {
-        shm_icons::init_test_spool();
-        let bus = crate::capabilities::test_support::private_bus().await;
-        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let gate = Arc::new(tokio::sync::Semaphore::new(0));
-        let app = bus
-            .builder()
-            .serve_at("/MenuBar", CountingMenu { fetches: fetches.clone(), gate: gate.clone() })
-            .unwrap()
-            .serve_at("/StatusNotifierItem", SlowIconItem { png_bytes: vec![255, 0, 0, 255] })
-            .unwrap()
-            .build()
-            .await
-            .unwrap();
-        let conn = bus.connection().await;
+        let (_bus, app, conn, registry, fetches, gate) = slow_item_beside_a_tray_one_short().await;
         let unique = app.unique_name().unwrap().to_owned();
-        let registry = ItemRegistry::default();
-        for idx in 1..MAX_ITEMS {
-            let built = entry(&conn, &format!("1.9{idx}/StatusNotifierItem"), idx as u64).await;
-            registry.lock().unwrap().items.insert(key(&format!(":1.9{idx}")), built);
-        }
         let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
         let resolved = resolved(unique.as_str(), "/StatusNotifierItem");
 
