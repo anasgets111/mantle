@@ -96,7 +96,6 @@ fn screen_entry(index: usize, facts: &OutputFacts) -> Option<Screen> {
 
 /// Falls back to the integer scale without a mode or a logical size.
 fn fractional_scale(facts: &OutputFacts) -> f64 {
-    use wl_output::Transform;
     let fallback = f64::from(facts.scale_factor);
     let (Some(((mode_width, mode_height), _)), Some((logical_width, _))) = (facts.current_mode, facts.logical_size)
     else {
@@ -106,9 +105,8 @@ fn fractional_scale(facts: &OutputFacts) -> f64 {
         return fallback;
     }
     // A mode is measured before rotation; a logical size after it.
-    let quarter_turn =
-        matches!(facts.transform, Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270);
-    f64::from(if quarter_turn { mode_height } else { mode_width }) / f64::from(logical_width)
+    f64::from(if crate::image::capture::quarter_turn(facts.transform) { mode_height } else { mode_width })
+        / f64::from(logical_width)
 }
 
 fn orientation_str(transform: wl_output::Transform) -> &'static str {
