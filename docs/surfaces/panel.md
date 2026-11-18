@@ -94,7 +94,7 @@ update it in place ([reload](index.md#reload-and-structural-fields)).
 | :--- | :--- | :--- |
 | `"all"` | One per output: `bar@DP-1`, `bar@HDMI-A-1` | Follows hotplug |
 | `"DP-1"` | One, `bar@DP-1`, while that output is connected | An unknown connector logs a warning and creates nothing |
-| `"active"` | One, bare id `bar`, on the output the compositor picks | Picked again at each show, because hiding destroys the object. Refuses `"NN%"` sizes and a function `child`. No instance while no output exists |
+| `"active"` | One, bare id `bar`, on the output the compositor picks | Picked again at each show, because hiding destroys the object, and when the panel turns `"on_demand"` ([keyboard](#keyboard-focus)). A panel the compositor refused waits for an output change; hiding and showing it does not retry it. Refuses `"NN%"` sizes and a function `child`. No instance while no output exists |
 
 Connector names come from [`mantle.screens`](../capabilities/index.md#renderer-members) or `niri msg outputs` /
 `hyprctl monitors`.
@@ -214,7 +214,7 @@ See [named state](../guide/signals.md#named-state) and [text fields](../guide/in
 | Hyprland refocuses the last window, onto its workspace, when a still-mapped panel drops to `"none"` | The engine sends no layer requests for a panel hidden in the same pass, so hiding one never drops it to `"none"` first. Hide it with `visible`, not by lowering the mode |
 | niri hands an `xdg_popup` the keyboard only if its parent held it when the popup mapped | The engine routes keys that arrive on the parent to the text field in a popup shown under it |
 | niri dismisses a grabbing popup when its parent's `keyboard_interactivity` changes | Raise the parent's mode before opening the popup, not from inside it |
-| No compositor (Hyprland, niri, sway, river) hands the keyboard to a still-mapped panel whose mode changes to `"on_demand"`; each does at map, and on a change to `"exclusive"` | Show a launcher with `visible`, so it maps fresh, or use `"exclusive"`. A bound change to `"on_demand"` arms `autofocus`, so `mantle input` works and `focused()` holds, but typed keys go to the focused app until the user clicks the panel ([#132](https://github.com/anasgets111/mantle/issues/132)) |
+| No compositor (Hyprland, niri, sway, river) hands the keyboard to a still-mapped panel whose mode changes to `"on_demand"`; each does at map, and on a change to `"exclusive"` | The engine remaps a panel whose mode turns from `"none"` to `"on_demand"`, and the compositor's focus-at-map policy applies: sway focuses only `"top"` and `"overlay"` panels, Hyprland none under a pointer constraint. With the pointer on an app window, every copy of an `output = "all"` panel is remapped, and the compositor picks which one gets the keyboard. No remap for a panel reserving an `exclusive_zone`, one with a popup shown or opening, or any instance of one under the pointer. A flip made while the pointer rests on the panel, including a click inside it, gets the keyboard on the next click; `"exclusive"` takes it at once ([#132](https://github.com/anasgets111/mantle/issues/132)) |
 
 ## Per-output content
 

@@ -204,6 +204,11 @@ impl App {
     /// instances in place (ADR-0038 decision 3), then re-evaluate, which catches a config's `screens`
     /// loop changing surface ids (ADR-0041 decisions 2-3).
     fn handle_output_change(&mut self, qh: &QueueHandle<App>, departing: Option<&wl_output::WlOutput>) {
+        // Before the early return: a panel refused under the old outputs may fit the new ones.
+        self.output_epoch += 1;
+        if self.surfaces.iter().any(|s| matches!(s.role, TrackedRole::Panel { refused: true, .. })) {
+            self.client.mark_dirty();
+        }
         let screens = self.screens(departing);
         // Before the early return: an output arriving during the startup burst changes what the
         // cache may hold even though nothing else here runs yet.

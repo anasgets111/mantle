@@ -230,6 +230,8 @@ pub struct App {
     /// The surface `keyboard_interactivity` armed while no surface here held the keyboard; its focus
     /// waits for `enter` (#130).
     awaiting_keyboard: Option<String>,
+    /// Bumped on every output event: an `"active"` panel refused since its build waits for the next.
+    output_epoch: u64,
     /// Whether `focused_control` was last moved by Tab or an AT action, which alone draw the outline.
     focus_visible: bool,
     accessibility: accessibility::Accessibility,
@@ -550,6 +552,7 @@ mod test_support {
                 focused_control: None,
                 armed_control: None,
                 awaiting_keyboard: None,
+                output_epoch: 0,
                 focus_visible: false,
                 accessibility: accessibility::Accessibility::new(waker),
                 held: Held::default(),

@@ -497,4 +497,119 @@ mod tests {
             }
         }
     }
+
+    /// #132's panels, all mapped: `flip` and `bar` (reserving 40 px) take `mode`, `fixed` is `on_demand`, and
+    /// `vis` is `on_demand` shown by `visible`; `menu` is a popup on `flip`, by its declared id. Then a `wl_surface` id per panel.
+    fn modes_app()
+    -> (App, tempfile::TempDir, wayland_client::EventQueue<App>, crate::wayland::test_support::MockWayland) {
+        let (mut app, dir, queue, mock) = App::test_app_with_wire(
+            r#"mode, shown = state("mode", "none"), state("shown", false)
+            local function p(id, kb, zone, visible) return panel { id = id, layer = "top", output = "TEST", width = 100,
+                height = 40, keyboard_interactivity = kb, exclusive_zone = zone, visible = visible, child = textfield {
+                    width = 100, height = 20, autofocus = true, on_change = print } } end
+            return { p("flip", mode, false), p("bar", mode, 40), p("fixed", "on_demand"), p("vis", "on_demand", false, shown),
+                popup { id = "menu", parent = "flip", anchor_rect = { x = 0, y = 0, width = 10, height = 10 }, width = 50,
+                    height = 50, grab = false, visible = state("menu", false) } }"#,
+        );
+        resolve_lua(&mut app, "shown:set(true)");
+        app.surfaces.iter_mut().for_each(|s| s.map_state = MapState::Mapped);
+        (app, dir, queue, mock)
+    }
+    fn wl_ids(app: &App) -> Vec<u32> {
+        app.surfaces[..4].iter().map(|s| s.role.wl_surface().unwrap().id().protocol_id()).collect()
+    }
+
+    #[test]
+    fn a_mapped_panel_keeps_its_surface_across_every_other_interactivity_change() {
+        let (mut app, _dir, mut queue, mock) = modes_app();
+        let before = wl_ids(&app);
+        app.input_serial = Some(crate::wayland::input::ArmedSerial { serial: 1, instance_id: "flip@TEST".into() });
+        // Opening, shown, then closing in the flip's pass: a remap would give the popup an unconfigured
+        // parent, then close it.
+        let (open, none) = (r#"state("menu", false):set(true) mode:set("on_demand")"#, r#"mode:set("none")"#);
+        let close = r#"state("menu", false):set(false) mode:set("on_demand")"#;
+        for lua in [r#"mode:set("exclusive")"#, none, open, none, open, none, close] {
+            resolve_lua(&mut app, lua);
+            queue.roundtrip(&mut app).unwrap();
+            assert_eq!(wl_ids(&app), before, "{lua}: `flip` is not remapped either");
+            assert!(!mock.requests.lock().unwrap().iter().any(|&(id, op, _)| before.contains(&id) && op == 0), "{lua}");
+        }
+    }
+
+    /// A reload editing `parent` leaves the stored spec behind the resolved tree, which an opening popup
+    /// takes, and ahead of where a shown one stays attached: the guard reads those two.
+    #[test]
+    fn a_popup_keeps_its_parent_configured_whatever_its_stored_spec_names() {
+        let (mut app, _dir, _queue, _mock) = modes_app();
+        let (before, menu) = (wl_ids(&app), app.surfaces.iter().position(|s| s.surface_id == "menu").unwrap());
+        app.input_serial = Some(crate::wayland::input::ArmedSerial { serial: 1, instance_id: "flip@TEST".into() });
+        for lua in [
+            r#"state("menu", false):set(true) mode:set("on_demand")"#,
+            r#"mode:set("none")"#,
+            r#"mode:set("on_demand")"#,
+        ] {
+            if let TrackedRole::Popup { spec, .. } = &mut app.surfaces[menu].role {
+                spec.parent = "fixed".into();
+            }
+            resolve_lua(&mut app, lua);
+            assert_eq!(wl_ids(&app), before, "{lua}");
+        }
+    }
+
+    /// #132: no compositor focuses a mapped surface turning `on_demand`, all focus one at map.
+    #[test]
+    fn a_mapped_panel_turning_on_demand_is_remapped_so_the_compositor_focuses_it() {
+        let (mut app, _dir, mut queue, mock) = modes_app();
+        let old = wl_ids(&app)[0];
+        resolve_lua(&mut app, r#"mode:set("on_demand")"#);
+        queue.roundtrip(&mut app).unwrap();
+        assert!(mock.requests.lock().unwrap().contains(&(old, 0, 0)), "the old wl_surface is destroyed");
+        assert_ne!(wl_ids(&app)[0], old);
+        assert_eq!(app.surfaces[0].map_state, MapState::AwaitingConfigure);
+        assert_eq!(app.focused_control.as_ref().map(|c| c.surface_id.as_str()), Some("flip@TEST"));
+    }
+
+    /// An `"active"` panel closed before its first configure is kept. Under the outputs it was built
+    /// for, that is a refusal: no pass recreates it until an output change. After one, it is retried at once.
+    #[test]
+    fn an_active_panel_refused_before_its_first_configure_waits_for_an_output_change() {
+        let (mut app, _dir, _queue, _mock) = App::test_app_with_wire(
+            r#"mode = state("mode", "none")
+            return panel { id = "p", layer = "top", output = "active", width = 100, height = 40, keyboard_interactivity = mode }"#,
+        );
+        app.surfaces[0].map_state = MapState::Mapped;
+        resolve_lua(&mut app, r#"mode:set("on_demand")"#);
+        let (conn, qh) = (app.conn.clone(), app.queue_handle.clone());
+        let output = app.output_state.outputs().next().unwrap();
+        let close = |app: &mut App| {
+            let TrackedRole::Panel { layer: Some(layer), .. } = &app.surfaces[0].role else { panic!("unshown") };
+            app.closed(&conn, &qh, &layer.clone());
+            assert_eq!((app.surfaces.len(), app.surfaces[0].map_state), (1, MapState::Unmapped));
+        };
+        // A pass as the main loop runs one: only when something marked the scene dirty.
+        let pass = |app: &mut App, dirty: bool| {
+            if dirty {
+                app.client.mark_dirty();
+            }
+            if app.client.re_resolve_if_dirty() {
+                app.apply_resolved_surface_state();
+            }
+            app.surfaces[0].map_state
+        };
+        close(&mut app);
+        assert!(!app.client.re_resolve_if_dirty(), "no pass asked for");
+        assert_eq!([0; 3].map(|_| pass(&mut app, true)), [MapState::Unmapped; 3], "no retry until the outputs change");
+        app.update_output(&conn, &qh, output.clone());
+        assert_eq!(pass(&mut app, false), MapState::AwaitingConfigure, "the output change asks for the pass");
+        app.update_output(&conn, &qh, output);
+        close(&mut app);
+        assert_eq!(pass(&mut app, false), MapState::AwaitingConfigure, "its output changed after the build: retried");
+        app.surfaces[0].map_state = MapState::Mapped;
+        close(&mut app);
+        assert_eq!(
+            pass(&mut app, false),
+            MapState::AwaitingConfigure,
+            "closed once mapped: retried at once, as before"
+        );
+    }
 }

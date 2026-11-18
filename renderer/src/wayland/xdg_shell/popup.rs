@@ -648,7 +648,8 @@ mod tests {
     }
 
     fn two_output_popup_app() -> (App, tempfile::TempDir) {
-        let source = r#"
+        two_output_app(
+            r#"
             local r = { x = 0, y = 0, width = 10, height = 10 }
             return {
                 panel { id = "bar", layer = "top", output = "all", height = 32 },
@@ -656,7 +657,12 @@ mod tests {
                 popup { id = "submenu", parent = "menu", anchor_rect = r, width = 160, height = 80, grab = false, visible = false },
                 popup { id = "tip", parent = "submenu", anchor_rect = r, width = 120, height = 40, grab = false, visible = false },
             }
-        "#;
+        "#,
+        )
+    }
+
+    /// `source` on outputs `eDP-1` and `DP-1`, its panels on compositor-chosen outputs.
+    fn two_output_app(source: &str) -> (App, tempfile::TempDir) {
         let (mut app, dir) = App::test_app(source);
         let outputs = [
             OutputGeometry { name: "eDP-1".into(), size: layout::LogicalSize { width: 1920.0, height: 1080.0 } },
@@ -785,5 +791,41 @@ mod tests {
         assert!(popup_state(&app, "menu").0, "reopened menu now follows bar@eDP-1, not bar@DP-1");
         app.drop_role_object(idx(&app, "bar@eDP-1"));
         assert!(!popup_state(&app, "menu").0);
+    }
+
+    /// #132: no instance of an `output = "all"` panel is remapped while one is under the pointer or has a
+    /// popup shown, or a copy on another output would take the keyboard; otherwise every one is.
+    #[test]
+    fn turning_on_demand_remaps_no_instance_under_the_pointer_or_with_a_popup() {
+        let (mut app, _dir) = two_output_app(
+            r#"mode, open = state("mode", "none"), state("open", false)
+            return { panel { id = "bar", layer = "top", output = "all", height = 32, keyboard_interactivity = mode },
+                popup { id = "menu", parent = "bar", anchor_rect = { x = 0, y = 0, width = 10, height = 10 }, width = 200,
+                    height = 120, grab = false, visible = open } }"#,
+        );
+        let ids =
+            |app: &App| ["bar@eDP-1", "bar@DP-1"].map(|id| app.surfaces[idx(app, id)].role.wl_surface().unwrap().id());
+        let flip = |app: &mut App| {
+            for mode in ["none", "on_demand"] {
+                app.surfaces.iter_mut().for_each(|s| s.map_state = MapState::Mapped);
+                app.client.lua().load(format!("mode:set({mode:?})")).exec().unwrap();
+                app.client.re_resolve_if_dirty();
+                app.apply_resolved_surface_state();
+            }
+        };
+        let before = ids(&app);
+        app.pointer_at = Some(("bar@DP-1".into(), (1.0, 1.0)));
+        flip(&mut app);
+        assert_eq!(ids(&app), before);
+        app.pointer_at = None;
+        app.input_serial = Some(ArmedSerial { serial: 1, instance_id: "bar@eDP-1".into() });
+        app.client.lua().load("open:set(true)").exec().unwrap();
+        flip(&mut app);
+        assert!(popup_state(&app, "menu").0);
+        assert_eq!(ids(&app), before, "a popup on one instance would close, the other would take the keyboard");
+        app.client.lua().load("open:set(false)").exec().unwrap();
+        flip(&mut app);
+        let after = ids(&app);
+        assert!(after[0] != before[0] && after[1] != before[1], "{before:?} -> {after:?}");
     }
 }

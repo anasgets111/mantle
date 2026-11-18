@@ -5,6 +5,7 @@
 use shared::{debug, warn};
 
 use super::*;
+use crate::layout::instance::is_instance_of;
 use crate::wayland::surface::MapState;
 use crate::wayland::surface::TrackedRole;
 
@@ -337,6 +338,8 @@ impl App {
                     output_size: instance.available,
                     measured,
                     requested: if visible { size } else { (0, 0) },
+                    built_epoch: self.output_epoch,
+                    refused: false,
                 },
                 instance.instance_id.clone(),
             )
@@ -351,9 +354,14 @@ impl App {
     /// Repeat [`App::create_panel`]'s guard because signal-bound `width`/`height` can turn a fixed
     /// axis into `Fill` after creation; `set_size(_, 0)` would kill the connection.
     pub(super) fn show_panel(&mut self, qh: &QueueHandle<App>, index: usize) {
-        let TrackedRole::Panel { spec, output, output_size, measured, .. } = &self.surfaces[index].role else {
+        let TrackedRole::Panel { spec, output, output_size, measured, built_epoch, refused, .. } =
+            &self.surfaces[index].role
+        else {
             return;
         };
+        if *refused && *built_epoch == self.output_epoch {
+            return;
+        }
         // `measured` is this pass's: [`App::apply_resolved_state`] writes it from the solved root
         // before it gets here, so a panel measured from its content is created at the size the
         // tree that is about to be painted actually takes.
@@ -364,9 +372,10 @@ impl App {
             return;
         }
         let (fresh, scale) = self.spawn_panel_layer(qh, spec, output.as_ref(), size);
-        if let TrackedRole::Panel { layer, requested, .. } = &mut self.surfaces[index].role {
+        if let TrackedRole::Panel { layer, requested, built_epoch, refused, .. } = &mut self.surfaces[index].role {
             *layer = Some(fresh);
             *requested = size;
+            (*built_epoch, *refused) = (self.output_epoch, false);
         }
         self.surfaces[index].scale = scale;
         self.surfaces[index].map_state = MapState::AwaitingConfigure;
@@ -419,6 +428,34 @@ impl App {
         let update = spec_update(applied, &fresh, *requested, *output_size, *measured);
         let gained_keyboard = applied.keyboard_interactivity == node::KeyboardInteractivity::None
             && update.keyboard_interactivity.is_some();
+        // #132: Hyprland, niri, sway and river focus an `on_demand` surface only at map, so a mapped one
+        // gaining it is remapped through the `visible` path. Not with a zone (windows would shift), nor
+        // while any instance (another output's copy would take the keyboard) is under the pointer (the
+        // `ponytail:` below) or has a popup shown or opening, which would close or lose its parent.
+        let remap = gained_keyboard
+            && update.keyboard_interactivity == Some(node::KeyboardInteractivity::OnDemand)
+            && self.surfaces[index].map_state == MapState::Mapped
+            && zone_for(applied, self.surfaces[index].configured_size) <= 0
+            && {
+                let group: Vec<&str> = (self.surfaces.iter())
+                    .filter(|s| matches!(&s.role, TrackedRole::Panel { spec, .. } if spec.topology.id == applied.topology.id))
+                    .map(|s| s.surface_id.as_str())
+                    .collect();
+                !self.pointer_at.as_ref().is_some_and(|(at, _)| group.contains(&at.as_str()))
+                    && !self.surfaces.iter().any(|other| match &other.role {
+                        // Where it is attached, which a reload editing `parent` does not move.
+                        TrackedRole::Popup { parent_id: Some(attached), .. } => group.contains(&attached.as_str()),
+                        // The parent this pass resolved, which the stored spec does not have yet.
+                        TrackedRole::Popup { spec, .. } => (self.client.scene().surface(&other.surface_id))
+                            .filter(|tree| tree.visible)
+                            .is_some_and(|tree| {
+                                let parent =
+                                    node::popup_spec(&tree.properties).map_or(spec.parent.clone(), |s| s.parent);
+                                group.iter().any(|instance| is_instance_of(instance, &parent))
+                            }),
+                        _ => false,
+                    })
+            };
         if update.keyboard_interactivity == Some(node::KeyboardInteractivity::None) {
             self.awaiting_keyboard.take_if(|armed| *armed == self.surfaces[index].surface_id);
         }
@@ -464,6 +501,15 @@ impl App {
         if update.exclusive.is_some() || update.size.is_some() {
             self.apply_exclusive_zone(index);
         }
+        // ponytail: never under the pointer, whose hover the drop ends and the replacement starts
+        // again, so a mode following that hover would remap without bound; such a flip, a click
+        // inside the panel included, waits for the next click. Upgrade: carry hover across the remap,
+        // with a deferred leave for when no enter lands on the replacement.
+        if remap {
+            self.drop_role_object(index);
+            let qh = self.queue_handle.clone();
+            self.show_panel(&qh, index);
+        }
         // After the zone request, keeping the pass to one commit.
         if update.moved_anything()
             && self.surfaces[index].map_state == MapState::Mapped
@@ -490,13 +536,18 @@ impl LayerShellHandler for App {
         let Some(index) = self.index_of_surface(layer.wl_surface()) else {
             return;
         };
-        // An `"active"` panel outlives its output (ADR-0246 decision 4). Mapped only, so a surface
-        // refused at creation is not retried every pass.
-        if let TrackedRole::Panel { output: None, .. } = self.surfaces[index].role
-            && self.surfaces[index].map_state == MapState::Mapped
+        // An `"active"` panel outlives its output (ADR-0246 decision 4), also when closed before its
+        // first configure (a show or a #132 remap). Closed under the outputs it was built for, that is
+        // a refusal, retried on the next output change; otherwise its output went, so retry now.
+        let state = self.surfaces[index].map_state;
+        if let TrackedRole::Panel { output: None, built_epoch, refused, .. } = &mut self.surfaces[index].role
+            && state != MapState::Unmapped
         {
+            *refused = state == MapState::AwaitingConfigure && *built_epoch == self.output_epoch;
+            if !*refused {
+                self.client.mark_dirty();
+            }
             self.drop_role_object(index);
-            self.client.mark_dirty();
             return;
         }
         let surface_id = self.surfaces[index].surface_id.clone();

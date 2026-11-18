@@ -84,6 +84,11 @@ pub(super) enum TrackedRole {
         /// content that grew under a spec that did not change at all. `(0, 0)` while no layer
         /// object has been built.
         requested: (u32, u32),
+        /// `App::output_epoch` when the layer object was last built, and whether the compositor
+        /// closed it before its first configure under those same outputs: `show_panel` waits for
+        /// the next output change rather than recreating it on every pass.
+        built_epoch: u64,
+        refused: bool,
     },
     Window {
         /// `None` when hidden: no `xdg_toplevel`, `xdg_surface`, or `wl_surface` exists

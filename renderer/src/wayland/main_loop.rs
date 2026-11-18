@@ -138,6 +138,7 @@ pub fn run(
         focused_control: None,
         armed_control: None,
         awaiting_keyboard: None,
+        output_epoch: 0,
         focus_visible: false,
         accessibility: accessibility::Accessibility::new(waker.clone()),
         held: Held::default(),

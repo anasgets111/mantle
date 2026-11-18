@@ -399,7 +399,7 @@ impl App {
         let Some(focused) = self.focused_control.as_ref() else { return };
         // An autofocus armed by `keyboard_interactivity` keeps its own scope until `enter` (#130).
         // ponytail: only `enter`, `keyboard_interactivity` returning to "none" or the panel's destroy
-        // ends the hold, so on a compositor that sends no `enter` for the flip (Hyprland), clicking
+        // ends the hold, so on a panel the flip does not remap (#132), clicking
         // into another app leaves `focused()` true. Upgrade: end it on a click outside the shell, which
         // no event reports to a client that never held the keyboard (`workspaces.active_client` stays
         // put when the click lands on the app focused before the panel opened).
