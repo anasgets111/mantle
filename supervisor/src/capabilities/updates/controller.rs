@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use shared::{debug, warn};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::process::Stdio;
 use tokio::process::{Child, ChildStdout, Command};
 use tokio::sync::mpsc::UnboundedSender;
@@ -286,6 +286,9 @@ async fn run_install(backend: Arc<dyn Backend>, state: Arc<Mutex<UpdatesState>>,
 /// and GNU `tail` following it until the command is reaped. No pipe, so our exit cannot SIGPIPE it.
 /// The installer inherits a lock on the log with the fd, so while it runs another install is refused;
 /// the returned dup releases it once the installer is reaped, though a process it left holds the fd.
+/// Each install unlinks the last log and creates its own, so such a process writes only the old one.
+/// The last log stays locked until the new one is, so of two Supervisors sharing the runtime
+/// directory one finds a log locked or replaced, or loses the `create_new`.
 // ponytail: a restarted Supervisor neither knows nor shows a running install, only refuses a second,
 // also while a process the installer left keeps the fd. Upgrade: record the installer's pid beside
 // the log and follow it again.
@@ -294,16 +297,24 @@ fn spawn_logged(
     log: &Path,
     follower: &str,
 ) -> std::io::Result<(Child, Option<ChildStdout>, std::fs::File)> {
-    let open = |write: bool| {
-        let mut options = std::fs::OpenOptions::new();
-        options.read(!write).append(write).create(write).mode(0o600);
-        options.custom_flags(libc::O_NOFOLLOW).open(log)
+    let open = |options: &mut std::fs::OpenOptions| options.mode(0o600).custom_flags(libc::O_NOFOLLOW).open(log);
+    let failed = |err: std::io::Error| std::io::Error::other(format!("cannot replace {}: {err}", log.display()));
+    let last = match open(std::fs::OpenOptions::new().append(true)) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        last => {
+            let last = last.map_err(failed)?;
+            lock_named(&last, log)?;
+            std::fs::remove_file(log).map_err(failed)?;
+            Some(last)
+        }
     };
-    let (file, reader) = (open(true)?, open(false)?);
-    crate::instance::take_lock(&file).map_err(|err| {
-        std::io::Error::other(format!("an update started before the shell restarted is still running ({err})"))
+    let file = open(std::fs::OpenOptions::new().append(true).create_new(true)).map_err(|err| match err.kind() {
+        std::io::ErrorKind::AlreadyExists => still_running(err),
+        _ => failed(err),
     })?;
-    file.set_len(0)?;
+    lock_named(&file, log)?;
+    drop(last);
+    let reader = open(std::fs::OpenOptions::new().read(true)).map_err(failed)?;
     let lock = file.try_clone()?;
     let mut installer = Command::new(&command.program);
     installer.args(&command.arguments).process_group(0).stdin(Stdio::null()).stdout(file.try_clone()?).stderr(file);
@@ -313,6 +324,21 @@ fn spawn_logged(
     let tail = Command::new(follower).args(["-c", "+1", "-f", &pid]).stdin(reader).stdout(Stdio::piped()).spawn();
     let tail = tail.map_err(|err| warn!("cannot follow {}: {err}; install_log stays empty", log.display()));
     Ok((child, tail.ok().and_then(|mut tail| tail.stdout.take()), lock))
+}
+
+/// Locks `file`, refusing unless `log` still names it: another Supervisor may have replaced it
+/// between the open and the lock, and a lock on a file no path names guards nothing.
+fn lock_named(file: &std::fs::File, log: &Path) -> std::io::Result<()> {
+    crate::instance::take_lock(file).map_err(still_running)?;
+    let (held, named) = (file.metadata()?, std::fs::symlink_metadata(log).ok());
+    match named.is_some_and(|named| (named.dev(), named.ino()) == (held.dev(), held.ino())) {
+        true => Ok(()),
+        false => Err(still_running("its log was replaced")),
+    }
+}
+
+fn still_running(why: impl std::fmt::Display) -> std::io::Error {
+    std::io::Error::other(format!("an update started before the shell restarted is still running ({why})"))
 }
 
 /// Testable loop over the followed log for [`run_install`]. Wakes `main.rs` on every parsed line
@@ -816,7 +842,8 @@ mod tests {
         std::os::unix::fs::symlink(&target, &log).unwrap();
 
         let command = InstallCommand { program: "true".into(), arguments: vec![] };
-        assert!(spawn_logged(&command, &log, "tail").is_err());
+        let refused = spawn_logged(&command, &log, "tail").unwrap_err().to_string();
+        assert!(refused.starts_with("cannot replace"), "not taken for a running install: {refused}");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
     }
 
@@ -1001,25 +1028,55 @@ exit {exit_code}"
         assert_eq!(std::fs::read_to_string(&log).unwrap(), "next\n", "a finished install's log is replaced");
     }
 
-    #[tokio::test]
-    async fn a_process_the_installer_leaves_running_does_not_refuse_the_next_install() {
+    #[test]
+    fn a_lock_held_on_the_last_log_refuses_the_install_and_keeps_that_log() {
+        let log = tempfile::tempdir().unwrap().keep().join("install.log");
+        let held = std::fs::File::create(&log).unwrap();
+        crate::instance::take_lock(&held).unwrap();
+        let refused = spawn_logged(&InstallCommand { program: "true".into(), arguments: Vec::new() }, &log, "tail");
+        assert!(refused.unwrap_err().to_string().contains("still running"));
+        assert_eq!(std::fs::metadata(&log).unwrap().ino(), held.metadata().unwrap().ino(), "not unlinked");
+    }
+
+    /// Another Supervisor's swap between this one's open and its lock: the lock alone would pass.
+    #[test]
+    fn a_log_replaced_before_it_is_locked_is_refused() {
         let dir = tempfile::tempdir().unwrap();
-        let (log, go) = (dir.path().join("install.log"), dir.path().join("go"));
+        let (log, other) = (dir.path().join("install.log"), dir.path().join("other"));
+        let opened = std::fs::File::create(&log).unwrap();
+        std::fs::write(&other, "").unwrap();
+        std::fs::rename(&other, &log).unwrap();
+        assert!(lock_named(&opened, &log).unwrap_err().to_string().contains("its log was replaced"));
+        lock_named(&std::fs::File::options().append(true).open(&log).unwrap(), &log).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_process_the_installer_leaves_running_neither_refuses_nor_writes_into_the_next_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let (log, go, wrote) = (dir.path().join("install.log"), dir.path().join("go"), dir.path().join("wrote"));
         let sh = |script: String| InstallCommand { program: "sh".into(), arguments: process::sh_args(&script) };
+        let wait = |path: &Path| {
+            format!("i=0; while [ ! -e '{}' ] && [ $i -lt 500 ]; do sleep 0.01; i=$((i+1)); done", path.display())
+        };
         // A build daemon: it keeps the installer's stdout, and so the locked log, after the installer exits.
-        let daemon = format!(
-            "(i=0; while [ ! -e '{}' ] && [ $i -lt 500 ]; do sleep 0.01; i=$((i+1)); done) & echo started",
-            go.display()
-        );
+        let daemon = format!("({}; echo late; touch '{}') & echo started", wait(&go), wrote.display());
         let (child, output, lock) = spawn_logged(&sh(daemon), &log, "tail").unwrap();
-        let state = Arc::new(Mutex::new(UpdatesState::default()));
+        let state = || Arc::new(Mutex::new(UpdatesState::default()));
         let (events_tx, _events_rx) = tokio::sync::mpsc::unbounded_channel();
         // `tail --pid` stops with the installer, so the read ends while the daemon still runs.
-        within(run_install_with_child(Arc::new(StubBackend), state, events_tx, child, output, lock)).await;
+        within(run_install_with_child(Arc::new(StubBackend), state(), events_tx.clone(), child, output, lock)).await;
 
-        let next = spawn_logged(&sh("echo next".into()), &log, "tail");
+        let next = format!("echo next; {}; echo done", wait(&wrote));
+        let (child, output, lock) = spawn_logged(&sh(next), &log, "tail").expect("the daemon kept the install lock");
         std::fs::write(&go, "").unwrap();
-        within(next.expect("the daemon kept the install lock").0.wait()).await.unwrap();
+        let state = state();
+        within(run_install_with_child(Arc::new(StubBackend), Arc::clone(&state), events_tx, child, output, lock)).await;
+        assert!(wrote.exists(), "the daemon wrote before the next install ended");
+        assert_eq!(
+            state.lock().unwrap().install_log,
+            ["next", "done"],
+            "the daemon's late line is not the next install's"
+        );
     }
 
     /// The proof that no install output can push `mantle.updates` past the frame cap: a full tail of
