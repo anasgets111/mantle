@@ -651,7 +651,7 @@
 ---@field pairing_request? PairingRequest The pairing question to show, or `nil`. Entry requests use `secure_submit`; confirmation, authorization and service requests use `answer_pairing`.
 
 ---@class TrayState
----@field items TrayItem[] Registered items in registration order, oldest first; updates never reorder them. At most 32: one arriving past that logs one warning, waits, and enters once another leaves.
+---@field items TrayItem[] Registered items in registration order, oldest first; updates never reorder them. At most 32: one arriving past that waits, up to 64, and enters once another leaves; later ones are dropped.
 
 ---@class NotificationsState
 ---`mantle.notifications`'s payload (ADR-0033).

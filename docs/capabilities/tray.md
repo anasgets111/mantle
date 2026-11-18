@@ -31,7 +31,7 @@ list {
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `items` | `TrayItem[]` | Registered items in registration order, oldest first; updates never reorder them. At most 32: one arriving past that logs one warning, waits, and enters once another leaves. |
+| `items` | `TrayItem[]` | Registered items in registration order, oldest first; updates never reorder them. At most 32: one arriving past that waits, up to 64, and enters once another leaves; later ones are dropped. |
 
 ### `MenuItem`
 

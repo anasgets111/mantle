@@ -9255,9 +9255,10 @@ lists' rows past the window keep pre-restyle sizes until shown (#141).
 Amended by #141: the scene samples the restyle count with the generation (after it, as the worker
 bumps it first), and a keyed scrolling list whose stamp's restyle count moved marks every known row
 stale like a boxed one, so rows past the window void at that landing and rows before it once passed.
-A new family's landing voids nothing unboxed. The check sits inside the generation-moved branch, so
-a pass or tick without a landing does no extra work. Cost: one restyle turns every measured row past
-the window of every list into an estimate, rows of other families included.
+A new family's landing voids nothing unboxed. The restyle check sits inside the generation-moved
+branch, but the scan that voids stale rows past the window runs on every measure, one pass over those
+rows. Cost: one restyle turns every measured row past the window of every list into an estimate,
+rows of other families included.
 
 ## 0400. A protocol mismatch re-executes the installed `mantle`
 
