@@ -45,6 +45,12 @@ pub(crate) fn take_lock(file: &File) -> io::Result<()> {
     Ok(())
 }
 
+/// Releases [`take_lock`]'s lock through any descriptor of the same open file, while others stay open.
+pub(crate) fn release_lock(file: &File) -> io::Result<()> {
+    fcntl(file, FcntlArg::F_OFD_SETLK(&whole_file(libc::F_UNLCK)))?;
+    Ok(())
+}
+
 /// Whether anyone holds the lock on `file`. A query: it takes nothing.
 pub fn is_locked(file: &File) -> io::Result<bool> {
     let mut lock = whole_file(libc::F_WRLCK);

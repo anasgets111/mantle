@@ -29,7 +29,8 @@ const LOG_TAIL_LINES: usize = 200;
 /// `install.log` keeps the whole line.
 const MAX_LOG_LINE_BYTES: usize = 4096;
 
-/// How often a scheduled check asks whether it is due; also the retry delay after a failure.
+/// How often a scheduled check asks whether it is due; also the first retry delay after a failure,
+/// doubled per further consecutive failure up to the interval.
 const CHECK_POLL: Duration = Duration::from_secs(300);
 
 /// Cloneable so `main.rs` can hand an `Arc`-backed copy to the spawned install task.
@@ -182,10 +183,17 @@ async fn run_check_task(
                 let last = state.lock().expect("mutex poisoned").last_successful_check;
                 until_due(last, epoch_seconds(SystemTime::now()), interval)
             };
+            // Backs off only while a check is due, so a failed manual check beside a recent good one
+            // keeps the overdue poll. Offline with a daily interval, that is 9 checks a day, not 288.
+            let poll = || {
+                let failures = state.lock().expect("mutex poisoned").consecutive_check_failures;
+                let backoff = CHECK_POLL.saturating_mul(2u32.saturating_pow(failures.saturating_sub(1)));
+                if wall().is_zero() { backoff.min(interval) } else { CHECK_POLL }
+            };
             let mut next = Instant::now() + wall();
             loop {
                 tokio::select! {
-                    _ = tokio::time::sleep_until(next.min(Instant::now() + CHECK_POLL)) => {
+                    _ = tokio::time::sleep_until(next.min(Instant::now() + poll())) => {
                         if Instant::now() >= next || wall().is_zero() {
                             next = Instant::now() + interval;
                             run_one_check(&backend, &state, &events).await;
@@ -258,7 +266,7 @@ fn until_due(last_successful_check: Option<i64>, now: i64, interval: Duration) -
 async fn run_install(backend: Arc<dyn Backend>, state: Arc<Mutex<UpdatesState>>, events: UnboundedSender<()>) {
     let command = backend.install_command();
     let log = shared::runtime_root().map(|root| root.join("install.log"));
-    let (child, output) = match log.and_then(|log| spawn_logged(&command, &log, "tail")) {
+    let (child, output, lock) = match log.and_then(|log| spawn_logged(&command, &log, "tail")) {
         Ok(spawned) => spawned,
         Err(err) => {
             let message = format!("failed to spawn {}: {err}", command.program);
@@ -271,15 +279,21 @@ async fn run_install(backend: Arc<dyn Backend>, state: Arc<Mutex<UpdatesState>>,
             return;
         }
     };
-    run_install_with_child(backend, state, events, child, output).await;
+    run_install_with_child(backend, state, events, child, output, lock).await;
 }
 
 /// Starts `command` writing into `log` (opened only here, `O_NOFOLLOW`; root pacman inherits the fd),
 /// and GNU `tail` following it until the command is reaped. No pipe, so our exit cannot SIGPIPE it.
-/// The installer inherits a lock on the log with the fd, so while it runs another install is refused.
-// ponytail: a restarted Supervisor neither knows nor shows a running install, only refuses a second.
-// Upgrade: record the installer's pid beside the log and follow it again.
-fn spawn_logged(command: &InstallCommand, log: &Path, follower: &str) -> std::io::Result<(Child, Option<ChildStdout>)> {
+/// The installer inherits a lock on the log with the fd, so while it runs another install is refused;
+/// the returned dup releases it once the installer is reaped, though a process it left holds the fd.
+// ponytail: a restarted Supervisor neither knows nor shows a running install, only refuses a second,
+// also while a process the installer left keeps the fd. Upgrade: record the installer's pid beside
+// the log and follow it again.
+fn spawn_logged(
+    command: &InstallCommand,
+    log: &Path,
+    follower: &str,
+) -> std::io::Result<(Child, Option<ChildStdout>, std::fs::File)> {
     let open = |write: bool| {
         let mut options = std::fs::OpenOptions::new();
         options.read(!write).append(write).create(write).mode(0o600);
@@ -290,6 +304,7 @@ fn spawn_logged(command: &InstallCommand, log: &Path, follower: &str) -> std::io
         std::io::Error::other(format!("an update started before the shell restarted is still running ({err})"))
     })?;
     file.set_len(0)?;
+    let lock = file.try_clone()?;
     let mut installer = Command::new(&command.program);
     installer.args(&command.arguments).process_group(0).stdin(Stdio::null()).stdout(file.try_clone()?).stderr(file);
     let child = installer.spawn()?;
@@ -297,7 +312,7 @@ fn spawn_logged(command: &InstallCommand, log: &Path, follower: &str) -> std::io
     // Without a reader the install still runs, so it is still tracked to its exit.
     let tail = Command::new(follower).args(["-c", "+1", "-f", &pid]).stdin(reader).stdout(Stdio::piped()).spawn();
     let tail = tail.map_err(|err| warn!("cannot follow {}: {err}; install_log stays empty", log.display()));
-    Ok((child, tail.ok().and_then(|mut tail| tail.stdout.take())))
+    Ok((child, tail.ok().and_then(|mut tail| tail.stdout.take()), lock))
 }
 
 /// Testable loop over the followed log for [`run_install`]. Wakes `main.rs` on every parsed line
@@ -308,6 +323,7 @@ async fn run_install_with_child(
     events: UnboundedSender<()>,
     mut child: tokio::process::Child,
     output: Option<ChildStdout>,
+    lock: std::fs::File,
 ) {
     let read = async {
         let Some(output) = output else { return };
@@ -331,6 +347,12 @@ async fn run_install_with_child(
     };
     // Reap while reading: `tail --pid` takes an unreaped installer for a live one.
     let (status, ()) = tokio::join!(child.wait(), read);
+    // Before `installing` falls, so an install asked for on that push is not refused.
+    if status.is_ok()
+        && let Err(err) = crate::instance::release_lock(&lock)
+    {
+        warn!("cannot release the install log's lock: {err}");
+    }
     let mut guard = state.lock().expect("mutex poisoned");
     guard.installing = false;
     guard.install_finished_at = Some(epoch_seconds(SystemTime::now()));
@@ -540,20 +562,48 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_failed_scheduled_check_is_retried_within_minutes_not_a_whole_interval() {
-        let (controller, mut events_rx) = failing_controller().await;
-        controller.configure(UpdatesConfigure {
-            interval_secs: 86_400,
-            checked_at: None,
-            packages: vec![],
-            aur: false,
-        });
-        await_one_check(&mut events_rx).await;
-        assert_eq!(controller.snapshot().consecutive_check_failures, 1);
-
-        tokio::time::timeout(Duration::from_secs(301), await_one_check(&mut events_rx))
-            .await
-            .expect("a failure at login, before the network is up, must not wait a day");
+    async fn a_failing_scheduled_check_retries_within_minutes_then_backs_off_to_the_interval() {
+        /// Fails while its flag is set.
+        struct Flaky(std::sync::atomic::AtomicBool);
+        impl Backend for Flaky {
+            fn name(&self) -> &'static str {
+                "flaky"
+            }
+            fn check(&self) -> Result<CheckReport, String> {
+                match self.0.load(std::sync::atomic::Ordering::SeqCst) {
+                    true => StubBackend.check(),
+                    false => Ok(CheckReport { packages: vec![], aur_error: None }),
+                }
+            }
+            fn install_command(&self) -> InstallCommand {
+                StubBackend.install_command()
+            }
+            fn parse_install_step(&self, _: &str) -> Option<InstallStep> {
+                None
+            }
+        }
+        let backend = Arc::new(Flaky(true.into()));
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let controller = UpdatesController::with_backend(Some(backend.clone()), no_marker(), events_tx);
+        assert_eq!(events_rx.try_recv().ok(), Some(()), "construction pushes");
+        controller.configure(UpdatesConfigure { interval_secs: 1500, checked_at: None, packages: vec![], aur: false });
+        let mut starts = Vec::new();
+        for round in 0..9 {
+            tokio::time::timeout(Duration::from_secs(1501), await_one_check(&mut events_rx))
+                .await
+                .expect("the next retry never started");
+            starts.push(tokio::time::Instant::now());
+            // Round 6 succeeds. Its stamp is then aged by an interval, as paused time cannot age the
+            // wall clock, so the failures after it are due at once.
+            backend.0.store(round != 5, std::sync::atomic::Ordering::SeqCst);
+            if round == 6 {
+                controller.state.lock().unwrap().last_successful_check = Some(epoch_seconds(SystemTime::now()) - 1500);
+            }
+        }
+        let gaps: Vec<_> = starts.windows(2).map(|pair| (pair[1] - pair[0]).as_secs()).collect();
+        // The first retry stays at 5 minutes: a failure at login, before the network is up. A
+        // success starts the backoff over.
+        assert_eq!(gaps, [300, 600, 1200, 1500, 1500, 1500, 300, 300]);
         assert_eq!(controller.snapshot().consecutive_check_failures, 2);
     }
 
@@ -728,7 +778,7 @@ mod tests {
     }
 
     /// A fake installer running `script`, logged under a fresh tempdir.
-    fn installer(script: &str) -> (Child, Option<ChildStdout>) {
+    fn installer(script: &str) -> (Child, Option<ChildStdout>, std::fs::File) {
         let log = tempfile::tempdir().unwrap().keep().join("install.log");
         spawn_logged(&InstallCommand { program: "sh".into(), arguments: process::sh_args(script) }, &log, "tail")
             .unwrap()
@@ -745,7 +795,7 @@ mod tests {
             go.display()
         );
         let command = InstallCommand { program: "sh".into(), arguments: process::sh_args(&script) };
-        let (mut child, output) = spawn_logged(&command, &log, "tail").unwrap();
+        let (mut child, output, _lock) = spawn_logged(&command, &log, "tail").unwrap();
         let mut lines = BoundedLines::new(output.unwrap(), "test".into());
         assert_eq!(within(lines.next_line()).await.unwrap().as_deref(), Some("first"));
         // The Supervisor exits, restarts or crashes.
@@ -773,12 +823,12 @@ mod tests {
     #[tokio::test]
     async fn run_install_with_child_parses_progress_reports_the_exit_code_and_logs_both_streams() {
         let state = Arc::new(Mutex::new(UpdatesState::default()));
-        let (child, output) = installer(
+        let (child, output, lock) = installer(
             "echo ':: Synchronizing package databases...'; echo '(1/2) installing nss (3.127-1 -> 3.128-1)'; echo '(2/2) upgrading gnome-autoar'; exit 0",
         );
 
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
-        run_install_with_child(Arc::new(StubBackend), Arc::clone(&state), events_tx, child, output).await;
+        run_install_with_child(Arc::new(StubBackend), Arc::clone(&state), events_tx, child, output, lock).await;
 
         let snapshot = state.lock().unwrap().clone();
         assert!(!snapshot.installing);
@@ -796,10 +846,10 @@ mod tests {
         assert_eq!(signal_count, 4, "one signal per output line plus one completion signal");
 
         let state = Arc::new(Mutex::new(UpdatesState::default()));
-        let (child, output) = installer("exit 1");
+        let (child, output, lock) = installer("exit 1");
 
         let (events_tx, _events_rx) = tokio::sync::mpsc::unbounded_channel();
-        run_install_with_child(Arc::new(StubBackend), Arc::clone(&state), events_tx, child, output).await;
+        run_install_with_child(Arc::new(StubBackend), Arc::clone(&state), events_tx, child, output, lock).await;
 
         let snapshot = state.lock().unwrap().clone();
         assert!(!snapshot.installing);
@@ -811,12 +861,12 @@ mod tests {
         );
 
         let state = Arc::new(Mutex::new(UpdatesState::default()));
-        let (child, output) = installer(
+        let (child, output, lock) = installer(
             "echo ':: Synchronizing package databases...'; echo 'error: target not found' 1>&2; echo '(1/1) upgrading nss'; exit 0",
         );
 
         let (events_tx, _events_rx) = tokio::sync::mpsc::unbounded_channel();
-        run_install_with_child(Arc::new(StubBackend), Arc::clone(&state), events_tx, child, output).await;
+        run_install_with_child(Arc::new(StubBackend), Arc::clone(&state), events_tx, child, output, lock).await;
 
         let log = state.lock().unwrap().install_log.clone();
         assert!(log.contains(&":: Synchronizing package databases...".to_string()), "{log:?}");
@@ -867,13 +917,13 @@ installing helper...
         ] {
             backend.install_command();
             let state = Arc::new(Mutex::new(UpdatesState::default()));
-            let (child, output) = installer(&format!(
+            let (child, output, lock) = installer(&format!(
                 "cat <<'PACMAN'
 {transcript}PACMAN
 exit {exit_code}"
             ));
             let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
-            run_install_with_child(backend.clone(), state.clone(), events_tx, child, output).await;
+            run_install_with_child(backend.clone(), state.clone(), events_tx, child, output, lock).await;
             let snapshot = state.lock().unwrap().clone();
             assert_eq!(
                 (
@@ -900,9 +950,9 @@ exit {exit_code}"
         let state = Arc::new(Mutex::new(UpdatesState::default()));
         let script =
             "printf 'caf\\351\\n'; printf 'err\\351\\n' >&2; echo after; echo after-err >&2; printf no-newline";
-        let (child, output) = installer(script);
+        let (child, output, lock) = installer(script);
         let (events_tx, _events_rx) = tokio::sync::mpsc::unbounded_channel();
-        run_install_with_child(Arc::new(StubBackend), Arc::clone(&state), events_tx, child, output).await;
+        run_install_with_child(Arc::new(StubBackend), Arc::clone(&state), events_tx, child, output, lock).await;
 
         let snapshot = state.lock().unwrap().clone();
         let mut log = snapshot.install_log;
@@ -915,11 +965,11 @@ exit {exit_code}"
     async fn an_install_whose_log_reader_cannot_start_is_still_tracked_to_its_exit() {
         let log = tempfile::tempdir().unwrap().keep().join("install.log");
         let command = InstallCommand { program: "sh".into(), arguments: process::sh_args("echo unread; exit 3") };
-        let (child, output) = spawn_logged(&command, &log, "/nonexistent/tail")
+        let (child, output, lock) = spawn_logged(&command, &log, "/nonexistent/tail")
             .expect("the installer is running, so the install must be tracked rather than reported failed");
         let state = Arc::new(Mutex::new(UpdatesState { installing: true, ..UpdatesState::default() }));
         let (events_tx, _events_rx) = tokio::sync::mpsc::unbounded_channel();
-        run_install_with_child(Arc::new(StubBackend), Arc::clone(&state), events_tx, child, output).await;
+        run_install_with_child(Arc::new(StubBackend), Arc::clone(&state), events_tx, child, output, lock).await;
 
         let snapshot = state.lock().unwrap().clone();
         assert!(!snapshot.installing);
@@ -937,7 +987,7 @@ exit {exit_code}"
             "echo first; i=0; while [ ! -e '{}' ] && [ $i -lt 500 ]; do sleep 0.01; i=$((i+1)); done; echo last",
             go.display()
         );
-        let (mut first, _output) = spawn_logged(&sh(first), &log, "tail").unwrap();
+        let (mut first, _output, _) = spawn_logged(&sh(first), &log, "tail").unwrap();
         poll_until(|| std::fs::read_to_string(&log).ok().filter(|text| text == "first\n")).await;
 
         let refused = spawn_logged(&sh("echo second".into()), &log, "tail");
@@ -946,9 +996,30 @@ exit {exit_code}"
         within(first.wait()).await.unwrap();
         assert_eq!(std::fs::read_to_string(&log).unwrap(), "first\nlast\n", "the first install's log is whole");
 
-        let (mut next, _output) = spawn_logged(&sh("echo next".into()), &log, "tail").unwrap();
+        let (mut next, _output, _) = spawn_logged(&sh("echo next".into()), &log, "tail").unwrap();
         within(next.wait()).await.unwrap();
         assert_eq!(std::fs::read_to_string(&log).unwrap(), "next\n", "a finished install's log is replaced");
+    }
+
+    #[tokio::test]
+    async fn a_process_the_installer_leaves_running_does_not_refuse_the_next_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let (log, go) = (dir.path().join("install.log"), dir.path().join("go"));
+        let sh = |script: String| InstallCommand { program: "sh".into(), arguments: process::sh_args(&script) };
+        // A build daemon: it keeps the installer's stdout, and so the locked log, after the installer exits.
+        let daemon = format!(
+            "(i=0; while [ ! -e '{}' ] && [ $i -lt 500 ]; do sleep 0.01; i=$((i+1)); done) & echo started",
+            go.display()
+        );
+        let (child, output, lock) = spawn_logged(&sh(daemon), &log, "tail").unwrap();
+        let state = Arc::new(Mutex::new(UpdatesState::default()));
+        let (events_tx, _events_rx) = tokio::sync::mpsc::unbounded_channel();
+        // `tail --pid` stops with the installer, so the read ends while the daemon still runs.
+        within(run_install_with_child(Arc::new(StubBackend), state, events_tx, child, output, lock)).await;
+
+        let next = spawn_logged(&sh("echo next".into()), &log, "tail");
+        std::fs::write(&go, "").unwrap();
+        within(next.expect("the daemon kept the install lock").0.wait()).await.unwrap();
     }
 
     /// The proof that no install output can push `mantle.updates` past the frame cap: a full tail of

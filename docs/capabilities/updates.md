@@ -79,7 +79,7 @@ Call each as `mantle.updates:<action>(arguments...)`; `?` marks an argument you 
 | --- | --- | --- |
 | `aur?` | `boolean` | Also check the AUR and install through `aur_helper`. Sends every foreign package name to aur.archlinux.org and builds without PKGBUILD review. |
 | `checked_at?` | `integer` | Persisted Unix seconds of the last successful check. Seeds `last_successful_check` only while that is `nil`, so a restart need not recheck at once. |
-| `interval` | `integer` | Seconds between scheduled checks, the first at once unless `last_successful_check` is younger; `0` checks only on `check`. Time asleep counts, and a failed check retries within 5 minutes. |
+| `interval` | `integer` | Seconds between scheduled checks, the first at once unless `last_successful_check` is younger; `0` checks only on `check`. Time asleep counts. A failed check retries after 5 minutes, then 10, 20 and so on, never longer than `interval`. |
 | `packages?` | `UpdateCandidate[]` | Persisted `packages` from that check, seeded on the same terms; ignored without `checked_at`. |
 
 ## Backend

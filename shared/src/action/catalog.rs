@@ -566,8 +566,8 @@ pub enum UpdatesAction {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UpdatesConfigure {
     /// Seconds between scheduled checks, the first at once unless `last_successful_check` is
-    /// younger; `0` checks only on `check`. Time asleep counts, and a failed check retries within
-    /// 5 minutes.
+    /// younger; `0` checks only on `check`. Time asleep counts. A failed check retries after 5
+    /// minutes, then 10, 20 and so on, never longer than `interval`.
     #[serde(rename = "interval")]
     pub interval_secs: u64,
     /// Persisted Unix seconds of the last successful check. Seeds `last_successful_check` only
