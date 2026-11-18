@@ -1912,7 +1912,7 @@ checksum = "d902046e6a28a1e4c3cab97258a0ce11e994903f01c2d97a9447a0b3df85f4f6"
 
 [[package]]
 name = "renderer"
-version = "0.13.3"
+version = "0.14.0"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -2141,7 +2141,7 @@ dependencies = [
 
 [[package]]
 name = "shared"
-version = "0.13.3"
+version = "0.14.0"
 dependencies = [
  "libc",
  "schemars",
@@ -2287,7 +2287,7 @@ dependencies = [
 
 [[package]]
 name = "supervisor"
-version = "0.13.3"
+version = "0.14.0"
 dependencies = [
  "enumflags2",
  "futures-util",

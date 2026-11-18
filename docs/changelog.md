@@ -7,7 +7,9 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
-This stability and security release has 121 entries: 8 Breaking, 3 Changed, 1 Added (locking before suspend when a config has a `lock`) and 109 Fixed. Read the Breaking entries first; each names the edit it needs. The largest groups are capabilities (40 entries, led by MPRIS, the tray, networking and updates) and text and text fields (16); SVG loading also gains size, depth and filter limits, and a file past them fails to load instead of exhausting memory.
+## 0.14.0 - 2026-11-18
+
+The "turns out there were a lot of bugs" release, also known as the "Mythos 5.2 happened" release: pointed at the codebase, it kept finding things. 109 fixes, 8 breaking changes, 3 changes, and one lonely new feature (locking before suspend). Read Breaking first; each entry names the edit. Cursed SVGs now fail to load instead of eating your RAM.
 
 ### Breaking
 
