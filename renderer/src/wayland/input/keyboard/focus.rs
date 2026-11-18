@@ -266,8 +266,16 @@ impl App {
     /// Give the keyboard to `autofocus` (ADR-0112).
     pub(super) fn arm_autofocus(&mut self, scope: &[String]) {
         let trees = self.scoped_trees(scope);
-        let Some(control) = autofocus_in_scope(&trees) else { return };
+        let control = autofocus_in_scope(&trees);
         drop(trees);
+        // ADR-0102 decision 2: a field Escape cancelled stays left until the panel next gets the keys
+        // (#146). Another candidate in its scope, or none (it hid), ends the hold, so a reshown field arms.
+        let candidate = control.as_ref().map(|control| (control.surface_id.clone(), control.id));
+        if candidate.is_some() && candidate == self.cancelled_field {
+            return;
+        }
+        self.cancelled_field.take_if(|(cancelled, _)| scope.contains(cancelled));
+        let Some(control) = control else { return };
         // A closed launcher can retain its tree and focus id without a `leave`; require its live
         // `wl_surface` or every turn would arm then prune the same field.
         if !self.surface_is_live(&control.surface_id) {
@@ -333,6 +341,7 @@ impl App {
     /// still typing there (#120).
     pub(in crate::wayland) fn arm_autofocus_on_interactivity(&mut self, surface_id: &str) {
         let scope = self.scope_of(surface_id);
+        self.cancelled_field.take_if(|(cancelled, _)| scope.contains(cancelled));
         let typing = self.focused_text_field.as_ref().is_some_and(|f| f.typing && scope.contains(&f.surface_id));
         if should_arm_autofocus(self.focused_secure_submit.is_some(), typing, self.focused_control.as_ref()) {
             self.arm_autofocus(&scope);

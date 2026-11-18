@@ -230,6 +230,8 @@ fn check_injected_text(text: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wayland::test_support::MockWayland;
+    use wayland_client::EventQueue;
 
     #[test]
     fn injected_text_the_input_method_path_would_drop_is_an_error() {
@@ -292,6 +294,19 @@ mod tests {
                 keyboard_interactivity = "on_demand", child = field("n") }} }}"#
         ));
         (app, dir)
+    }
+
+    /// The compositor's `wl_keyboard.enter` on `surface_id`, after announcing a keyboard once.
+    fn enter(app: &mut App, queue: &mut EventQueue<App>, mock: &MockWayland, surface_id: &str) {
+        if app.keyboard.is_none() {
+            let seat = app.seat_state.seats().next().unwrap();
+            mock.send(seat.id().protocol_id(), 0, &2u32.to_ne_bytes()); // wl_seat.capabilities: keyboard
+            queue.roundtrip(app).unwrap();
+        }
+        let (conn, qh, keyboard) = (app.conn.clone(), queue.handle(), app.keyboard.clone().unwrap());
+        let tracked = app.surfaces.iter().find(|s| s.surface_id == surface_id);
+        let surface = tracked.and_then(|s| s.role.wl_surface()).unwrap().clone();
+        KeyboardHandler::enter(app, &conn, &qh, &keyboard, &surface, 0, &[], &[]);
     }
 
     /// One main-loop turn's focus upkeep and protocol state after `code`.
@@ -361,6 +376,62 @@ mod tests {
             turn(&mut app, "");
             app.arm_autofocus_if_unfocused(&app.keyboard_focus_scope());
             assert_eq!(app.lua_log(), want, "draft {draft:?}");
+            (app.keyboard_focus, app.focused_control) = (None, None); // the "none" panel's `leave`
+            turn(&mut app, "w:set(300)");
+            assert_eq!(app.lua_log(), [want, &["b:"]].concat(), "reopening arms the cancelled field");
+        }
+    }
+
+    /// An `on_demand` `bar` holding the keyboard, its `autofocus` field armed: in a column shown by
+    /// `open`, or in a `grab = false` popup shown by `open`.
+    fn bar_with_field(in_popup: bool) -> (App, tempfile::TempDir, EventQueue<App>, MockWayland) {
+        let field = r#"textfield { width = 100, height = 20, autofocus = true, on_cancel = function() end,
+            focused = focused("a"), on_change = function(t) log[#log + 1] = "a:" .. t end }"#;
+        let hidden = format!("column {{ visible = open, children = {{ {field} }} }}");
+        let (in_bar, in_menu) = if in_popup { ("nil", field) } else { (hidden.as_str(), "nil") };
+        let (mut app, dir, mut queue, mock) = App::test_app_with_wire(&format!(
+            r#"open, log = state("open", false), {{}}
+            return {{ panel {{ id = "bar", layer = "top", output = "TEST", width = 200, height = 40,
+                keyboard_interactivity = "on_demand", child = {in_bar} }},
+              popup {{ id = "menu", parent = "bar", anchor_rect = {{ x = 0, y = 0, width = 10, height = 10 }},
+                width = 100, height = 40, grab = false, visible = open, child = {in_menu} }} }}"#
+        ));
+        let bar = app.surfaces.iter().position(|s| s.surface_id == "bar@TEST").unwrap();
+        app.set_surface_size(bar, (200, 40));
+        app.map_on_configure(bar);
+        turn(&mut app, "open:set(true)");
+        enter(&mut app, &mut queue, &mock, "bar@TEST");
+        assert_eq!(app.lua_log(), ["a:"]);
+        (app, dir, queue, mock)
+    }
+
+    /// ADR-0102 decision 2: Escape with `on_cancel` leaves the field, and an `on_demand` panel's upkeep
+    /// must not hand it the keys back before the next `enter` (#146).
+    #[test]
+    fn escape_on_an_on_demand_panel_stays_unfocused_until_the_next_enter() {
+        let (mut app, _dir, mut queue, mock) = bar_with_field(false);
+        let escape = parse_combo("Escape").unwrap().0;
+        assert_eq!(app.inject_key("bar@TEST", &escape, (false, false)), Ok(()));
+        turn(&mut app, "");
+        app.arm_autofocus_if_unfocused(&app.keyboard_focus_scope());
+        assert_eq!(app.lua_log(), ["a:"], "no second `on_change` from a re-arm");
+        assert!(!is_focused(&app, "a"));
+        enter(&mut app, &mut queue, &mock, "bar@TEST");
+        assert_eq!(app.lua_log(), ["a:", "a:"], "the next `enter` arms it as before");
+    }
+
+    /// A cancelled field hidden, or in a popup closed, arms again when shown, as it always did.
+    #[test]
+    fn a_cancelled_field_shown_again_arms_its_autofocus() {
+        for (in_popup, holder) in [(false, "bar@TEST"), (true, "menu")] {
+            let (mut app, _dir, _queue, _mock) = bar_with_field(in_popup);
+            let escape = parse_combo("Escape").unwrap().0;
+            assert_eq!(app.inject_key(holder, &escape, (false, false)), Ok(()));
+            for code in ["open:set(false)", "open:set(true)"] {
+                turn(&mut app, code);
+                app.arm_autofocus_if_unfocused(&app.keyboard_focus_scope());
+            }
+            assert_eq!(app.lua_log(), ["a:", "a:"], "{holder}");
         }
     }
 

@@ -443,8 +443,11 @@ impl App {
                 && scene.surface(surface_id).is_some_and(|tree| layout::hit::contains_node(tree, id))
         };
         let focused_alive = self.focused_text_field.as_ref().map(|field| alive(&field.surface_id, field.id));
+        // A cancelled field in a popup that closed leaves the scope, so `arm_autofocus` cannot end its hold.
+        let cancelled_gone = self.cancelled_field.as_ref().is_some_and(|(surface_id, id)| !alive(surface_id, *id));
         forget_gone_drafts(&mut parked, alive);
         self.parked_drafts = parked;
+        self.cancelled_field.take_if(|_| cancelled_gone);
         // Liveness of the surface and of the node, not of the keyboard (ADR-0108): a field whose
         // surface lost the keyboard keeps its draft and simply takes no keys until it is back
         // ([`App::text_field_takes_keys`]). [`App::drop_unusable_text_field_focus`] already drops
@@ -591,6 +594,8 @@ impl App {
         }
         if edit.cancelled {
             self.focus_text_field(None);
+            self.set_control_focus(None);
+            self.cancelled_field = Some((surface_id.clone(), field_id));
         }
         // `focus_text_field(None)` above already repainted a cancelled field's surface.
         self.mark_focused_text_field_changed();

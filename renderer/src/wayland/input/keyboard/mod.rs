@@ -287,7 +287,7 @@ impl KeyboardHandler for App {
         // ADR-0112: absent masked focus or an already-typing plain field, scope `autofocus` takes
         // keys; focus-follows-mouse may enter repeatedly, so a typing field keeps its draft.
         let typing_restored = !secure_armed && self.restore_typing_control_on_enter(&scope);
-        self.armed_control = None;
+        (self.armed_control, self.cancelled_field) = (None, None);
         if focus::should_arm_autofocus(secure_armed, typing_restored, self.focused_control.as_ref()) {
             self.arm_autofocus(&scope);
         }

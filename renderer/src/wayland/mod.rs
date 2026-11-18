@@ -232,6 +232,8 @@ pub struct App {
     focused_control: Option<FocusedControl>,
     /// The `autofocus` control last seen, so one the user left is not re-armed until the keyboard re-enters.
     armed_control: Option<(String, layout::scene::NodeId)>,
+    /// The plain field Escape last cancelled, which `autofocus` skips until the keyboard re-enters or it hides.
+    cancelled_field: Option<(String, layout::scene::NodeId)>,
     /// The surface `keyboard_interactivity` armed while no surface here held the keyboard; its focus
     /// waits for `enter` (#130).
     awaiting_keyboard: Option<String>,
@@ -365,6 +367,7 @@ impl App {
             pending_seeds: Vec::new(),
             focused_control: None,
             armed_control: None,
+            cancelled_field: None,
             awaiting_keyboard: None,
             output_epoch: 0,
             focus_visible: false,

@@ -9,6 +9,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 - Fixed: nested `effect.shader` nodes with `opacity` below 1 fade their subtree by the product of their opacities when the GPU refuses their offscreen textures. The inner layer used to replace the outer fade, so two at 0.5 drew at 0.5 instead of 0.25.
 - Fixed: on Arch, two shells in one login, such as a test shell beside your own, no longer run `mantle.updates` checks at the same time. One could store the other's half-downloaded repo database, even after the shell that started the download exited. A check that starts while another shell's download runs fails with `check_error`; a scheduled one retries on the failed-check backoff, which starts at 5 minutes.
+- Fixed: Escape in a `textfield` with `on_cancel` (or `escape = "blur"`) leaves the field until its surface next gets the keyboard, its panel's `keyboard_interactivity` turns on, or the field hides and shows again. On an `on_demand` panel its `autofocus` used to take the keys straight back and call `on_change` with the seed text again. `focused(name)` now turns `false` at the Escape; it used to stay `true`.
 
 ## 0.14.0 - 2026-11-18
 
