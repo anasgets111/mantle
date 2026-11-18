@@ -293,6 +293,33 @@ return column {
 }
 ```
 
+A `scale` above 1 or a non-zero `translate` paints past the node's box. An overshoot does it on the
+way to 1 or 0: springs below critical damping, the `back` and `elastic` families, a Bezier with `y`
+outside `[0, 1]`, or a keyframe past the end value. Every surface cuts what paints past its edge,
+and a content-sized one takes its layout box, not a transform's reach. Make room with `padding` on
+the panel or `margin` on the node. The panel's own `margin` sits outside the surface and makes none.
+Panel `padding` moves the content inward on an anchored side and grows a panel's own `background`.
+On a fixed-size axis it comes out of the content's space instead.
+
+```lua
+local open = state("open", false)
+
+return panel {
+    id = "card",
+    layer = "overlay",
+    anchor = { top = true },
+    padding = 8, -- room for the spring to pass 1: 0.92 -> 1 peaks near 1.008
+    child = column {
+        width = 400,
+        height = 200,
+        border_width = 3,
+        border_color = "#89b4fa",
+        scale = open:map(function(on) return on and 1 or 0.92 end),
+        animate = { scale = { spring = { stiffness = 180, damping = 16 } } },
+    },
+}
+```
+
 ## Keyframes
 
 A `keyframes` entry walks a list of values instead of easing to the resolved one. While it runs, it

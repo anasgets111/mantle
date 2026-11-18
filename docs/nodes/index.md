@@ -221,7 +221,8 @@ one lets the event through to the node around it ([pointer](../guide/input.md#po
 
 `scale`, `rotate` and `translate` act like CSS `transform`: the subtree draws moved, while layout,
 siblings and `geometry` see the untransformed box. A node scaled to 0 takes no input. Tween them for
-motion that skips re-layout.
+motion that skips re-layout. A content-sized surface cuts a transform past its edge
+([spring overshoot](../guide/animation.md#spring)).
 
 ### Cursor names
 
