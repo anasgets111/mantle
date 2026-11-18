@@ -18,6 +18,7 @@ impl ResolvedNode {
             rect: LogicalRect { x, y, width, height },
             margin: EdgeInsets::default(),
             scrolled: 0.0,
+            field_top: None,
             layout_style: std::rc::Rc::new(LayoutStyle::parse(&PropMap::default()).unwrap()),
             taffy: None,
             visible: true,
@@ -185,6 +186,8 @@ pub struct ResolvedNode {
     pub margin: EdgeInsets,
     /// The scroll offset its children carry, so a wheel moves them on from it without a pass.
     pub(crate) scrolled: f32,
+    /// A `multiline` field's [`field::FieldTop`]: the text `scrolled` keeps at its top.
+    pub(crate) field_top: Option<Box<field::FieldTop>>,
     pub visible: bool,
     /// This node's own `opacity`, before any ancestor's. `layout::paint::build_node` multiplies
     /// the chain descending, the same way it intersects a clip, so a panel fades with everything

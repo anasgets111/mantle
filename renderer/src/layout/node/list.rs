@@ -74,6 +74,8 @@ pub fn list_children(
         items: Vec::new(),
         catalog: None,
         sizes: Vec::new(),
+        boxed: Vec::new(),
+        fonts: old.map_or(0, |old| old.fonts),
         typical: old.map_or(f32::NAN, |old| old.typical),
         window: None,
         added: Vec::new(),
@@ -120,6 +122,10 @@ pub struct ListMemo {
     catalog: Option<Rc<Catalog>>,
     /// Per catalog item, its last solved length with margins: NaN if never built, `HIDDEN` if not shown.
     sizes: Vec<f32>,
+    /// Per catalog item, 1 when a glyph 0 went into its size, [`STALE`] once faces changed since.
+    boxed: Vec<u8>,
+    /// The font generation `sizes` were last measured under.
+    fonts: u64,
     /// The mean known length, carried across builds: an unbuilt item's estimate.
     typical: f32,
     /// The catalog items built, when not all of them.
@@ -134,6 +140,8 @@ pub struct ListMemo {
 
 /// The length of an item that takes no room: hidden, so no gap either.
 const HIDDEN: f32 = f32::NEG_INFINITY;
+
+const STALE: u8 = 2;
 
 /// Every element and key of a keyed scrolling list; shared, as rollback clones the memo every pass.
 struct Catalog {
@@ -292,18 +300,34 @@ impl ListMemo {
         }
     }
 
+    /// Whether this keyed scrolling list's memo notes its items' sizes.
+    pub fn windowed(&self) -> bool {
+        self.catalog.is_some()
+    }
+
+    /// Item `at`'s last solved length, NaN if unknown.
+    #[cfg(test)]
+    pub fn size(&self, at: usize) -> f32 {
+        self.sizes[at]
+    }
+
     /// The room before and after the window for the items it does not build, gaps included.
     pub fn room(&self) -> (f32, f32) {
         let Some(range) = self.window.clone() else { return (0.0, 0.0) };
         (self.room_of(0..range.start), self.room_of(range.end..self.sizes.len()))
     }
 
-    /// Notes what the built items solved to, `None` for one not shown, and the viewport length,
-    /// cross length and spacing the list solved to while shown. A new cross length voids the others' sizes.
+    /// Notes what the built items solved to, `None` for one not shown, and whether a glyph 0 went
+    /// into each, and the viewport length, cross length and spacing the list solved to while shown.
+    /// A new cross length voids the others' sizes; new `fonts` void the boxed ones past the window
+    /// (#125). One before it stays until reached or passed: voiding it would move the rows shown.
+    /// ponytail: a row no face covers is voided at every landing, and along either axis though an
+    /// unwrapped row keeps its height. Upgrade: a height bit set only by wrapped text, 3 lines.
     pub fn measured(
         &mut self,
-        lengths: impl Iterator<Item = Option<f32>>,
+        lengths: impl Iterator<Item = (Option<f32>, bool)>,
         (viewport, cross, spacing): (f32, f32, f32),
+        fonts: u64,
     ) {
         (self.viewport, self.spacing) = (viewport, spacing);
         if self.catalog.is_none() {
@@ -313,8 +337,15 @@ impl ListMemo {
             self.sizes.iter_mut().filter(|size| size.is_finite()).for_each(|size| *size = f32::NAN);
             self.cross = cross;
         }
-        for (item, length) in self.range().zip(lengths) {
-            self.sizes[item] = length.unwrap_or(HIDDEN);
+        if fonts != self.fonts {
+            self.boxed.iter_mut().for_each(|flags| *flags = STALE * u8::from(*flags != 0));
+            self.fonts = fonts;
+        }
+        let end = self.range().end;
+        let past = self.sizes[end..].iter_mut().zip(&mut self.boxed[end..]);
+        past.filter(|(_, flags)| **flags == STALE).for_each(|(size, flags)| (*size, *flags) = (f32::NAN, 0));
+        for (item, (length, boxed)) in self.range().zip(lengths) {
+            (self.sizes[item], self.boxed[item]) = (length.unwrap_or(HIDDEN), u8::from(boxed && length.is_some()));
         }
         let known = self.sizes.iter().filter(|size| size.is_finite());
         let (sum, count) = known.fold((0.0, 0), |(sum, count), size| (sum + size, count + 1));
@@ -480,6 +511,7 @@ fn parse_list_children(
     }
     let built = if key_fn.is_some() && properties.contains_key("scroll") && failed.is_empty() {
         build.sizes = vec![f32::NAN; all.len()];
+        build.boxed = vec![0; all.len()];
         // A new `each` or VM builds other rows: their old lengths would mislead (`typical` stays).
         let carried = old.filter(|old| old.lua == lua.weak() && same_lua_value(&old.inputs[1], &build.inputs[1]));
         let was = old.and_then(|old| old.catalog.as_ref());
@@ -488,7 +520,7 @@ fn parse_list_children(
             let Some(&before) = was.and_then(|was| was.index.get(key)) else { continue };
             build.added[at] = false;
             if let Some(old) = carried {
-                build.sizes[at] = old.sizes[before];
+                (build.sizes[at], build.boxed[at]) = (old.sizes[before], old.boxed[before]);
             }
         }
         let all = all.into_iter().map(|(element, key)| (element, key.expect("a keyed list keys every item")));

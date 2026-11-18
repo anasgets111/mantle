@@ -4,18 +4,47 @@
 use std::collections::{HashMap, HashSet};
 
 use super::{NodeId, ResolvedNode, Scene};
-use crate::layout::node::PaintStyle;
+use crate::layout::node::{PaintStyle, Typeface};
 use crate::layout::{field_rows, hit};
 use crate::text::shaping::ShapingHandle;
 
-/// A multiline field's draft, the rows it wrapped to at a width, so a change re-wraps once, and the
-/// byte its scroll's top row starts at with the px scrolled past it, which new faces re-wrap to,
-/// and the width they were taken at.
+/// A multiline field's draft and the rows it wrapped to at a width and font generation.
 #[derive(Default)]
 pub(super) struct FieldDraft {
     pub(super) text: String,
-    wrapped: (f32, usize),
-    top: Option<(usize, f32, f32)>,
+    wrapped: (f32, usize, u64),
+}
+
+/// The byte a multiline field's top row starts at, the px past it, and the wrap width, face and font
+/// generation its scroll was derived at: a change to any scrolls back to that text (#111, #125).
+#[derive(Debug, Clone)]
+pub(crate) struct FieldTop {
+    at: usize,
+    past: f32,
+    fit: (f32, Typeface, u64),
+}
+
+/// The wrap width a multiline field's rows take now, and its face; `None` for any other node.
+fn fit_of(node: &ResolvedNode) -> Option<(f32, &Typeface)> {
+    let Some(PaintStyle::TextField { face, caret, multiline: Some(_), .. }) = &node.paint else { return None };
+    Some((field_rows::wrap_width(node.content_box(node.rect).width, caret.width), face))
+}
+
+/// Scrolls `node`, just laid out, back to its [`FieldTop`] when that was derived at another fit,
+/// the px past its row scaled to the new row height.
+pub(super) fn refit(node: &mut ResolvedNode, drafts: &FieldDrafts, shaping: &ShapingHandle, fonts: u64) {
+    let (Some((width, face)), Some(top)) = (fit_of(node), node.field_top.as_deref()) else { return };
+    if (top.fit.0, &top.fit.1, top.fit.2) == (width, face, fonts) {
+        return;
+    }
+    let (past, height) = (top.past * face.line_height / top.fit.1.line_height, node.content_box(node.rect).height);
+    let text = drafts.get(&node.id).map_or("", |draft| draft.text.as_str());
+    let scrolled = field_rows::with_rows(text, face, width, shaping, |rows| {
+        let row = field_rows::row_of(rows, top.at, false) as f32;
+        field_rows::clamp_scroll(row * face.line_height + past, rows.len(), face.line_height, height)
+    });
+    let top = FieldTop { at: top.at, past, fit: (width, face.clone(), fonts) };
+    (node.scrolled, node.field_top) = (scrolled, Some(Box::new(top)));
 }
 
 /// By node: an id is never reused, so a re-created node starts from nothing, as its draft does.
@@ -29,21 +58,22 @@ impl Scene {
         let Some(&node) = path.as_ref().and_then(|path| path.last()) else { return false };
         let Some(PaintStyle::TextField { face, caret, multiline: Some(lines), .. }) = &node.paint else { return false };
         let width = field_rows::wrap_width(node.content_box(node.rect).width, caret.width);
+        // Before shaping: a face landing meanwhile leaves the count behind, not ahead (#125).
+        let fonts = shaping.font_generation();
         let old = self.field_drafts.get(&id);
-        if old.map_or(text.is_empty(), |old| old.text == text && old.wrapped.0 == width) {
+        let current = |old: &FieldDraft| (old.wrapped.0, old.wrapped.2) == (width, fonts);
+        if old.map_or(text.is_empty(), |old| old.text == text && current(old)) {
             return false;
         }
         let count = |text: &str| field_rows::count(text, face, width, shaping);
         let before = match old {
-            Some(FieldDraft { wrapped: (at, rows), .. }) if *at == width => *rows,
+            Some(old) if current(old) => old.wrapped.1,
             old => count(old.map_or("", |old| old.text.as_str())),
         };
         let after = count(text);
         match text.is_empty() {
             true => self.field_drafts.remove(&id),
-            false => {
-                self.field_drafts.insert(id, FieldDraft { text: text.to_owned(), wrapped: (width, after), top: None })
-            }
+            false => self.field_drafts.insert(id, FieldDraft { text: text.to_owned(), wrapped: (width, after, fonts) }),
         };
         // The measure reads the draft, not its inputs, so taffy's cache must be told.
         if let (Some(taffy), Some(tree)) = (node.taffy, self.solver_trees.get_mut(instance_id)) {
@@ -52,41 +82,16 @@ impl Scene {
         lines.rows(before) != lines.rows(after)
     }
 
-    /// After faces changed (#55): every draft wraps again at its next set, recounting the rows it
-    /// had in the old faces (no width equals NaN, so a focused field refits too); each multiline
-    /// field scrolls back to the text its top row showed. A top taken at another width, before a
-    /// resize no scroll followed, no longer names the row shown: it is dropped and the px stay.
-    pub(super) fn faces_changed(&mut self, shaping: &ShapingHandle) {
-        self.field_drafts.values_mut().for_each(|draft| draft.wrapped.0 = f32::NAN);
-        let mut stack: Vec<&mut ResolvedNode> = self.surfaces.values_mut().collect();
-        while let Some(node) = stack.pop() {
-            if let Some(PaintStyle::TextField { face, caret, multiline: Some(_), .. }) = &node.paint
-                && let Some(FieldDraft { text, top: top @ Some(_), .. }) = self.field_drafts.get_mut(&node.id)
-            {
-                let width = field_rows::wrap_width(node.content_box(node.rect).width, caret.width);
-                match *top {
-                    Some((at, past, taken)) if taken == width => {
-                        let row = field_rows::with_rows(text, face, width, shaping, |rows| {
-                            field_rows::row_of(rows, at, false)
-                        });
-                        node.scrolled = row as f32 * face.line_height + past;
-                    }
-                    _ => *top = None,
-                }
-            }
-            stack.extend(&mut node.children);
-        }
-    }
-
     /// The byte and px of the field `id`'s scroll anchor.
     #[cfg(test)]
     pub fn field_top(&self, id: NodeId) -> Option<(usize, f32)> {
-        self.field_drafts.get(&id)?.top.map(|(at, past, _)| (at, past))
+        let node = self.surfaces.values().find_map(|tree| hit::path_to_node(tree, id)?.last().copied())?;
+        node.field_top.as_ref().map(|top| (top.at, top.past))
     }
 
-    /// The width the field `id`'s draft last wrapped at, `None` without one.
-    pub fn field_wrap_width(&self, id: NodeId) -> Option<f32> {
-        self.field_drafts.get(&id).map(|draft| draft.wrapped.0)
+    /// The width and font generation the field `id`'s draft last wrapped at, `None` without one.
+    pub fn field_wrapped(&self, id: NodeId) -> Option<(f32, u64)> {
+        self.field_drafts.get(&id).map(|draft| (draft.wrapped.0, draft.wrapped.2))
     }
 
     /// Drops the drafts of fields no surface holds any more.
@@ -111,14 +116,11 @@ impl Scene {
     }
 
     /// Scrolls the field `id`'s rows to `scroll` px, `top` its [`field_rows::top`]; whether that
-    /// moved them.
+    /// moved them. The anchor takes the last pass's font generation, never newer than the rows'.
     pub fn set_field_scroll(&mut self, instance_id: &str, id: NodeId, scroll: f32, top: Option<(usize, f32)>) -> bool {
         let Some(node) = self.surfaces.get_mut(instance_id).and_then(|tree| find_mut(tree, id)) else { return false };
-        if let (Some(draft), Some(PaintStyle::TextField { caret, .. })) = (self.field_drafts.get_mut(&id), &node.paint)
-        {
-            let width = field_rows::wrap_width(node.content_box(node.rect).width, caret.width);
-            draft.top = top.map(|(at, past)| (at, past, width));
-        }
+        let fit = fit_of(node).map(|(width, face)| (width, face.clone(), self.font_generation));
+        node.field_top = top.zip(fit).map(|((at, past), fit)| Box::new(FieldTop { at, past, fit }));
         let moved = node.scrolled != scroll;
         node.scrolled = scroll;
         moved
@@ -176,37 +178,53 @@ mod tests {
         apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
         let id = scene.surface("bar@TEST").unwrap().children[0].children[0].id;
         assert!(!scene.set_field_draft("bar@TEST", id, "●●●●● ●●●●●", &shaping), "one row of boxes");
-        let before = shaping.font_generation();
-        drop(open);
-        crate::lua::calls::poll_until(|| (), || shaping.font_generation() > before);
+        crate::text::shaping::tests::land(&shaping, open);
         apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
         assert!(scene.set_field_draft("bar@TEST", id, "●●●●●", &shaping), "two rows shrink to one");
     }
 
-    /// #111: an unfocused field scrolled before a face landed keeps the text its top row showed:
-    /// `x` tops the box at row 2 in boxes and at row 4 once each `●` line wraps in two, 5 px down.
-    /// Resized since, the anchor names another row: the px stay.
+    /// #111, #125: an unfocused field scrolled before a face landed keeps the text its top row
+    /// showed, at the width of the pass the face lands in: `x` tops the box at row 2 in boxes; in
+    /// the face each `●` line wraps in two at 80 px (row 4) and in none at 200 px (row 2), 5 px down.
     #[test]
-    fn a_field_scrolled_before_a_face_landed_keeps_its_top_row() {
-        for (resize, scrolled, top) in [("", 45.0, Some((64, 5.0))), ("w:set(40)", 25.0, None)] {
+    fn a_field_scrolled_before_a_face_landed_keeps_its_top_row_resized_or_not() {
+        for (resize, scrolled) in [("", 45.0), ("w:set(200)", 25.0)] {
             let Some((shaping, open)) = gated_shots_fixture(crate::text::fonts::covering_file) else { return };
             let (lua, surface) = surface_from(&format!("w = state(\"w\", 80)\n{}", FIELD.replace("80", "w")));
             let mut scene = Scene::new();
             let surfaces = std::slice::from_ref(&surface);
             apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
             let id = scene.surface("bar@TEST").unwrap().children[0].children[0].id;
-            scene.set_field_draft("bar@TEST", id, "●●●●● ●●●●●\n●●●●● ●●●●●\nx\ny\nz", &shaping);
+            scene.set_field_draft("bar@TEST", id, "●●●●● ●●●●●\n●●●●● ●●●●●\nx\ny\nz\nq", &shaping);
             apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
             // Row 2, `x`, starts past two lines of ten 3-byte `●`, a space and a newline.
             assert!(scene.set_field_scroll("bar@TEST", id, 25.0, Some((64, 5.0))));
+            crate::text::shaping::tests::land(&shaping, open);
             lua.load(resize).exec().unwrap();
             apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
-            let before = shaping.font_generation();
-            drop(open);
-            crate::lua::calls::poll_until(|| (), || shaping.font_generation() > before);
-            apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
             assert_eq!(scene.surface("bar@TEST").unwrap().children[0].children[0].scrolled, scrolled, "{resize}");
-            assert_eq!(scene.field_top(id), top, "{resize}: an anchor at another width is dropped");
+            assert_eq!(scene.field_top(id), Some((64, 5.0)), "{resize}");
+        }
+    }
+
+    /// #125: a field relaid at another line height keeps its top line and the share of it scrolled
+    /// past: `x`, byte 4, on row 2, half a row down is 50 px at 20 px rows and 25 at 10.
+    #[test]
+    fn a_field_relaid_at_another_line_height_keeps_its_top_line() {
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) =
+            surface_from(&format!("lh = state(\"lh\", 2)\n{}", FIELD.replace("line_height = 1", "line_height = lh")));
+        let mut scene = Scene::new();
+        let surfaces = std::slice::from_ref(&surface);
+        apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
+        let id = scene.surface("bar@TEST").unwrap().children[0].children[0].id;
+        scene.set_field_draft("bar@TEST", id, "a\nb\nx\ny\nz\nq\nr\ns", &shaping);
+        apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
+        assert!(scene.set_field_scroll("bar@TEST", id, 50.0, Some((4, 10.0))));
+        for (lh, scrolled) in [(1, 25.0), (2, 50.0)] {
+            lua.load(format!("lh:set({lh})")).exec().unwrap();
+            apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
+            assert_eq!(scene.surface("bar@TEST").unwrap().children[0].children[0].scrolled, scrolled, "{lh}");
         }
     }
 
@@ -244,7 +262,7 @@ mod tests {
         apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
         let id = scene.surface("bar@TEST").unwrap().children[0].children[0].id;
         scene.set_field_draft("bar@TEST", id, "a\nb", &shaping);
-        assert!(scene.field_wrap_width(id).is_some());
+        assert!(scene.field_wrapped(id).is_some());
         lua.load(r#"state("kids", {}):set({})"#).exec().unwrap();
         apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
         assert!(scene.field_drafts.is_empty(), "a field no surface holds keeps no draft");

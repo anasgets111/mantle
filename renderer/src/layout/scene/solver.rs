@@ -50,8 +50,8 @@ pub(super) enum Measure {
         wrap: node::Wrap,
         elide: node::Elide,
         max_lines: Option<usize>,
-        /// The last `(max_width, size)` this node measured; see [`solve`].
-        memo: Option<(Option<f32>, taffy::Size<f32>)>,
+        /// The last `(max_width, size)` this node measured and whether a glyph 0 went in; see [`solve`].
+        memo: Option<(Option<f32>, taffy::Size<f32>, bool)>,
     },
     /// `icon`'s `size`, the same number on both axes.
     Square(f32),
@@ -581,12 +581,13 @@ fn measure_leaf(
                             .map(|width| ceiling.width.map_or(width, |max| width.min(max)))
                             .or(ceiling.width),
                     };
-                    if let Some((key, size)) = memo
+                    if let Some((key, size, _)) = memo
                         && *key == max_width
                     {
                         return clamp(*size);
                     }
-                    let shaped = shaping.shape(face.request(content.to_string(), max_width, runs.clone()));
+                    let (shaped, mut boxed) =
+                        shaping.shape_boxed(face.request(content.to_string(), max_width, runs.clone()));
                     let lines = max_lines.map_or(shaped.lines.len(), |cap| shaped.lines.len().min(cap));
                     let mut width = shaped.shaped.iter().take(lines).fold(0.0, |width, line| line.width.max(width));
                     // Room for the ellipsis paint styles and appends in `fit::Fitted::push_ellipsis`.
@@ -601,11 +602,13 @@ fn measure_leaf(
                             (from < to).then(|| shaping::FontRun { range: from - kept.start..to - kept.start, ..*run })
                         });
                         let text = format!("{}…", &content[kept.clone()]);
-                        let ellipsized = shaping.shape(face.request(text, None, ellipsized.collect())).width;
+                        let (ellipsized, also) = shaping.shape_boxed(face.request(text, None, ellipsized.collect()));
+                        let ellipsized = ellipsized.width;
+                        boxed |= also;
                         width = width.max(max_width.map_or(ellipsized, |max| ellipsized.min(max)));
                     }
                     let size = taffy::Size { width, height: lines as f32 * face.line_height };
-                    *memo = Some((max_width, size));
+                    *memo = Some((max_width, size, boxed));
                     clamp(size)
                 }
             }

@@ -109,16 +109,19 @@ impl App {
             }
             return action;
         };
+        // A goal taken in other faces names another x (#125).
+        let fonts = self.shaping.font_generation();
         let resolved = self.focused_text_field.as_ref().and_then(|field| {
             let (view, _) = self.field_view(&field.surface_id, field.id)?;
+            let goal = field.goal_x.filter(|&(_, at)| at == fonts).map(|(x, _)| x);
             field_rows::with_rows(&field.buffer, view.face, view.width, &self.shaping, |rows| {
-                row_motion(rows, motion, (field.selection.1, field.upstream), field.goal_x, (view.align, view.width))
+                row_motion(rows, motion, (field.selection.1, field.upstream), goal, (view.align, view.width))
             })
         });
         let (Some(((to, upstream), goal)), Some(field)) = (resolved, self.focused_text_field.as_mut()) else {
             return KeyAction::Ignore;
         };
-        (field.goal_x, field.upstream) = (goal, upstream);
+        (field.goal_x, field.upstream) = (goal.map(|x| (x, fonts)), upstream);
         KeyAction::Move(Motion::To(to))
     }
 
@@ -149,11 +152,12 @@ impl App {
         }
     }
 
-    /// After a pass, [`App::fit_field`] for a focused multiline field whose width re-wrapped its rows.
+    /// After a pass, [`App::fit_field`] for a focused multiline field whose width or faces re-wrapped
+    /// its rows.
     pub(in crate::wayland) fn fit_focused_field_if_rewrapped(&mut self) {
         let Some(field) = self.focused_text_field.as_ref() else { return };
         let Some((view, _)) = self.field_view(&field.surface_id, field.id) else { return };
-        if self.client.scene().field_wrap_width(field.id) != Some(view.width) {
+        if self.client.scene().field_wrapped(field.id) != Some((view.width, self.shaping.font_generation())) {
             self.fit_focused_field();
         }
     }

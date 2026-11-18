@@ -917,7 +917,7 @@ mod tests {
         let mut parked = Parked::new();
         let mut field = draft(1, "old");
         field.history.record(("o".into(), (0, 0)), None);
-        field.goal_x = Some(12.0);
+        field.goal_x = Some((12.0, 0));
         let id = field.id;
         assert!(store_draft(&mut parked, Some(&mut field), "calendar@eDP-1", id, "héllo"));
         assert_eq!((field.buffer.as_str(), field.selection, field.goal_x), ("héllo", (6, 6), None));

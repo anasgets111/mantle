@@ -432,12 +432,17 @@ impl ShapingHandle {
     /// so it keeps answering after death, correct rather than lucky, but the next new string, not
     /// the next call, is the first symptom.
     pub fn shape(&self, request: ShapeRequest) -> ShapeResult {
+        self.shape_keyed(request, false).0
+    }
+
+    /// [`shape`](Self::shape), and whether it holds a glyph 0, all a landing face can change (#125).
+    pub fn shape_boxed(&self, request: ShapeRequest) -> (ShapeResult, bool) {
         self.shape_keyed(request, false)
     }
 
     /// [`shape`](Self::shape), keeping each line's glyphs for paint and link hit-testing (ADR-0211).
     pub fn shape_glyphs(&self, request: ShapeRequest) -> ShapeResult {
-        self.shape_keyed(request, true)
+        self.shape_keyed(request, true).0
     }
 
     /// Each line of `text` shaped alone with its glyphs and `runs` re-based onto it, paired with the
@@ -485,7 +490,7 @@ impl ShapingHandle {
             .collect()
     }
 
-    fn shape_keyed(&self, request: ShapeRequest, glyphs: bool) -> ShapeResult {
+    fn shape_keyed(&self, request: ShapeRequest, glyphs: bool) -> (ShapeResult, bool) {
         // The text moves into the key rather than being cloned into it, so a hit allocates
         // nothing and only a miss pays for the copy the worker needs.
         let key = ShapeKey {
@@ -506,7 +511,7 @@ impl ShapingHandle {
         if let Some((hit, stamp)) = self.cache.lock().unwrap_or_else(PoisonError::into_inner).get(&key)
             && stamp.is_none_or(|at| at == self.generation.load(Ordering::Acquire))
         {
-            return hit.clone();
+            return (hit.clone(), stamp.is_some());
         }
 
         let (reply_tx, reply_rx) = mpsc::channel();
@@ -540,7 +545,7 @@ impl ShapingHandle {
             cache.clear();
         }
         cache.insert(key, (result.clone(), stamp));
-        result
+        (result, stamp.is_some())
     }
 
     /// Replaces the font chain every reader measures and paints against, and clears the
@@ -1343,6 +1348,13 @@ pub(crate) mod tests {
             lookup(ch)
         });
         Some((handle, open))
+    }
+
+    /// Drops `open`, then waits for the face it held back to land.
+    pub(crate) fn land(shaping: &ShapingHandle, open: mpsc::Sender<()>) {
+        let before = shaping.font_generation();
+        drop(open);
+        crate::lua::calls::poll_until(|| (), || shaping.font_generation() > before);
     }
 
     /// #55: uncovered codepoints answer before any lookup returns, and each is looked up once, even

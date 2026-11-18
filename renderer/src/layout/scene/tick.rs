@@ -48,6 +48,7 @@ impl Scene {
     ) -> Vec<String> {
         // Animated edge tables can still run `__index` during parsing, so ticks share the pass budget.
         let budget = crate::lua::signal::LayoutPassBudget::enter(lua);
+        self.sample_fonts(shaping);
         let mut relaid = Vec::new();
         for instance in instances {
             let key = instance.instance_id.as_str();
@@ -77,7 +78,7 @@ impl Scene {
                 &mut solver,
                 root,
                 instance.available,
-                (shaping, &self.field_drafts),
+                (shaping, &self.field_drafts, self.font_generation),
                 lua,
                 now,
                 &mut at,
@@ -149,7 +150,7 @@ fn relayout_retained(
     tree: &mut taffy::TaffyTree<Measure>,
     root: ResolvedNode,
     available: LogicalSize,
-    (shaping, drafts): (&ShapingHandle, &super::field::FieldDrafts),
+    fonts: (&ShapingHandle, &super::field::FieldDrafts, u64),
     lua: &Lua,
     now: Instant,
     at: &mut Option<Instant>,
@@ -157,7 +158,7 @@ fn relayout_retained(
 ) -> Result<ResolvedNode, LayoutError> {
     let prepared = prepare_retained(tree, root, (None, 0.0), lua, now, false, false)?;
     close(at, &mut split.prepare);
-    let solved = solve_instance(tree, prepared, available, (shaping, drafts), now);
+    let solved = solve_instance(tree, prepared, available, fonts, now);
     close(at, &mut split.solve);
     solved
 }
@@ -235,6 +236,7 @@ pub(super) fn prepare_retained(
         child_table,
         resolve_memo,
         site,
+        field_top,
         ..
     } = node;
     let paint = if relayout || refit { node::paint_style(kind, &properties)? } else { old_paint };
@@ -274,6 +276,7 @@ pub(super) fn prepare_retained(
         resolve_memo,
         site,
         scrolled: old_scroll,
+        field_top,
     };
     if !node.style.visible {
         return Ok(node);
@@ -521,6 +524,34 @@ mod tests {
 
     fn child_tween(scene: &Scene) -> Tween {
         scene.surface("bar@TEST").unwrap().children[0].tweens[0].clone()
+    }
+
+    /// #125: a tick between a face landing and the next pass measures text in the face: three
+    /// boxes are 18 px at 10 px.
+    #[test]
+    fn a_tick_after_a_face_landed_measures_text_in_the_face() {
+        let Some((shaping, open)) = crate::text::shaping::tests::gated_shots_fixture(crate::text::fonts::covering_file)
+        else {
+            return;
+        };
+        let (lua, surface) = surface_from(
+            r#"panel { id = "bar", child = column { animate = { width = { duration = 100, easing = "linear" } },
+                children = { rect { width = state("w", 40), height = 10 }, text { font_size = 10, content = "●●●" } } } }"#,
+        );
+        let mut scene = Scene::new();
+        let text = |scene: &Scene| scene.surface("bar@TEST").unwrap().children[0].children[1].rect.width;
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(text(&scene), 18.0);
+        lua.load(r#"state("w", 40):set(90)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        crate::text::shaping::tests::land(&shaping, open);
+        scene.tick(
+            &[instance_at(&surface, full())],
+            &shaping,
+            &lua,
+            child_tween(&scene).started + std::time::Duration::from_millis(50),
+        );
+        assert_ne!(text(&scene), 18.0, "measured in the face");
     }
 
     #[test]

@@ -115,7 +115,8 @@ pub struct Scene {
     /// keeps taffy's layout cache, so a pass that changed only paint lays nothing out. Dropped with
     /// a failed pass or tick, whose writes it may hold.
     solver_trees: HashMap<String, taffy::TaffyTree<solver::Measure>>,
-    /// The font generation `solver_trees` measured against. A face loaded since can fill what a
+    /// The font generation sampled at the last pass or tick: what `solver_trees` measured against,
+    /// and the stamp a field anchor set between passes takes. A face loaded since can fill what a
     /// kept memo measured as boxes (#55), and an unchanged node is never compared again.
     font_generation: u64,
     next_id: u64,
@@ -140,6 +141,16 @@ impl Scene {
     /// than whichever pass ran last.
     pub fn take_resolve_split(&mut self) -> ResolveSplit {
         std::mem::take(&mut self.resolve_split)
+    }
+
+    /// Samples the font generation before a pass or tick shapes anything, to stamp what it derives
+    /// (#125). Every tree goes when it moved: one measured in old faces answers from taffy's cache.
+    fn sample_fonts(&mut self, shaping: &ShapingHandle) {
+        let fonts = shaping.font_generation();
+        if fonts != self.font_generation {
+            self.solver_trees.clear();
+            self.font_generation = fonts;
+        }
     }
 
     /// The instance's kept solver tree, or a new one after clearing the ids of the `retained`
@@ -257,15 +268,7 @@ impl Scene {
         admit: impl FnOnce(&Scene, Option<LayoutError>) -> Result<Option<LayoutError>, LayoutError>,
         inspect: Option<&mut dyn FnMut(&Scene)>,
     ) -> Result<Option<LayoutError>, LayoutError> {
-        // Every tree, not the visited ones: the generation recorded here is the whole scene's.
-        // ponytail: a windowed list's sizes for items outside its window stay measured in the old
-        // faces until relaid. Upgrade: #125.
-        let fonts = shaping.font_generation();
-        if fonts != self.font_generation {
-            self.solver_trees.clear();
-            self.faces_changed(shaping);
-            self.font_generation = fonts;
-        }
+        self.sample_fonts(shaping);
         let next_id_snapshot = self.next_id;
         let seeds_snapshot = self.seeds.len();
         let lc_snapshot = crate::lua::signal::layout_changed_len(lua);
@@ -435,7 +438,8 @@ impl Scene {
         let prepared =
             prepare(self, &mut tree, existing, fresh.kind, resolved, (None, 0.0), (false, false, true), lua, now, 0)?;
         close(&mut at, &mut self.resolve_split.resolve);
-        let solved = solve_instance(&mut tree, prepared, available, (shaping, &self.field_drafts), now)?;
+        let fonts = (shaping, &self.field_drafts, self.font_generation);
+        let solved = solve_instance(&mut tree, prepared, available, fonts, now)?;
         publish_geometry(&solved, 0.0, 0.0, lua, false, Some(geometry_undo))
             .map_err(|e| node::invalid("geometry", e.to_string()))?;
         if !geometry_undo.is_empty() {
@@ -620,6 +624,8 @@ struct PreparedNode {
     site: Option<Site>,
     /// The retained [`ResolvedNode::scrolled`]: a `multiline` field keeps it across passes.
     scrolled: f32,
+    /// Carried across the pass; see [`ResolvedNode::field_top`].
+    field_top: Option<Box<field::FieldTop>>,
 }
 
 #[cfg(test)]

@@ -95,8 +95,9 @@ pub(in crate::wayland) struct FocusedTextField {
     pub(super) span: Span,
     /// The left press that last selected here, which the next may continue as a double or triple click.
     pub(super) click: Option<(std::time::Instant, (f64, f64))>,
-    /// The x a run of Up and Down in a `multiline` field keeps to, field-local.
-    pub(super) goal_x: Option<f32>,
+    /// The x a run of Up and Down in a `multiline` field keeps to, field-local, and the font
+    /// generation it was taken under.
+    pub(super) goal_x: Option<(f32, u64)>,
     /// A caret at a mid-word wrap belongs to the row it ends, not the next ([`crate::layout::field_rows::row_of`]).
     pub(super) upstream: bool,
     pub(super) on_change: Option<Function>,

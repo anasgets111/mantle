@@ -42,7 +42,7 @@ pub(super) fn solve_instance(
     tree: &mut taffy::TaffyTree<Measure>,
     mut prepared: PreparedNode,
     available: LogicalSize,
-    (shaping, drafts): (&ShapingHandle, &FieldDrafts),
+    (shaping, drafts, fonts): (&ShapingHandle, &FieldDrafts, u64),
     now: Instant,
 ) -> Result<ResolvedNode, LayoutError> {
     let style = &prepared.style;
@@ -68,7 +68,7 @@ pub(super) fn solve_instance(
     if measure_content_sizes(tree, &mut prepared, now)?.0 {
         solve(tree, prepared.taffy, available, (shaping, drafts))?;
     }
-    finish(tree, prepared, shaping, now)
+    finish(tree, prepared, (shaping, drafts, fonts), now).map(|(node, _)| node)
 }
 
 /// A content-sized `width` or `height` with an `animate` entry has no target until it is solved.
@@ -182,6 +182,7 @@ pub(super) fn prepare(
 
     let old_mask_target = retained.as_ref().and_then(|node| node.mask_target);
     let old_scroll = retained.as_ref().map_or(0.0, |node| node.scrolled);
+    let field_top = retained.as_mut().and_then(|node| node.field_top.take());
     let kept = retained.as_ref().is_some_and(|r| Rc::ptr_eq(&r.layout_style, &resolved.style));
     let old_axis = retained.as_ref().map(|r| main_axis_of(kind, &r.properties)).transpose()?;
     let Resolved { properties, style, paint, tweens, movement: move_spec, memo: resolve_memo } = resolved;
@@ -254,6 +255,7 @@ pub(super) fn prepare(
         resolve_memo: Some(resolve_memo),
         site: None,
         scrolled: old_scroll,
+        field_top,
     };
     if !node.style.visible {
         node.frozen.extend(leaving);
@@ -551,13 +553,13 @@ fn kept_items(
 /// and `layout::hit` already accumulate down, so the rect goes across untouched. Two things still
 /// `scene`'s own happen here, both needing a size that only exists once the solve is done: a
 /// scrolled container shifts its children, and an over-wide `text` is cut to the box it ended up
-/// in.
+/// in. Also whether a glyph 0 went into its size: a text in it measured one (#125).
 fn finish(
     tree: &taffy::TaffyTree<Measure>,
     prepared: PreparedNode,
-    shaping: &ShapingHandle,
+    (shaping, drafts, fonts): (&ShapingHandle, &FieldDrafts, u64),
     now: Instant,
-) -> Result<ResolvedNode, LayoutError> {
+) -> Result<(ResolvedNode, bool), LayoutError> {
     let PreparedNode {
         id,
         kind,
@@ -581,12 +583,13 @@ fn finish(
         resolve_memo,
         site,
         scrolled: kept_scroll,
+        field_top,
     } = prepared;
     let layout = tree.layout(taffy_id).map_err(taffy_failed)?;
     let size = LogicalSize { width: layout.size.width, height: layout.size.height };
-    let unconstrained_width = match tree.get_node_context(taffy_id) {
-        Some(Measure::Text { memo: Some((None, size)), .. }) => Some(size.width),
-        _ => None,
+    let (unconstrained_width, mut boxed) = match tree.get_node_context(taffy_id) {
+        Some(Measure::Text { memo: Some((width, size, boxed)), .. }) => (width.is_none().then_some(size.width), *boxed),
+        _ => (None, false),
     };
 
     // Frozen children come back as they were (see `prepare`): no scroll offset applied again to
@@ -594,16 +597,22 @@ fn finish(
     let (children, scrolled) = if style.visible {
         // Sized up front: a `Result` collect cannot, and grows by doubling, moving every node again.
         let mut built = Vec::with_capacity(children.len() + leaving.len());
+        let windowed = list_memo.as_deref().is_some_and(node::ListMemo::windowed);
+        let mut bits = Vec::with_capacity(if windowed { children.len() } else { 0 });
         for child in children {
-            built.push(finish(tree, child, shaping, now)?);
+            let (child, bit) = finish(tree, child, (shaping, drafts, fonts), now)?;
+            boxed |= bit;
+            bits.extend(windowed.then_some(bit));
+            built.push(child);
         }
         let mut children: Vec<ResolvedNode> = built;
         if let Some(memo) = list_memo.as_deref_mut()
             && let Some(axis) = main_axis_of(kind, &properties)?
         {
             let cross = if axis == MainAxis::Vertical { size.width } else { size.height };
-            let lengths = children.iter().map(|child| child.in_flow().then(|| child.extent_on(axis)));
-            memo.measured(lengths, (viewport(&style, size, axis).0, cross, style.spacing));
+            let lengths =
+                children.iter().zip(bits).map(|(child, bit)| (child.in_flow().then(|| child.extent_on(axis)), bit));
+            memo.measured(lengths, (viewport(&style, size, axis).0, cross, style.spacing), fonts);
         }
 
         // ADR-0069 decision 4.
@@ -643,6 +652,8 @@ fn finish(
         }
         _ => None,
     };
+    // A hidden field's rows are back at the top, so its anchor goes.
+    let field_top = field_top.filter(|_| style.visible);
     let mut node = ResolvedNode {
         mask_target,
         allocated_axes,
@@ -671,7 +682,9 @@ fn finish(
         child_table,
         resolve_memo,
         site,
+        field_top,
     };
+    super::field::refit(&mut node, drafts, shaping, fonts);
     retarget_move(&mut node, prior_position, now);
     // A window the pass came up short of builds again this turn (`Scene::read_by_lua`): the
     // viewport outgrew the one it was planned for, or its new items were shorter than estimated.
@@ -683,7 +696,7 @@ fn finish(
     {
         handle.set_quiet(Value::Number(f64::from(node.scrolled)));
     }
-    Ok(node)
+    Ok((node, boxed))
 }
 
 /// A missing solver tree leaves only the retained rect, which already carries its parent's scroll.
@@ -726,6 +739,9 @@ mod tests {
     use crate::layout::scene::tests::{applied, apply_at, apply_on_two_outputs, full, surface_from};
     use crate::layout::scene::*;
     use crate::lua::nodes::{deserialize_lua_table, register_node_constructors};
+    use crate::text::fonts::covering_file;
+    use crate::text::shaping::tests::land;
+    use std::sync::mpsc::Sender;
 
     #[test]
     fn a_hidden_subtree_is_frozen_rather_than_rebuilt_and_thaws_with_its_ids() {
@@ -1027,6 +1043,187 @@ mod tests {
             assert_eq!(list.scrolled, 50.0 * 22.0 - 2.0 - 100.0, "{surface}");
             assert_eq!(list.children[ids.iter().position(|id| id == "r50").unwrap()].rect.y, 80.0, "{surface}");
         }
+    }
+
+    /// 200 keyed rows, each a `text` of `row` (Lua, of `i`) in a `row`, in a 100 px horizontal
+    /// list on `s`, beside a `●` text, under a column masked by its child `m` (`kids`), shaped on a
+    /// handle whose `lookup`s each wait for one send on the sender or its drop. At 10 px a box is
+    /// 6 px and `●` 8.94. Also a pass on one output that runs `code` first.
+    #[allow(clippy::type_complexity)]
+    fn face_list(
+        row: &str,
+        lookup: impl Fn(char) -> Option<std::path::PathBuf> + Send + 'static,
+    ) -> Option<(ShapingHandle, Sender<()>, mlua::Lua, VirtualNode, Box<dyn Fn(&mut Scene, &mlua::Lua, &str)>)> {
+        let (shaping, open) = crate::text::shaping::tests::gated_shots_fixture(lookup)?;
+        let (lua, surface) = surface_from(&format!(
+            r#"s = scroll("s")
+            anim = state("anim", {{}})
+            shown = state("shown", true)
+            local all = {{}} for i = 1, 200 do all[i] = "r" .. i end
+            L = list {{ width = 100, height = 20, direction = "horizontal", scroll = s, animate = anim,
+                visible = shown, items = all, key = function(k) return k end, each = function(k)
+                    local i = tonumber(k:sub(2)) return row {{ children = {{ text {{ font_size = 10, content = {row} }} }} }}
+                end }}
+            dot = text {{ font_size = 10, content = "●" }}
+            kids = state("kids", {{ L, dot, rect {{ id = "m", width = 1, height = 1 }} }})
+            return panel {{ id = "bar", child = column {{ mask = {{ node = "m" }}, children = kids }} }}"#
+        ));
+        let (handle, at) = (shaping.clone(), surface.clone());
+        let pass = move |scene: &mut Scene, lua: &mlua::Lua, code: &str| {
+            lua.load(code).exec().unwrap();
+            apply_at(scene, std::slice::from_ref(&at), full(), &handle, lua).unwrap();
+        };
+        Some((shaping, open, lua, surface, Box::new(pass)))
+    }
+
+    /// Rows 1-20 and 181-200 six `●`, the rest `a`: boxed rows before and past a window at 1000 px.
+    const BOXED_ENDS: &str = r#"(i <= 20 or i > 180) and "●●●●●●" or "a""#;
+
+    /// Rows 181-200 six `●`, the rest `a`: boxed rows past a window anywhere up to 500 px.
+    const BOXED_TAIL: &str = r#"i > 180 and "●●●●●●" or "a""#;
+
+    /// The list on `instance`: its room before and after the window, its offset, and its first row
+    /// at or past the viewport's start with that row's x.
+    fn face_list_on(scene: &Scene, instance: &str) -> ((f32, f32), f32, Option<(NodeId, f32)>) {
+        let list = &scene.surface(instance).unwrap().children[0].children[0];
+        let row = list.children.iter().find(|row| row.in_flow() && row.rect.x >= 0.0).map(|row| (row.id, row.rect.x));
+        (list.list_memo.as_deref().unwrap().room(), list.scrolled, row)
+    }
+
+    /// #125: a face landing voids a list's boxed sizes past its window, on each of two outputs
+    /// sharing its `scroll`, and writes neither the offset nor the rows' place.
+    #[test]
+    fn a_face_landing_voids_the_boxed_sizes_past_a_window_on_two_outputs() {
+        let Some((shaping, open, lua, surface, _)) = face_list(BOXED_ENDS, covering_file) else { return };
+        let mut scene = Scene::new();
+        let pass = |scene: &mut Scene, code: &str| {
+            lua.load(code).exec().unwrap();
+            apply_on_two_outputs(scene, &surface, &shaping, &lua).unwrap();
+            ["bar@LEFT", "bar@RIGHT"].map(|instance| face_list_on(scene, instance))
+        };
+        pass(&mut scene, "");
+        let before = pass(&mut scene, "s:scroll_to(1000)");
+        land(&shaping, open);
+        pass(&mut scene, "");
+        for (before, after) in before.iter().zip(pass(&mut scene, "")) {
+            assert_eq!((after.0.0, after.1, after.2), (before.0.0, before.1, before.2), "nothing before it moves");
+            assert!(after.0.1 < before.0.1, "rows 181-200 are narrower estimates now");
+        }
+    }
+
+    /// #125: a pass rolled back after a face landed keeps the list's sizes as they were, and the
+    /// next pass voids them.
+    #[test]
+    fn a_pass_rolled_back_after_a_face_landed_leaves_the_void_to_the_next() {
+        let Some((shaping, open, lua, surface, pass)) = face_list(BOXED_ENDS, covering_file) else { return };
+        let mut scene = Scene::new();
+        pass(&mut scene, &lua, "");
+        pass(&mut scene, &lua, "s:scroll_to(1000)");
+        let before = face_list_on(&scene, "bar@TEST");
+        land(&shaping, open);
+        let mask = |id: &str| format!(r#"kids:set({{ L, dot, rect {{ id = "{id}", width = 1, height = 1 }} }})"#);
+        lua.load(mask("x")).exec().unwrap();
+        assert!(apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).is_err());
+        assert_eq!(face_list_on(&scene, "bar@TEST"), before, "rolled back");
+        pass(&mut scene, &lua, &mask("m"));
+        let after = face_list_on(&scene, "bar@TEST");
+        assert_eq!((after.0.0, after.1, after.2), (before.0.0, before.1, before.2));
+        assert_ne!(after.0.1, before.0.1, "voided by the pass that held");
+    }
+
+    /// #125: a list hidden when a face lands voids when shown again, from the offset written while
+    /// it was hidden (as `reset_on_close` writes it).
+    #[test]
+    fn a_list_hidden_when_a_face_landed_voids_when_shown_and_keeps_a_write_made_meanwhile() {
+        let Some((shaping, open, lua, _, pass)) = face_list(BOXED_TAIL, covering_file) else { return };
+        let mut scene = Scene::new();
+        pass(&mut scene, &lua, "");
+        pass(&mut scene, &lua, "");
+        let zero = face_list_on(&scene, "bar@TEST");
+        pass(&mut scene, &lua, "s:scroll_to(500)");
+        pass(&mut scene, &lua, "shown:set(false)");
+        land(&shaping, open);
+        pass(&mut scene, &lua, "");
+        let signal = crate::lua::signal::from_userdata(&lua.globals().get("s").unwrap()).unwrap();
+        crate::lua::signal::reset(&lua, &signal);
+        pass(&mut scene, &lua, "shown:set(true)");
+        let after = face_list_on(&scene, "bar@TEST");
+        assert_eq!(after.1, 0.0, "the write made while hidden");
+        assert_ne!(after.0.1, zero.0.1, "voided once shown");
+    }
+
+    /// #125: a list wheeled in place before a face lands keeps the wheel's offset and voids.
+    #[test]
+    fn a_list_wheeled_in_place_keeps_the_wheels_offset_when_a_face_lands() {
+        let Some((shaping, open, lua, _, pass)) = face_list(BOXED_ENDS, covering_file) else { return };
+        let mut scene = Scene::new();
+        pass(&mut scene, &lua, "");
+        pass(&mut scene, &lua, "s:scroll_to(1000)");
+        let signal = crate::lua::signal::from_userdata(&lua.globals().get("s").unwrap()).unwrap();
+        assert!(scene.scroll_in_place(&signal, 1010.0, &lua).is_some(), "inside the window");
+        let wheeled = face_list_on(&scene, "bar@TEST");
+        land(&shaping, open);
+        pass(&mut scene, &lua, "");
+        pass(&mut scene, &lua, "");
+        let after = face_list_on(&scene, "bar@TEST");
+        assert_eq!((after.0.0, after.1, after.2), (wheeled.0.0, 1010.0, wheeled.2), "where the wheel left it");
+        assert_ne!(after.0.1, wheeled.0.1);
+    }
+
+    /// #125: a boxed row measured at 200 px and left before the window at one landing stays stale
+    /// through the next, and is voided once a scroll set after both leaves it past the window. `●`
+    /// and `✓` land one at a time, each from its own one-codepoint subset.
+    #[test]
+    fn a_boxed_row_before_the_window_is_voided_once_past_it_after_two_landings() {
+        let split = |ch: char| {
+            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shots/fonts/split");
+            Some(dir.join(format!("Symbols2-{:04X}.ttf", ch as u32)))
+        };
+        let Some((shaping, open, lua, _, pass)) = face_list(BOXED_ENDS, split) else { return };
+        let mut scene = Scene::new();
+        let list =
+            |scene: &Scene| scene.surface("bar@TEST").unwrap().children[0].children[0].list_memo.clone().unwrap();
+        pass(&mut scene, &lua, "");
+        pass(&mut scene, &lua, "s:scroll_to(200)");
+        let last = list(&scene).range().end - 1;
+        assert!(list(&scene).size(last).is_finite() && last < 20, "row {last} measured in boxes");
+        pass(&mut scene, &lua, "s:scroll_to(1000)");
+        for kids in
+            ["", r#"kids:set({ L, text { font_size = 10, content = "✓" }, rect { id = "m", width = 1, height = 1 } })"#]
+        {
+            let before = shaping.font_generation();
+            pass(&mut scene, &lua, kids);
+            open.send(()).unwrap();
+            crate::lua::calls::poll_until(|| (), || shaping.font_generation() > before);
+            pass(&mut scene, &lua, "");
+        }
+        pass(&mut scene, &lua, "s:scroll_to(0)");
+        let (memo, after) = (list(&scene), face_list_on(&scene, "bar@TEST"));
+        assert_eq!(after.1, 0.0, "the scroll set after the landings stands");
+        assert!(!memo.range().contains(&last) && memo.size(last).is_nan(), "row {last} voided past the window");
+    }
+
+    /// #125, the common path: a landing for a face no row uses leaves the list as it was, its
+    /// sizes, offset and a running scroll run included.
+    #[test]
+    fn a_face_landing_leaves_a_list_whose_rows_never_boxed_untouched() {
+        let Some((shaping, open, lua, _, pass)) = face_list(r#"string.rep("a", i % 5 + 1)"#, covering_file) else {
+            return;
+        };
+        let mut scene = Scene::new();
+        pass(&mut scene, &lua, "");
+        pass(&mut scene, &lua, "s:scroll_to(1000)");
+        pass(&mut scene, &lua, "anim:set({ scroll = 60000 }) s:scroll_by(50)");
+        let run = |scene: &Scene| {
+            let list = &scene.surface("bar@TEST").unwrap().children[0].children[0];
+            (list.tweens.len(), node::scroll_target(&list.tweens))
+        };
+        let before = (face_list_on(&scene, "bar@TEST").0, run(&scene));
+        assert_eq!(before.1.0, 1, "a minute-long run");
+        land(&shaping, open);
+        pass(&mut scene, &lua, "");
+        pass(&mut scene, &lua, "");
+        assert_eq!((face_list_on(&scene, "bar@TEST").0, run(&scene)), before);
     }
 
     /// A `clock` text beside a `list` of `items`, counting `each` calls in `built`. `item` is the

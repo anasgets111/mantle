@@ -9,6 +9,7 @@ Copyright 2022 The Noto Project Authors (https://github.com/notofonts/symbols)
 
 NotoSansSymbols2-Regular.ttf here is Noto Sans Symbols 2 2.008 cut to U+2713 and U+25CF with
 pyftsubset.
+split/Symbols2-25CF.ttf and split/Symbols2-2713.ttf are that file cut to one codepoint each.
 
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
