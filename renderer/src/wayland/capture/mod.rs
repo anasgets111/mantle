@@ -657,14 +657,7 @@ mod tests {
     impl Wire {
         /// Captures the mock's `TEST` output as [`ID`] over `protocol`, its first frame requested.
         pub(super) fn new(protocol: Protocol, live: Option<f32>) -> Self {
-            let node = CaptureNode {
-                node: ID,
-                target: CaptureTarget::Output("TEST".into()),
-                live,
-                paint_cursor: false,
-                region: None,
-            };
-            let mut wire = Self::with(protocol, &node);
+            let mut wire = Self::with(protocol, &capture_node(ID, CaptureTarget::Output("TEST".into()), live));
             wire.app.request_frame(ID);
             wire.settle();
             wire
@@ -748,7 +741,7 @@ mod tests {
         }
     }
 
-    fn capture_node(node: NodeId, target: CaptureTarget, live: Option<f32>) -> CaptureNode {
+    pub(super) fn capture_node(node: NodeId, target: CaptureTarget, live: Option<f32>) -> CaptureNode {
         CaptureNode { node, target, live, paint_cursor: false, region: None }
     }
 

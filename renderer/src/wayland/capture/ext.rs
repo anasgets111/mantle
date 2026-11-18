@@ -232,7 +232,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{ID, Wire, id};
+    use super::super::tests::{ID, Wire, capture_node, id};
     use super::*;
 
     // Session events: `buffer_size` 0, `shm_format` 1, `dmabuf_format` 3, `done` 4, `stopped` 5;
@@ -378,14 +378,8 @@ mod tests {
     /// A session lives across frames until the source's `paint_cursor` changes.
     #[test]
     fn a_session_is_reused_until_paint_cursor_changes() {
-        let node = CaptureNode {
-            node: ID,
-            target: CaptureTarget::Output("TEST".into()),
-            live: Some(f32::INFINITY),
-            paint_cursor: true,
-            region: None,
-        };
-        let mut w = Wire::with(Protocol::Ext, &node);
+        let output = capture_node(ID, CaptureTarget::Output("TEST".into()), Some(f32::INFINITY));
+        let mut w = Wire::with(Protocol::Ext, &CaptureNode { paint_cursor: true, ..output });
         w.app.request_frame(ID);
         w.settle();
         let manager = id(w.app.captures.backend.ext.as_ref());

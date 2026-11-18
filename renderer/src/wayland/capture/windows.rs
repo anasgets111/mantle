@@ -210,10 +210,7 @@ mod tests {
         let source = w.requests(sources);
         assert_eq!(source.len(), 1, "a capture source for the toplevel");
         let manager = id(w.app.captures.backend.ext.as_ref());
-        let session = match &w.source().proto {
-            Some(Proto::Ext(ext)) => id(ext.session.as_ref()),
-            _ => panic!("an ext session"),
-        };
+        let session = id(w.ext().session.as_ref());
         assert_eq!(w.requests(manager), [(0, session)]);
         assert!(w.source().in_flight);
 

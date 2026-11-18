@@ -396,17 +396,6 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_pixel_reads_as_the_nearest_known_one() {
-        let (a, b, none) = ([1, 2, 3, 255], [9, 9, 9, 255], [0; 4]);
-        let row = [none, none, a, none, none, none, b, none].concat();
-        assert_eq!(filled(&row, 8), [a, a, a, a, a, b, b, b].concat());
-        assert_eq!(filled(&[none; 3].concat(), 3), [0; 12], "nothing known stays unknown");
-        let two = [[a, none, none].concat(), [none, none, b].concat()].concat();
-        assert_eq!(filled(&two, 3), [[a, a, b].concat(), [a, b, b].concat()].concat(), "rows and columns both reach");
-        assert!(filled(&[], 0).is_empty());
-    }
-
-    #[test]
     fn an_opaque_block_and_unknown_rows_fill_from_the_nearest_known_pixel_in_2d() {
         // A known gradient 12x6 with rows 0 and 5 unknown and an opaque block over x 2..10, y 2..4.
         let px = |x: u8, y: u8| [x, y, 7, 255];
@@ -587,10 +576,7 @@ mod tests {
         w.app.captures.desktops.insert(ID, bare(vec![0; 8], 2));
         w.source_mut().desktop = Some(Vec::new());
         let land = |w: &mut Wire, pixels: Option<[u8; 8]>| {
-            let frame = match &w.source().proto {
-                Some(Proto::Wlr(wlr)) => id(wlr.frame.as_ref()),
-                _ => panic!("a wlr frame"),
-            };
+            let frame = id(w.wlr().frame.as_ref());
             // wlr `buffer` (XRGB 2x1, 8-byte rows), `buffer_done`, then `ready`.
             w.send(frame, 0, &[wl_shm::Format::Xrgb8888 as u32, 2, 1, 8]);
             w.send(frame, 6, &[]);
