@@ -113,7 +113,6 @@ mod tests {
     /// What the fake daemon saw, shared with the test.
     #[derive(Default, Clone)]
     struct Calls {
-        files: Arc<Mutex<Vec<Vec<String>>>>,
         /// `method:args` of the pass-through calls.
         log: Arc<Mutex<Vec<String>>>,
         list_attempts: Arc<AtomicUsize>,
@@ -195,8 +194,8 @@ mod tests {
 
         async fn set_plugin_enabled(&self, _device_id: &str, _plugin_id: &str, _enabled: bool) {}
 
-        async fn send_files(&self, _device_id: &str, files: Vec<String>) {
-            self.0.files.lock().unwrap().push(files);
+        async fn send_files(&self, device_id: &str, files: Vec<String>) {
+            self.0.log.lock().unwrap().push(format!("send_files:{device_id}:{}", files.join(",")));
         }
 
         #[zbus(signal)]
@@ -575,7 +574,13 @@ mod tests {
         poll_until(|| (!calls.log.lock().unwrap().is_empty()).then_some(())).await;
         calls.log.lock().unwrap().clear();
 
-        let table: [(&str, Vec<serde_json::Value>, &str); 8] = [
+        // `send_files` passes only regular files (`sendable`), so its row names a real one.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, "x").unwrap();
+        let file = file.to_str().unwrap();
+        let sent = format!("send_files:phone-123:{file}");
+        let table: [(&str, Vec<serde_json::Value>, &str); 9] = [
             ("broadcast", vec![], "broadcast"),
             ("ring", vec!["phone-123".into()], "ring:phone-123"),
             ("ping", vec!["phone-123".into(), "hi".into()], "ping:phone-123:hi"),
@@ -584,6 +589,7 @@ mod tests {
             ("unmount", vec!["phone-123".into()], "unmount:phone-123"),
             ("accept_pairing", vec!["phone-123".into()], "accept_pairing:phone-123"),
             ("reject_pairing", vec!["phone-123".into()], "reject_pairing:phone-123"),
+            ("send_files", vec!["phone-123".into(), vec![file].into()], &sent),
         ];
         for (action, arguments, _) in &table {
             dispatch(action, arguments.clone());
@@ -596,23 +602,5 @@ mod tests {
             (seen == expected).then_some(())
         })
         .await;
-    }
-
-    #[tokio::test]
-    async fn send_files_reaches_the_daemon() {
-        let bus = private_bus().await;
-        let calls = ready_calls();
-        let _server = daemon_on(&bus, calls.clone()).await;
-        let controller = controller_on(bus.connection().await);
-        let dispatch = dispatcher(Capability::AndroidConnect, super::dispatch, &controller);
-        poll_until(|| controller.snapshot().available.then_some(())).await;
-
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("a.txt");
-        std::fs::write(&file, "x").unwrap();
-        let file = file.to_str().unwrap();
-        dispatch("send_files", vec!["phone-123".into(), vec![file].into()]);
-        poll_until(|| (!calls.files.lock().unwrap().is_empty()).then_some(())).await;
-        assert_eq!(*calls.files.lock().unwrap(), [vec![file.to_owned()]]);
     }
 }

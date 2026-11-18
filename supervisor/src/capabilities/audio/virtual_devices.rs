@@ -182,6 +182,7 @@ fn module(device: &VirtualDevice) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::capabilities::test_support::within;
     use crate::process::sh_args;
 

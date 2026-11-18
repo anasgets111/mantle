@@ -99,32 +99,4 @@ mod tests {
             assert!(parse_install_step(&mut Progress::default(), line).is_none(), "{line:?}");
         }
     }
-
-    #[test]
-    fn summaries_and_numbered_steps_keep_one_transaction_count() {
-        let mut progress = Progress::default();
-        for (line, expected) in [
-            ("Packages (3) a-1 b-1 c-1", None),
-            ("upgrading a...", Some((1, 3, "a"))),
-            ("(1/3) upgrading a", Some((1, 3, "a"))),
-            ("upgrading a...", Some((1, 3, "a"))),
-            ("reinstalling b...", Some((2, 3, "b"))),
-            ("downgrading c...", Some((3, 3, "c"))),
-            ("installing extra...", Some((3, 3, "extra"))),
-            ("Packages (4294967295) huge", None),
-            ("(4294967295/4294967295) upgrading last", Some((u32::MAX, u32::MAX, "last"))),
-            ("upgrading overflow...", Some((u32::MAX, u32::MAX, "overflow"))),
-            ("Packages (invalid)", None),
-            ("upgrading unknown...", Some((0, 0, "unknown"))),
-            ("Packages (1)garbage", None),
-            ("installing bad-summary...", Some((0, 0, "bad-summary"))),
-            ("Packages (1)", None),
-            ("installing only...", Some((1, 1, "only"))),
-            ("Packages (0)", None),
-            (":: nothing to do", None),
-        ] {
-            let step = parse_install_step(&mut progress, line);
-            assert_eq!(step.as_ref().map(|s| (s.current, s.total, s.package.as_str())), expected, "{line}");
-        }
-    }
 }

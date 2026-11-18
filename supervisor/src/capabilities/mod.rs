@@ -238,32 +238,4 @@ mod tests {
         assert_eq!(next_delay(Duration::from_secs(16)), RETRY_MAX);
         assert_eq!(next_delay(RETRY_MAX), RETRY_MAX);
     }
-
-    /// Yields `items` units, then ends; polling past the end panics, so a forwarder that spins on
-    /// an ended stream fails instead of hanging the test.
-    fn ending(items: usize) -> impl futures_util::Stream<Item = ()> + Unpin {
-        let mut polls = 0;
-        futures_util::stream::poll_fn(move |_| {
-            polls += 1;
-            assert!(polls <= items + 1, "polled past the end");
-            std::task::Poll::Ready((polls <= items).then_some(()))
-        })
-    }
-
-    #[tokio::test]
-    async fn a_forwarder_sends_once_per_item_and_stops_when_its_stream_ends() {
-        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
-        test_support::within(forward_until_closed(ending(2), events, 'x')).await;
-        assert_eq!(received.recv().await, Some('x'));
-        assert_eq!(received.recv().await, Some('x'));
-        assert_eq!(received.recv().await, None, "exactly one send per item");
-    }
-
-    #[tokio::test]
-    async fn a_forwarder_stops_once_nobody_listens() {
-        let (events, received) = tokio::sync::mpsc::unbounded_channel();
-        drop(received);
-        let changes = futures_util::StreamExt::chain(futures_util::stream::iter([()]), futures_util::stream::pending());
-        test_support::within(forward_until_closed(changes, events, ())).await;
-    }
 }

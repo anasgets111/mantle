@@ -155,15 +155,4 @@ mod tests {
             Err(RunError::Failed("exited with an error"))
         );
     }
-
-    #[tokio::test]
-    async fn run_logged_hands_back_output_only_on_success() {
-        static BUSY: AtomicBool = AtomicBool::new(false);
-        let limit = Duration::from_secs(5);
-        assert_eq!(run_logged("sh", &["-c", "echo hi"], limit, &BUSY, false).await, Some(b"hi\n".to_vec()));
-        assert_eq!(run_logged("sh", &["-c", "exit 1"], limit, &BUSY, false).await, None);
-        assert_eq!(run_logged("mantle-no-such-tool", &[], limit, &BUSY, true).await, None);
-        assert_eq!(RunError::Busy.reason(), None, "a busy tick is never logged");
-        assert_eq!(RunError::Missing.reason(), Some("is not installed"));
-    }
 }

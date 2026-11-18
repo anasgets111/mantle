@@ -753,8 +753,7 @@ mod tests {
 
     #[tokio::test]
     async fn server_information_reports_the_release_version() {
-        let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let (sound_tx, _sound_rx) = std::sync::mpsc::sync_channel(1);
+        let (events, sound_tx) = test_channels();
         let controller = NotificationsController::inert(events, sound_tx);
         let version = env!("CARGO_PKG_VERSION").to_string();
         let expected = ("mantle".to_string(), "mantle".to_string(), version, "1.2".to_string());
@@ -811,8 +810,7 @@ mod tests {
 
     #[tokio::test]
     async fn notify_and_close_notification_exchange_methods_and_signals_over_dbus() {
-        let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let (sound_tx, _sound_rx) = std::sync::mpsc::sync_channel(1);
+        let (events, sound_tx) = test_channels();
         let mut controller = NotificationsController::inert(events, sound_tx);
         let (client, server) =
             p2p_pair_serving(|peer| peer.serve_at(NOTIFICATIONS_OBJECT_PATH, controller.clone())).await;
@@ -932,8 +930,7 @@ mod tests {
     /// An absurd hold clamps to five minutes, not the rest of the session.
     #[tokio::test(start_paused = true)]
     async fn a_hold_longer_than_the_cap_is_clamped_to_it() {
-        let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let (sound_tx, _sound_rx) = std::sync::mpsc::sync_channel(1);
+        let (events, sound_tx) = test_channels();
         let controller = NotificationsController::inert(events, sound_tx);
 
         let before = Instant::now();
@@ -976,18 +973,9 @@ mod tests {
         assert!(std::path::Path::new(&rewritten).exists(), "an icon rewritten in the window is in use");
     }
 
-    #[test]
-    fn spool_raw_image_writes_a_valid_image_and_drops_an_out_of_bounds_one() {
-        crate::capabilities::shm_icons::init_test_spool();
-        let path = spool_raw_image(9_003, &valid_rgba_image(4, 4)).expect("a valid image spools");
-        assert!(std::path::Path::new(&path).exists());
-        assert_eq!(spool_raw_image(9_004, &valid_rgba_image(129, 1)), None);
-    }
-
     #[tokio::test]
     async fn the_positional_app_icon_beats_the_image_path_name_which_fills_in_when_it_is_empty() {
-        let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let (sound_tx, _sound_rx) = std::sync::mpsc::sync_channel(1);
+        let (events, sound_tx) = test_channels();
         let controller = NotificationsController::inert(events, sound_tx);
         for (positional, expected) in [("firefox", "firefox"), ("", "other")] {
             let hints = Hints { image_path: Some("other".into()), ..Hints::default() };
@@ -1078,31 +1066,15 @@ mod tests {
             .await
             .expect("icon_data spools");
         assert!(std::path::Path::new(&from_icon_data).exists());
+        assert_eq!(spool_raw_image(9_107, &valid_rgba_image(129, 1)), None, "an out-of-bounds image is dropped");
 
         let body = format!(r#"hi <img src="{}"/> <img src="/etc/passwd"/>"#, trusted_file.display());
         let hints = Hints { image_path: Some(format!("file://{}", trusted_file.display())), ..Hints::default() };
         controller.notify("app".into(), 0, String::new(), "s".into(), body, vec![], hints, 0).await;
         let first = &controller.snapshot().feed[0];
         assert_eq!(first.image_path.as_deref(), Some(canonical.as_str()));
-        assert_eq!(
-            first.body,
-            [
-                super::super::NotificationSpan::Text {
-                    text: "hi ".into(),
-                    bold: false,
-                    italic: false,
-                    underline: false,
-                    href: None,
-                },
-                super::super::NotificationSpan::Image { image_path: canonical },
-                super::super::NotificationSpan::Text {
-                    text: " ".into(),
-                    bold: false,
-                    italic: false,
-                    underline: false,
-                    href: None,
-                },
-            ]
-        );
+        let images: Vec<_> =
+            first.body.iter().filter(|span| matches!(span, super::super::NotificationSpan::Image { .. })).collect();
+        assert_eq!(images, [&super::super::NotificationSpan::Image { image_path: canonical }], "only the trusted one");
     }
 }

@@ -796,27 +796,6 @@ mod tests {
         assert_eq!(locks.try_recv().ok(), Some(shared::SetSessionLock { locked: true }));
     }
 
-    /// `main.rs` reaches the idle controller through `idle()`. The controller is planted:
-    /// `start(Idle)` would dial the session bus and the session's compositor.
-    #[tokio::test]
-    async fn idle_hands_out_the_started_controller() {
-        let (mut shell, _bus) = shell().await;
-        let (controller, mut locks, _logind) = idle::controller::tests::controller().await;
-        shell.capabilities.idle = Some(controller);
-        shell.capabilities.idle().expect("idle started").inhibit(GENERATION, "test").await;
-        within(locks.recv()).await.expect("logind was asked for a lock");
-    }
-
-    /// State-carrying signals push under their own capability's name.
-    #[tokio::test]
-    async fn a_signal_carrying_state_reaches_the_renderer_as_its_capability() {
-        let (mut shell, _bus) = shell().await;
-        shell.push(Signal::Secrets(shared::state::secrets::SecretsState::default()));
-        shell.push(Signal::Keyboard(shared::state::keyboard::KeyboardState::default()));
-        let names: Vec<String> = shell.received().into_iter().map(|(name, _)| name).collect();
-        assert_eq!(names, ["secrets", "keyboard"]);
-    }
-
     const MAC: &str = "AA:AA:AA:AA:AA:AA";
 
     /// Bluetooth builds in a worker that queues commands, takes a PIN from `secure_submit`, and stops

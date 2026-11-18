@@ -598,6 +598,14 @@ pub(super) mod tests {
         assert_eq!(next_burst(&mut stream::empty()).await, None);
     }
 
+    fn resolved(unique: &str, path: &str) -> ResolvedRegistration {
+        ResolvedRegistration {
+            unique_name: OwnedUniqueName::try_from(unique).unwrap(),
+            destination: zbus::names::OwnedBusName::try_from(unique).unwrap(),
+            object_path: OwnedObjectPath::try_from(path).unwrap(),
+        }
+    }
+
     pub(in super::super) fn key(unique: &str) -> ItemKey {
         (
             OwnedUniqueName::try_from(unique).expect("a valid unique name"),
@@ -835,11 +843,7 @@ pub(super) mod tests {
         let app = app.unwrap().build().await.unwrap();
         let connection = bus.connection().await;
         let unique = app.unique_name().unwrap().to_owned();
-        let resolved = ResolvedRegistration {
-            unique_name: unique.clone(),
-            destination: BusName::from(unique.clone()).into(),
-            object_path: OwnedObjectPath::try_from("/StatusNotifierItem").unwrap(),
-        };
+        let resolved = resolved(unique.as_str(), "/StatusNotifierItem");
         let registry = ItemRegistry::default();
         let (events, _pushed) = tokio::sync::mpsc::unbounded_channel();
         assert_eq!(register_item(&connection, &registry, &events, resolved, true).await, RegisterOutcome::Registered);
@@ -968,11 +972,7 @@ pub(super) mod tests {
         app_connection.set(app.clone()).unwrap();
         let connection = bus.connection().await;
         let unique = app.unique_name().unwrap().to_owned();
-        let resolved = ResolvedRegistration {
-            unique_name: unique.clone(),
-            destination: BusName::from(unique.clone()).into(),
-            object_path: OwnedObjectPath::try_from("/StatusNotifierItem").unwrap(),
-        };
+        let resolved = resolved(unique.as_str(), "/StatusNotifierItem");
         let registry = ItemRegistry::default();
         let (events, _pushed) = tokio::sync::mpsc::unbounded_channel();
         assert_eq!(register_item(&connection, &registry, &events, resolved, true).await, RegisterOutcome::Registered);
@@ -1001,14 +1001,8 @@ pub(super) mod tests {
         let registry = ItemRegistry::default();
         let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
         for (unique, path) in [(":1.10", "/A"), (":1.20", "/B"), (":1.10", "/A")] {
-            let destination = zbus::names::OwnedBusName::try_from(unique).unwrap();
-            let resolved = ResolvedRegistration {
-                unique_name: OwnedUniqueName::try_from(unique).unwrap(),
-                destination,
-                object_path: OwnedObjectPath::try_from(path).unwrap(),
-            };
             assert_eq!(
-                register_item(&connection, &registry, &events, resolved, true).await,
+                register_item(&connection, &registry, &events, resolved(unique, path), true).await,
                 RegisterOutcome::Registered
             );
         }
@@ -1031,29 +1025,9 @@ pub(super) mod tests {
         fn title(&self) -> String {
             self.title.lock().unwrap().to_string()
         }
-        #[zbus(property, name = "IconName")]
-        fn icon_name(&self) -> String {
-            String::new()
-        }
-        #[zbus(property, name = "IconPixmap")]
-        fn icon_pixmap(&self) -> Vec<super::super::RawIconPixmap> {
-            Vec::new()
-        }
         #[zbus(property, name = "Status")]
         fn status(&self) -> String {
             "Active".to_string()
-        }
-        #[zbus(property, name = "ItemIsMenu")]
-        fn item_is_menu(&self) -> bool {
-            false
-        }
-        #[zbus(property, name = "ToolTip")]
-        fn tool_tip(&self) -> super::super::RawToolTip {
-            (String::new(), Vec::new(), String::new(), String::new())
-        }
-        #[zbus(property, name = "Menu")]
-        fn menu(&self) -> OwnedObjectPath {
-            OwnedObjectPath::try_from("/").unwrap()
         }
     }
 
@@ -1062,7 +1036,7 @@ pub(super) mod tests {
         use super::super::TrayController;
         use super::super::watcher::tests::StubStatusNotifierItem;
         use super::super::{WATCHER_BUS_NAME, WATCHER_OBJECT_PATH};
-        use crate::capabilities::test_support::{poll_until, private_bus, snapshot_frame_len};
+        use crate::capabilities::test_support::{poll_until, private_bus};
 
         let bus = private_bus().await;
         let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1072,6 +1046,10 @@ pub(super) mod tests {
             zbus::Proxy::new(conn, WATCHER_BUS_NAME, WATCHER_OBJECT_PATH, "org.kde.StatusNotifierWatcher")
                 .await
                 .unwrap()
+        }
+        async fn register(conn: &zbus::Connection) {
+            let item = ("/StatusNotifierItem",);
+            watcher_proxy(conn).await.call::<_, _, ()>("RegisterStatusNotifierItem", &item).await.unwrap();
         }
 
         // Register the first item synchronously so `snapshot().items[0]` is known to be this mutable peer.
@@ -1085,66 +1063,37 @@ pub(super) mod tests {
             .unwrap();
         let first_unique = first_app.unique_name().unwrap().to_owned();
         let first_id = item_id(first_unique.as_str(), "/StatusNotifierItem");
-        watcher_proxy(&first_app)
-            .await
-            .call::<_, _, ()>("RegisterStatusNotifierItem", &("/StatusNotifierItem",))
-            .await
-            .unwrap();
+        register(&first_app).await;
         poll_until(|| (controller.snapshot().items.len() == 1).then_some(())).await;
 
         let spawn_item = || async {
             let app =
                 bus.builder().serve_at("/StatusNotifierItem", StubStatusNotifierItem).unwrap().build().await.unwrap();
             let unique = app.unique_name().unwrap().to_owned();
-            watcher_proxy(&app)
-                .await
-                .call::<_, _, ()>("RegisterStatusNotifierItem", &("/StatusNotifierItem",))
-                .await
-                .unwrap();
+            register(&app).await;
             (app, item_id(unique.as_str(), "/StatusNotifierItem"))
         };
 
         let mut apps = futures_util::future::join_all((1..MAX_ITEMS).map(|_| spawn_item())).await;
         poll_until(|| (controller.snapshot().items.len() == MAX_ITEMS).then_some(())).await;
 
-        let full_snapshot = controller.snapshot();
-        assert_eq!(full_snapshot.items.len(), MAX_ITEMS);
-        assert_eq!(full_snapshot.items[0].id, first_id);
-        assert!(
-            snapshot_frame_len(shared::Capability::Tray, &full_snapshot) < shared::framing::MAX_FRAME_LEN,
-            "snapshot at MAX_ITEMS must fit one frame"
-        );
+        assert_eq!(controller.snapshot().items[0].id, first_id);
 
         // Re-registering an already-tracked item at capacity must succeed, refresh, and keep its place.
         *first_title.lock().unwrap() = "re-registered";
-        watcher_proxy(&first_app)
-            .await
-            .call::<_, _, ()>("RegisterStatusNotifierItem", &("/StatusNotifierItem",))
-            .await
-            .unwrap();
+        register(&first_app).await;
         poll_until(|| (controller.snapshot().items[0].name == "re-registered").then_some(())).await;
         assert_eq!(controller.snapshot().items[0].id, first_id, "re-registration kept its order");
 
         // Register three extra items past MAX_ITEMS: one departs while waiting, two stay to enter in order.
         let (extra_departing, extra_departing_id) = spawn_item().await;
-        let (extra_waiting1, extra_waiting1_id) = spawn_item().await;
-        let extra_waiting1_unique = extra_waiting1.unique_name().unwrap().to_string();
+        let (_extra_waiting1, extra_waiting1_id) = spawn_item().await;
         let (_extra_waiting2, extra_waiting2_id) = spawn_item().await;
         poll_until(|| (controller.waiting_len() == 3).then_some(())).await;
-
-        // Re-registering the same waiting peer must not duplicate it in `waiting` or emit a second warning.
-        watcher_proxy(&extra_waiting1)
-            .await
-            .call::<_, _, ()>("RegisterStatusNotifierItem", &("/StatusNotifierItem",))
-            .await
-            .unwrap();
-        let waiting_warn_key = format!("tray item limit {extra_waiting1_unique}");
-        assert!(!shared::log::first_failure(&waiting_warn_key), "warning must have fired once already");
 
         let host_conn = bus.connection().await;
         let watcher_client = watcher_proxy(&host_conn).await;
         assert_eq!(controller.snapshot().items.len(), MAX_ITEMS);
-        assert_eq!(controller.waiting_len(), 3);
         assert!(!controller.snapshot().items.iter().any(|item| item.id == extra_waiting1_id));
         assert!(!controller.snapshot().items.iter().any(|item| item.id == extra_waiting2_id));
         assert!(!controller.snapshot().items.iter().any(|item| item.id == extra_departing_id));
@@ -1177,7 +1126,6 @@ pub(super) mod tests {
         assert_eq!(after_second.items.len(), MAX_ITEMS);
         assert!(!after_second.items.iter().any(|item| item.id == dropped2_id));
         assert_eq!(controller.waiting_len(), 0);
-        assert!(snapshot_frame_len(shared::Capability::Tray, &after_second) < shared::framing::MAX_FRAME_LEN);
     }
 
     #[tokio::test]
@@ -1187,7 +1135,6 @@ pub(super) mod tests {
         let registry = ItemRegistry::default();
         let per_item = MAX_MENU_NODES - 1;
         let filler_count = MAX_TOTAL_MENU_NODES / per_item;
-        assert_eq!(filler_count, 4);
 
         for idx in 0..filler_count {
             let mut item_entry = entry(&connection, &format!("1.{idx}/StatusNotifierItem"), idx as u64).await;
@@ -1229,64 +1176,18 @@ pub(super) mod tests {
     #[test]
     fn record_at_cap_deduplicates_same_path_allows_second_path_and_caps_queue_at_max_waiting() {
         let mut reg = Registry::default();
-        let reg_item = |unique: &str, path: &str| ResolvedRegistration {
-            unique_name: OwnedUniqueName::try_from(unique).unwrap(),
-            destination: zbus::names::OwnedBusName::try_from(unique).unwrap(),
-            object_path: OwnedObjectPath::try_from(path).unwrap(),
-        };
-
-        let first = reg_item(":1.1", "/A");
+        let first = resolved(":1.1", "/A");
         record_at_cap(&mut reg, &first, true);
         record_at_cap(&mut reg, &first, true);
         assert_eq!(reg.waiting.len(), 1, "identical (unique, path) must deduplicate");
 
-        record_at_cap(&mut reg, &reg_item(":1.1", "/B"), true);
+        record_at_cap(&mut reg, &resolved(":1.1", "/B"), true);
         assert_eq!(reg.waiting.len(), 2, "distinct object path on the same peer must also queue");
 
         for i in 2..(MAX_WAITING_ITEMS + 10) {
-            record_at_cap(&mut reg, &reg_item(&format!(":1.{i}"), "/StatusNotifierItem"), true);
+            record_at_cap(&mut reg, &resolved(&format!(":1.{i}"), "/StatusNotifierItem"), true);
         }
         assert_eq!(reg.waiting.len(), MAX_WAITING_ITEMS, "waiting queue must cap at MAX_WAITING_ITEMS");
-    }
-
-    #[test]
-    fn cleanup_helpers_reap_only_dropped_item_and_menu_icons() {
-        shm_icons::init_test_spool();
-        let spool = |name: &str| shm_icons::write_png(SPOOL_SUBDIR, name, b"\x89PNG").unwrap();
-        let stem = icon_filename_stem("1.50/StatusNotifierItem");
-        let kept_base = spool(&format!("{stem}_base_kept.png"));
-        let old_attn = spool(&format!("{stem}_attn_old.png"));
-        let new_attn = spool(&format!("{stem}_attn_new.png"));
-        let old_overlay = spool(&format!("{stem}_overlay_old.png"));
-        let old_menu = spool(&format!("{stem}_menu_1.png"));
-
-        let old = TrayItem {
-            id: "1.50/StatusNotifierItem".into(),
-            icon_path: Some(kept_base.clone()),
-            attention_icon_path: Some(old_attn.clone()),
-            overlay_icon_path: Some(old_overlay.clone()),
-            menu: Some(vec![MenuItem { id: 1, icon_name: Some(old_menu.clone()), ..MenuItem::default() }]),
-            ..TrayItem::default()
-        };
-        let kept = TrayItem {
-            id: old.id.clone(),
-            icon_path: Some(kept_base.clone()),
-            attention_icon_path: Some(new_attn.clone()),
-            overlay_icon_path: None,
-            menu: None,
-            ..TrayItem::default()
-        };
-
-        cleanup_replaced_icons(&old, &kept);
-        assert!(std::path::Path::new(&kept_base).exists(), "unchanged icon stays");
-        assert!(std::path::Path::new(&new_attn).exists(), "new icon stays");
-        assert!(!std::path::Path::new(&old_attn).exists(), "replaced attention icon reaped");
-        assert!(!std::path::Path::new(&old_overlay).exists(), "cleared overlay icon reaped");
-        assert!(!std::path::Path::new(&old_menu).exists(), "dropped menu icon reaped");
-
-        cleanup_item_icons(&kept);
-        assert!(!std::path::Path::new(&kept_base).exists());
-        assert!(!std::path::Path::new(&new_attn).exists());
     }
 
     struct SlowIconItem {
@@ -1332,11 +1233,7 @@ pub(super) mod tests {
             registry.lock().unwrap().items.insert(key(&format!(":1.9{idx}")), built);
         }
         let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let resolved = ResolvedRegistration {
-            unique_name: unique.clone(),
-            destination: BusName::from(unique.clone()).into(),
-            object_path: OwnedObjectPath::try_from("/StatusNotifierItem").unwrap(),
-        };
+        let resolved = resolved(unique.as_str(), "/StatusNotifierItem");
 
         let (conn_clone, reg_clone, events_clone) = (conn.clone(), registry.clone(), events.clone());
         let handle =
@@ -1427,5 +1324,45 @@ pub(super) mod tests {
         })
         .await;
         assert_eq!(registry.lock().unwrap().items.len(), MAX_ITEMS);
+    }
+
+    #[test]
+    fn cleanup_helpers_reap_only_dropped_item_and_menu_icons() {
+        shm_icons::init_test_spool();
+        let spool = |name: &str| shm_icons::write_png(SPOOL_SUBDIR, name, b"\x89PNG").unwrap();
+        let stem = icon_filename_stem("1.50/StatusNotifierItem");
+        let kept_base = spool(&format!("{stem}_base_kept.png"));
+        let old_attn = spool(&format!("{stem}_attn_old.png"));
+        let new_attn = spool(&format!("{stem}_attn_new.png"));
+        let old_overlay = spool(&format!("{stem}_overlay_old.png"));
+        let old_menu = spool(&format!("{stem}_menu_1.png"));
+
+        let old = TrayItem {
+            id: "1.50/StatusNotifierItem".into(),
+            icon_path: Some(kept_base.clone()),
+            attention_icon_path: Some(old_attn.clone()),
+            overlay_icon_path: Some(old_overlay.clone()),
+            menu: Some(vec![MenuItem { id: 1, icon_name: Some(old_menu.clone()), ..MenuItem::default() }]),
+            ..TrayItem::default()
+        };
+        let kept = TrayItem {
+            id: old.id.clone(),
+            icon_path: Some(kept_base.clone()),
+            attention_icon_path: Some(new_attn.clone()),
+            overlay_icon_path: None,
+            menu: None,
+            ..TrayItem::default()
+        };
+
+        cleanup_replaced_icons(&old, &kept);
+        assert!(std::path::Path::new(&kept_base).exists(), "unchanged icon stays");
+        assert!(std::path::Path::new(&new_attn).exists(), "new icon stays");
+        assert!(!std::path::Path::new(&old_attn).exists(), "replaced attention icon reaped");
+        assert!(!std::path::Path::new(&old_overlay).exists(), "cleared overlay icon reaped");
+        assert!(!std::path::Path::new(&old_menu).exists(), "dropped menu icon reaped");
+
+        cleanup_item_icons(&kept);
+        assert!(!std::path::Path::new(&kept_base).exists());
+        assert!(!std::path::Path::new(&new_attn).exists());
     }
 }

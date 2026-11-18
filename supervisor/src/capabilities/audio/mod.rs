@@ -188,9 +188,10 @@ mod tests {
     }
 
     /// Each mixer action reaches the mixer as its command, percents as fractions; clamping is the
-    /// mixer's (`master`).
+    /// mixer's (`master`). `set_virtual_devices` goes to the devices' task with its generation, an
+    /// unknown action goes nowhere.
     #[test]
-    fn dispatch_sends_each_mixer_action_as_its_command() {
+    fn dispatch_sends_each_action_to_the_mixer_or_the_devices_task() {
         let main_loop = main_loop();
         let (audio, mixer, mut requests) = rig(&main_loop, None);
         let send = dispatcher(Capability::Audio, dispatch, &audio);
@@ -230,19 +231,11 @@ mod tests {
             ]
         );
         assert!(requests.try_recv().is_err(), "none of them declares devices");
-    }
 
-    /// `set_virtual_devices` goes to the devices' task with its generation, an unknown action goes
-    /// nowhere.
-    #[test]
-    fn virtual_devices_go_to_their_task_and_unknown_actions_nowhere() {
-        let main_loop = main_loop();
-        let (audio, mixer, mut requests) = rig(&main_loop, None);
         let devices = vec![json!([{ "kind": "null_sink", "name": "a" }])];
         dispatch(&audio, &at(5, "set_virtual_devices", devices));
         dispatch(&audio, &at(5, "play_sound", vec!["bell".into()]));
-        dispatch(&audio, &at(5, "toggle_mute", vec![61.into()]));
-        assert_eq!(mixer.drain(), [AudioCommand::ToggleMute(61)], "only the known mixer action reaches the mixer");
+        assert_eq!(mixer.drain(), [], "neither reaches the mixer");
         let Ok(Request::Declare { generation, devices }) = requests.try_recv() else { panic!("no declaration") };
         let device = shared::action::VirtualDevice {
             kind: shared::action::VirtualKind::NullSink,

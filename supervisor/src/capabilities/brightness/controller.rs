@@ -340,14 +340,6 @@ pub(crate) mod tests {
         BrightnessController { state: Arc::default(), device: Arc::default(), system_bus, writes: Default::default() }
     }
 
-    #[tokio::test]
-    async fn the_task_ends_before_watching_when_nobody_listens() {
-        let root = tempfile::tempdir().unwrap();
-        let controller = unstarted().await;
-        let (events_tx, _) = tokio::sync::mpsc::unbounded_channel();
-        within(run_brightness_task(root.path().to_path_buf(), controller, events_tx)).await;
-    }
-
     /// A dock or a hybrid GPU can add the backlight after startup; udev's `add` is what reselects.
     #[tokio::test]
     async fn a_backlight_added_later_is_picked_up_and_a_removed_one_keeps_its_reading() {

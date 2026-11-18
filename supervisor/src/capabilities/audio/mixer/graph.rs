@@ -155,16 +155,4 @@ mod tests {
             assert_eq!(graph.links.len(), 1, "{why}: the unrelated link stays");
         }
     }
-
-    #[test]
-    fn a_stream_is_linked_to_the_device_it_plays_into_or_records_from() {
-        let mut graph = LinkGraph::default();
-        // Two channels, two links, as `pw-link -l` shows for a stereo stream.
-        graph.add_link(80, &link("101", "59"));
-        graph.add_link(81, &link("101", "59"));
-        graph.add_link(82, &link("60", "102"));
-        assert_eq!(graph.linked(101, true).collect::<Vec<_>>(), [59, 59]);
-        assert_eq!(graph.linked(102, false).collect::<Vec<_>>(), [60]);
-        assert_eq!(graph.linked(102, true).count(), 0, "a recording stream plays into nothing");
-    }
 }

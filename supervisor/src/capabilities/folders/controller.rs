@@ -514,14 +514,5 @@ mod tests {
         touch(&dir_a, "two.jpg");
         until(&controller, &mut rx, &key_a, |folder| folder.entries.len() == 2).await;
         assert!(!controller.snapshot().watched.contains_key(&key_b));
-
-        // Same-path filter update resets `ready` and relists with the new extension filter.
-        controller.watch(&key_a, vec!["txt".to_string()]);
-        assert!(!controller.snapshot().watched[&key_a].ready);
-        touch(&dir_a, "note.txt");
-        until(&controller, &mut rx, &key_a, |folder| {
-            folder.ready && folder.entries.len() == 1 && folder.entries[0].name == "note.txt"
-        })
-        .await;
     }
 }

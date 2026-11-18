@@ -325,9 +325,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn cancel_vpn_secret_declines_the_pending_request() {
-        let (controller, _asked, _events, _peer) = fixture().await;
-        let declined = secret_agent::tests::asking(Arc::clone(&controller.vpn), controller.events.clone());
-        poll_until(|| controller.vpn.lock().unwrap().secret.is_some().then_some(())).await;
+        let (controller, _events, _peer, declined) = prompted().await;
 
         dispatcher(Capability::Network, dispatch, &controller)("cancel_vpn_secret", vec![]);
 

@@ -121,21 +121,6 @@ mod tests {
         assert_eq!(first_helper(OsStr::new("")), None);
     }
 
-    #[test]
-    fn only_vercmp_answering_1_makes_a_version_newer() {
-        let dir = tempfile::tempdir().unwrap();
-        let says_newer = fake_program(dir.path(), "newer", "echo 1");
-        let says_older = fake_program(dir.path(), "older", "echo -1");
-
-        assert!(newer(&says_newer, "1:1.0-1", "9.0-1"));
-        assert!(!newer(&says_newer, "2.0-1", "2.0-1"), "an equal version never asks vercmp");
-        assert!(!newer(&says_older, "2.9-1", "3.0-1"));
-        assert!(!newer("", "1.1-1", "1.0-1"), "a vercmp that cannot run finds nothing newer");
-        // Offered first, as `vercmp a b` orders.
-        let argv = std::fs::read_to_string(dir.path().join("argv")).unwrap();
-        assert_eq!(argv, "newer 1:1.0-1 9.0-1\nolder 2.9-1 3.0-1\n");
-    }
-
     fn foreign() -> Vec<(String, String)> {
         [("newer", "1.0-1"), ("same", "2.0-1"), ("epoch", "9.0-1"), ("older", "3.0-1")]
             .map(|(name, version)| (name.to_string(), version.to_string()))
@@ -165,5 +150,20 @@ mod tests {
         let body = br#"{"error":"No request type/data specified.","resultcount":0,"results":[],"type":"error"}"#;
         assert!(parse_info(body, &foreign()).is_err());
         assert!(parse_info(b"<html>", &foreign()).is_err());
+    }
+
+    #[test]
+    fn only_vercmp_answering_1_makes_a_version_newer() {
+        let dir = tempfile::tempdir().unwrap();
+        let says_newer = fake_program(dir.path(), "newer", "echo 1");
+        let says_older = fake_program(dir.path(), "older", "echo -1");
+
+        assert!(newer(&says_newer, "1:1.0-1", "9.0-1"));
+        assert!(!newer(&says_newer, "2.0-1", "2.0-1"), "an equal version never asks vercmp");
+        assert!(!newer(&says_older, "2.9-1", "3.0-1"));
+        assert!(!newer("", "1.1-1", "1.0-1"), "a vercmp that cannot run finds nothing newer");
+        // Offered first, as `vercmp a b` orders.
+        let argv = std::fs::read_to_string(dir.path().join("argv")).unwrap();
+        assert_eq!(argv, "newer 1:1.0-1 9.0-1\nolder 2.9-1 3.0-1\n");
     }
 }

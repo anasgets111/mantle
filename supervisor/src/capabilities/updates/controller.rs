@@ -835,6 +835,7 @@ mod tests {
         let backend = Arc::new(PacmanBackend::new(Default::default(), Default::default(), None));
         // Reconstructed from pacman's C-locale summary and package-operation callbacks.
         for (transcript, expected, exit_code) in [
+            ("Packages (2) a-1 b-1\n(1/2) upgrading a\nupgrading a...\n", (1, 2, "a"), 0),
             (
                 "Packages (5) old-1 [removal] new-2 kvantum-2 linux-2 lib-1
 :: Processing package changes...

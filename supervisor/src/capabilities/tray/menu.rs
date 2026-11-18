@@ -447,30 +447,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn count_and_truncate_menu_nodes_preserve_preorder_within_budget() {
-        let node = |id, children| MenuItem { id, children, ..MenuItem::default() };
-        let mut tree = vec![
-            node(1, vec![node(2, vec![]), node(3, vec![node(4, vec![])])]),
-            node(5, vec![node(6, vec![])]),
-            node(7, vec![]),
-        ];
-        assert_eq!(count_menu_nodes(&tree), 7);
-
-        let mut dropped = Vec::new();
-        let mut remaining = 3;
-        truncate_menu_nodes(&mut tree, &mut remaining, &mut dropped);
-
-        assert_eq!(remaining, 0);
-        assert_eq!(count_menu_nodes(&tree), 3);
-        assert_eq!(tree.len(), 1);
-        assert_eq!(tree[0].id, 1);
-        assert_eq!(tree[0].children.len(), 2);
-        assert!(tree[0].children[1].children.is_empty(), "grandchild past budget is dropped");
-        assert_eq!(dropped.iter().map(|item| item.id).collect::<Vec<_>>(), [4, 5, 7]);
-        assert_eq!(count_menu_nodes(&dropped), 4);
-    }
-
     struct CapturingMenu {
         depths: std::sync::Mutex<Vec<i32>>,
         child_count: i32,

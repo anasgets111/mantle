@@ -737,12 +737,9 @@ mod tests {
 
     /// Well inside the five-second call timeout that would otherwise end a hung call.
     async fn ends_promptly(task: &tokio::task::AbortHandle) {
-        let ended = async {
-            while !task.is_finished() {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        };
-        tokio::time::timeout(std::time::Duration::from_secs(1), ended).await.expect("the hung player's queue ended");
+        tokio::time::timeout(std::time::Duration::from_secs(1), poll_until(|| task.is_finished().then_some(())))
+            .await
+            .expect("the hung player's queue ended");
     }
 
     /// Each player has its own queue: one that never answers holds up only its own commands, and
