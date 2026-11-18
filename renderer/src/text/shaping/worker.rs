@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use parley::fontique::{Blob, Collection, CollectionOptions};
+use parley::fontique::{Blob, CharmapIndex, Collection, CollectionOptions, FamilyId};
 use parley::setting::Tag;
 use parley::{
     FontContext, FontFamilyName, FontStyle, FontVariation, FontWeight, Layout, LayoutContext, LineHeight, OverflowWrap,
@@ -26,6 +26,11 @@ pub(super) struct WorkerFonts {
     layout_context: LayoutContext<()>,
     /// A Parley font is identified by its mapped file and collection index.
     faces: HashMap<(u64, u32), fontdb::ID>,
+    charmaps: HashMap<(u64, u32), CharmapIndex>,
+    /// Every Fontique family registered, so a face joining one is told from a new family.
+    family_ids: HashSet<FamilyId>,
+    /// Bumped when a face joins a registered family: every unboxed result may pick it now (#133).
+    restyles: Arc<AtomicU64>,
     blobs: HashMap<usize, Blob<u8>>,
     family_names: Vec<String>,
     pub(super) primary_family: String,
@@ -44,7 +49,7 @@ pub(super) struct WorkerFonts {
 }
 
 impl WorkerFonts {
-    pub(super) fn new(chain: &[&str]) -> Self {
+    pub(super) fn new(chain: &[&str], restyles: Arc<AtomicU64>) -> Self {
         let ResolvedFonts { mut db, primary_family, loaded_paths } = fonts::resolve_chain(chain);
         // Map once in fontdb, then register the same bytes with Parley.
         let chain_data = font_chain_data(&mut db);
@@ -55,6 +60,9 @@ impl WorkerFonts {
             font_context,
             layout_context: LayoutContext::new(),
             faces: HashMap::new(),
+            charmaps: HashMap::new(),
+            family_ids: HashSet::new(),
+            restyles,
             blobs: HashMap::new(),
             family_names: Vec::new(),
             primary_family,
@@ -148,14 +156,23 @@ impl WorkerFonts {
     }
 
     fn register_faces(&mut self) {
+        let mut joined = Vec::new();
         for face in &self.chain_data {
             let blob = self.blobs.entry(face.data.addr()).or_insert_with(|| {
                 let blob = Blob::new(face.data.0.clone());
-                self.font_context.collection.register_fonts(blob.clone(), None);
+                for (family, fonts) in self.font_context.collection.register_fonts(blob.clone(), None) {
+                    joined.push(family);
+                    self.charmaps.extend(fonts.iter().map(|font| ((blob.id(), font.index()), font.charmap_index())));
+                }
                 blob
             });
             self.faces.insert((blob.id(), face.index), face.id);
         }
+        // Families from before this call: a new family's regular and bold arrive together.
+        if joined.iter().any(|family| self.family_ids.contains(family)) {
+            self.restyles.fetch_add(1, Ordering::Release);
+        }
+        self.family_ids.extend(joined);
         self.family_names.clear();
         for face in self.db.faces() {
             for (name, _) in &face.families {
@@ -169,13 +186,14 @@ impl WorkerFonts {
 
 /// Measures `request`, and reports every codepoint the loaded faces had no glyph for so the worker
 /// can go find faces for them (ADR-0239). All of them, not the first: one codepoint nothing on the
-/// system covers would otherwise hide every box after it in the same string.
+/// system covers would otherwise hide every box after it in the same string. The `bool` is a
+/// cluster drawn without glyph 0 by a face lacking one of its characters (#133).
 pub(super) fn shape(
     fonts: &mut WorkerFonts,
     primary_family: &str,
     request: &ShapeRequest,
     glyphs: bool,
-) -> (ShapeResult, Vec<char>) {
+) -> (ShapeResult, Vec<char>, bool) {
     if fonts.chain_data.is_empty() {
         return (
             ShapeResult {
@@ -187,6 +205,7 @@ pub(super) fn shape(
                 coords: Vec::new().into(),
             },
             Vec::new(),
+            false,
         );
     }
 
@@ -236,6 +255,7 @@ pub(super) fn shape(
     let mut shaped = Vec::new();
     let mut coords: Vec<Box<[i16]>> = Vec::new();
     let mut missing = Vec::new();
+    let mut partial = false;
     // ASCII holds no right-to-left character, so every paragraph of it is LTR.
     let bidi = (!request.text.is_ascii()).then(|| unicode_bidi::BidiInfo::new(&request.text, None));
     for line in layout.lines() {
@@ -256,6 +276,7 @@ pub(super) fn shape(
         for run in line.runs() {
             let key = (run.font().data.id(), run.font().index);
             let face = fonts.faces.get(&key).copied();
+            let charmap = fonts.charmaps.get(&key).and_then(|index| index.charmap(run.font().data.data()));
             let bits = || run.normalized_coords().iter().map(|c| c.to_bits());
             let instance = coords.iter().position(|at| at.iter().copied().eq(bits())).unwrap_or_else(|| {
                 coords.push(bits().collect());
@@ -265,9 +286,17 @@ pub(super) fn shape(
                 let mut range = cluster.text_range();
                 range.end = range.end.min(request.text.len());
                 range.start = range.start.min(range.end);
+                // The shaper fakes a thin space or hides a ZWJ the face lacks, so no glyph 0 shows
+                // that a face landing later takes the cluster.
+                let text = request.text.get(range.clone()).unwrap_or_default();
+                partial |= !text.is_ascii()
+                    && charmap.as_ref().is_some_and(|map| {
+                        let lacks = |ch: char| map.map(ch).is_none_or(|glyph| glyph == 0);
+                        text.chars().any(|ch| counts_toward_coverage(ch) && lacks(ch))
+                    });
                 for glyph in cluster.glyphs() {
                     if glyph.id == 0 {
-                        missing.extend(request.text.get(range.clone()).and_then(|text| text.chars().next()));
+                        missing.extend(text.chars().next());
                     }
                     if glyphs && let Some(face) = face {
                         placed.push(Glyph {
@@ -311,7 +340,21 @@ pub(super) fn shape(
         shaped: shaped.into(),
         coords: coords.into(),
     };
-    (result, missing)
+    (result, missing, partial)
+}
+
+/// Whether Parley counts `ch` toward a face's coverage: not a control, line or paragraph separator,
+/// or format character outside the Inherited script (`parley_engine` `contributes_to_shaping`), nor
+/// VS15/16, which `CharCluster::fill` drops in emoji clusters. VS1-14 and ZWJ/ZWNJ count.
+/// ponytail: Unicode 16's format characters, by hand; a newer one stays boxed. Upgrade: Parley's
+/// own flag, once it is public.
+fn counts_toward_coverage(ch: char) -> bool {
+    !ch.is_control()
+        && !matches!(ch, '\u{AD}' | '\u{600}'..='\u{605}' | '\u{61C}' | '\u{6DD}' | '\u{70F}' | '\u{890}'..='\u{891}'
+            | '\u{8E2}' | '\u{180E}' | '\u{200B}' | '\u{200E}'..='\u{202E}' | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}' | '\u{FE0E}'..='\u{FE0F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}' | '\u{110BD}'
+            | '\u{110CD}' | '\u{13430}'..='\u{1343F}' | '\u{1BCA0}'..='\u{1BCA3}' | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0001}' | '\u{E0020}'..='\u{E007F}')
 }
 
 /// Every loaded face for FemtoVG (ADR-0211). Parley may choose a collection's second face,
@@ -357,8 +400,8 @@ mod tests {
         if !fonts::fc_lists("Noto Sans") {
             return;
         }
-        let mut fonts = WorkerFonts::new(&["Noto Sans"]);
-        let (result, _) = shape(&mut fonts, "Noto Sans", &req("finished", 20.0), true);
+        let mut fonts = WorkerFonts::new(&["Noto Sans"], Arc::default());
+        let (result, ..) = shape(&mut fonts, "Noto Sans", &req("finished", 20.0), true);
         let glyphs = &result.shaped[0].glyphs;
         let fi = glyphs.iter().find(|glyph| glyph.start == 0).unwrap();
         let n = glyphs.iter().find(|glyph| glyph.start == 2).unwrap();
@@ -381,11 +424,11 @@ mod tests {
             return;
         }
 
-        let mut fonts = WorkerFonts::new(&["Noto Sans", "Noto Sans Mono"]);
+        let mut fonts = WorkerFonts::new(&["Noto Sans", "Noto Sans Mono"], Arc::default());
 
         let request = ShapeRequest { line_height: 28.8, ..req("Mantle Engine Renderer", 24.0) };
-        let (proportional, _) = shape(&mut fonts, "Noto Sans", &request, false);
-        let (monospace, _) = shape(&mut fonts, "Noto Sans Mono", &request, false);
+        let (proportional, ..) = shape(&mut fonts, "Noto Sans", &request, false);
+        let (monospace, ..) = shape(&mut fonts, "Noto Sans Mono", &request, false);
 
         // Near-equal widths would mean the family argument did nothing; 10% clears rounding noise.
         let diff = (proportional.width - monospace.width).abs();
@@ -404,9 +447,9 @@ mod tests {
     /// database. It must measure nothing without asking Parley to select a face.
     #[test]
     fn shaping_against_an_empty_database_measures_nothing_rather_than_panicking() {
-        let mut fonts = WorkerFonts::new(fonts::DEFAULT_CHAIN);
+        let mut fonts = WorkerFonts::new(fonts::DEFAULT_CHAIN, Arc::default());
         fonts.chain_data.clear();
-        let (measured, missing) = shape(&mut fonts, "", &req("Mantle", 14.0), true);
+        let (measured, missing, _) = shape(&mut fonts, "", &req("Mantle", 14.0), true);
         assert_eq!((measured.width, measured.height), (0.0, 0.0));
         assert!(measured.lines.is_empty() && measured.shaped.is_empty());
         assert!(missing.is_empty(), "a database with nothing in it has no codepoint to go looking for");
@@ -420,7 +463,7 @@ mod tests {
         }
         let shots = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shots/fonts/fonts.conf");
         fonts::FONTCONFIG_FILE.set(Some(shots));
-        let mut fonts = WorkerFonts::new(&["Noto Sans"]);
+        let mut fonts = WorkerFonts::new(&["Noto Sans"], Arc::default());
         let (generation, ensured) = (AtomicU64::new(0), Mutex::new(HashSet::new()));
         fonts.family_for(Some(&Arc::from("noto sans")), &generation, &ensured);
         assert_eq!(generation.load(Ordering::Acquire), 0, "another name for the loaded Noto Sans");
@@ -435,9 +478,29 @@ mod tests {
         }
     }
 
+    /// #133: only a face joining a family registered before restyles, not a new family's files.
+    #[test]
+    fn only_a_face_joining_a_registered_family_restyles() {
+        if !fonts::fc_match_available() {
+            return;
+        }
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shots/fonts");
+        fonts::FONTCONFIG_FILE.set(Some(dir.join("fonts.conf")));
+        let counter = Arc::new(AtomicU64::new(0));
+        let mut fonts = WorkerFonts::new(&["Noto Sans Symbols 2"], Arc::clone(&counter));
+        let (generation, ensured) = (AtomicU64::new(0), Mutex::new(HashSet::new()));
+        let restyles = || counter.load(Ordering::Acquire);
+        fonts.family_for(Some(&Arc::from("Noto Sans")), &generation, &ensured);
+        assert_eq!((generation.load(Ordering::Acquire), restyles()), (1, 0), "four files of a new family");
+        assert!(fonts.land('─', dir.join("split/Mono-Regular-2500.ttf"), &generation));
+        assert_eq!(restyles(), 0, "a new family");
+        assert!(fonts.land('│', dir.join("split/Mono-Bold-2500-2502.ttf"), &generation));
+        assert_eq!(restyles(), 1, "its bold joins it");
+    }
+
     #[test]
     fn the_family_memo_clears_at_its_cap_and_takes_the_handle_side_with_it() {
-        let mut fonts = WorkerFonts::new(fonts::DEFAULT_CHAIN);
+        let mut fonts = WorkerFonts::new(fonts::DEFAULT_CHAIN, Arc::default());
         let generation = AtomicU64::new(0);
         let ensured: Mutex<HashSet<Arc<str>>> = Mutex::new(HashSet::new());
         for i in 0..SHAPE_CACHE_CAPACITY {
