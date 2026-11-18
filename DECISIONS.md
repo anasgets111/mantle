@@ -5321,6 +5321,9 @@ spawn too: what the shell launches inherits neither variable.
 
 Amended by ADR-0391: decision 2's `session-locked` is per compositor, not per login.
 
+Amended by ADR-0400: a protocol-mismatch re-exec resolves `-c DIR` again, as a cold start in a
+new instance dir.
+
 ## 0223. A `persistent_table` file is watched, and a change on disk wins whole
 
 Amends ADR-0136 decision 2: a hand edit or another shell's save went unseen, and the next save
@@ -9233,3 +9236,19 @@ landing never writes the shared scroll offset. That write is what broke #111's a
 outputs, rollback, hidden lists and in-place wheels. Measured on a 1000-row list: resting passes
 unchanged, ticks within 0–4 µs (about 3%) of base. Rejected: a registry the bump walks (misses values
 off the visited tree and in rolled-back state); packed per-row bits (+10–15 lines for 1 B/row).
+
+## 0400. A protocol mismatch re-executes the installed `mantle`
+
+Since ADR-0059 nothing restarts a Supervisor that stops, so exiting 76 after refusing a Renderer
+(#63) left a session locked at that moment with no lock client (#104). After the same teardown, the
+Supervisor execs the path `current_exe()` gave at start, with its argv (argv[0] as launched) and the
+stdio it had before log capture; every other fd closes on exec, so a foreground re-exec drops fds a
+launcher handed down (a wrapper's flock), which a normal start keeps. The path is read at start:
+after an upgrade `current_exe()` reads "(deleted)" and `/proc/self/exe` runs the old inode. The new
+Supervisor starts cold and relocks from the ADR-0060 marker, which a refused Renderer never touches.
+`MANTLE_REEXEC_FROM` carries the protocol of the Supervisor that ran the exec; one started on its own
+protocol exits 76 instead, bounding a half-finished upgrade to two execs while later upgrades still
+re-exec. Lock gap: about 10 s plus a boot (5 s Renderer kill, 5 s session-process grace), derived,
+not measured; the compositor's own lock screen shows meanwhile. Rejected: passing state across exec
+(the marker carries the one fact that must survive); a lifetime "already re-executed" flag (a
+long-lived session would lose the feature at its next upgrade).
