@@ -9163,6 +9163,8 @@ probe thread as above. Measured: 5 fallback files cost 40 ms once; 100 uncoverab
 Amended by #111: a landing also scrolls each multiline field back to the byte its top row started
 at, from an anchor the app passes with each scroll it sets; an anchor taken at another wrap width is
 dropped and the px offset kept. Windowed-list sizes off the window move to #125.
+Amended by #125: the landing fan-out, the app-passed anchor and both ponytails are replaced by
+ADR-0399.
 
 ## 0396. An undecodable Supervisor frame is skipped only when its kind's loss is safe
 
@@ -9215,3 +9217,19 @@ is hidden. Debug, 30-surface config: base 0.55 s, after 0.44 s. Rejected: rollin
 the passes (Lua side effects escape any rollback); all hidden surfaces in one layout (one reads
 another's rect); a second VM (the config's load and prints run twice; not measured). Ceiling: a
 probe can still change another probe's warning; a VM per probe is the upgrade.
+
+## 0399. Font-derived values carry the generation they were shaped in
+
+A face landing no longer fans out to per-site fixes (#125). Each kept value that shaping produced
+stores the font generation sampled before it was shaped, and its reader re-derives on a mismatch:
+field draft wrap counts, a multiline field's top anchor (kept on the node with its wrap width and
+face) and the vertical goal x. `Scene::sample_fonts` runs once per pass and per tick and drops every
+solver tree when the generation moved. A field anchor set between passes takes the scene's last
+sample, since an older stamp costs only one idempotent re-derive. A re-derive scales the px past the
+anchor's row by new/old line height, then clamps to the rows. Text measures record whether glyph 0
+went in, the only thing a later face changes, and `finish` returns that bit up the tree; a keyed
+scrolling list marks those rows stale at each landing and voids the stale ones past its window, so a
+landing never writes the shared scroll offset. That write is what broke #111's attempt across two
+outputs, rollback, hidden lists and in-place wheels. Measured on a 1000-row list: resting passes
+unchanged, ticks within 0–4 µs (about 3%) of base. Rejected: a registry the bump walks (misses values
+off the visited tree and in rolled-back state); packed per-row bits (+10–15 lines for 1 B/row).
