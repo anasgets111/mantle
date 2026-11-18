@@ -301,6 +301,21 @@ fn lay_out(
     scene
         .apply_locked(&output.surfaces, &instances, shaping, loader.lua(), false, true)
         .map_err(|err| err.to_string())?;
+    // The evaluation pass reads a signal-bound field as its placeholder; the resolved spec is
+    // what the surface gets, so `exclusive_zone = state("zone", 0)` is refused here.
+    // ponytail: a hidden popup is skipped whole, since its `anchor_rect` may be set only when it
+    // opens; its other bound fields go unchecked. Exempting only open-time fields is the upgrade.
+    for (surface, spec) in output.surfaces.iter().zip(specs) {
+        for instance in instances.iter().filter(|instance| instance.declared_id == spec.declared_id()) {
+            if let Some(root) = scene.surface(&instance.instance_id)
+                && (root.visible || !matches!(spec, SurfaceSpec::Popup(_)))
+            {
+                spec.resolved(&root.properties).map_err(|err| {
+                    crate::lua::location::Site::lead(surface.site, format!("{}: {err}", surface.kind))
+                })?;
+            }
+        }
+    }
     Ok((scene, instances))
 }
 
@@ -580,6 +595,9 @@ mod tests {
                 return { panel { id = "lens", layer = "top", visible = false, child = rect { width = 9, height = 9,
                 margin = mantle.applications:map(function() return mantle.audio:get() == nil and 0 or 90 end, 90),
                 shadows = { { blur = 48 } } } } }"#.to_owned(), ""),
+            // A hidden popup's resolved spec is not checked: its `anchor_rect` may be set only on open.
+            (r#"return { panel { id = "bar", layer = "top" }, popup { id = "p", parent = "bar", visible = false,
+                anchor_rect = state("rect", nil), width = 9, height = 9 } }"#.to_owned(), ""),
         ];
         let dir = tempfile::tempdir().unwrap();
         for (shell, want) in cases {
@@ -682,6 +700,22 @@ mod tests {
                     "\nreturn popup { id = \"p\", parent = \"bar\", anchor_rect = { x = 0, y = 0, width = 1, height = 1 }, width = \"wide\" }\n",
                 )],
                 &["shell.lua:2: popup: invalid value for `width`", "got string \"wide\""],
+            ),
+            (
+                "bound root value the evaluation pass defers",
+                &[(
+                    "shell.lua",
+                    "local zone = state(\"zone\", 0)\nreturn panel { id = \"bar\", layer = \"top\", exclusive_zone = zone }\n",
+                )],
+                &["shell.lua:2: panel: invalid value for `exclusive_zone`", "(0 is false, -1 is \"ignore\")"],
+            ),
+            (
+                "bound root value on a hidden panel",
+                &[(
+                    "shell.lua",
+                    "local zone = state(\"zone\", 0)\nreturn panel { id = \"bar\", layer = \"top\", visible = false, exclusive_zone = zone }\n",
+                )],
+                &["shell.lua:2: panel: invalid value for `exclusive_zone`"],
             ),
             (
                 "root built in a module",

@@ -651,9 +651,9 @@ props! {
         ///
         /// Book: The surface's size ([size](#size))
         height: Bound<SizeMode> = range(0.0, 8192.0).absent(Prose("content"));
-        /// `false` reserves nothing, a positive integer reserves that many px, `"ignore"` also overlaps others' zones. `true` reserves the configured height when exactly one of `top`/`bottom` is anchored and `left`/`right` match (both or neither), the width in the transposed case, else nothing.
+        /// `false` reserves nothing, a positive integer reserves that many px (`0` and `-1` are refused: write `false` or `"ignore"`), `"ignore"` also overlaps others' zones. `true` reserves the configured height when exactly one of `top`/`bottom` is anchored and `left`/`right` match (both or neither), the width in the transposed case, else nothing.
         ///
-        /// Book: The space reserved from other windows ([exclusive zones](#exclusive-zones))
+        /// Book: The space reserved from other windows: `false`, `true`, a positive px count or `"ignore"` ([exclusive zones](#exclusive-zones))
         exclusive_zone: Bound<Exclusive> = absent(Bool(false));
         /// Whether it takes the keyboard.
         ///

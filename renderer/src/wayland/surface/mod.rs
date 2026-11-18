@@ -4,7 +4,6 @@
 use shared::{debug, error, warn};
 
 use super::*;
-use crate::layout::node::PropMap;
 use crate::text::snap::PhysicalRect;
 use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1;
 
@@ -416,19 +415,6 @@ fn starting_visible(resolved: Option<bool>, roster: &SurfaceSpec) -> bool {
         SurfaceSpec::Window(_) | SurfaceSpec::Popup(_) | SurfaceSpec::Lock(_) => false,
     })
 }
-/// Re-derive a surface spec from resolved properties, using `roster` only for the role
-/// (ADR-0049 amendment). `kind` built the roster, so taking the role from properties could hide a
-/// reconcile bug. [`App::create_surfaces`] is the caller; [`App::apply_resolved_state`] parses by
-/// the tracked role instead.
-fn resolved_surface_spec(roster: &SurfaceSpec, properties: &PropMap) -> Result<SurfaceSpec, layout::node::LayoutError> {
-    match roster {
-        SurfaceSpec::Panel(_) => node::panel_spec(properties).map(SurfaceSpec::Panel),
-        SurfaceSpec::Window(_) => node::window_spec(properties).map(SurfaceSpec::Window),
-        SurfaceSpec::Popup(_) => node::popup_spec(properties).map(SurfaceSpec::Popup),
-        SurfaceSpec::Lock(_) => node::lock_spec(properties).map(SurfaceSpec::Lock),
-    }
-}
-
 impl App {
     pub(super) fn surface_scale(
         &self,
@@ -482,7 +468,7 @@ impl App {
             // Use resolved properties, not the raw roster. For popups this is permanent: each
             // `PopupSpec` field is consumed by `get_popup`, and no `xdg_popup.reposition` exists,
             // so a raw signal placeholder (`DEFERRED_POPUP_EXTENT`, 1x1 at 0,0) lasts its life.
-            let spec = match tree.map(|tree| resolved_surface_spec(roster, &tree.properties)) {
+            let spec = match tree.map(|tree| roster.resolved(&tree.properties)) {
                 Some(Ok(fresh)) => fresh,
                 Some(Err(err)) => {
                     log_invalid_re_resolve(&instance.instance_id, roster.role(), err);
@@ -661,6 +647,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::node::PropMap;
     use crate::lua::marshal::rect_table;
 
     fn panel(id: &str) -> PanelSpec {
@@ -896,8 +883,7 @@ mod tests {
         let mut placeholder = popup_spec_fixture();
         placeholder.anchor_rect = LogicalRect { x: 0.0, y: 0.0, width: 1.0, height: 1.0 };
 
-        let SurfaceSpec::Popup(spec) = resolved_surface_spec(&SurfaceSpec::Popup(placeholder), &properties).unwrap()
-        else {
+        let SurfaceSpec::Popup(spec) = SurfaceSpec::Popup(placeholder).resolved(&properties).unwrap() else {
             panic!("the role comes from the roster, not from the properties")
         };
         assert_eq!(spec.anchor_rect, LogicalRect { x: 40.0, y: 4.0, width: 86.0, height: 24.0 });
@@ -912,6 +898,6 @@ mod tests {
             ("id", Value::String(lua.create_string("bar").unwrap())),
             ("exclusive_zone", Value::Number(32.0)),
         ]);
-        assert!(resolved_surface_spec(&SurfaceSpec::Panel(panel("bar")), &properties).is_err());
+        assert!(SurfaceSpec::Panel(panel("bar")).resolved(&properties).is_err());
     }
 }

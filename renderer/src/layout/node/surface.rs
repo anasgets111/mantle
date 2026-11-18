@@ -108,7 +108,10 @@ impl Prop for Exclusive {
             Value::Integer(n) if *n > 0 => Ok(Exclusive::Zone(i32::try_from(*n).unwrap_or(i32::MAX))),
             other => Err(invalid(
                 row.name,
-                format!("expected a boolean, a pixel count or \"ignore\", got {}", preview_for_error(other)),
+                format!(
+                    "expected a boolean, a positive pixel count or \"ignore\" (0 is false, -1 is \"ignore\"), got {}",
+                    preview_for_error(other)
+                ),
             )),
         }
     }
@@ -267,8 +270,10 @@ mod tests {
             r#"return { kind = "panel", exclusive_zone = -1 }"#,
             r#"return { kind = "panel", exclusive_zone = 1.5 }"#,
         ] {
+            let err = parse(bad).unwrap_err();
+            assert!(err.to_string().contains("(0 is false, -1 is \"ignore\")"), "{bad} must name the rule: {err}");
             assert!(
-                matches!(parse(bad).unwrap_err(), LayoutError::InvalidProperty { property, .. } if property == "exclusive_zone"),
+                matches!(err, LayoutError::InvalidProperty { property, .. } if property == "exclusive_zone"),
                 "{bad} must be refused by name"
             );
         }

@@ -79,7 +79,7 @@ update it in place ([reload](index.md#reload-and-structural-fields)).
 | `namespace` | `string` | `"mantle-{id}"` | The layer namespace compositor rules match (Hyprland `layerrule`, niri `layer-rule`) |
 | `width` | `Length\|Bound`, `[0, 8192]` | Content | The surface's size ([size](#size)) |
 | `height` | `Length\|Bound`, `[0, 8192]` | Content | The surface's size ([size](#size)) |
-| `exclusive_zone` | `boolean\|integer\|"ignore"\|Bound` | `false` | The space reserved from other windows ([exclusive zones](#exclusive-zones)) |
+| `exclusive_zone` | `boolean\|integer\|"ignore"\|Bound` | `false` | The space reserved from other windows: `false`, `true`, a positive px count or `"ignore"` ([exclusive zones](#exclusive-zones)) |
 | `keyboard_interactivity` | `"none"\|"on_demand"\|"exclusive"\|Bound` | `"none"` | Whether it takes the keyboard ([keyboard focus](#keyboard-focus)) |
 | `margin` | `number\|Edges\|Bound` | `0` | Offset from the anchored edges, not layout margin; one on an edge the panel is not anchored to does nothing |
 | `visible` | `boolean\|Bound` | `true` | Hiding destroys the layer surface; showing recreates it |

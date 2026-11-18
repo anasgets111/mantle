@@ -61,6 +61,18 @@ impl SurfaceSpec {
         }
     }
 
+    /// Re-derives this role's spec from resolved properties, taking only the role from `self`
+    /// (ADR-0049 amendment): `kind` built the roster, so taking the role from properties could hide
+    /// a reconcile bug. `App::create_surfaces` and `mantle check` call it.
+    pub fn resolved(&self, properties: &PropMap) -> Result<SurfaceSpec, LayoutError> {
+        match self {
+            SurfaceSpec::Panel(_) => panel_spec(properties).map(SurfaceSpec::Panel),
+            SurfaceSpec::Window(_) => window_spec(properties).map(SurfaceSpec::Window),
+            SurfaceSpec::Popup(_) => popup_spec(properties).map(SurfaceSpec::Popup),
+            SurfaceSpec::Lock(_) => lock_spec(properties).map(SurfaceSpec::Lock),
+        }
+    }
+
     pub fn fingerprint(&self) -> SurfaceFingerprint {
         match self {
             SurfaceSpec::Panel(spec) => SurfaceFingerprint::Panel(spec.topology.clone()),
