@@ -4555,6 +4555,25 @@ effective opacity, which took blur from boxes resting at 0.5 or below. The regio
 to one `set_blur_region` each way. ponytail: a cut-short enter or exit and a spring retarget cut
 wherever the new run puts it.
 
+Amendment (#145): a run that cuts short a fade through 0 while the box is under that fade's cut (an
+interrupt with another spec or a spring, or an exit) keeps the fade's span (`Tween::carried`), so
+its blur still switches at half the old peak. Above the cut, or after a played-out keyframe run, the
+new run spans only itself. This replaces the ponytail above. ponytail: a run that stays under the
+old cut gets its blur only at rest.
+
+Amendment (#144): Hyprland 0.57.2 blurs a whole popup (`blur_popups`, `decoration:blur:popups`)
+whose ext-background-effect region is empty, null or off-surface: it checks only that the raw
+region is non-empty (OpenGL.cpp:1936), intersects it with the surface box (1938), and an empty clip
+draws all damage (1702-1720). With `HYPRLAND_INSTANCE_SIGNATURE` set and non-empty, a popup whose
+glass is hidden sends a 1x1 region at (0,0): one blurred logical pixel, seen live as a speck. niri
+draws nothing for an empty region (checked live), so other compositors keep it. A surface whose
+tree has a `compositor_blur` node takes its effect object on its first pass, so neither the popup
+rule nor a blanket `layerrule blur` blurs it whole before its glass shows; the tree walk runs only
+until then, about 5 us per pass in a debug build, inside the noise between base runs. Rejected: an
+off-surface 1x1, which brought the whole-popup rectangle back live; a null region or destroying the
+effect, which hand the surface back to the rule. ponytail: drop the 1x1 once Hyprland honours an
+empty popup region.
+
 ## 0196. The name is Obelisk, in the record as well as the code
 
 "Oblisk" was a misspelling of the object this is named after, carried from the first commit through
