@@ -9278,6 +9278,11 @@ A new family's landing voids nothing unboxed. The restyle check sits inside the 
 branch, but the scan that voids stale rows past the window runs on every measure, one pass over those
 rows. Cost: one restyle turns every measured row past the window of every list into an estimate,
 rows of other families included.
+Amended after the release audit: the pass that voids rows past a keyed list's window has already
+placed its room from the old sizes, so a measure that voids any owes the list one follow-up pass that
+turn, through the short-window path. Only a voiding pass pays it; a list with rows no face covers
+pays it at every landing. The shared scroll offset does not move. A cross-length change voids rows
+too but owes no pass (#150).
 
 ## 0400. A protocol mismatch re-executes the installed `mantle`
 
