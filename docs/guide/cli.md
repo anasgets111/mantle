@@ -232,7 +232,11 @@ reads `nil` there, so a field removed by an engine update fails the check instea
 
 It prints `<path>: ok, N surface(s)` and one `<role> <id>` line per surface, preceded by anything
 the config `print`ed, then one `warning:` line per outer shadow the surface cuts off by 4 px or
-more, naming the side and the room it needs. A warning leaves the exit status at 0, and a side
+more, naming the side and the room it needs. A hidden surface is checked laid out as if shown, alone,
+after the passes: nothing it runs changes the exit status or the errors. Checking it pushes its
+pass's sample data again, so `on_change` handlers run, and print, a second time. One hidden in every pass
+whose content fails to lay out shown, or whose pass's sample data or layout fails to run again for
+it, gets a `hidden <role> "<id>" not checked` warning with the error. A warning leaves the exit status at 0, and a side
 where a `panel` meets the output edge is skipped. An error prints as `<config dir>: <error>` and exits 1; files in it are named
 relative to the config directory. A layout error leads with the line that built the failing node
 and its kind (`text[1]`, with its index among `children`), then gives the path down to its parent

@@ -190,7 +190,7 @@ impl Scene {
         shaping: &ShapingHandle,
         lua: &Lua,
     ) -> Result<(), LayoutError> {
-        self.apply_admitting(fresh_surfaces, instances, shaping, lua, |_, failed| failed.map_or(Ok(None), Err))
+        self.apply_admitting(fresh_surfaces, instances, shaping, lua, |_, failed| failed.map_or(Ok(None), Err), None)
             .map(drop)
     }
 
@@ -211,12 +211,27 @@ impl Scene {
         if !atomic {
             lua.set_app_data(DroppedValues::default());
         }
-        let outcome = self.apply_admitting(fresh_surfaces, instances, shaping, lua, |scene, failed| match failed {
+        let admit = |scene: &Scene, failed: Option<LayoutError>| match failed {
             Some(err) if atomic => Err(err),
             failed => lock_stays_authenticatable(scene, instances, locked).map(|()| failed),
-        });
+        };
+        let outcome = self.apply_admitting(fresh_surfaces, instances, shaping, lua, admit, None);
         lua.remove_app_data::<DroppedValues>();
         outcome
+    }
+
+    /// An atomic apply that `inspect` reads once it passes every check, then rolls back as a failed
+    /// one does, so the next probe reads none of its geometry (`mantle check`'s hidden surfaces).
+    pub fn inspect_then_roll_back(
+        &mut self,
+        fresh_surfaces: &[VirtualNode],
+        instances: &[SurfaceInstance],
+        shaping: &ShapingHandle,
+        lua: &Lua,
+        mut inspect: impl FnMut(&Scene),
+    ) -> Result<(), LayoutError> {
+        let admit = |_: &Scene, failed: Option<LayoutError>| failed.map_or(Ok(None), Err);
+        self.apply_admitting(fresh_surfaces, instances, shaping, lua, admit, Some(&mut inspect)).map(drop)
     }
 
     /// Reconciles one retained tree per mapped instance against `fresh_surfaces`, using each
@@ -240,6 +255,7 @@ impl Scene {
         shaping: &ShapingHandle,
         lua: &Lua,
         admit: impl FnOnce(&Scene, Option<LayoutError>) -> Result<Option<LayoutError>, LayoutError>,
+        inspect: Option<&mut dyn FnMut(&Scene)>,
     ) -> Result<Option<LayoutError>, LayoutError> {
         // Every tree, not the visited ones: the generation recorded here is the whole scene's.
         // ponytail: a windowed list's sizes for items outside its window stay measured in the old
@@ -261,7 +277,9 @@ impl Scene {
         let outcome = self
             .apply_visiting(fresh_surfaces, instances, shaping, lua, &budget, &mut rollback, &mut geometry_undo, admit)
             .and_then(|outcome| self.check_image_status_names(lua).map(|()| outcome));
-        if outcome.is_err() {
+        // An inspected pass passed every check above, and then rolls back.
+        let inspected = outcome.is_ok() && inspect.map(|inspect| inspect(self)).is_some();
+        if outcome.is_err() || inspected {
             for (key, tree) in rollback {
                 self.restore(key, tree);
             }
@@ -1115,9 +1133,14 @@ pub(super) mod tests {
         let (_lua2, v2) = surface_from(r#"panel { id = "bar", width = 99, height = 99 }"#);
         let instances = [instance_at(&v2, full())];
         let err = scene
-            .apply_admitting(&[v2], &instances, &shaping, &_lua2, |_, _| {
-                Err(node::invalid("child", "the finished scene is not admissible"))
-            })
+            .apply_admitting(
+                &[v2],
+                &instances,
+                &shaping,
+                &_lua2,
+                |_, _| Err(node::invalid("child", "the finished scene is not admissible")),
+                None,
+            )
             .unwrap_err();
 
         assert!(err.to_string().contains("not admissible"), "the veto's own message must reach the caller: {err}");

@@ -78,7 +78,7 @@ fn check(config_dir: &Path) -> Result<String, String> {
 /// Lays out with every capability `nil`, then after [`push_samples`] of each sample set; each
 /// failing pass is one `<error>` entry, which may span lines, then `(<passes>)` on its own line,
 /// unless every pass failed alike: a static error does not depend on the data. On success, the
-/// warnings of every pass, one per cut shadow ([`shadow_cuts`]) and per hidden panel that fails shown.
+/// warnings of every pass, one per cut shadow ([`shadow_cuts`]) and per hidden surface that fails shown.
 fn lay_out_passes(
     output: &crate::lua::LoadOutput,
     specs: &[SurfaceSpec],
@@ -95,7 +95,7 @@ fn lay_out_passes(
         ("with alternate sample data", Some("alternate")),
         ("with empty sample lists", Some("empty")),
     ];
-    let shape = sample_shape();
+    let (shape, mut hidden) = (sample_shape(), Vec::new());
     for (pass, set) in passes {
         if let Some(set) = set {
             push_samples(namespace, loader, set, &shape)
@@ -104,28 +104,16 @@ fn lay_out_passes(
         match lay_out(output, specs, loader, shaping, size) {
             Ok((scene, instances)) => {
                 shadow_cuts(&scene, &instances, specs, &mut cuts);
-                // A hidden panel resolves no children, so each is linted again laid out shown, alone
-                // so one that fails shown (content valid only once opened) skips only itself, and
-                // only when no pass checked it. ponytail: panels only; a closed popup or window
-                // stays unchecked until its shown layout is known not to fail on ordinary configs.
+                let mut ids: Vec<String> = Vec::new();
                 for instance in &instances {
-                    let id = instance.declared_id.as_str();
-                    match scene.surface(&instance.instance_id).filter(|root| root.kind == "panel") {
-                        Some(root) if root.visible => _ = checked.insert(id.to_owned()),
-                        Some(_) => match lay_out(&shown(output, specs, id), specs, loader, shaping, size) {
-                            Ok((scene, instances)) => {
-                                shadow_cuts(&scene, &instances, specs, &mut cuts);
-                                checked.insert(id.to_owned());
-                            }
-                            Err(err) => {
-                                _ = skipped
-                                    .entry(id.to_owned())
-                                    .or_insert(format!("hidden panel \"{id}\" not checked: {err}"))
-                            }
-                        },
-                        None => {}
+                    let id = &instance.declared_id;
+                    match scene.surface(&instance.instance_id) {
+                        Some(root) if root.visible => _ = checked.insert(id.clone()),
+                        Some(_) if !ids.contains(id) => ids.push(id.clone()),
+                        _ => {}
                     }
                 }
+                hidden.push((set, ids));
             }
             Err(err) => match failures.iter_mut().find(|(seen, _)| *seen == err) {
                 Some((_, in_passes)) => in_passes.push(pass),
@@ -138,6 +126,44 @@ fn lay_out_passes(
     };
     if !failures.is_empty() {
         return Err(failures.into_iter().map(each).collect());
+    }
+    // A hidden surface resolves no children, so each is linted again laid out shown, after the
+    // verdict: a probe runs the config's Lua, and nothing it leaves may reach a pass that decides
+    // the exit code or the errors. Each pass's data is restored and each surface laid out alone, so
+    // one that fails shown (content valid only once opened) skips only itself, and only when no
+    // pass checked it. A pass whose data or layout fails to replay skips its surfaces the same way.
+    // ponytail: a probe sees the
+    // VM as the real passes and earlier probes left it; only its geometry rolls back, so another
+    // probe's scroll, `pulse` or Lua writes can change a hidden surface's warning, never the
+    // verdict. A second VM per probe is the upgrade.
+    for (set, ids) in hidden.into_iter().filter(|(_, ids)| !ids.is_empty()) {
+        let restored = match set {
+            Some(set) => {
+                push_samples(namespace, loader, set, &shape).map_err(|err| crate::lua::location::describe(&err))
+            }
+            None => Ok(namespace.capabilities.values().for_each(|handle| _ = handle.hydrate(mlua::Value::Nil))),
+        };
+        let replayed = restored.and_then(|()| lay_out(output, specs, loader, shaping, size));
+        for id in &ids {
+            let probed = match &replayed {
+                Ok((_, instances)) => {
+                    let own: Vec<_> = instances.iter().filter(|i| &i.declared_id == id).cloned().collect();
+                    let lint = |scene: &Scene| shadow_cuts(scene, &own, specs, &mut cuts);
+                    let surfaces = shown(output, specs, id).surfaces;
+                    Scene::new()
+                        .inspect_then_roll_back(&surfaces, &own, shaping, loader.lua(), lint)
+                        .map_err(|e| e.to_string())
+                }
+                Err(err) => Err(format!("its pass did not replay: {err}")),
+            };
+            match probed {
+                Ok(()) => _ = checked.insert(id.clone()),
+                Err(err) => {
+                    let role = specs.iter().find(|spec| spec.declared_id() == id).map_or("", SurfaceSpec::role);
+                    _ = skipped.entry(id.clone()).or_insert(format!("hidden {role} \"{id}\" not checked: {err}"))
+                }
+            }
+        }
     }
     let cut = cuts.into_iter().map(|(node, sides)| format!("{node}'s {}", cut_line(&sides)));
     let unchecked = skipped.into_iter().filter(|(id, _)| !checked.contains(id)).map(|(_, line)| line);
@@ -462,10 +488,12 @@ mod tests {
         std::fs::write(dir.path().join("shell.lua"), shell).unwrap();
         let broken = super::run(dir.path()).expect("a hidden panel that fails shown is a warning");
         let guard = r#"local apps = mantle.applications
-            return { panel { id = "g", layer = "top", visible = apps:map(function(s) return s and #s.entries > 0 end),
-            child = text { content = apps:map(function(s) return s.entries[1].name end) } } }"#;
+            local shown = apps:map(function(s) return s and #s.entries > 0 end)
+            local name = text { content = apps:map(function(s) return s.entries[1].name end) }
+            return { panel { id = "g", layer = "top", visible = shown, child = name },
+            window { id = "w", visible = shown, child = name } }"#;
         std::fs::write(dir.path().join("shell.lua"), guard).unwrap();
-        let guarded = super::run(dir.path()).expect("a panel shown once its data arrives");
+        let guarded = super::run(dir.path()).expect("a panel and window shown once their data arrives");
         assert!(!guarded.contains("warning"), "the passes with data check it: {guarded}");
         assert!(
             broken.contains(
@@ -475,12 +503,91 @@ mod tests {
         );
         assert!(broken.contains(r#"warning: panel "pane": rect "pill"'s shadow is cut"#), "{broken}");
         assert_eq!(broken.matches("warning:").count(), 2, "the shown bar is not skipped: {broken}");
+        let closed = r#"local pill = rect { id = "pill", width = "fill", height = "fill", shadows = { { blur = 48 } } }
+            return { panel { id = "bar", layer = "top" }, popup { id = "menu", parent = "bar", width = 200,
+            height = 100, anchor_rect = { x = 0, y = 0, width = 1, height = 1 }, visible = false,
+            child = pill }, window { id = "prefs", visible = false, child = pill },
+            window { id = "bad", visible = false, child = rect { shadows = { { blur = "wide" } } } },
+            popup { id = "worse", parent = "bar", anchor_rect = { x = 0, y = 0, width = 1, height = 1 },
+            visible = false, child = rect { shadows = { { blur = "wide" } } } } }"#;
+        std::fs::write(dir.path().join("shell.lua"), closed).unwrap();
+        let closed = super::run(dir.path()).expect("a closed popup and window check shown");
+        assert!(closed.contains(r#"warning: popup "menu": rect "pill"'s shadow is cut"#), "{closed}");
+        assert!(closed.contains(r#"warning: window "prefs": rect "pill"'s shadow is cut"#), "{closed}");
+        assert!(closed.contains(r#"warning: hidden window "bad" not checked: shell.lua:5: rect"#), "{closed}");
+        assert!(closed.contains(r#"warning: hidden popup "worse" not checked: shell.lua:7: rect"#), "{closed}");
+        assert_eq!(closed.matches("warning:").count(), 4, "the shown bar adds nothing: {closed}");
         assert!(!shadow_report("width = 360, height = 140", "{ spread = 1 }").contains("warning"), "a hairline");
         assert!(!shadow_report("width = 360, height = 140", r#"{ blur = 48, inset = true }"#).contains("warning"));
         assert!(
             !shadow_report("width = 560, height = 340, padding = 90", DROP).contains("warning"),
             "a surface with room for the shadow"
         );
+    }
+
+    /// A hidden surface is probed after the verdict, so nothing its Lua does fails the check; a probe
+    /// failing a check of its own (`image_status` names, the pass budget) leaves it not checked.
+    #[test]
+    fn a_hidden_surface_probe_never_changes_the_verdict() {
+        let reader = r#"panel { id = "reader", layer = "top", output = "DP-1", child = rect { height = 10,
+            width = READ(function(v) assert(v == 0 or v == false, "a probe leaked") return 10 end) } }"#;
+        let reader = |read: &str| reader.replace("READ", read);
+        let (geometry, mapped) =
+            ("local g = geometry(\"other\")\n", reader("g:map(function(r) return r.width end):map"));
+        let other = "window { id = \"other\", visible = false, child = rect { width = 9, height = 9, geometry = g } }";
+        let other = |role: &str| other.replace("window {", role);
+        // Each probe gets its pass's data back: a cut seen only with `nil`, then only with entries.
+        let lens = r#"return { panel { id = "lens", layer = "top", visible = false, padding = mantle.applications:map(
+            function(s) return PAD), child = rect { id = "pill", width = 100, height = 50, shadows = { { blur = 48 } } } } }"#;
+        let cut = r#"warning: panel "lens": rect "pill"'s shadow is cut"#;
+        let cases = [
+            (format!("{geometry}return {{ {mapped}, {} }}", other("window {")), ""),
+            (format!("{geometry}return {{ {mapped}, {} }}", other("panel { layer = \"top\",")), ""),
+            (format!("{geometry}return {{ {}, {mapped} }}", other("window {")), ""),
+            (format!(r#"{geometry}return {{ {}, panel {{ id = "card", layer = "top", visible = false,
+                padding = g:map(function(r) return r.width > 0 and 80 or 0 end), child = rect {{ id = "pill",
+                width = 100, height = 50, shadows = {{ {{ blur = 48 }} }} }} }} }}"#, other("window {")),
+                r#"warning: panel "card": rect "pill"'s shadow is cut"#),
+            (format!(r#"local pos = scroll("pos") pos:scroll_to(60)
+                return {{ {}, window {{ id = "other", visible = false, child = column {{ width = 9, height = 9,
+                scroll = pos, children = {{ rect {{ width = 9, height = 99 }} }} }} }} }}"#, reader("pos:map")), ""),
+            (format!(r#"local touched = state("touched", false)
+                return {{ {}, window {{ id = "other", visible = false, child = list {{ items = {{ 1 }},
+                each = function() touched:set(true) return rect {{ width = 9, height = 9 }} end }} }} }}"#,
+                reader("touched:map")), ""),
+            (format!(r#"local g = geometry("other") local flashing = pulse(g:map(function(r) return r.width end), 60000)
+                return {{ {}, panel {{ id = "other", layer = "top", visible = false, child = function(output)
+                if output == "DP-1" then return rect {{ width = 40, height = 10, geometry = g }} end
+                return rect {{ width = 9, height = 9, visible = flashing }} end }},
+                panel {{ id = "extra", layer = "top", output = "EXTRA" }} }}"#, reader("flashing:map")), ""),
+            (r#"local s = image_status("shared") return { panel { id = "card", layer = "top", visible = false,
+                child = column { children = { image { source = "", width = 9, height = 9, status = s },
+                image { source = "", width = 9, height = 9, status = s } } } } }"#.to_owned(),
+                r#"warning: hidden panel "card" not checked: invalid value for `status`"#),
+            (r#"return { panel { id = "other", layer = "top", visible = false, child = function() local burnt = false
+                return rect { width = 9, height = 9, margin = setmetatable({}, { __index = function()
+                if not burnt then burnt = true pcall(function() while true do end end) end return 0 end }) } end } }"#
+                .to_owned(), r#"warning: hidden panel "other" not checked: the layout pass exceeded its CPU budget"#),
+            (lens.replace("PAD", "90 end, 0"), cut),
+            (lens.replace("PAD", "#s.entries > 0 and 0 or 90 end, 90"), cut),
+            // A replay that fails, or a restore a handler cuts short, probes nothing and says so.
+            (r#"local apps, n = mantle.applications, state("n", 0) apps:on_change(function() n:set(n:get() + 1) end)
+                return { panel { id = "r", layer = "top", child = rect { height = 9, width = n:map(function(n)
+                assert(n == 0 or apps:get() and n <= 3) return 9 end) } }, window { id = "w", visible = false,
+                child = rect { width = 9, height = 9, shadows = { { blur = 48 } } } } }"#.to_owned(),
+                r#"warning: hidden window "w" not checked: its pass did not replay"#),
+            (r#"local n = 0 mantle.applications:on_change(function() n = n + 1 assert(n <= 3) end)
+                return { panel { id = "lens", layer = "top", visible = false, child = rect { width = 9, height = 9,
+                margin = mantle.applications:map(function() return mantle.audio:get() == nil and 0 or 90 end, 90),
+                shadows = { { blur = 48 } } } } }"#.to_owned(), ""),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        for (shell, want) in cases {
+            std::fs::write(dir.path().join("shell.lua"), &shell).unwrap();
+            let report = super::run(dir.path()).unwrap_or_else(|err| panic!("{err}\n{shell}"));
+            assert!(report.contains(want), "{shell}\n{report}");
+            assert_eq!(report.matches("warning:").count(), usize::from(!want.is_empty()), "{shell}\n{report}");
+        }
     }
 
     #[test]

@@ -769,6 +769,7 @@ mod tests {
             &shaping,
             &lua,
             |_, _| Err(node::invalid("child", "veto")),
+            None,
         );
         assert!(err.unwrap_err().to_string().contains("veto"));
         let after = moved(&scene).movement.as_ref().unwrap();

@@ -1813,12 +1813,19 @@ mod tests {
         } } }"#,
         );
         let error = scene
-            .apply_admitting(std::slice::from_ref(&replacement), &instances, &shaping, &lua, |_, _| {
-                lua.gc_collect().unwrap();
-                assert!(weak.get::<Option<mlua::Table>>(1).unwrap().is_some());
-                assert!(weak.get::<Option<mlua::Table>>(2).unwrap().is_some());
-                Err(node::invalid("child", "veto"))
-            })
+            .apply_admitting(
+                std::slice::from_ref(&replacement),
+                &instances,
+                &shaping,
+                &lua,
+                |_, _| {
+                    lua.gc_collect().unwrap();
+                    assert!(weak.get::<Option<mlua::Table>>(1).unwrap().is_some());
+                    assert!(weak.get::<Option<mlua::Table>>(2).unwrap().is_some());
+                    Err(node::invalid("child", "veto"))
+                },
+                None,
+            )
             .unwrap_err();
         assert!(matches!(error, LayoutError::InvalidProperty { property, .. } if property == "child"));
         lua.gc_collect().unwrap();
