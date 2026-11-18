@@ -8,11 +8,18 @@ use crate::layout::node::{PaintStyle, Typeface};
 use crate::layout::{field_rows, hit};
 use crate::text::shaping::ShapingHandle;
 
-/// A multiline field's draft and the rows it wrapped to at a width and font generation.
-#[derive(Default)]
+/// A multiline field's draft, the wrap width, face and font generation it was wrapped at, and the
+/// rows it wrapped to.
 pub(super) struct FieldDraft {
     pub(super) text: String,
-    wrapped: (f32, usize, u64),
+    fit: (f32, Typeface, u64),
+    rows: usize,
+}
+
+impl FieldDraft {
+    fn fit(&self) -> (f32, &Typeface, u64) {
+        (self.fit.0, &self.fit.1, self.fit.2)
+    }
 }
 
 /// The byte a multiline field's top row starts at, the px past it, and the wrap width, face and font
@@ -61,19 +68,22 @@ impl Scene {
         // Before shaping: a face landing meanwhile leaves the count behind, not ahead (#125).
         let fonts = shaping.font_generation();
         let old = self.field_drafts.get(&id);
-        let current = |old: &FieldDraft| (old.wrapped.0, old.wrapped.2) == (width, fonts);
+        let current = |old: &FieldDraft| old.fit() == (width, face, fonts);
         if old.map_or(text.is_empty(), |old| old.text == text && current(old)) {
             return false;
         }
         let count = |text: &str| field_rows::count(text, face, width, shaping);
         let before = match old {
-            Some(old) if current(old) => old.wrapped.1,
+            Some(old) if current(old) => old.rows,
             old => count(old.map_or("", |old| old.text.as_str())),
         };
         let after = count(text);
         match text.is_empty() {
             true => self.field_drafts.remove(&id),
-            false => self.field_drafts.insert(id, FieldDraft { text: text.to_owned(), wrapped: (width, after, fonts) }),
+            false => {
+                let draft = FieldDraft { text: text.to_owned(), fit: (width, face.clone(), fonts), rows: after };
+                self.field_drafts.insert(id, draft)
+            }
         };
         // The measure reads the draft, not its inputs, so taffy's cache must be told.
         if let (Some(taffy), Some(tree)) = (node.taffy, self.solver_trees.get_mut(instance_id)) {
@@ -89,9 +99,9 @@ impl Scene {
         node.field_top.as_ref().map(|top| (top.at, top.past))
     }
 
-    /// The width and font generation the field `id`'s draft last wrapped at, `None` without one.
-    pub fn field_wrapped(&self, id: NodeId) -> Option<(f32, u64)> {
-        self.field_drafts.get(&id).map(|draft| (draft.wrapped.0, draft.wrapped.2))
+    /// The width, face and font generation the field `id`'s draft last wrapped at, `None` without one.
+    pub fn field_wrapped(&self, id: NodeId) -> Option<(f32, &Typeface, u64)> {
+        self.field_drafts.get(&id).map(FieldDraft::fit)
     }
 
     /// Drops the drafts of fields no surface holds any more.
@@ -168,11 +178,12 @@ mod tests {
     }
 
     /// Rows counted with boxes are recounted once the face lands (#55): at 10 px a box is 6 px
-    /// wide and `●` 8.94, so ten of them wrap to one row, then two.
+    /// wide and `●` 8.94, so ten of them wrap to one row, then two. So are rows counted at another
+    /// `font_size`: six `●` take one row at 10 px and two at 20.
     #[test]
-    fn a_draft_wrapped_before_a_face_landed_is_recounted() {
+    fn a_draft_wrapped_before_a_face_landed_or_at_another_size_is_recounted() {
         let Some((shaping, open)) = gated_shots_fixture(crate::text::fonts::covering_file) else { return };
-        let (lua, surface) = surface_from(FIELD);
+        let (lua, surface) = surface_from(&format!("fs = state(\"fs\", 10)\n{}", FIELD.replace("= 10", "= fs")));
         let mut scene = Scene::new();
         let surfaces = std::slice::from_ref(&surface);
         apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
@@ -181,6 +192,13 @@ mod tests {
         crate::text::shaping::tests::land(&shaping, open);
         apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
         assert!(scene.set_field_draft("bar@TEST", id, "●●●●●", &shaping), "two rows shrink to one");
+        assert!(!scene.set_field_draft("bar@TEST", id, "●●● ●●●", &shaping), "still one row: no pass owed");
+        lua.load("fs:set(20)").exec().unwrap();
+        apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
+        assert_eq!(scene.surface("bar@TEST").unwrap().children[0].children[0].rect.height, 40.0, "two rows");
+        assert!(scene.set_field_draft("bar@TEST", id, "●●●", &shaping), "two rows at 20 px shrink to one");
+        apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
+        assert_eq!(scene.surface("bar@TEST").unwrap().children[0].children[0].rect.height, 20.0);
     }
 
     /// #111, #125: an unfocused field scrolled before a face landed keeps the text its top row

@@ -152,12 +152,13 @@ impl App {
         }
     }
 
-    /// After a pass, [`App::fit_field`] for a focused multiline field whose width or faces re-wrapped
-    /// its rows.
+    /// After a pass, [`App::fit_field`] for a focused multiline field whose width, face or font
+    /// generation re-wrapped its rows.
     pub(in crate::wayland) fn fit_focused_field_if_rewrapped(&mut self) {
         let Some(field) = self.focused_text_field.as_ref() else { return };
         let Some((view, _)) = self.field_view(&field.surface_id, field.id) else { return };
-        if self.client.scene().field_wrapped(field.id) != Some((view.width, self.shaping.font_generation())) {
+        if self.client.scene().field_wrapped(field.id) != Some((view.width, view.face, self.shaping.font_generation()))
+        {
             self.fit_focused_field();
         }
     }
