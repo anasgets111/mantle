@@ -26,6 +26,10 @@ fn value_as_str_or_joined_array(value: &Value<'_>) -> Option<String> {
     }
 }
 
+/// Longer than any real media, so a length past it is a player's "infinite" marker: Firefox sends
+/// `i64::MAX` rounded to milliseconds for a live stream, which reads as unknown, like no length.
+const MAX_LENGTH_US: i64 = 100 * 365 * 24 * 3600 * 1_000_000;
+
 fn value_as_i64(value: &Value<'_>) -> Option<i64> {
     match value {
         Value::I64(i) => Some(*i),
@@ -73,7 +77,7 @@ pub(super) fn parse_metadata(metadata: &std::collections::HashMap<String, OwnedV
         album_artist: joined("xesam:albumArtist"),
         genre: joined("xesam:genre"),
         art_url: url("mpris:artUrl"),
-        length_us: get("mpris:length").and_then(value_as_i64),
+        length_us: get("mpris:length").and_then(value_as_i64).filter(|length| *length <= MAX_LENGTH_US),
         trackid: get("mpris:trackid").and_then(value_as_trackid).filter(|id| fits_text_cap(id)),
         url: url("xesam:url"),
     }
@@ -199,12 +203,15 @@ mod tests {
         assert_eq!(parsed.url.as_deref().map(str::len), Some(4096), "a URL exactly at the cap is kept");
     }
 
-    /// The spec says `x`, but some players send `t`; one past `i64::MAX` names no length.
+    /// The spec says `x`, but some players send `t`; one past `i64::MAX`, or Firefox's live-stream
+    /// marker, names no length.
     #[test]
     fn parse_metadata_reads_a_length_of_any_integer_type() {
         for (value, expected) in [
             (Value::U64(1_302_000_000), Some(1_302_000_000)),
             (Value::U64(u64::MAX), None),
+            (Value::I64(9_223_372_036_854_000_000), None),
+            (Value::I64(MAX_LENGTH_US), Some(MAX_LENGTH_US)),
             (Value::U32(7), Some(7)),
             (Value::I32(-1), Some(-1)),
             (Value::F64(7.0), None),
