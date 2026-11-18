@@ -237,7 +237,9 @@ fn run_clock(
         let Some(at) = due.into_iter().flatten().min().filter(|at| *at <= to) else { break };
         set(at);
         crate::lua::timer::dispatch_due(lua, at);
-        crate::lua::signal::take_due_wake(lua, at).into_iter().for_each(crate::lua::signal::note_write);
+        for cell in crate::lua::signal::take_due_wake(lua, at) {
+            crate::lua::signal::note_write(cell);
+        }
         crate::lua::signal::run_state_handlers(lua);
         scene.apply_locked(&output.surfaces, instances, shaping, lua, false, true).map_err(|err| err.to_string())?;
     }

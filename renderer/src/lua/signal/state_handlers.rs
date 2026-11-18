@@ -454,7 +454,9 @@ mod tests {
         run(&lua);
         let due = t0 + std::time::Duration::from_millis(10);
         lua.set_app_data(crate::lua::timer::SimClock(due));
-        super::super::take_due_wake(&lua, due).into_iter().for_each(super::super::note_write);
+        for cell in super::super::take_due_wake(&lua, due) {
+            super::super::note_write(cell);
+        }
         run(&lua);
 
         let seen: Vec<String> = lua.load("return seen").eval().unwrap();

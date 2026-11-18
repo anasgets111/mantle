@@ -635,10 +635,6 @@ mod tests {
         }
     }
 
-    fn lua_log(app: &App) -> Vec<String> {
-        app.client.lua().globals().get::<mlua::Table>("log").unwrap().sequence_values().map(Result::unwrap).collect()
-    }
-
     fn key_a(raw_code: u32) -> KeyEvent {
         KeyEvent { raw_code, ..key(Keysym::a, Some("a")) }
     }
@@ -697,7 +693,7 @@ mod tests {
         assert!(app.focused_secure_submit.as_ref().is_some_and(|f| f.buffer.is_empty()), "armed and scrubbed");
         press(&mut app, Keysym::Return, "\r");
         assert!(rx.try_recv().is_err(), "an Enter on the emptied field sends nothing");
-        assert!(lua_log(&app).is_empty(), "no key of a secure field reaches on_key");
+        assert!(app.lua_log().is_empty(), "no key of a secure field reaches on_key");
     }
 
     #[test]
@@ -713,7 +709,7 @@ mod tests {
         press(&mut app, Keysym::Escape, "\u{1b}");
         assert!(app.focused_secure_submit.as_ref().is_some_and(|f| f.buffer.is_empty()), "armed and scrubbed");
         press(&mut app, Keysym::Escape, "\u{1b}");
-        assert_eq!(lua_log(&app), ["cancel:true", "cancel:false"]);
+        assert_eq!(app.lua_log(), ["cancel:true", "cancel:false"]);
     }
 
     #[test]
@@ -789,7 +785,7 @@ mod tests {
         assert!(app.repeating.is_some());
         app.fire_due_repeat();
         assert_eq!(app.focused_secure_submit.as_ref().unwrap().buffer.expose_secret(), b"aa");
-        assert!(lua_log(&app).is_empty(), "an armed secure field silences on_key");
+        assert!(app.lua_log().is_empty(), "an armed secure field silences on_key");
 
         // Remove the secure_submit node while keeping the panel surface alive.
         app.client.lua().load("show:set(false)").exec().unwrap();
@@ -803,7 +799,7 @@ mod tests {
         app.fire_due_repeat();
         app.release_offered_key(event.raw_code);
         assert!(
-            lua_log(&app).is_empty(),
+            app.lua_log().is_empty(),
             "neither a repeat nor a synthetic release may reach the surface after the field goes"
         );
     }
@@ -849,7 +845,7 @@ mod tests {
 
         assert!(app.focused_secure_submit.is_none());
         assert!(app.repeating.is_none());
-        assert!(lua_log(&app).is_empty(), "the held repeat must not leak into the newly focused surface");
+        assert!(app.lua_log().is_empty(), "the held repeat must not leak into the newly focused surface");
 
         // A fresh press while secure focus is stale prunes secure focus and reaches the new surface.
         app.keyboard_focus = Some("prompt".to_string());
@@ -857,7 +853,7 @@ mod tests {
         app.keyboard_focus = Some("other".to_string());
         app.apply_key(&event, false, Some(2));
         assert!(app.focused_secure_submit.is_none());
-        assert_eq!(lua_log(&app), ["a:false"]);
+        assert_eq!(app.lua_log(), ["a:false"]);
     }
 
     #[test]
@@ -880,7 +876,7 @@ mod tests {
         assert!(app.repeating.is_some(), "None -> None must not cancel an unrelated repeat");
         app.fire_due_repeat();
         app.fire_due_repeat();
-        assert_eq!(lua_log(&app), ["a", "a"]);
+        assert_eq!(app.lua_log(), ["a", "a"]);
 
         // Re-focusing the same secure field preserves repeat; switching to another clears it.
         let tree = app.client.scene().surface("prompt").unwrap();

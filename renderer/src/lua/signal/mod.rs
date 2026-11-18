@@ -47,8 +47,8 @@ pub use state_handlers::{clear as clear_state_handlers, run as run_state_handler
 pub(crate) use tracking::MemoTable;
 pub(crate) use tracking::{
     ComputedFrame, EvaluationMemo, begin_instance_resolve, end_instance_resolve, finish_computed_undo, forget_instance,
-    is_read, note_everything_written, note_read, note_reads, note_write, note_write_prev, reset_read_tracker,
-    restore_write_stamps, set_computed_undo_active, untracked, with_derived, write_clock, written_since,
+    is_read, note_everything_written, note_read, note_reads, note_write, reset_read_tracker, restore_write_stamps,
+    set_computed_undo_active, untracked, with_derived, write_clock, written_since,
 };
 use tracking::{Evaluation, Output};
 

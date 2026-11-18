@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures_util::{FutureExt, StreamExt};
-use shared::{debug, warn};
+use shared::{debug, warn_first};
 use tokio::task::JoinHandle;
 
 use super::collections::{TrackListState, collections_forwarder, next_optional, read_playlists, read_track_list};
@@ -285,11 +285,7 @@ pub(super) async fn register_player(
     };
     if full {
         let message = format!("not tracking {bus_name}: {MAX_PLAYERS} players already are");
-        if shared::log::first_failure(&message) {
-            warn!("{message}")
-        } else {
-            debug!("{message}")
-        }
+        warn_first!(message, "{message}");
         return;
     }
     let player = match bind_player(connection, &bus_name).await {

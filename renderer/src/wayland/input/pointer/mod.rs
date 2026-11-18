@@ -515,10 +515,6 @@ mod tests {
         assert_eq!(pointer_button_name(0), None);
     }
 
-    fn lua_log(app: &App) -> Vec<String> {
-        app.client.lua().globals().get::<mlua::Table>("log").unwrap().sequence_values().map(Result::unwrap).collect()
-    }
-
     fn hover_bool(app: &App, name: &str) -> bool {
         app.client.lua().load(format!("return hover({name:?}):get()")).eval().unwrap()
     }
@@ -585,7 +581,7 @@ mod tests {
         app.pointer_event(0, (10.0, 10.0), &PointerEventKind::Enter { serial: 1 }, false);
         assert!(hover_bool(&app, "a"));
         assert_eq!(hover_rect_box(&app, "a"), (0.0, 0.0, 60.0, 40.0));
-        assert_eq!(lua_log(&app), ["a:true"]);
+        assert_eq!(app.lua_log(), ["a:true"]);
 
         // Layout removes node `a`: signal clears, last rect stays, no `on_hover` on layout change.
         app.client.lua().load(r#"mode:set("none")"#).exec().unwrap();
@@ -593,11 +589,11 @@ mod tests {
         app.refresh_hover_after_layout();
         assert!(!hover_bool(&app, "a"));
         assert_eq!(hover_rect_box(&app, "a"), (0.0, 0.0, 60.0, 40.0));
-        assert_eq!(lua_log(&app), ["a:true"]);
+        assert_eq!(app.lua_log(), ["a:true"]);
 
         // Next motion delivers the pending leave crossing and resets `entered` for re-entry.
         app.pointer_event(0, (12.0, 10.0), &PointerEventKind::Motion { time: 2 }, false);
-        assert_eq!(lua_log(&app), ["a:true", "a:false"]);
+        assert_eq!(app.lua_log(), ["a:true", "a:false"]);
         assert!(app.surfaces[0].last_hover.is_empty());
 
         // Re-adding `a` under the pointer restores `true` silently, and next motion fires `a:true`.
@@ -605,9 +601,9 @@ mod tests {
         assert!(app.client.re_resolve_if_dirty());
         app.refresh_hover_after_layout();
         assert!(hover_bool(&app, "a"));
-        assert_eq!(lua_log(&app), ["a:true", "a:false"]);
+        assert_eq!(app.lua_log(), ["a:true", "a:false"]);
         app.pointer_event(0, (14.0, 10.0), &PointerEventKind::Motion { time: 3 }, false);
-        assert_eq!(lua_log(&app), ["a:true", "a:false", "a:true"]);
+        assert_eq!(app.lua_log(), ["a:true", "a:false", "a:true"]);
 
         // Replacing `hover("a")` with `hover("b")` on the retained node clears `a` and sets `b`.
         app.client.lua().load(r#"mode:set("b")"#).exec().unwrap();
@@ -617,15 +613,15 @@ mod tests {
         assert!(hover_bool(&app, "b"));
         assert_eq!(hover_rect_box(&app, "a"), (0.0, 0.0, 60.0, 40.0));
         assert_eq!(hover_rect_box(&app, "b"), (0.0, 0.0, 60.0, 40.0));
-        assert_eq!(lua_log(&app), ["a:true", "a:false", "a:true"]);
+        assert_eq!(app.lua_log(), ["a:true", "a:false", "a:true"]);
 
         app.pointer_event(0, (16.0, 10.0), &PointerEventKind::Motion { time: 4 }, false);
-        assert_eq!(lua_log(&app), ["a:true", "a:false", "a:true", "a:false", "b:true"]);
+        assert_eq!(app.lua_log(), ["a:true", "a:false", "a:true", "a:false", "b:true"]);
 
         app.pointer_event(0, (16.0, 10.0), &PointerEventKind::Leave { serial: 5 }, false);
         assert!(!hover_bool(&app, "b"));
         assert_eq!(hover_rect_box(&app, "b"), (0.0, 0.0, 60.0, 40.0));
-        assert_eq!(lua_log(&app), ["a:true", "a:false", "a:true", "a:false", "b:true", "b:false"]);
+        assert_eq!(app.lua_log(), ["a:true", "a:false", "a:true", "a:false", "b:true", "b:false"]);
         assert!(app.surfaces[0].last_hover.is_empty());
     }
 
@@ -667,14 +663,14 @@ mod tests {
         assert!(!hover_bool(&app, "dup"));
         assert!(hover_bool(&app, "x"));
         assert_eq!(app.surfaces[0].last_hover.len(), 1);
-        assert_eq!(lua_log(&app), ["first:true", "second:false", "x:true"]);
+        assert_eq!(app.lua_log(), ["first:true", "second:false", "x:true"]);
 
         // Move onto first `rect` (`dup` entered on both ancestor and child; second callback wins).
         app.pointer_event(0, (10.0, 10.0), &PointerEventKind::Motion { time: 2 }, false);
         assert!(hover_bool(&app, "dup"));
         assert!(!hover_bool(&app, "x"));
         assert_eq!(app.surfaces[0].last_hover.len(), 1);
-        assert_eq!(lua_log(&app), ["first:true", "second:false", "x:true", "first:true", "x:false"]);
+        assert_eq!(app.lua_log(), ["first:true", "second:false", "x:true", "first:true", "x:false"]);
 
         // No new tree during layout refresh clears `hover("dup")` silently while keeping rect.
         app.client.forget_surface("bar");
@@ -688,6 +684,6 @@ mod tests {
         assert!(!hover_bool(&app, "dup"));
         assert_eq!(hover_rect_box(&app, "dup"), (0.0, 0.0, 120.0, 40.0));
         assert!(app.surfaces[0].last_hover.is_empty());
-        assert_eq!(lua_log(&app), ["first:true", "second:false", "x:true", "first:true", "x:false", "second:false"]);
+        assert_eq!(app.lua_log(), ["first:true", "second:false", "x:true", "first:true", "x:false", "second:false"]);
     }
 }

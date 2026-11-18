@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use nix::unistd::Pid;
 use shared::framing::{self, FramingError};
-use shared::{ConnectionHandshake, RendererFrame, SupervisorFrame, debug, error, info, warn};
+use shared::{ConnectionHandshake, RendererFrame, SupervisorFrame, debug, error, info, warn, warn_first};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc::{self, UnboundedSender};
 
@@ -532,12 +532,14 @@ pub(crate) fn frame_fits(frame: &SupervisorFrame, payload: &[u8]) -> bool {
     if payload.len() <= framing::MAX_FRAME_LEN {
         return true;
     }
-    let message = format!("dropped a {}-byte {} frame: over the frame cap", payload.len(), frame_kind(frame));
-    if oversized_warns(frame) {
-        warn!("{message}")
-    } else {
-        debug!("{message}")
-    }
+    // Warned once per capability or kind: a client re-sending the same state would otherwise log one
+    // line per push, and a single flag would hide a second capability.
+    let kind = frame_kind(frame);
+    warn_first!(
+        format!("oversized frame: {kind}"),
+        "dropped a {}-byte {kind} frame: over the frame cap",
+        payload.len()
+    );
     false
 }
 
@@ -548,12 +550,6 @@ fn frame_kind(frame: &SupervisorFrame) -> &str {
         SupervisorFrame::CallResult(_) => "call answer",
         _ => "non-snapshot",
     }
-}
-
-/// Warn the first time each capability or kind is too large: a client re-sending the same state
-/// would otherwise log one line per push, and a single flag would hide a second capability.
-fn oversized_warns(frame: &SupervisorFrame) -> bool {
-    shared::log::first_failure(&format!("oversized frame: {}", frame_kind(frame)))
 }
 
 /// Sends `frame`, logging rather than propagating failure. `NoConnection` is expected before boot

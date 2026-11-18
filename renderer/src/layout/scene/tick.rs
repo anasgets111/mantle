@@ -1655,7 +1655,9 @@ mod tests {
         };
         let land = |scene: &mut Scene, at: &mut std::time::Instant| {
             *at += std::time::Duration::from_millis(50);
-            crate::lua::signal::take_due_wake(&lua, *at).into_iter().for_each(crate::lua::signal::note_write);
+            for cell in crate::lua::signal::take_due_wake(&lua, *at) {
+                crate::lua::signal::note_write(cell);
+            }
             pass(scene, *at);
         };
         pass(&mut scene, now);

@@ -592,6 +592,11 @@ mod test_support {
             (app, dir)
         }
 
+        /// The config's global `log` sequence, which test handlers append to.
+        pub(in crate::wayland) fn lua_log(&self) -> Vec<String> {
+            self.client.lua().load("return log").eval().unwrap()
+        }
+
         /// Same as [`App::test_app`], with `wl_output`, `ext_background_effect_manager_v1` (Blur),
         /// `ext_session_lock_manager_v1`, a `wl_seat` that announces nothing, `wl_data_device_manager`,
         /// and a wire request log synchronized via `event_queue.roundtrip`.

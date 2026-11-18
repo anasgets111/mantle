@@ -331,16 +331,6 @@ pub(super) mod tests {
     use super::*;
     use crate::capabilities::test_support::{PrivateBus, p2p_pair_serving, private_bus, within};
 
-    struct FakeNm;
-
-    #[zbus::interface(name = "org.freedesktop.NetworkManager")]
-    impl FakeNm {
-        #[zbus(property)]
-        fn wireless_enabled(&self) -> bool {
-            true
-        }
-    }
-
     pub(crate) async fn method_call_monitor(bus: &PrivateBus) -> zbus::MessageStream {
         let monitor = bus.connection().await;
         let dbus = "org.freedesktop.DBus";
@@ -564,7 +554,10 @@ pub(super) mod tests {
     /// zbus primes a property stream with the cached value, so an answering manager reports once.
     #[tokio::test]
     async fn the_manager_forwarder_reports_networkmanagers_properties() {
-        let (connection, _nm) = p2p_pair_serving(|peer| peer.serve_at("/org/freedesktop/NetworkManager", FakeNm)).await;
+        let (connection, _nm) = p2p_pair_serving(|peer| {
+            peer.serve_at("/org/freedesktop/NetworkManager", FakeNmDevices(Default::default()))
+        })
+        .await;
         let (events, mut signals) = tokio::sync::mpsc::unbounded_channel();
         spawn_manager_forwarder(NetworkManagerProxy::new(&connection).await.unwrap(), events);
         assert!(matches!(within(signals.recv()).await, Some(NetworkSignal::Changed)));

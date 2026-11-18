@@ -439,13 +439,8 @@ thread_local! {
     static WRITES: std::cell::RefCell<WriteLog> = std::cell::RefCell::new(WriteLog::default());
 }
 
-/// Stamps a write to `cell`, whether or not it dirties the scene.
-pub(crate) fn note_write(cell: CellId) {
-    note_write_prev(cell);
-}
-
-/// Stamps a write to `cell` and returns its previous stamp, if any.
-pub(crate) fn note_write_prev(cell: CellId) -> Option<u64> {
+/// Stamps a write to `cell`, whether or not it dirties the scene, and returns its previous stamp.
+pub(crate) fn note_write(cell: CellId) -> Option<u64> {
     WRITES.with_borrow_mut(|log| {
         let at = log.tick();
         log.last.insert(cell, at)
@@ -1097,6 +1092,11 @@ mod tests {
         )
         .exec()
         .unwrap();
+        // `g` holds a stamp past 1 before the pass, so the rollback has a real previous stamp to restore.
+        let g_id = super::super::from_userdata(&lua.globals().get("g").unwrap()).unwrap().cell_id().unwrap();
+        note_write(g_id);
+        let before_g = current_clock();
+        note_write(g_id);
         let eval_cell = |expr: &str| {
             let _memo = EvaluationMemo::enter(&lua);
             let f = ComputedFrame::enter(&lua);
@@ -1106,13 +1106,12 @@ mod tests {
         let c1_id = eval_cell("return c1:get()")[0];
         let c2_id = eval_cell("return c2:get()")[0];
         let unrel_id = eval_cell("return unrel:get()")[0];
-        let g_id = super::super::from_userdata(&lua.globals().get("g").unwrap()).unwrap().cell_id().unwrap();
         let pre_stamp = write_clock(&lua);
 
         let _memo = EvaluationMemo::enter(&lua);
         {
             let _pass = LayoutPassBudget::enter(&lua);
-            let prev_g = note_write_prev(g_id);
+            let prev_g = note_write(g_id);
             set_computed_undo_active(&lua, true);
             lua.load("g:set(50) u:set(2)").exec().unwrap();
             assert_eq!(lua.load("return c2:get()").eval::<i64>().unwrap(), 101);
@@ -1123,6 +1122,7 @@ mod tests {
             restore_write_stamps([(g_id, prev_g)]);
             finish_computed_undo(&lua, &[g_id], true);
         }
+        assert!(written_since(before_g, &[g_id]) && !written_since(pre_stamp, &[g_id]), "g's prior stamp is back");
         assert!(!written_since(pre_stamp, &[c1_id, c2_id]), "contaminated computeds roll back");
         assert!(written_since(pre_stamp, &[unrel_id]), "unrelated computeds keep their stamp");
         assert!(EvaluationMemo::get(&lua, c1_id).is_none(), "contaminated entry evicted from memo");

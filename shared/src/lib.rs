@@ -67,6 +67,14 @@ macro_rules! warn {
     ($($arg:tt)*) => { $crate::log::emit($crate::log::Level::Warn, module_path!(), format_args!($($arg)*)) };
 }
 
+/// [`warn!`] the first time `key` fails, [`debug!`] after: see [`log::first_failure_level`].
+#[macro_export]
+macro_rules! warn_first {
+    ($key:expr, $($arg:tt)*) => {
+        $crate::log::emit($crate::log::first_failure_level(&$key), module_path!(), format_args!($($arg)*))
+    };
+}
+
 /// See [`error!`]. The shell's lifecycle: start, reload, respawn, stop (ADR-0251).
 #[macro_export]
 macro_rules! notice {

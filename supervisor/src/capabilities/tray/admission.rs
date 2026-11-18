@@ -1,6 +1,6 @@
 //! Tray caps: the item limit with its waiting queue and deferred adoption, and the shared menu budget.
 
-use shared::{debug, warn};
+use shared::{debug, warn_first};
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::menu::{MenuItem, count_menu_nodes, truncate_menu_nodes};
@@ -36,12 +36,8 @@ pub(super) fn enforce_menu_budget(item_id: &str, items: &mut Vec<MenuItem>, max_
 
 pub(super) fn record_at_cap(guard: &mut Registry, resolved: &ResolvedRegistration, defer_on_full: bool) {
     let id = item_id(resolved.unique_name.as_str(), resolved.object_path.as_str());
-    let message = format!("not tracking {id}: {} tray items already are; waiting for a slot", guard.items.len());
-    if shared::log::first_failure(&format!("tray item limit {}", resolved.unique_name)) {
-        warn!("{message}");
-    } else {
-        debug!("{message}");
-    }
+    let (key, len) = (format!("tray item limit {}", resolved.unique_name), guard.items.len());
+    warn_first!(key, "not tracking {id}: {len} tray items already are; waiting for a slot");
     if !defer_on_full {
         guard.adoption_deferred = true;
         return;

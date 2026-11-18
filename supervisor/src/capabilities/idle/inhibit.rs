@@ -50,16 +50,12 @@ pub(crate) fn apply_screensaver_inhibit(state: &mut InhibitState, peer: String, 
     if held >= MAX_SCREENSAVER_HOLDS_PER_PEER || state.screensaver.len() >= MAX_SCREENSAVER_HOLDS {
         // Warned once per peer: a refused video that then blanks the screen should leave a trace,
         // and a client retrying in a loop should not flood.
-        let message = format!(
+        shared::warn_first!(
+            format!("screensaver limit {peer}"),
             "refused a ScreenSaver hold from {peer} ({:?}): it holds {held}, {} in all",
             hold.who,
             state.screensaver.len()
         );
-        if shared::log::first_failure(&format!("screensaver limit {peer}")) {
-            shared::warn!("{message}");
-        } else {
-            shared::debug!("{message}");
-        }
         return None;
     }
     let cookie = state.next_cookie;

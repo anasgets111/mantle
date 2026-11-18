@@ -60,7 +60,7 @@ pub(super) fn publish_geometry(
             let table = Value::Table(crate::lua::marshal::rect_table(lua, rect)?);
             let prev_value = cell.replace(table);
             if let Some(log) = undo.as_deref_mut() {
-                let prev_stamp = crate::lua::signal::note_write_prev(id);
+                let prev_stamp = crate::lua::signal::note_write(id);
                 log.push(GeometryWrite { id, cell, prev_value, prev_stamp });
             } else {
                 crate::lua::signal::note_write(id);

@@ -240,6 +240,12 @@ pub fn first_failure(key: &str) -> bool {
     warned.insert(key.to_string())
 }
 
+/// [`Level::Warn`] for the [`first_failure`] under `key`, else [`Level::Debug`]: a refusal leaves one
+/// trace at the default level without flooding it. Logged through [`crate::warn_first!`].
+pub fn first_failure_level(key: &str) -> Level {
+    if first_failure(key) { Level::Warn } else { Level::Debug(1) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,6 +259,12 @@ mod tests {
             }
         }
         Config { tag, default, overrides }
+    }
+
+    #[test]
+    fn a_failure_warns_once_per_key_then_drops_to_debug() {
+        let level = |key| first_failure_level(&format!("first_failure_level test {key}"));
+        assert_eq!((level("a"), level("a"), level("b")), (Level::Warn, Level::Debug(1), Level::Warn));
     }
 
     #[test]

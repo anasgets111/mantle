@@ -1597,7 +1597,9 @@ mod tests {
         assert_eq!(built(), 6, "pending, and nothing it reads was written");
         let now = std::time::Instant::now() + std::time::Duration::from_millis(50);
         lua.set_app_data(crate::lua::timer::SimClock(now));
-        crate::lua::signal::take_due_wake(&lua, now).into_iter().for_each(crate::lua::signal::note_write);
+        for cell in crate::lua::signal::take_due_wake(&lua, now) {
+            crate::lua::signal::note_write(cell);
+        }
         apply(&mut scene);
         assert_eq!(built(), 9, "the landing writes the delay");
         assert_eq!(list_contents(&scene), ["new", "new", "new"]);

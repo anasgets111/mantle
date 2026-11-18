@@ -303,10 +303,6 @@ mod tests {
         app.apply_resolved_surface_state();
     }
 
-    fn lua_log(app: &App) -> Vec<String> {
-        app.client.lua().load("return log").eval().unwrap()
-    }
-
     fn is_focused(app: &App, name: &str) -> bool {
         app.client.lua().load(format!("return focused({name:?}):get()")).eval().unwrap()
     }
@@ -318,10 +314,10 @@ mod tests {
         turn(&mut app, "w:set(300)");
         assert!(is_focused(&app, "a"), "#130: a later re-resolve keeps the armed field until `enter`");
         assert_eq!(app.inject_text("launcher@TEST", "ze"), Ok(()));
-        assert_eq!(lua_log(&app), ["a:", "a:ze"]);
+        assert_eq!(app.lua_log(), ["a:", "a:ze"]);
         turn(&mut app, "open:set(false)");
         turn(&mut app, "open:set(true)");
-        assert_eq!(lua_log(&app), ["a:", "a:ze"], "closing arms nothing, not even `b`; reopening keeps the draft");
+        assert_eq!(app.lua_log(), ["a:", "a:ze"], "closing arms nothing, not even `b`; reopening keeps the draft");
     }
 
     #[test]
@@ -330,11 +326,11 @@ mod tests {
         app.keyboard_focus = Some("notes@TEST".to_string());
         app.arm_autofocus_if_unfocused(&app.keyboard_focus_scope());
         turn(&mut app, "open:set(true)");
-        assert_eq!(lua_log(&app), ["n:"], "the notes field keeps the keys");
+        assert_eq!(app.lua_log(), ["n:"], "the notes field keeps the keys");
         (app.keyboard_focus, app.focused_control) = (None, None); // `leave` keeps the draft typing
         turn(&mut app, "open:set(false)");
         turn(&mut app, "open:set(true)");
-        assert_eq!(lua_log(&app), ["n:", "a:"], "a draft without the keyboard holds nothing");
+        assert_eq!(app.lua_log(), ["n:", "a:"], "a draft without the keyboard holds nothing");
     }
 
     #[test]
