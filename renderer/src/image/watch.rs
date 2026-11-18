@@ -203,6 +203,25 @@ mod tests {
     use super::*;
     use crate::lua::calls::poll_until;
 
+    /// Drains until each of `expected` is touched and returns every path touched meanwhile. A
+    /// close-write can arrive late: a child forked by another test thread holds the written fd.
+    /// Dedups only against earlier drains, so a duplicate within one drain still shows.
+    fn touched(watcher: &mut Watcher, expected: &[&PathBuf]) -> Vec<PathBuf> {
+        let (watcher, touched) = (std::cell::RefCell::new(watcher), std::cell::RefCell::new(Vec::<PathBuf>::new()));
+        let poll = || {
+            let drained = watcher.borrow_mut().drain().touched;
+            let mut touched = touched.borrow_mut();
+            let seen = touched.len();
+            for path in drained {
+                if !touched[..seen].contains(&path) {
+                    touched.push(path);
+                }
+            }
+        };
+        poll_until(poll, || expected.iter().all(|path| touched.borrow().contains(*path)));
+        touched.into_inner()
+    }
+
     #[test]
     fn a_directory_is_watched_once_for_all_its_paths_and_released_with_the_last() {
         let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
@@ -245,14 +264,12 @@ mod tests {
         let _ = watcher.drain();
 
         std::fs::write(&target, "edited").unwrap();
-        let touched = watcher.drain().touched;
-        assert_eq!(touched.len(), 2);
-        assert!(touched.contains(&target) && touched.contains(&link), "editing the target names both");
+        assert_eq!(touched(&mut watcher, &[&target, &link]).len(), 2, "editing the target names both, only");
         watcher.unwatch(&target);
 
         std::fs::remove_file(&link).unwrap();
         std::os::unix::fs::symlink(&second, &link).unwrap();
-        assert_eq!(watcher.drain().touched, std::slice::from_ref(&link), "re-pointing the link names the link");
+        assert_eq!(touched(&mut watcher, &[&link]), std::slice::from_ref(&link), "re-pointing the link names the link");
 
         // Re-watching after a re-point drops the old target (even if its basename matched the link)
         // and tracks the new one without duplicates.
@@ -261,9 +278,10 @@ mod tests {
         let third_alt = third_dir.path().join("shared.png");
         let fourth_dir = tempfile::tempdir().unwrap();
         let fourth = fourth_dir.path().join("shared.png");
-        std::fs::write(&third, "z").unwrap();
-        std::fs::write(&third_alt, "a").unwrap();
-        std::fs::write(&fourth, "b").unwrap();
+        // Hard links open no fd, so no late close-write can reach the watches added below.
+        for path in [&third, &third_alt, &fourth] {
+            std::fs::hard_link(&second, path).unwrap();
+        }
 
         std::fs::remove_file(&link).unwrap();
         std::os::unix::fs::symlink(&third, &link).unwrap();
@@ -273,14 +291,15 @@ mod tests {
         std::fs::write(&target, "old-ignored").unwrap();
         assert_eq!(watcher.drain(), Drained::default(), "old same-name target no longer triggers");
         std::fs::write(&third, "new-edit").unwrap();
-        assert_eq!(watcher.drain().touched, std::slice::from_ref(&link), "new target triggers");
+        assert_eq!(touched(&mut watcher, &[&link]), std::slice::from_ref(&link), "new target triggers");
 
         // Re-pointing within the same target dir drops the old target filename.
         std::fs::remove_file(&link).unwrap();
         std::os::unix::fs::symlink(&third_alt, &link).unwrap();
         assert!(watcher.watch(&link).is_some());
         let _ = watcher.drain();
-        std::fs::write(&third, "same-dir-old-ignored").unwrap();
+        // A delete queues within the syscall, so a stale subscription would show in this one drain.
+        std::fs::remove_file(&third).unwrap();
         assert_eq!(watcher.drain(), Drained::default(), "old filename in same target dir is pruned");
 
         // Re-pointing across dirs to a target with the same filename drops the previous dir watch.
@@ -292,7 +311,7 @@ mod tests {
         std::fs::write(&third_alt, "diff-dir-same-name-ignored").unwrap();
         assert_eq!(watcher.drain(), Drained::default());
         std::fs::write(&fourth, "fourth-edit").unwrap();
-        assert_eq!(watcher.drain().touched, std::slice::from_ref(&link));
+        assert_eq!(touched(&mut watcher, &[&link]), std::slice::from_ref(&link));
 
         watcher.unwatch(&link);
         assert!(watcher.dirs.is_empty(), "unwatch releases both directories");
