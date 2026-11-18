@@ -9,7 +9,10 @@ text without a family uses the chain's primary font. Generic names use the famil
 the chain. An unavailable family falls back to the loaded serif family, or the primary if none
 is loaded. SVG text uses SVG layout and shaping, so its spacing can differ from a `text` node. Images, icons and file masks
 share this behavior, including background decoding. An SVG's `<image>` draws only a picture embedded
-as a `data:` URL; one naming a file draws nothing.
+as a `data:` URL; one naming a file draws nothing. An SVG fails to load when it uses a filter
+effect other than `feGaussianBlur`, `feOffset`, `feFlood`, `feMerge`, `feMergeNode`, `feComposite`,
+`feColorMatrix` and `feBlend`, decodes an embedded picture more than once, or passes a limit: 8 MiB
+compressed, inflated or entity-expanded, or 256 levels of elements and `<use>` hops.
 
 A wallpaper that crossfades when the path changes:
 

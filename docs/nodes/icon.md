@@ -48,7 +48,8 @@ The theme is the desktop portal's `org.gnome.desktop.interface` `icon-theme` (wh
 `gsettings set org.gnome.desktop.interface icon-theme` writes), else `gtk-icon-theme-name` from
 `$XDG_CONFIG_HOME/gtk-4.0/settings.ini`, else `gtk-3.0/settings.ini`, else `hicolor`. A
 change through the portal redraws every icon at once; a `settings.ini` edit shows after a shell
-restart. Files load as PNG, JPEG, WebP, GIF, ICO, BMP, SVG or SVGZ.
+restart. Files load as PNG, JPEG, WebP, GIF, ICO, BMP, SVG or SVGZ; an SVG has the limits an
+[`image`](image.md) has.
 
 ## How do I…
 

@@ -321,6 +321,7 @@ of the press runs.
 | :--- | :--- |
 | 0 | Success. For `set` and `toggle`: the shell applied the write |
 | 1 | The command failed. It prints the reason on stderr: no shell running, no shell with that `--pid`, `XDG_RUNTIME_DIR` unset, the socket unreachable, no log this login, `check` found an error, `call` failed or timed out, `set` or `toggle` was refused or timed out, `input` was refused or timed out, `-d` could not start the shell (not running within 5 s, or it exited), `init` could not write a file |
+| 76 | The running `mantle` stopped because an upgrade changed the protocol to its shell process. Start `mantle` again ([runtime](runtime.md)) |
 | 2 | Bad arguments: unknown flag, missing name or value, a non-numeric `--pid`, `--profile=0`, a flag the command does not take, `--pid` with `-c`, `-c` with `list`. It prints `mantle: <reason>` and the help text. Also `mantle-renderer` run by hand |
 
 ## How do I…
