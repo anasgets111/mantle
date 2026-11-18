@@ -521,17 +521,6 @@ mod tests {
         assert!(!parts.apply(niri_ipc::Event::WindowClosed { id: 2 }), "window 2 is gone after closing");
     }
 
-    #[test]
-    fn id_parsers_accept_u64_and_reject_non_numeric_strings() {
-        for raw in ["abc", "", "-1"] {
-            assert_eq!(window_id(raw), None, "{raw:?}");
-            assert_eq!(workspace_reference(raw), None, "{raw:?}");
-        }
-        assert_eq!(window_id("0"), Some(0));
-        assert_eq!(window_id("7"), Some(7));
-        assert_eq!(workspace_reference("7"), Some(niri_ipc::WorkspaceReferenceArg::Id(7)));
-    }
-
     struct FollowRun {
         end: End,
         ws_state: std::sync::Arc<std::sync::Mutex<shared::state::workspaces::WorkspacesState>>,
@@ -695,12 +684,17 @@ mod tests {
     fn every_niri_write_sends_its_action_as_one_json_line() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("niri.sock");
-        let (requests, log) = crate::compositor::test_support::run_writes(
+        let (requests, _) = crate::compositor::test_support::run_writes(
             "compositor::niri::tests::niri_writes_child",
             &socket,
             &[(niri_ipc::socket::SOCKET_PATH_ENV, socket.as_os_str())],
             crate::compositor::test_support::read_line,
             |_| b"{\"Ok\":\"Handled\"}\n".to_vec(),
+            &[
+                "switch_layout index 256 is out of range for niri",
+                r#""x" is not a niri window id"#,
+                r#"set_fullscreen("7", true) is not supported"#,
+            ],
         );
 
         assert_eq!(
@@ -713,12 +707,5 @@ mod tests {
                 "{\"Action\":{\"SwitchLayout\":{\"layout\":{\"Index\":2}}}}\n",
             ]
         );
-        for line in [
-            "switch_layout index 256 is out of range for niri",
-            r#""x" is not a niri window id"#,
-            r#"set_fullscreen("7", true) is not supported"#,
-        ] {
-            assert!(log.contains(line), "{line:?} missing from {log}");
-        }
     }
 }

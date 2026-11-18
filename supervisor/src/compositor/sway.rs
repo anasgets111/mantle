@@ -690,6 +690,13 @@ mod tests {
                 sway_write(&mut frame, SWAY_RUN_COMMAND, results).unwrap();
                 frame
             },
+            &[
+                r#"workspaces: sway command `workspace --no-auto-back-and-forth "2"` succeeded"#,
+                "windows: sway refused `[con_id=7] kill`",
+                "windows: sway refused `[con_id=7] move",
+                r#"set_maximized("7", true) is not supported"#,
+                r#"toggle_special("scratch") is not supported"#,
+            ],
         );
 
         assert_eq!(
@@ -704,15 +711,6 @@ mod tests {
                 "0 input type:keyboard xkb_switch_layout 1",
             ]
         );
-        for line in [
-            r#"workspaces: sway command `workspace --no-auto-back-and-forth "2"` succeeded"#,
-            "windows: sway refused `[con_id=7] kill`",
-            "windows: sway refused `[con_id=7] move",
-            r#"set_maximized("7", true) is not supported"#,
-            r#"toggle_special("scratch") is not supported"#,
-        ] {
-            assert!(log.contains(line), "{line:?} missing from {log}");
-        }
         assert!(!log.contains("refused `[con_id=7] focus`"), "a lone success is not a refusal: {log}");
     }
 }

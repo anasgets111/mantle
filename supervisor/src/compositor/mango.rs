@@ -588,7 +588,7 @@ mod tests {
     fn every_mango_write_sends_its_dispatch_and_logs_mangos_verdict() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("mango.sock");
-        let (requests, log) = crate::compositor::test_support::run_writes(
+        let (requests, _) = crate::compositor::test_support::run_writes(
             "compositor::mango::tests::mango_writes_child",
             &socket,
             &[("MANGO_INSTANCE_SIGNATURE", socket.as_os_str())],
@@ -600,6 +600,14 @@ mod tests {
                     b"{\"success\":true}\n".to_vec()
                 }
             },
+            &[
+                "workspaces: mango `viewcrossmon,2,^eDP-1$` succeeded",
+                r#"windows: mango refused `killclient client,7`: {"error":"no such client"}"#,
+                r#""eDP-1:0" is not a mango workspace id"#,
+                r#"focusid("0") is not a mango window id"#,
+                r#"move_window("7", "eDP-1:1") is not supported"#,
+                "switch_layout(1) is not supported",
+            ],
         );
 
         assert_eq!(
@@ -611,15 +619,5 @@ mod tests {
                 "dispatch togglefullscreen client,7\n",
             ]
         );
-        for line in [
-            "workspaces: mango `viewcrossmon,2,^eDP-1$` succeeded",
-            r#"windows: mango refused `killclient client,7`: {"error":"no such client"}"#,
-            r#""eDP-1:0" is not a mango workspace id"#,
-            r#"focusid("0") is not a mango window id"#,
-            r#"move_window("7", "eDP-1:1") is not supported"#,
-            "switch_layout(1) is not supported",
-        ] {
-            assert!(log.contains(line), "{line:?} missing from {log}");
-        }
     }
 }

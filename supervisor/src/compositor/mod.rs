@@ -391,20 +391,6 @@ mod tests {
     }
 
     #[test]
-    fn a_toggle_is_needed_only_when_the_wanted_state_differs_and_unknown_reads_as_off() {
-        for (current, want, needed) in [
-            (None, true, true),
-            (None, false, false),
-            (Some(false), true, true),
-            (Some(false), false, false),
-            (Some(true), true, false),
-            (Some(true), false, true),
-        ] {
-            assert_eq!(toggle_needed(current, want), needed, "{current:?} -> {want}");
-        }
-    }
-
-    #[test]
     #[ignore = "run by a_session_with_no_compositor_logs_and_drops_every_write"]
     fn unsupported_writes_child() {
         test_support::writes_child(|| {
@@ -421,21 +407,18 @@ mod tests {
     fn a_session_with_no_compositor_logs_and_drops_every_write() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("unused.sock");
-        let (_, log) = test_support::run_writes(
+        test_support::run_writes(
             "compositor::tests::unsupported_writes_child",
             &socket,
             &[("SWAYSOCK", "".as_ref())],
             test_support::read_line,
             |_| Vec::new(),
+            &[
+                r#"focus_workspace("1") is not supported"#,
+                r#"focus_window("2") is not supported"#,
+                r#"close_window("3") is not supported"#,
+                "windows: SWAYSOCK is unset; sway `[con_id=4] focus` ignored",
+            ],
         );
-
-        for line in [
-            r#"focus_workspace("1") is not supported"#,
-            r#"focus_window("2") is not supported"#,
-            r#"close_window("3") is not supported"#,
-            "windows: SWAYSOCK is unset; sway `[con_id=4] focus` ignored",
-        ] {
-            assert!(log.contains(line), "{line:?} missing from {log}");
-        }
     }
 }

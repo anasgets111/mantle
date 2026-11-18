@@ -51,13 +51,15 @@ const CHILD_ENV: &str = "MANTLE_TEST_COMPOSITOR_CHILD";
 /// Runs the `#[ignore]`d test `child` in a fresh copy of this test binary with `env`, so a real
 /// backend reads its socket from its own process env, as in a session, with no `set_var` here.
 /// Each connection to `socket` is read by `read` and answered by `answer`. Returns the requests in
-/// arrival order and the child's output, where the backend logs each reply's verdict.
+/// arrival order and the child's output, where the backend logs each reply's verdict: every line
+/// of `logged` must be in it.
 pub(crate) fn run_writes(
     child: &str,
     socket: &Path,
     env: &[(&str, &OsStr)],
     read: fn(&mut UnixStream) -> Vec<u8>,
     answer: impl Fn(&[u8]) -> Vec<u8> + Send + 'static,
+    logged: &[&str],
 ) -> (Vec<String>, String) {
     let listener = UnixListener::bind(socket).unwrap();
     let server = std::thread::spawn(move || {
@@ -96,6 +98,9 @@ pub(crate) fn run_writes(
     assert!(output.status.success(), "{child} failed: {log}");
     // A filter that matches nothing also exits zero.
     assert!(log.contains("1 passed"), "{child} did not run: {log}");
+    for line in logged {
+        assert!(log.contains(line), "{line:?} missing from {log}");
+    }
     (requests, log)
 }
 

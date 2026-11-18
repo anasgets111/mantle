@@ -478,6 +478,7 @@ mod tests {
             Hyprland.close_window("0xa");
             Hyprland.set_fullscreen("0xa", true, Some(true));
             Hyprland.set_fullscreen("0xa", true, None);
+            Hyprland.set_fullscreen("0xa", false, Some(true));
             Hyprland.set_maximized("0xa", false, Some(false));
             Hyprland.set_maximized("0xa", true, Some(false));
             Hyprland.move_window("0xa", "2");
@@ -495,7 +496,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("hypr/sig")).unwrap();
         let socket = dir.path().join("hypr/sig/.socket.sock");
-        let (requests, log) = crate::compositor::test_support::run_writes(
+        let (requests, _) = crate::compositor::test_support::run_writes(
             "compositor::hyprland::tests::hyprland_writes_child",
             &socket,
             &[("HYPRLAND_INSTANCE_SIGNATURE", "sig".as_ref()), ("XDG_RUNTIME_DIR", dir.path().as_os_str())],
@@ -511,6 +512,13 @@ mod tests {
                 _ if request.starts_with(b"dispatch hl.dsp.window.close") => b"Invalid window".to_vec(),
                 _ => b"ok".to_vec(),
             },
+            &[
+                "workspaces: Hyprland command `dispatch hl.dsp.focus({ workspace = 3 })` succeeded",
+                r#"windows: Hyprland refused `dispatch hl.dsp.window.close({ window = "address:0xa" })`: Invalid window"#,
+                "keyboard: Hyprland command `switchxkblayout main 1` succeeded",
+                "no Hyprland workspace has id -5",
+                r#""bad" is not a Hyprland workspace id"#,
+            ],
         );
 
         assert_eq!(
@@ -523,6 +531,7 @@ mod tests {
                 r#"dispatch hl.dsp.focus({ window = "address:0xa" })"#,
                 r#"dispatch hl.dsp.window.close({ window = "address:0xa" })"#,
                 r#"dispatch hl.dsp.window.fullscreen({ window = "address:0xa" })"#,
+                r#"dispatch hl.dsp.window.fullscreen({ window = "address:0xa" })"#,
                 r#"dispatch hl.dsp.window.fullscreen({ window = "address:0xa", mode = "maximized" })"#,
                 r#"dispatch hl.dsp.window.move({ window = "address:0xa", workspace = 2, follow = false })"#,
                 "j/workspaces",
@@ -531,14 +540,5 @@ mod tests {
                 "switchxkblayout main 1",
             ]
         );
-        for line in [
-            "workspaces: Hyprland command `dispatch hl.dsp.focus({ workspace = 3 })` succeeded",
-            r#"windows: Hyprland refused `dispatch hl.dsp.window.close({ window = "address:0xa" })`: Invalid window"#,
-            "keyboard: Hyprland command `switchxkblayout main 1` succeeded",
-            "no Hyprland workspace has id -5",
-            r#""bad" is not a Hyprland workspace id"#,
-        ] {
-            assert!(log.contains(line), "{line:?} missing from {log}");
-        }
     }
 }
