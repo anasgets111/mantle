@@ -4,6 +4,8 @@ local layout = require("layout")
 local marks = require("marks")
 
 local placed = layout.placed("polkit")
+local SHADOWS = { { color = "#00000099", blur = 60 } }
+local ROOM = layout.shadow_room(SHADOWS)
 
 local polkit = state("mock_polkit", { active = false, message = "", user = "" })
 local typed = state("polkit_typed", 0)
@@ -15,13 +17,13 @@ return panel {
     id = "polkit",
     layer = "overlay",
     anchor = { top = true, left = true },
-    -- The card sits in a 48 px frame so its shadow is not cut at the surface edge.
-    margin = placed:map(function(p) return { top = p.top - 48, left = p.left - 48 } end),
+    -- Padding gives the card's shadow room, so the surface edge does not cut it.
+    margin = placed:map(function(p) return { top = p.top - ROOM, left = p.left - ROOM } end),
     visible = mapped,
     keyboard_interactivity = "none",
     child = column {
-        width = placed:map(function(p) return p.width + 96 end),
-        padding = 48,
+        width = placed:map(function(p) return p.width + 2 * ROOM end),
+        padding = ROOM,
         children = {
             column {
                 width = placed:map(function(p) return p.width end),
@@ -31,7 +33,7 @@ return panel {
                 background = theme.base,
                 border_width = 1,
                 border_color = theme.overlay,
-                shadows = { { color = "#00000099", blur = 60 } },
+                shadows = SHADOWS,
                 opacity = shown:map(function(on) return on and 1 or 0 end),
                 scale = shown:map(function(on) return on and 1 or 0.94 end),
                 animate = {

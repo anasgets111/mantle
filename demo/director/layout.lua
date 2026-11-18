@@ -49,11 +49,25 @@ end
 
 local M = { metrics = metrics }
 
--- A tight key shadow under a wide ambient one; the surface needs a 64 px frame to hold them.
+-- A tight key shadow under a wide ambient one; a surface holds them in SHADOW_ROOM px of padding.
 M.SHADOWS = {
     { color = "#00000055", blur = 48, offset = { y = 18 } },
     { color = "#00000040", blur = 6,  offset = { y = 2 } },
 }
+
+-- The room around a box that holds `shadows` uncut: the engine's `shadow_reach`
+-- (renderer/src/layout/paint/mod.rs), 3 sigma (1.5 x blur) past the offset box.
+-- ponytail: ignores spread; add it here when a shadow gains one.
+function M.shadow_room(shadows)
+    local room = 0
+    for _, s in ipairs(shadows) do
+        local o = s.offset or {}
+        room = math.max(room, math.ceil(1.5 * (s.blur or 0) + math.max(math.abs(o.x or 0), math.abs(o.y or 0))))
+    end
+    return room
+end
+
+M.SHADOW_ROOM = M.shadow_room(M.SHADOWS)
 
 local function center(screen, design) return box(screen, design) end
 

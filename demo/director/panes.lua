@@ -274,14 +274,14 @@ M.caption_pane = panel {
     id = "caption",
     layer = "overlay",
     anchor = { bottom = true, left = true },
-    -- The card sits in a 64 px frame so its shadow is not cut at the surface edge.
-    margin = { bottom = 48 - 64, left = 48 - 64 },
+    -- Padding gives the card's shadow room, so the surface edge does not cut it.
+    margin = { bottom = 48 - layout.SHADOW_ROOM, left = 48 - layout.SHADOW_ROOM },
     visible = caption:map(function(title) return title ~= "" end),
     child = computed({ caption, frame }, function(title, m)
         local cap = layout.caption(m)
         return column {
-            width = cap.width and cap.width + 128,
-            padding = 64,
+            width = cap.width and cap.width + 2 * layout.SHADOW_ROOM,
+            padding = layout.SHADOW_ROOM,
             children = { column {
                 id = "caption:" .. title,
                 width = cap.width,

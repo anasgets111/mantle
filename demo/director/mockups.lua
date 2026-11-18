@@ -27,13 +27,13 @@ local function window(id, title, app_icon, body)
         id = "mock:" .. id,
         layer = "top",
         anchor = { top = true, left = true },
-        -- The window sits in a 64 px frame so its shadow is not cut at the surface edge.
-        margin = size:map(function(s) return { top = s.top - 64, left = s.left - 64 } end),
+        -- Padding gives the window's shadow room, so the surface edge does not cut it.
+        margin = size:map(function(s) return { top = s.top - layout.SHADOW_ROOM, left = s.left - layout.SHADOW_ROOM } end),
         visible = app:map(function(a) return a == id end),
         child = column {
-            width = size:map(function(s) return s.width + 128 end),
-            height = size:map(function(s) return s.height + 128 end),
-            padding = 64,
+            width = size:map(function(s) return s.width + 2 * layout.SHADOW_ROOM end),
+            height = size:map(function(s) return s.height + 2 * layout.SHADOW_ROOM end),
+            padding = layout.SHADOW_ROOM,
             children = { column {
                 width = size:map(function(s) return s.width end),
                 height = size:map(function(s) return s.height end),
