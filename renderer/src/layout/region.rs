@@ -139,17 +139,17 @@ fn collect_blur_regions(
 /// and leaves mid-fade rather than on its first or last frame (#114). Static ancestors scale both
 /// sides alike. A node at rest, or running between values above 0, is cut at 0 as before.
 ///
-/// ponytail: a spring, or a retarget to a third value mid-fade, starts its run from the shown
-/// value, so it switches where that run puts the cut. A finite keyframe run ending above 0 but
+/// ponytail: a run that interrupts a fade through 0 under its cut keeps that fade's span (#145),
+/// so one that stays under half the old peak, such as 1 to 0 cut short at 0.3 for 0.4, gets its
+/// blur only at rest. An `animate.exit` naming no `opacity` drops a running fade, so a fade-in cut
+/// short at 0.3 rests there with its blur on through the exit. A keyframe run started mid-fade
+/// carries nothing and cuts where its own frames put it. A finite keyframe run ending above 0 but
 /// under its cut, such as `{ 0, 1, 0.1 }`, drops the blur on the way down and gets it back when it
 /// settles, because a node at rest keeps its blur. Below the cut, a surface whose tree asks for
 /// blur ([`asks_for_blur`]) still sends a region, so a blanket compositor rule does not apply.
 fn fade_cut(node: &ResolvedNode) -> f32 {
     let fade = node.tweens.iter().find(|tween| tween.property == "opacity" && !tween.resting);
-    match fade.and_then(node::Tween::span) {
-        Some((low, high)) if low <= 0.0 => high / 2.0,
-        _ => 0.0,
-    }
+    fade.map_or(0.0, node::Tween::fade_cut)
 }
 
 /// A rounded rectangle as the axis-aligned rectangles a `wl_region` is made of, since the protocol

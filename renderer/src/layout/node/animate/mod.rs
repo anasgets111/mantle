@@ -103,11 +103,12 @@ pub fn depart(
     // node's motion from now on, so its lifetime is the block's duration and not that plus
     // whatever an interrupted entry animation had left to run.
     sync(tweens, properties, lua)?;
-    tweens.clear();
+    let prior = std::mem::take(tweens);
     for (property, target) in targets {
         let from =
             Animatable::from_value(property, properties.get(property))?.unwrap_or_else(|| target.identity(property));
-        let tween = Tween::new(property, from, target, now, spec.clone());
+        let carried = carried_span(prior.iter().find(|tween| tween.property == property), &from, now);
+        let tween = Tween { carried, ..Tween::new(property, from, target, now, spec.clone()) };
         properties.insert(property, tween.at(now).to_value(lua).map_err(|e| invalid("animate", e.to_string()))?);
         tweens.push(tween);
     }
@@ -129,6 +130,8 @@ pub struct Tween {
     pub spec: AnimationSpec,
     /// The logical start of an eased transition and its shortened duration after reversals.
     reversal: Option<Reversal>,
+    /// The span of a fade through 0 this run cut short under its cut (#145): see [`carried_span`].
+    carried: Option<(f32, f32)>,
     /// A finite sequence that has played out (ADR-0152). It stays in the list so a pass does not
     /// start it over, holding the property at its last frame, but it no longer asks for frames.
     /// Always false for a plain tween, which is dropped the moment it arrives.
@@ -146,12 +149,12 @@ struct Reversal {
 
 impl Tween {
     fn new(property: &'static str, from: Animatable, to: Animatable, started: Instant, spec: AnimationSpec) -> Self {
-        Tween { property, from, to, started, spec, reversal: None, resting: false, shown: None }
+        Tween { property, from, to, started, spec, reversal: None, carried: None, resting: false, shown: None }
     }
 
     /// The lowest and highest number the run passes through: every frame of a keyframe run, else
-    /// where it logically began (which a reversal keeps across its turn) and where it ends. `None`
-    /// for a property that is not a number.
+    /// where it logically began (which a reversal keeps across its turn) and where it ends, widened
+    /// by a fade it [`carried_span`]. `None` for a property that is not a number.
     pub fn span(&self) -> Option<(f32, f32)> {
         let widen = |span: Option<(f32, f32)>, value: &Animatable| match (span, value) {
             (Some((low, high)), Animatable::Number(value)) => Some((low.min(*value), high.max(*value))),
@@ -159,9 +162,22 @@ impl Tween {
         };
         let empty = Some((f32::INFINITY, f32::NEG_INFINITY));
         let origin = self.reversal.as_ref().map_or(&self.from, |reversal| &reversal.origin);
-        match &self.spec.motion {
+        let run = match &self.spec.motion {
             Motion::Sequence(sequence) => sequence.frames.iter().map(|frame| &frame.value).fold(empty, widen),
             _ => [origin, &self.to].into_iter().fold(empty, widen),
+        };
+        match (run, self.carried) {
+            (Some((low, high)), Some((from, to))) => Some((low.min(from), high.max(to))),
+            (run, _) => run,
+        }
+    }
+
+    /// Where `compositor_blur` switches on this run (#114): half the highest value a run touching 0
+    /// reaches, else 0.
+    pub fn fade_cut(&self) -> f32 {
+        match self.span() {
+            Some((low, high)) if low <= 0.0 => high / 2.0,
+            _ => 0.0,
         }
     }
 
@@ -365,7 +381,8 @@ pub fn retarget(
                     None
                 };
                 let spec = handed_over(spec, running, &displayed, &target, now);
-                Tween { reversal, ..Tween::new(property, displayed, target, now, spec) }
+                let carried = carried_span(running, &displayed, now);
+                Tween { reversal, carried, ..Tween::new(property, displayed, target, now, spec) }
             }
             Some(running) if !running.done(now) => {
                 // A spring's `velocity` is the rate the last retarget handed it, not a number the
@@ -394,6 +411,15 @@ pub fn retarget(
         tweens.push(tween);
     }
     Ok((tweens, movement))
+}
+
+/// The span a new run starting at `shown` takes over from `prior` (#145): a run through 0 that is
+/// under its cut, its blur still off, so the new run does not switch it on early. Any run still in
+/// the list counts, one a tick has yet to drop included, except a played-out keyframe run.
+fn carried_span(prior: Option<&Tween>, shown: &Animatable, now: Instant) -> Option<(f32, f32)> {
+    let prior = prior.filter(|prior| !(matches!(prior.spec.motion, Motion::Sequence(_)) && prior.done(now)))?;
+    let (Some((low, high)), Animatable::Number(shown)) = (prior.span(), shown) else { return None };
+    (low <= 0.0 && *shown <= prior.fade_cut()).then_some((low, high))
 }
 
 /// The tween for a content-sized `width` or `height` after layout measured it: `shown` is the
@@ -1018,6 +1044,56 @@ mod tests {
         assert!(!forward_again[0].done(turn_again + Duration::from_millis(164)));
         assert!(forward_again[0].done(turn_again + Duration::from_millis(166)));
         assert_eq!(forward_again[0].span(), Some((0.0, 100.0)));
+    }
+
+    /// #145: a run replacing a fade through 0 while it is under that fade's cut keeps the fade's
+    /// span, so `compositor_blur` still waits for half its peak. Above the cut, or after a
+    /// played-out keyframe run, the new run spans only itself and a box resting above 0 keeps its
+    /// blur.
+    #[test]
+    fn a_run_interrupting_a_fade_through_zero_under_its_cut_keeps_that_fade_span() {
+        let lua = Lua::new();
+        let start = Instant::now();
+        let (fade_out, to_one) =
+            ("opacity = 0, animate = { opacity = { duration = 300, from = 1 } }", Some("opacity = 1"));
+        // `None` departs instead: an `animate.exit` from the shown value.
+        for (prior, ms, shown, next, want, why) in [
+            (fade_out, 270, 0.1, to_one, (0.0, 1.0), "a fade-in with another spec over a fade-out at 0.1"),
+            (fade_out, 150, 0.5, to_one, (0.0, 1.0), "at the cut itself"),
+            (fade_out, 310, 0.02, to_one, (0.0, 1.0), "a fade-out the pass clock ended but no tick dropped"),
+            (fade_out, 30, 0.9, Some("opacity = 0.3"), (0.3, 0.9), "above the cut: 1 to 0.3 keeps its blur"),
+            (
+                "opacity = 0.3, animate = { opacity = { duration = 300, keyframes = { 0, 1, 0.3 } } }",
+                1000,
+                0.3,
+                to_one,
+                (0.3, 1.0),
+                "a played-out keyframe run resting at 0.3",
+            ),
+            (
+                "opacity = 1, animate = { opacity = { duration = 300, from = 0 } }",
+                90,
+                0.3,
+                None,
+                (0.0, 1.0),
+                "an exit cutting a fade-in short at 0.3",
+            ),
+        ] {
+            let mut prior = rect_props(&lua, &format!("return {{ {prior} }}"));
+            let mut tweens = retarget("rect", None, &mut prior, start, &lua, false).unwrap().0;
+            let now = start + Duration::from_millis(ms);
+            let animate = "animate = { opacity = 200, exit = { duration = 200, opacity = 0 } }";
+            let source = format!("return {{ {}, {animate} }}", next.unwrap_or(&format!("opacity = {shown}")));
+            let mut properties = rect_props(&lua, &source);
+            let tweens = if next.is_none() {
+                assert!(depart("rect", &mut tweens, &mut properties, now, &lua).unwrap());
+                tweens
+            } else {
+                let displayed = PropMap::from_iter([("opacity", Animatable::Number(shown).to_value(&lua).unwrap())]);
+                retarget("rect", Some((&tweens, &displayed)), &mut properties, now, &lua, false).unwrap().0
+            };
+            assert_eq!(tweens[0].span(), Some(want), "{why}");
+        }
     }
 
     #[test]
