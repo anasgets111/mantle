@@ -69,10 +69,16 @@ fn cleanup_item_icons(item: &TrayItem) {
 }
 
 fn cleanup_replaced_icons(old: &TrayItem, kept: &TrayItem) {
+    remove_replaced_pngs(old, kept);
+    reap_menu_icons(&old.id, old.menu.as_deref().unwrap_or_default(), kept.menu.as_deref().unwrap_or_default());
+}
+
+/// Deletes each spooled icon PNG `old` names that `new` no longer does.
+fn remove_replaced_pngs(old: &TrayItem, new: &TrayItem) {
     for (old_path, new_path) in [
-        (&old.icon_path, &kept.icon_path),
-        (&old.attention_icon_path, &kept.attention_icon_path),
-        (&old.overlay_icon_path, &kept.overlay_icon_path),
+        (&old.icon_path, &new.icon_path),
+        (&old.attention_icon_path, &new.attention_icon_path),
+        (&old.overlay_icon_path, &new.overlay_icon_path),
     ] {
         if let Some(old_path) = old_path
             && Some(old_path) != new_path.as_ref()
@@ -80,7 +86,6 @@ fn cleanup_replaced_icons(old: &TrayItem, kept: &TrayItem) {
             shm_icons::remove_png(SPOOL_SUBDIR, old_path);
         }
     }
-    reap_menu_icons(&old.id, old.menu.as_deref().unwrap_or_default(), kept.menu.as_deref().unwrap_or_default());
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -210,18 +215,7 @@ pub(super) async fn register_item(
 ///
 /// Returns whether the item changed, new pixels at an unchanged PNG path included.
 fn keep_menu_across(entry: &mut ItemEntry, mut refreshed: TrayItem) -> bool {
-    let old = &entry.last_known;
-    for (old, new) in [
-        (&old.icon_path, &refreshed.icon_path),
-        (&old.attention_icon_path, &refreshed.attention_icon_path),
-        (&old.overlay_icon_path, &refreshed.overlay_icon_path),
-    ] {
-        if let Some(old) = old
-            && Some(old) != new.as_ref()
-        {
-            shm_icons::remove_png(SPOOL_SUBDIR, old);
-        }
-    }
+    remove_replaced_pngs(&entry.last_known, &refreshed);
     let menu = entry.last_known.menu.take();
     let changed = refreshed != entry.last_known;
     refreshed.menu = menu;
