@@ -282,6 +282,17 @@ impl App {
             }
             return;
         };
+        // A panel before its first configure has no geometry to place against (#136). ponytail: a
+        // grab opens anyway, since its serial is cleared at the end of this turn; upgrade: carry it.
+        if grab.is_none()
+            && let Some(parent) = parent_index.filter(|&p| matches!(self.surfaces[p].role, TrackedRole::Panel { .. }))
+            && self.surfaces[parent].map_state != MapState::Mapped
+        {
+            if self.refusal_is_new(index, PopupRefusal::UnconfiguredParent) {
+                debug!("{surface_id}: waits for {parent_id}'s first configure");
+            }
+            return;
+        }
 
         let Some(positioner) = self.positioner_for(&surface_id, &placement) else {
             return;
@@ -647,8 +658,9 @@ mod tests {
         );
     }
 
+    /// Both `bar` instances configured, so popups open on them in the pass that shows them.
     fn two_output_popup_app() -> (App, tempfile::TempDir) {
-        two_output_app(
+        let (mut app, dir) = two_output_app(
             r#"
             local r = { x = 0, y = 0, width = 10, height = 10 }
             return {
@@ -658,7 +670,11 @@ mod tests {
                 popup { id = "tip", parent = "submenu", anchor_rect = r, width = 120, height = 40, grab = false, visible = false },
             }
         "#,
-        )
+        );
+        for id in ["bar@eDP-1", "bar@DP-1"] {
+            app.map_on_configure(idx(&app, id));
+        }
+        (app, dir)
     }
 
     /// `source` on outputs `eDP-1` and `DP-1`, its panels on compositor-chosen outputs.
@@ -784,6 +800,7 @@ mod tests {
         app.apply_popup_visibility(menu_idx, false);
         let qh = app.queue_handle.clone();
         app.show_panel(&qh, idx(&app, "bar@eDP-1"));
+        app.map_on_configure(idx(&app, "bar@eDP-1"));
         open_popup_on(&mut app, "menu", Some("bar@eDP-1"));
         assert_eq!(popup_state(&app, "menu").1.as_deref(), Some("bar@eDP-1"));
 
@@ -791,6 +808,51 @@ mod tests {
         assert!(popup_state(&app, "menu").0, "reopened menu now follows bar@eDP-1, not bar@DP-1");
         app.drop_role_object(idx(&app, "bar@eDP-1"));
         assert!(!popup_state(&app, "menu").0);
+    }
+
+    /// #136: a popup shown in the same pass as its panel opens on the panel's first configure, once,
+    /// whether it is tracked after its panel or before it.
+    #[test]
+    fn a_popup_waits_for_its_panels_first_configure() {
+        let bar = r#"panel { id = "bar", layer = "top", output = "all", height = 32, visible = shown }"#;
+        let menu = r#"popup { id = "menu", parent = "bar", anchor_rect = { x = 0, y = 0, width = 10, height = 10 },
+            width = 200, height = 120, grab = false, visible = open }"#;
+        for (first, second, reshown) in
+            [(bar, menu, PopupRefusal::UnconfiguredParent), (menu, bar, PopupRefusal::HiddenParent)]
+        {
+            let (mut app, _dir) = two_output_app(&format!(
+                r#"open, shown = state("open", false), state("shown", true) return {{ {first}, {second} }}"#
+            ));
+            let pass = |app: &mut App| {
+                let passed = app.client.re_resolve_if_dirty();
+                app.apply_resolved_surface_state();
+                passed && app.client.take_last_resolved().is_none()
+            };
+            app.client.lua().load("open:set(true)").exec().unwrap();
+            pass(&mut app);
+            assert_eq!(popup_state(&app, "menu"), (false, None, None, Some(PopupRefusal::UnconfiguredParent)));
+            // The parent hides as its configure lands: `bind_and_clear` maps, asks for the whole pass,
+            // then hides it before any EGL bind.
+            app.client.lua().load("shown:set(false)").exec().unwrap();
+            app.client.re_resolve_if_dirty();
+            app.bind_and_clear(idx(&app, "bar@eDP-1"), 1900, 31);
+            assert!(app.egl.is_none() && !app.exit && app.surfaces[idx(&app, "bar@eDP-1")].role.wl_surface().is_none());
+            assert!(pass(&mut app), "the configure requests a pass that revisits every popup");
+            assert_eq!(popup_state(&app, "menu"), (false, None, None, Some(PopupRefusal::HiddenParent)));
+            // Shown again, the popup visited before the panel sees it still hidden.
+            app.client.lua().load("shown:set(true)").exec().unwrap();
+            pass(&mut app);
+            assert_eq!(popup_state(&app, "menu"), (false, None, None, Some(reshown)));
+            // Its configure, which also marks the panel's new size, asks for a whole pass that opens it.
+            app.set_surface_size(idx(&app, "bar@eDP-1"), (1900, 30));
+            app.map_on_configure(idx(&app, "bar@eDP-1"));
+            assert!(pass(&mut app), "the configure requests a pass that revisits every popup");
+            assert_eq!(popup_state(&app, "menu"), (true, Some("bar@eDP-1".into()), None, None));
+            let opened = app.surfaces[idx(&app, "menu")].role.wl_surface().unwrap().id();
+            app.client.mark_dirty();
+            assert!(pass(&mut app));
+            assert_eq!(app.surfaces[idx(&app, "menu")].role.wl_surface().unwrap().id(), opened, "opened once");
+        }
     }
 
     /// #132: no instance of an `output = "all"` panel is remapped while one is under the pointer or has a

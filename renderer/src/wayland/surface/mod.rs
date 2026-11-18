@@ -195,6 +195,8 @@ pub(super) enum PopupRefusal {
     /// The compositor bound `xdg_popup` below version 3, which is where `reposition` was added, so
     /// an open popup cannot be resized or moved and keeps what it opened at until it closes.
     Unrepositionable,
+    /// The parent panel awaits its first configure, which asks for the pass that opens this one.
+    UnconfiguredParent,
 }
 /// Everything an `xdg_positioner` is told, as one value: the size to ask for and the five fields
 /// that place it. It exists so that what is sent and what is remembered cannot drift apart: a
@@ -560,9 +562,7 @@ impl App {
     pub(super) fn bind_and_clear(&mut self, index: usize, width: u32, height: u32) {
         self.set_surface_size(index, (width, height));
         // No buffer may attach before this first or remap configure; everything below may draw.
-        if self.surfaces[index].map_state == MapState::AwaitingConfigure {
-            self.surfaces[index].map_state = MapState::Mapped;
-        }
+        self.map_on_configure(index);
         // Only `Reserve` depends on the configured size; the rest went out before the first commit.
         if matches!(&self.surfaces[index].role, TrackedRole::Panel { spec, .. } if spec.exclusive == node::Exclusive::Reserve)
         {
@@ -582,6 +582,28 @@ impl App {
         }
         self.paint_surface(index);
         self.sync_captures();
+    }
+
+    /// A popup that waits on a panel ([`PopupRefusal::UnconfiguredParent`], or `HiddenParent` when
+    /// it was visited before the panel's show) owes a whole pass: the size change narrows it to the
+    /// panel. A popup whose parent stays hidden costs one whole pass per surface mapped meanwhile.
+    pub(super) fn map_on_configure(&mut self, index: usize) {
+        if self.surfaces[index].map_state != MapState::AwaitingConfigure {
+            return;
+        }
+        self.surfaces[index].map_state = MapState::Mapped;
+        let waiting = |s: &TrackedSurface| {
+            matches!(
+                s.role,
+                TrackedRole::Popup {
+                    refusal_logged: Some(PopupRefusal::UnconfiguredParent | PopupRefusal::HiddenParent),
+                    ..
+                }
+            )
+        };
+        if self.surfaces.iter().any(waiting) {
+            self.client.mark_dirty();
+        }
     }
 
     /// Records the logical buffer size; the next paint resizes the EGL window to it.
