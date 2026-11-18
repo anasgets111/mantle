@@ -118,9 +118,19 @@ fn check_against_the_sync_root(
     aur: bool,
 ) -> Result<CheckReport, String> {
     std::fs::create_dir_all(sync_root).map_err(|err| format!("failed to create {}: {err}", sync_root.display()))?;
+    // Every shell in the login shares `sync_root`, part files included; each `curl` holds this too.
+    // ponytail: a busy lock fails the check, retried on the failed-check backoff. Upgrade: block with
+    // `F_OFD_SETLKW` (the check already runs on a blocking thread).
+    let path = sync_root.join("check.lock");
+    let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path);
+    let lock = lock.map_err(|err| format!("failed to open {}: {err}", path.display()))?;
+    crate::instance::take_lock(&lock).map_err(|err| match err.raw_os_error() {
+        Some(libc::EAGAIN | libc::EACCES) => "another shell is checking for updates".to_string(),
+        _ => format!("failed to lock {}: {err}", path.display()),
+    })?;
     link_local_db(db_root, sync_root)?;
 
-    check::sync(programs, conf_path, sync_root)?;
+    check::sync(programs, conf_path, sync_root, &lock)?;
     let mut packages = check::outdated(programs, conf_path, sync_root)?;
     let aur_error = if aur {
         check::foreign(programs, conf_path, sync_root)
@@ -218,6 +228,46 @@ mod tests {
                 && db.ends_with(&format!(" --output {root}/sync/core.db.part file:///mirror/core/core.db"))
         );
         assert_eq!(argv, expected);
+    }
+
+    #[test]
+    fn a_second_shell_skips_its_check_while_another_shells_download_runs_even_orphaned() {
+        let dir = tempfile::tempdir().unwrap();
+        let gate = dir.path().join("gate");
+        let write_part = r#"while [ $# -gt 0 ]; do [ "$1" = --output ] && printf "$X" > "$2"; shift; done"#;
+        let fake = |name: &str, body: &str| fake_program(dir.path(), name, body);
+        let pacman_conf =
+            fake("pacman-conf", "case \"$*\" in *--repo-list) echo core ;; *Server) echo file:///m ;; esac");
+        let pacman = fake("pacman", "exit 0");
+        // A's download leaves a process behind until the test opens the gate, as a `curl` outliving
+        // its Supervisor would, holding curl's stdin (`sh` gives a background job `/dev/null` unless
+        // redirected); B's finishes at once.
+        let wait =
+            format!("i=0; while [ ! -e '{}' ] && [ $i -lt 1000 ]; do sleep 0.01; i=$((i+1)); done", gate.display());
+        let curl_a = fake("curl-a", &format!("X=a; {write_part}\nexec 3<&0; ( {wait} ) <&3 >/dev/null 2>&1 &"));
+        let curl_b = fake("curl-b", &format!("X=b; {write_part}"));
+        let db_root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(db_root.path().join("local")).unwrap();
+        let sync_root = tempfile::tempdir().unwrap();
+        let check = |curl: &str| {
+            let programs = Programs { pacman: &pacman, pacman_conf: &pacman_conf, curl, vercmp: "" };
+            check_against_the_sync_root(&programs, Path::new("/c"), db_root.path(), sync_root.path(), false)
+        };
+        let db = || std::fs::read_to_string(sync_root.path().join("sync/core.db")).unwrap();
+
+        assert!(check(&curl_a).is_ok());
+        let b = check(&curl_b);
+        std::fs::write(&gate, "").unwrap();
+        assert_eq!(db(), "a");
+        assert_eq!(b.unwrap_err(), "another shell is checking for updates");
+
+        let after = (0..1000).find_map(|_| {
+            let found = check(&curl_b).ok();
+            found.is_none().then(|| std::thread::sleep(std::time::Duration::from_millis(10)));
+            found
+        });
+        assert!(after.is_some(), "a check once the download ends takes the lock");
+        assert_eq!(db(), "b");
     }
 
     #[test]

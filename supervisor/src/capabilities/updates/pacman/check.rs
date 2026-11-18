@@ -4,8 +4,9 @@
 
 use std::collections::HashMap;
 use std::ffi::CString;
+use std::fs::File;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use shared::state::updates::UpdateCandidate;
 
@@ -17,7 +18,7 @@ use super::Programs;
 ///
 /// ponytail: no `.db.sig` is fetched, so a repo set to `DatabaseRequired` fails the check; fetch
 /// the signature when such a repo turns up.
-pub fn sync(programs: &Programs, conf: &Path, db_path: &Path) -> Result<(), String> {
+pub fn sync(programs: &Programs, conf: &Path, db_path: &Path, lock: &File) -> Result<(), String> {
     let sync_dir = db_path.join("sync");
     std::fs::create_dir_all(&sync_dir).map_err(|err| format!("failed to create {}: {err}", sync_dir.display()))?;
     let repos = run(Command::new(programs.pacman_conf).arg("--config").arg(conf).arg("--repo-list"), failed)?;
@@ -28,14 +29,20 @@ pub fn sync(programs: &Programs, conf: &Path, db_path: &Path) -> Result<(), Stri
         // `pacman-conf` has already expanded `Include`, `$repo` and `$arch`.
         let servers =
             run(Command::new(programs.pacman_conf).arg("--config").arg(conf).args(["--repo", repo, "Server"]), failed)?;
-        fetch_db(programs.curl, &sync_dir, repo, servers.lines())?;
+        fetch_db(programs.curl, &sync_dir, repo, servers.lines(), lock)?;
     }
     Ok(())
 }
 
 /// Tries each mirror in order until one answers, as pacman does. Timeouts match libalpm's, plus a
 /// total limit libalpm lacks: a mirror trickling a byte a second would hold the check forever.
-fn fetch_db<'a>(curl: &str, sync_dir: &Path, repo: &str, servers: impl Iterator<Item = &'a str>) -> Result<(), String> {
+fn fetch_db<'a>(
+    curl: &str,
+    sync_dir: &Path,
+    repo: &str,
+    servers: impl Iterator<Item = &'a str>,
+    lock: &File,
+) -> Result<(), String> {
     let db = sync_dir.join(format!("{repo}.db"));
     // A killed download leaves only the part file; the db pacman reads is swapped in whole.
     let part = sync_dir.join(format!("{repo}.db.part"));
@@ -51,7 +58,9 @@ fn fetch_db<'a>(curl: &str, sync_dir: &Path, repo: &str, servers: impl Iterator<
         }
         let output = command
             .arg(format!("{server}/{repo}.db"))
-            .stdin(Stdio::null())
+            // The check's lock as stdin, which `curl` never reads: one orphaned by its Supervisor's
+            // exit holds the lock until it stops writing `part`.
+            .stdin(lock.try_clone().map_err(|err| format!("failed to pass the lock to curl: {err}"))?)
             .output()
             .map_err(|err| format!("failed to run curl: {err}"))?;
         if !output.status.success() {
@@ -249,16 +258,17 @@ mod tests {
         );
         let sync = tempfile::tempdir().unwrap();
         let db = sync.path().join("core.db");
+        let lock = tempfile::tempfile().unwrap();
 
-        let failed = fetch_db(&curl, sync.path(), "core", ["file:///gone"].into_iter());
+        let failed = fetch_db(&curl, sync.path(), "core", ["file:///gone"].into_iter(), &lock);
         assert_eq!(failed.unwrap_err(), "failed to sync core: curl: (37) gone");
-        fetch_db(&curl, sync.path(), "core", ["file:///gone", "file:///live"].into_iter()).unwrap();
+        fetch_db(&curl, sync.path(), "core", ["file:///gone", "file:///live"].into_iter(), &lock).unwrap();
         assert_eq!(std::fs::read_to_string(&db).unwrap(), "db");
         assert!(!sync.path().join("core.db.part").exists());
 
         // A part file a killed download left must not be swapped in as the db.
         std::fs::write(sync.path().join("core.db.part"), "stale").unwrap();
-        fetch_db(&curl, sync.path(), "core", ["file:///live"].into_iter()).unwrap();
+        fetch_db(&curl, sync.path(), "core", ["file:///live"].into_iter(), &lock).unwrap();
         assert_eq!(std::fs::read_to_string(&db).unwrap(), "db", "an unchanged db is kept");
         let argv = std::fs::read_to_string(dir.path().join("argv")).unwrap();
         assert_eq!(argv.lines().count(), 4);
@@ -273,7 +283,7 @@ mod tests {
         let programs = Programs { pacman: "", pacman_conf: &pacman_conf, curl: "", vercmp: "" };
         let conf = dir.path().join("pacman.conf");
 
-        let error = sync(&programs, &conf, &dir.path().join("db")).unwrap_err();
+        let error = sync(&programs, &conf, &dir.path().join("db"), &tempfile::tempfile().unwrap()).unwrap_err();
         assert_eq!(error, format!("no repos configured in {}/pacman.conf", dir.path().display()));
         assert!(dir.path().join("db/sync").is_dir(), "the sync dir is made before pacman-conf runs");
     }
