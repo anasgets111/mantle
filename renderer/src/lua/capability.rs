@@ -14,11 +14,10 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashSet};
 use std::rc::Rc;
 
-use mlua::{Function, Lua, LuaSerdeExt, MetaMethod, MultiValue, UserData, UserDataMethods, Value};
+use mlua::{Function, Lua, MetaMethod, MultiValue, UserData, UserDataMethods, Value};
 use shared::{CommandEnvelope, CommandParams, RendererFrame, error};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::layout::node::preview_for_error;
 use crate::lua::hint::{closest, hint};
 use crate::lua::location::LocatedMethods;
 use crate::lua::luacats::rust_type_in_lua;
@@ -409,9 +408,8 @@ impl Capability {
         }
         // The Supervisor decodes again (ADR-0291); this one is for the config line that sent it.
         let roster = shared::Capability::from_name(&self.name).expect("an action resolves only on a roster name");
-        shared::action::check(roster, action, &arguments).map_err(|err| {
-            mlua::Error::runtime(format!("mantle.{}:{action}: {}", self.name, in_lua_words(lua, &err, &arguments)))
-        })?;
+        shared::action::check(roster, action, &arguments)
+            .map_err(|err| mlua::Error::runtime(format!("mantle.{}:{action}: {}", self.name, in_lua_words(&err))))?;
         self.commands.send(&self.name, action, arguments);
         Ok(())
     }
@@ -428,11 +426,11 @@ fn path_slot(capability: &str, action: &str) -> Option<usize> {
 }
 
 /// `shared::action`'s `argument 1: invalid type: string "x", expected usize` as `bad argument #1:
-/// expected a non-negative integer, got string "x"`, with the Lua value as sent. Inside a table
-/// argument it is serde's own got-word, as the table is not what failed. `invalid value` (right
-/// type, out of range) says so for a number; no slot but a wrong count reads `expects 1 argument, got 2`.
-// ponytail: only these three serde messages are reworded; any other passes through, after the slot.
-fn in_lua_words(lua: &Lua, err: &serde_json::Error, arguments: &[serde_json::Value]) -> String {
+/// expected a non-negative integer, got string`. Only the type: an argument can be a password
+/// (#129). `invalid value` (right type, out of range) says so for a number; no slot but a wrong
+/// count reads `expects 1 argument, got 2`.
+// ponytail: only these serde messages are reworded; any other passes through, after the slot.
+fn in_lua_words(err: &serde_json::Error) -> String {
     let text = err.to_string();
     let slot = text.strip_prefix("argument ").and_then(|rest| rest.split_once(": "));
     let Some((slot, text)) = slot.and_then(|(n, rest)| Some((n.parse::<usize>().ok()?, rest))) else {
@@ -447,25 +445,24 @@ fn in_lua_words(lua: &Lua, err: &serde_json::Error, arguments: &[serde_json::Val
             None => text,
         };
     };
-    let invalid = |prefix| text.strip_prefix(prefix)?.rsplit_once(", expected ");
-    let (range, (got, want)) = match (invalid("invalid type: "), invalid("invalid value: ")) {
-        (Some(pair), _) => (false, pair),
-        (_, Some(pair)) => (true, pair),
-        _ => return format!("bad argument #{slot}: {text}"),
+    let split = |kind| Some((kind, text.strip_prefix(kind)?.rsplit_once(", expected ")?));
+    let Some((kind, (got, want))) =
+        ["invalid type: ", "invalid value: ", "unknown variant "].into_iter().find_map(split)
+    else {
+        return format!("bad argument #{slot}: {text}");
     };
-    let note =
-        if range && (got.starts_with("integer") || got.starts_with("floating point")) { " (out of range)" } else { "" };
-    // Back from JSON, which keeps a string, an integer or a float as Lua sent it.
-    let value = arguments
-        .get(slot - 1)
-        .filter(|json| !json.is_null())
-        .and_then(|json| lua.to_value(json).ok())
-        .unwrap_or(Value::Nil);
-    let got = if matches!(value, Value::Table(_)) && !matches!(got, "sequence" | "map") {
-        got.replace('`', "").replace("floating point", "number")
-    } else {
-        preview_for_error(&value)
+    if kind == "unknown variant " {
+        return format!("bad argument #{slot}: unknown variant, expected {want}");
+    }
+    // serde quotes the value after its type word; the value's own text is arbitrary, so cut at the
+    // first quote rather than look for its end.
+    let got = match got.split(['`', '"']).next().unwrap_or_default().trim_end() {
+        "floating point" => "number",
+        "map" | "sequence" => "table",
+        "null" => "nil",
+        word => word,
     };
+    let note = if kind == "invalid value: " && matches!(got, "integer" | "number") { " (out of range)" } else { "" };
     format!("bad argument #{slot}: expected {}, got {got}{note}", rust_type_in_lua(want))
 }
 
@@ -530,14 +527,49 @@ pub(crate) mod tests {
         let (lua, _handle, mut rx) = lua_with_capability(0);
         for (call, needle) in [
             (r#"mantle.probe:set_app_volume("firefox", function() end)"#, "argument 2"),
-            ("mantle.probe:set_app_volume(7, 'x')", "bad argument #2: expected a number, got string \"x\""),
+            ("mantle.probe:set_app_volume(7, 'hunter2')", "bad argument #2: expected a number, got string"),
+            // A value can be a password (#129): only its type and the key names reach the error.
+            ("mantle.probe:set_app_volume(nil, 7)", "bad argument #1: expected a non-negative integer, got nil"),
+            (
+                "mantle.probe:set_level_meters({ 'hunter2' })",
+                "bad argument #1: expected a non-negative integer, got string",
+            ),
+            (
+                "mantle.probe:set_virtual_devices({ { kind = 'hunter2', name = 'x' } })",
+                "unknown variant, expected one of",
+            ),
+            ("mantle.probe:set_virtual_devices({ { kind = 'loopback', name = 'x', pin = 'hunter2' } })", "`pin`"),
             // 2^40 paths through shared subtables: refused by count before mlua expands them.
             ("local t = { 'x' } for _ = 1, 40 do t = { t, t } end mantle.probe:set_app_volume(7, t)", "values"),
         ] {
             let err = lua.load(call).exec().unwrap_err();
             assert!(err.to_string().contains(needle), "{call}: the error must name the offending slot: {err}");
+            assert!(!err.to_string().contains("hunter2"), "{call}: the error must not quote the value: {err}");
             assert!(rx.try_recv().is_err(), "{call}: a refused argument must not queue a half-built command");
         }
+    }
+
+    /// `~/` fails only without `$HOME`, which a test can't unset in its own process: it reruns
+    /// itself in a child without it.
+    #[test]
+    fn a_tilde_path_without_home_is_refused_without_quoting_it() {
+        if std::env::var_os("HOME").is_some() {
+            let me = "lua::capability::tests::a_tilde_path_without_home_is_refused_without_quoting_it";
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", me, "--nocapture"])
+                .env_remove("HOME")
+                .output()
+                .unwrap();
+            let out = String::from_utf8_lossy(&child.stdout);
+            assert!(child.status.success() && out.contains("1 passed"), "{out}");
+            return;
+        }
+        let lua = Lua::new();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (folders, _) = Capability::new("folders", DirtyFlag::new(), CommandSender::new(0, tx));
+        lua.globals().set("folders", folders).unwrap();
+        let err = lua.load("folders:watch('~/hunter2')").exec().unwrap_err().to_string();
+        assert!(err.contains("mantle.folders:watch: `~/` needs $HOME") && !err.contains("hunter2"), "{err}");
     }
 
     #[test]
@@ -559,7 +591,9 @@ pub(crate) mod tests {
         let (keyboard, _) = Capability::new("keyboard", DirtyFlag::new(), CommandSender::new(0, tx));
         lua.globals().set("keyboard", keyboard).unwrap();
 
-        for (arg, got) in [(r#""x""#, r#"got string "x""#), ("1.5", "got number 1.5"), ("-1", "got integer -1")] {
+        for (arg, got) in
+            [(r#""x""#, "got string"), ("1.5", "got number"), ("-1", "got integer (out of range)"), ("{}", "got table")]
+        {
             let src = format!("\n\nkeyboard:switch_layout({arg})");
             let err = lua.load(&src).set_name("=shell.lua").exec().unwrap_err();
             let first = crate::lua::describe(&err);
@@ -570,7 +604,7 @@ pub(crate) mod tests {
                 ),
                 "{first}"
             );
-            assert!(first.contains(got), "{first}");
+            assert!(first.ends_with(got), "{first}");
         }
     }
 

@@ -437,6 +437,26 @@ pub enum RendererFrame {
     CanLock(bool),
 }
 
+impl RendererFrame {
+    /// The frame's variant name, for logs. Fixed labels avoid `{frame:?}`, whose derived `Debug`
+    /// would print `SecureSubmit.secret` (ADR-0005).
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Command(_) => "Command",
+            Self::SecureSubmit(_) => "SecureSubmit",
+            Self::LockReport(_) => "LockReport",
+            Self::StartCapability { .. } => "StartCapability",
+            Self::CanLock(_) => "CanLock",
+            Self::CallResult(_) => "CallResult",
+            // Control-client frames (ADR-0112, ADR-0197), named so no wildcard hides a new variant.
+            Self::SetState { .. } => "SetState",
+            Self::Call(_) => "Call",
+            Self::ListDeclared { .. } => "ListDeclared",
+            Self::Inject { .. } => "Inject",
+        }
+    }
+}
+
 /// Final result of the Supervisor's re-exec'd PAM worker's conversation, carried as the last
 /// [`PamMessage::Outcome`] on the worker's stdout (ADR-0028, ADR-0241). It crosses a different
 /// process boundary from `RendererFrame`/`SupervisorFrame`, so is not reused as one. There is no

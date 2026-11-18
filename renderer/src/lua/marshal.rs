@@ -12,11 +12,12 @@ const MIN_SAFE_INTEGER: i64 = -MAX_SAFE_INTEGER;
 /// Maximum string size: 64KB.
 pub(crate) const MAX_STRING_BYTES: usize = 64 * 1024;
 
-/// `path` with a leading `~/` expanded under `$HOME`, or a Lua error naming `what`.
+/// `path` with a leading `~/` expanded under `$HOME`, or a Lua error naming `what` but not the
+/// path, an action argument that can hold a secret (#129).
 pub(crate) fn expand_path(what: &str, path: &str) -> mlua::Result<String> {
     shared::expand_tilde(path)
         .map(std::borrow::Cow::into_owned)
-        .map_err(|err| mlua::Error::runtime(format!("{what}: {err}, got {}", crate::layout::node::preview_str(path))))
+        .map_err(|err| mlua::Error::runtime(format!("{what}: {err}")))
 }
 
 /// `path` absolute or `~/` under `$HOME`, or a Lua error naming `what`: a relative one would resolve

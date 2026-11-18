@@ -10,7 +10,7 @@ pub(crate) fn parse_action<A: serde::de::DeserializeOwned>(params: &shared::Comm
 /// The log line for a command that failed to decode: neither serde's message nor the arguments,
 /// since either can hold a password from a network or secrets action (#121). Only the category,
 /// as `decode` reads values, not text, so serde has no position to give.
-fn malformed(params: &shared::CommandParams, err: &serde_json::Error) -> String {
+pub(crate) fn malformed(params: &shared::CommandParams, err: &serde_json::Error) -> String {
     let shared::CommandParams { capability, action, generation_id, .. } = params;
     format!("malformed {capability}.{action} command from generation {generation_id}: {:?} error", err.classify())
 }

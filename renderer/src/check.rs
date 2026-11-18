@@ -738,7 +738,7 @@ mod tests {
                 "bad action parameter",
                 &[("shell.lua", "\nmantle.keyboard:switch_layout(\"x\")\nreturn {}\n")],
                 &[
-                    "shell.lua:2: mantle.keyboard:switch_layout: bad argument #1: expected a non-negative integer, got string \"x\"",
+                    "shell.lua:2: mantle.keyboard:switch_layout: bad argument #1: expected a non-negative integer, got string",
                 ],
             ),
             (
@@ -750,7 +750,7 @@ mod tests {
                 "action value out of range",
                 &[("shell.lua", "\nmantle.audio:set_default_sink(4294967296)\nreturn {}\n")],
                 &[
-                    "shell.lua:2: mantle.audio:set_default_sink: bad argument #1: expected a non-negative integer, got integer 4294967296 (out of range)",
+                    "shell.lua:2: mantle.audio:set_default_sink: bad argument #1: expected a non-negative integer, got integer (out of range)",
                 ],
             ),
             (
@@ -782,7 +782,7 @@ mod tests {
             (
                 "action argument that quotes serde",
                 &[("shell.lua", "\nmantle.keyboard:switch_layout(\"a, expected b\")\nreturn {}\n")],
-                &["bad argument #1: expected a non-negative integer, got string \"a, expected b\""],
+                &["bad argument #1: expected a non-negative integer, got string\n"],
             ),
             (
                 "a plain-table child leads with its parent's line",
@@ -828,17 +828,17 @@ mod tests {
             (
                 "action argument nested in a table",
                 &[("shell.lua", "\nmantle.folders:watch(\"/tmp\", { \"a\", 5 })\nreturn {}\n")],
-                &["shell.lua:2: mantle.folders:watch: bad argument #2: expected a string, got integer 5"],
+                &["shell.lua:2: mantle.folders:watch: bad argument #2: expected a string, got integer\n"],
             ),
             (
                 "set_volume with a string",
                 &[("shell.lua", "\nmantle.audio:set_volume(59, \"loud\")\nreturn {}\n")],
-                &["shell.lua:2: mantle.audio:set_volume: bad argument #2: expected a number, got string \"loud\""],
+                &["shell.lua:2: mantle.audio:set_volume: bad argument #2: expected a number, got string\n"],
             ),
             (
                 "an integral float is a number",
                 &[("shell.lua", "\nmantle.keyboard:switch_layout(1.0)\nreturn {}\n")],
-                &["expected a non-negative integer, got number 1.0"],
+                &["expected a non-negative integer, got number\n"],
             ),
             // quoted in docs/guide/agents.md
             (

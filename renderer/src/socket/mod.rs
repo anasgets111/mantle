@@ -189,7 +189,7 @@ async fn pump<R, W>(
     let writer = async {
         while let Some(mut frame) = outbound_rx.recv().await {
             if let Err(err) = write_json_frame(write_half, &frame).await {
-                debug!("failed to send a {} frame: {err}", frame_label(&frame));
+                debug!("failed to send a {} frame: {err}", frame.label());
             }
             // Scrub immediately after write, not at `Drop` (ADR-0005/ADR-0027). The serialized
             // copy is `write_json_frame`'s to scrub and it does; this is the frame's own bytes.
@@ -202,24 +202,6 @@ async fn pump<R, W>(
     tokio::select! {
         _ = &mut reader => {}
         _ = &mut writer => {}
-    }
-}
-
-/// Names a frame for write-failure logs. Fixed labels avoid `{frame:?}`, whose derived `Debug`
-/// would print `SecureSubmit.secret` (ADR-0005).
-fn frame_label(frame: &RendererFrame) -> &'static str {
-    match frame {
-        RendererFrame::Command(_) => "Command",
-        RendererFrame::SecureSubmit(_) => "SecureSubmit",
-        RendererFrame::LockReport(_) => "LockReport",
-        RendererFrame::StartCapability { .. } => "StartCapability",
-        RendererFrame::CanLock(_) => "CanLock",
-        RendererFrame::CallResult(_) => "CallResult",
-        // Never sent here (ADR-0112, ADR-0197), but a wildcard could hide a new unnamed variant.
-        RendererFrame::SetState { .. } => "SetState",
-        RendererFrame::Call(_) => "Call",
-        RendererFrame::ListDeclared { .. } => "ListDeclared",
-        RendererFrame::Inject { .. } => "Inject",
     }
 }
 

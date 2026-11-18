@@ -419,7 +419,14 @@ async fn run_supervisor(
                     );
                     continue;
                 }
-                debug!(2; "inbound frame from generation {}: {:?}", inbound.generation_id, inbound.frame);
+                // Never the frame itself: a command's arguments or a set value can be a password (#129).
+                match &inbound.frame {
+                    RendererFrame::Command(envelope) => {
+                        let shared::CommandParams { capability, action, .. } = &envelope.params;
+                        debug!(2; "inbound {capability}.{action} command from generation {}", inbound.generation_id);
+                    }
+                    frame => debug!(2; "inbound {} frame from generation {}", frame.label(), inbound.generation_id),
+                }
                 match inbound.frame {
                 RendererFrame::LockReport(report) => supervisor.record_lock_report(report),
                 RendererFrame::CanLock(can_lock) => {
@@ -434,7 +441,7 @@ async fn run_supervisor(
                     "process" => supervisor.dispatch_process_command(&envelope).await,
                     name => match Capability::from_name(name) {
                         Some(capability) => supervisor.dispatch_capability_command(capability, &envelope),
-                        None => debug!("inbound command from generation {}: {:?}", inbound.generation_id, envelope),
+                        None => debug!("dropped a command for unknown capability {name}"),
                     },
                 },
                 RendererFrame::StartCapability { capability } => {

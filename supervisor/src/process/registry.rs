@@ -65,10 +65,7 @@ pub(crate) fn dispatch(
                 None => exited(None),
             },
             None => {
-                debug!(
-                    "malformed process.run command from generation {generation_id}: {:?}",
-                    envelope.params.arguments
-                );
+                debug!("malformed process.{action} command from generation {generation_id}");
                 // Lua's ProcessHandle already awaits `id`'s on_exit; this prevents a callback pair
                 // leak when no process spawned.
                 exited(None);
@@ -82,16 +79,13 @@ pub(crate) fn dispatch(
                 let opts = envelope.params.arguments.get(2).cloned().unwrap_or_default();
                 let opts = match serde_json::from_value::<Option<shared::action::LaunchOpts>>(opts) {
                     Ok(opts) => opts.unwrap_or_default(),
-                    Err(err) => return warn!("process.detach: refused {cmd:?}: {err}"),
+                    Err(err) => return warn!("{}", crate::action::malformed(&envelope.params, &err)),
                 };
                 if let Err(err) = crate::process::spawn_detached(&cmd, &args, &opts.env, None) {
                     warn!("process.detach: spawning {cmd:?} failed: {err}");
                 }
             }
-            None => debug!(
-                "malformed process.detach command from generation {generation_id}: {:?}",
-                envelope.params.arguments
-            ),
+            None => debug!("malformed process.detach command from generation {generation_id}"),
         },
         // Reaped off the loop: SIGTERM, grace and group poll take 100 ms, 2 s for a TERM-ignoring child.
         "kill" => {
@@ -129,7 +123,7 @@ pub(crate) fn spawn_and_register_process(
             Some((stdout, stderr))
         }
         Err(err) => {
-            warn!("process.run({cmd:?}, {args:?}) failed to spawn: {err}");
+            warn!("process.run({cmd:?}) failed to spawn: {err}");
             None
         }
     }
@@ -292,7 +286,7 @@ async fn report_process_output_line(
             let frame = SupervisorFrame::ProcessOutput(ProcessOutputLine { id, stream, line });
             match serde_json::to_vec(&frame) {
                 Ok(payload) => registry.send_output(generation_id, payload).await,
-                Err(err) => debug!("failed to serialize {frame:?}: {err}"),
+                Err(err) => debug!("failed to serialize process {id}'s output: {err}"),
             }
             false
         }

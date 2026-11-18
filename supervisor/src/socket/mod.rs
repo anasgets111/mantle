@@ -560,9 +560,9 @@ fn oversized_warns(frame: &SupervisorFrame) -> bool {
 /// Renderer registration; `connected.recv()` replays `last_snapshots`, so no early push is lost.
 /// Returns whether the frame was queued.
 pub(crate) fn send_frame_logged(registry: &GenerationRegistry, generation_id: u32, frame: &SupervisorFrame) -> bool {
-    let Ok(payload) = serde_json::to_vec(frame)
-        .inspect_err(|err| debug!("failed to serialize {frame:?} for generation {generation_id}: {err}"))
-    else {
+    let Ok(payload) = serde_json::to_vec(frame).inspect_err(|err| {
+        debug!("failed to serialize a {} frame for generation {generation_id}: {err}", frame_kind(frame))
+    }) else {
         return false;
     };
     if !frame_fits(frame, &payload) {
@@ -574,7 +574,7 @@ pub(crate) fn send_frame_logged(registry: &GenerationRegistry, generation_id: u3
     // Silent for snapshots: the replay delivers them, and a respawn cooldown logged one line per
     // snapshot for 30s.
     if !matches!(frame, SupervisorFrame::StateSnapshot(_)) {
-        debug!("failed to push {frame:?} to generation {generation_id}: no connection registered");
+        debug!("failed to push a {} frame to generation {generation_id}: no connection registered", frame_kind(frame));
     }
     false
 }

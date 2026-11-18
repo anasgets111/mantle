@@ -79,7 +79,7 @@ still exists.
 | Any other unknown name | Raises at the read, listing the actions the capability takes |
 | Any other method but `get`, `map` and `on_change` on `appearance`, `audio_levels`, `battery`, `privacy` or `clock` | Raises: they have no actions |
 | A function or userdata argument | Raises at the call, naming its slot |
-| Wrong type, range or argument count | Raises at the call: `mantle.audio:set_volume: bad argument #2: expected a number, got string "loud"`, or `mantle.audio:set_volume: expects 2 arguments, got 3` |
+| Wrong type, range or argument count | Raises at the call: `mantle.audio:set_volume: bad argument #2: expected a number, got string`, or `mantle.audio:set_volume: expects 2 arguments, got 3` |
 | A value the type rules out | Raises at the call: an empty name, a relative `folders:watch` path, a negative `hold_expiry` |
 | A float where an `integer` goes | Raises: `5.0` is refused, `5` works. `math.floor(x + 0.5)` returns an integer |
 | Arguments to an action that takes none | Raises: `mantle.network:scan(1)` is refused |
