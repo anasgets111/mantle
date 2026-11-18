@@ -2166,6 +2166,14 @@ Amended by #120: a panel whose bound `keyboard_interactivity` turns on from `"no
 scope under the same conditions `enter` checks. The caret, text-input and control focus
 (`focused(name)`) still wait for the keyboard; `focused()` reading true for one turn before that is
 #130.
+Amended by #130: an autofocus armed by `keyboard_interactivity` turning on, while no surface here
+holds the keyboard, keeps control focus in its panel's scope. The hold ends on `enter`, on
+`keyboard_interactivity` returning to `"none"`, or when the panel is destroyed. Only the prune
+widens; key routing, accessibility, the outline and typing stay gated on the keyboard. Hyprland,
+niri, sway and river focus an `on_demand` layer only at map, so after such a flip typed keys still
+go to the focused app (#132), and clicking into another app does not end the hold. Rejected:
+widening `keyboard_focus_scope()`, which would move accessibility focus and send another surface's
+keys to the launcher.
 
 ## 0113. What a code review is worth: four fixes out of two hundred findings, and the two that were the review's own doc drift
 
@@ -8961,6 +8969,11 @@ refusal that leaves nothing to wait for), at once if already locked, or after 3 
 late, and a raised `InhibitDelayMaxSec` cannot stall a suspend on a dead Renderer. Lock latency on
 hardware is not yet measured. Resume takes a fresh fd; a refused first one is logged once and not
 retried. Rejected: a Lua opt-in, which leaves every config unlocked by default.
+Amended by #122: a replacement for a Renderer that reported `CanLock(true)` starts unknown, and a
+sleep waits, within the same 3 s, for its first `CanLock`. Every generation sends one, `false` when
+its startup evaluation or apply fails, and an owed relock answers the wait without a second lock
+frame. Rejected: keeping the last `true`, since a lock sent before the replacement connects is
+dropped and a config that dropped its lock would be asked for one.
 
 ## 0386. SVG draw cost is counted from the parsed tree and refused past 2^28 weighted pixel writes
 
@@ -9145,6 +9158,18 @@ missing or non-string `kind`, and length or I/O errors. A skipped `Call` or `Set
 control client to time out (5 s). Rejected: skipping any decode failure (fails open on lock frames)
 and a deny-list (a new kind would default to skippable). Still open: a malformed first
 `SetSessionLock` loops with the session unlocked (#123).
+Amended by #123: a `SetSessionLock` that fails the typed decode no longer always ends the
+connection. If its `data.locked` reads as a bool, that value is forwarded. If not, and the last lock
+frame the pump forwarded did not ask for a lock, it is forwarded as a lock and the connection stays
+open, since ending it respawned into the same frame with the first lock never taken. Once a lock was
+asked for, the connection ends as before: lock and unlock share one body, so a lock forced over a
+held one answered a correct password with nothing while the Supervisor refused every retry; ending
+it clears `unlocking` through `RendererLost` and the relock brings a fresh prompt. Every lock the
+Renderer takes comes through its pump, so the pump's flag tracks the last lock asked for. Under a
+total skew each correct password costs a respawn and the session stays locked until a VT switch: it
+fails closed where base failed open. Rejected: reading every unreadable frame as a lock (locks the
+user out after a correct password); capping respawns (ends the loop with the session open, since the
+Supervisor is not a Wayland client). Still open: a frame whose `kind` cannot be read.
 
 ## 0397. A reload's surfaces are drawn first, then swapped back to back
 
