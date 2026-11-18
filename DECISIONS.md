@@ -2174,6 +2174,19 @@ niri, sway and river focus an `on_demand` layer only at map, so after such a fli
 go to the focused app (#132), and clicking into another app does not end the hold. Rejected:
 widening `keyboard_focus_scope()`, which would move accessibility focus and send another surface's
 keys to the launcher.
+Amended by #132: a mapped panel whose `keyboard_interactivity` turns from `"none"` to `"on_demand"`
+is destroyed and rebuilt through the `visible` hide and show path, so the compositor can focus it at
+map. Whether the keyboard follows is the compositor's call (sway: `"top"` and `"overlay"` only;
+Hyprland: not under a pointer constraint). Where it does, a field typing in another panel keeps its
+draft. No instance is rebuilt while the panel reserves a zone above 0 (windows would move twice),
+while any instance is under the pointer (a mode bound to the panel's own hover rebuilt in a loop),
+or while a popup under any instance is shown or opening; popups are matched by their live attachment
+or the parent their resolved tree names. Cost: a flip made while the pointer rests on the panel, a
+click inside it included, gets the keyboard on the next click. Rejected: carrying hover across the
+rebuild (no leave comes for a surface we destroy and no enter on the replacement is guaranteed, so
+hover could stick), going through `"exclusive"` and back (niri sends `leave` on the way back), and
+`hyprland_focus_grab_v1` (one compositor). A popup opening on a later pass while the replacement
+awaits its first configure is #136.
 
 ## 0113. What a code review is worth: four fixes out of two hundred findings, and the two that were the review's own doc drift
 
@@ -5980,6 +5993,10 @@ Rejected: reading the focused output from `mantle.workspaces` and targeting its 
 workspaces backend and rebuilds a shown surface on every focus change.
 
 **Amends ADR-0038 decision 3.**
+Amended by #132 (decision 4): an `"active"` panel closed before its first configure is kept, not
+dropped. Closed under the outputs it was built for, it is a refusal: no pass recreates it until the
+next output event, so a pass every second does not rebuild it every second. Closed after an output
+change, or once mapped, it is retried at once.
 
 ## 0247. `windows` lists every open toplevel, for taskbars, docks and alt-tab
 
@@ -9182,3 +9199,19 @@ promises a damage region survives other surfaces becoming current; buffer age ke
 correct. Measured live on Hyprland/NVIDIA (spread of a reload that commits 3 surfaces and removes
 1): median 0.90 ms, max 4.21 ms before; 0.22 ms and 1.84 ms after. Rejected: batching every turn;
 only a reload changes several surfaces' looks at once.
+
+## 0398. `mantle check` probes hidden surfaces after the verdict
+
+A hidden panel, popup or window is laid out shown to lint its cut shadows (#119, #128). The probe
+runs the config's Lua with the surface forced open, and its effects are open-ended: geometry, a
+consumed scroll request, an armed `pulse`, state written in a list's `each`. Probing inside the
+sample passes let those reach the verdict: a valid config failed the check, and one probe's rect hid
+another surface's cut. So the four sample passes run first and alone decide the exit code and the
+errors, recording which surfaces each left hidden. Then each pass's data is pushed again and laid
+out, and each hidden surface is laid out alone, its own instances only, under
+`Scene::inspect_then_roll_back`: budget gate, `image_status` names, lint, rollback. A pass whose
+replay fails marks its surfaces `not checked`. Cost: `on_change` handlers run twice when anything
+is hidden. Debug, 30-surface config: base 0.55 s, after 0.44 s. Rejected: rolling back probes inside
+the passes (Lua side effects escape any rollback); all hidden surfaces in one layout (one reads
+another's rect); a second VM (the config's load and prints run twice; not measured). Ceiling: a
+probe can still change another probe's warning; a VM per probe is the upgrade.
