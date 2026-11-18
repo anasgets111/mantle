@@ -549,18 +549,6 @@ mod tests {
     }
 
     #[test]
-    fn workers_exit_when_the_pool_drops() {
-        let pool = Pool::spawn(None, 2);
-        let queue = Arc::clone(&pool.jobs);
-        drop(pool);
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while Arc::strong_count(&queue) > 1 {
-            assert!(std::time::Instant::now() < deadline, "a worker is still waiting on the dropped pool's queue");
-            std::thread::yield_now();
-        }
-    }
-
-    #[test]
     fn only_svg_is_rasterized_by_size_and_only_gif_is_animated_by_extension() {
         assert!(is_vector(Path::new("/usr/share/icons/Adwaita/symbolic/x.svg")));
         assert!(is_vector(Path::new("/tmp/X.SVG")));

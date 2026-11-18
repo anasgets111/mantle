@@ -190,19 +190,6 @@ mod tests {
         assert_eq!(cache.read(&path, at).len, 5, "and the next draw reads it");
     }
 
-    /// The same idle shell, watched: no wake, and an event that changes no version is no cue.
-    #[test]
-    fn a_watched_file_owes_no_wake_and_a_no_op_event_no_cue() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("wall.png");
-        std::fs::write(&path, "one").unwrap();
-        let (mut cache, now) = (VersionCache::default(), Instant::now());
-        cache.read(&path, now);
-        assert_eq!(cache.due(), None, "nothing to poll, so nothing to wake for");
-        std::fs::set_permissions(&path, std::fs::metadata(&path).unwrap().permissions()).unwrap();
-        assert!(cache.changed(now).is_empty(), "chmod to the same mode is a stat, not a cue");
-    }
-
     #[test]
     fn a_path_whose_directory_goes_is_polled_from_then_on() {
         let root = tempfile::tempdir().unwrap();

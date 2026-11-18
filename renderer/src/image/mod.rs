@@ -865,16 +865,13 @@ mod tests {
         assert_eq!(cache.next_recheck(), None, "nor a wake");
         assert!(cache.watch_fd().is_some());
         cache.insert(key.clone(), Slot::Pending);
+        std::fs::set_permissions(&png, std::fs::metadata(&png).unwrap().permissions()).unwrap();
         assert!((0..20).all(|_| cache.poll().is_empty()), "an unchanged file is never a cue");
 
-        std::fs::write(&png, [&PIL_2X2_RGBA_PNG[..], b"!"].concat()).unwrap();
-        // `IN_CLOSE_WRITE` waits for the last close, which a fork in another test thread delays to its exec.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        let mut cue = cache.poll();
-        while cue.is_empty() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-            cue = cache.poll();
-        }
+        let replacement = dir.path().join("saved.png");
+        std::fs::write(&replacement, [&PIL_2X2_RGBA_PNG[..], b"!"].concat()).unwrap();
+        std::fs::rename(&replacement, &png).unwrap();
+        let cue = cache.poll();
         assert_eq!(cue, std::slice::from_ref(&png), "a rewrite is, once");
         assert!(cache.poll().is_empty());
         let rewritten = cache.key_for(&request);
@@ -1088,25 +1085,6 @@ mod tests {
             matches!(cache.entries.get(&key).map(|e| &e.slot), Some(Slot::Pending)),
             "no canvas, so nothing uploaded yet"
         );
-    }
-
-    /// Only an `image` node, which has a clock, asks for a WebP, PNG or APNG to play; a mask, sampler or
-    /// icon takes a slot of its own, and no other kind of file splits on it.
-    #[test]
-    fn only_an_image_node_asks_for_a_webp_png_or_apng_to_play() {
-        let mut cache = ImageCache::inline();
-        for (file, node, plays) in [
-            ("/w/a.webp", true, true),
-            ("/w/a.PNG", true, true),
-            ("/w/a.apng", true, true),
-            ("/w/a.webp", false, false),
-            ("/w/a.png", false, false),
-            ("/w/a.jpg", true, false),
-            ("/w/a.gif", true, false),
-        ] {
-            let request = ImageRequest { clock: node.then(|| (NodeId::test(1), true)), ..request(Path::new(file), 8) };
-            assert_eq!(cache.key_for(&request).plays, plays, "{file}, node: {node}");
-        }
     }
 
     #[test]

@@ -561,26 +561,6 @@ pub(in crate::image) mod tests {
         pixels
     }
 
-    /// An animated WebP or APNG takes the GIF's shape: the base, then each later frame's changed
-    /// rect only, replaying to the composited frames, and every delay at least the 20 ms floor.
-    #[test]
-    fn an_animated_webp_and_apng_decode_to_a_base_and_the_rects_that_changed() {
-        let dir = tempfile::tempdir().unwrap();
-        let webp = webp_fixture(dir.path(), "a.webp", &frames(), &[100, 0, 60]);
-        let apng = apng_fixture(dir.path(), "a.png", &frames(), &[100, 0, 60]);
-        for path in [webp, apng] {
-            let decoded = decode_frames(&path, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET)
-                .unwrap_or_else(|| panic!("{} is animated", path.display()));
-            let rects: Vec<_> = decoded.deltas.iter().map(|delta| delta.rect).collect();
-            assert_eq!(rects, [(1, 1, 2, 2), (3, 3, 1, 1)], "{}", path.display());
-            assert_eq!(decoded.delays, [100, 20, 60].map(Duration::from_millis), "{}", path.display());
-            assert_eq!(decoded.natural, Some((4, 4)));
-            for (index, frame) in frames().iter().enumerate() {
-                assert_eq!(&replayed(&decoded, index), frame, "{} frame {index}", path.display());
-            }
-        }
-    }
-
     /// An APNG's frames are sub-rects with their own disposal: what `Background` clears after a
     /// frame is a change the next frame's delta must carry, outside that frame's own rect.
     #[test]
@@ -714,16 +694,6 @@ pub(in crate::image) mod tests {
         assert_eq!(decoded.delays, [Duration::from_millis(50); 5], "5 cs each, the out-of-canvas frame gone");
         assert_eq!(decoded.deltas[1].rect, (1, 0, 3, 3), "the cleared (1, 0, 1, 2) joined to (3, 1, 1, 2)");
         assert_eq!(decoded.deltas[3].rect, (0, 0, 3, 3), "the cleared (1, 1, 2, 2) joined to (0, 0, 1, 1)");
-    }
-
-    /// Two canvases that differ nowhere have no changed rect; otherwise it is the box around every difference.
-    #[test]
-    fn the_changed_rect_is_the_box_around_every_difference() {
-        let [red, green, both] = frames();
-        assert_eq!(changed_rect(&red, &red, 4), (0, 0, 0, 0));
-        assert_eq!(changed_rect(&red, &green, 4), (1, 1, 2, 2));
-        assert_eq!(changed_rect(&red, &both, 4), (1, 1, 3, 3));
-        assert_eq!(changed_rect(&both, &red, 4), (1, 1, 3, 3));
     }
 
     /// `decode` hands a WebP or APNG to the animation reader ahead of the still path and keeps

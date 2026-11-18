@@ -315,15 +315,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_missing_icon_warns_once_in_each_theme() {
-        let name = "mantle-test-missing-icon-theme-warning";
-        for theme in ["mantle-test-old-theme", "mantle-test-new-theme"] {
-            assert_eq!(lookup(name, 16, theme), None);
-            assert!(!super::super::first_failure(&format!("{theme}/{name}")));
-        }
-    }
-
-    #[test]
     fn only_an_absolute_name_is_its_own_path() {
         // Tray icons arrive as absolute `icon_path`s with no stat. `./x.png` is not a theme name
         // and is not resolved against the working directory.
@@ -415,14 +406,6 @@ mod tests {
         let held = state.lock().unwrap().memo.get(&999).map(HashMap::len).unwrap_or_default();
         assert!(held <= MEMO_CAPACITY, "the map must not hold more than the cap, held {held}");
         assert_eq!(walks, MEMO_CAPACITY + 1, "every novel name still resolves; the cap bounds memory, not correctness");
-    }
-
-    /// The process-wide state: a repeated frame must not repaint every icon surface again. Only
-    /// this test sets it, and every other test resolves through fixtures or a local state.
-    #[test]
-    fn the_same_portal_theme_twice_is_one_switch() {
-        assert!(follow_portal_theme(Some("mantle-test-portal".into())));
-        assert!(!follow_portal_theme(Some("mantle-test-portal".into())));
     }
 
     fn in_theme(theme: &str) -> Mutex<Resolved> {

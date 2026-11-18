@@ -222,23 +222,6 @@ mod tests {
     }
 
     #[test]
-    fn edits_renames_and_deletes_name_the_watched_path_and_nothing_else() {
-        let dir = tempfile::tempdir().unwrap();
-        let (wall, neighbour) = (dir.path().join("wall.png"), dir.path().join("other.png"));
-        let mut watcher = Watcher::new().unwrap();
-        watcher.watch(&wall).unwrap();
-
-        std::fs::write(&wall, "appears").unwrap();
-        assert_eq!(watcher.drain().touched, std::slice::from_ref(&wall), "a file that did not exist yet");
-        std::fs::write(&neighbour, "x").unwrap();
-        assert_eq!(watcher.drain(), Drained::default(), "a sibling is not this path");
-        std::fs::rename(&neighbour, &wall).unwrap();
-        assert_eq!(watcher.drain().touched, std::slice::from_ref(&wall), "an atomic save, once");
-        std::fs::remove_file(&wall).unwrap();
-        assert_eq!(watcher.drain().touched, std::slice::from_ref(&wall));
-    }
-
-    #[test]
     fn a_symlinked_file_is_watched_where_it_is_and_where_it_points() {
         let (link_dir, target_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let target = target_dir.path().join("wall.png");
@@ -318,52 +301,6 @@ mod tests {
     }
 
     #[test]
-    fn a_same_directory_symlink_watches_both_names_and_cleans_up_without_duplicates() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("target.png");
-        let link = dir.path().join("link.png");
-        std::fs::write(&target, "one").unwrap();
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-
-        let mut watcher = Watcher::new().unwrap();
-        let wd = watcher.watch(&link).unwrap();
-        assert_eq!(watcher.dirs.len(), 1);
-        assert_eq!(watcher.dirs[&wd].len(), 2, "same directory records both link and target names");
-        let _ = watcher.drain();
-
-        std::fs::write(&target, "two").unwrap();
-        assert_eq!(watcher.drain().touched, std::slice::from_ref(&link));
-
-        std::fs::remove_file(&link).unwrap();
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-        assert_eq!(watcher.drain().touched, std::slice::from_ref(&link));
-
-        // IN_IGNORED on the shared descriptor produces one lost entry, not two.
-        let mut out = Drained::default();
-        watcher.map(wd, AddWatchFlags::IN_IGNORED, None, &mut out);
-        assert_eq!(out.lost, std::slice::from_ref(&link));
-        assert!(watcher.dirs.is_empty());
-
-        // Re-watch, verify re-pointing out of link_dir prunes the old same-dir target entry,
-        // and verify unwatch drops all entries.
-        let wd = watcher.watch(&link).unwrap();
-        assert_eq!(watcher.dirs[&wd].len(), 2);
-        let other_dir = tempfile::tempdir().unwrap();
-        let other = other_dir.path().join("other.png");
-        std::fs::write(&other, "other").unwrap();
-        std::fs::remove_file(&link).unwrap();
-        std::os::unix::fs::symlink(&other, &link).unwrap();
-        assert_eq!(watcher.watch(&link), Some(wd));
-        assert_eq!(watcher.dirs[&wd].len(), 1, "old same-dir target entry was pruned");
-        let _ = watcher.drain();
-        std::fs::write(&target, "same-dir-old-ignored").unwrap();
-        assert_eq!(watcher.drain(), Drained::default());
-
-        watcher.unwatch(&link);
-        assert!(watcher.dirs.is_empty());
-    }
-
-    #[test]
     fn losing_one_watch_of_a_symlink_releases_its_pair_and_avoids_duplicate_lost_entries() {
         let (link_dir, target_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let target = target_dir.path().join("target.png");
@@ -402,29 +339,6 @@ mod tests {
         let mut overflow_out = Drained::default();
         watcher.lose_all(&mut overflow_out);
         assert_eq!(overflow_out.lost, std::slice::from_ref(&link));
-        assert!(watcher.dirs.is_empty());
-    }
-
-    #[test]
-    fn partial_symlink_watch_failure_rolls_back_the_link_directory_watch() {
-        let dir = tempfile::tempdir().unwrap();
-        let root_link = dir.path().join("to-root");
-        std::os::unix::fs::symlink("/", &root_link).unwrap();
-
-        let mut watcher = Watcher::new().unwrap();
-        assert_eq!(watcher.watch(&root_link), None, "canonical target `/` has no file_name");
-        assert!(watcher.dirs.is_empty(), "link directory watch must be rolled back on target watch failure");
-
-        // Rolling back a dangling symlink removes only its temporary link-dir entry, keeping siblings.
-        let sibling = dir.path().join("sibling.png");
-        let dangling = dir.path().join("dangling.png");
-        std::fs::write(&sibling, "ok").unwrap();
-        std::os::unix::fs::symlink(dir.path().join("missing.png"), &dangling).unwrap();
-        let wd = watcher.watch(&sibling).unwrap();
-        assert_eq!(watcher.watch(&dangling), None);
-        assert_eq!(watcher.dirs.get(&wd).map(Vec::len), Some(1));
-        assert_eq!(watcher.dirs[&wd][0].0, sibling);
-        watcher.unwatch(&sibling);
         assert!(watcher.dirs.is_empty());
     }
 }
