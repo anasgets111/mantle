@@ -227,6 +227,9 @@ pub struct App {
     focused_control: Option<FocusedControl>,
     /// The `autofocus` control last seen, so one the user left is not re-armed until the keyboard re-enters.
     armed_control: Option<(String, layout::scene::NodeId)>,
+    /// The surface `keyboard_interactivity` armed while no surface here held the keyboard; its focus
+    /// waits for `enter` (#130).
+    awaiting_keyboard: Option<String>,
     /// Whether `focused_control` was last moved by Tab or an AT action, which alone draw the outline.
     focus_visible: bool,
     accessibility: accessibility::Accessibility,
@@ -546,6 +549,7 @@ mod test_support {
                 pending_seeds: Vec::new(),
                 focused_control: None,
                 armed_control: None,
+                awaiting_keyboard: None,
                 focus_visible: false,
                 accessibility: accessibility::Accessibility::new(waker),
                 held: Held::default(),

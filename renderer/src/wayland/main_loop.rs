@@ -137,6 +137,7 @@ pub fn run(
         pending_seeds: Vec::new(),
         focused_control: None,
         armed_control: None,
+        awaiting_keyboard: None,
         focus_visible: false,
         accessibility: accessibility::Accessibility::new(waker.clone()),
         held: Held::default(),

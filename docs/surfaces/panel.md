@@ -214,6 +214,7 @@ See [named state](../guide/signals.md#named-state) and [text fields](../guide/in
 | Hyprland refocuses the last window, onto its workspace, when a still-mapped panel drops to `"none"` | The engine sends no layer requests for a panel hidden in the same pass, so hiding one never drops it to `"none"` first. Hide it with `visible`, not by lowering the mode |
 | niri hands an `xdg_popup` the keyboard only if its parent held it when the popup mapped | The engine routes keys that arrive on the parent to the text field in a popup shown under it |
 | niri dismisses a grabbing popup when its parent's `keyboard_interactivity` changes | Raise the parent's mode before opening the popup, not from inside it |
+| No compositor (Hyprland, niri, sway, river) hands the keyboard to a still-mapped panel whose mode changes to `"on_demand"`; each does at map, and on a change to `"exclusive"` | Show a launcher with `visible`, so it maps fresh, or use `"exclusive"`. A bound change to `"on_demand"` arms `autofocus`, so `mantle input` works and `focused()` holds, but typed keys go to the focused app until the user clicks the panel ([#132](https://github.com/anasgets111/mantle/issues/132)) |
 
 ## Per-output content
 

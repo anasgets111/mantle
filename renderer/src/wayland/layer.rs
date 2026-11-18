@@ -419,6 +419,9 @@ impl App {
         let update = spec_update(applied, &fresh, *requested, *output_size, *measured);
         let gained_keyboard = applied.keyboard_interactivity == node::KeyboardInteractivity::None
             && update.keyboard_interactivity.is_some();
+        if update.keyboard_interactivity == Some(node::KeyboardInteractivity::None) {
+            self.awaiting_keyboard.take_if(|armed| *armed == self.surfaces[index].surface_id);
+        }
 
         if let Some(margin) = update.margin {
             set_margin(layer, margin);

@@ -70,6 +70,14 @@ fn check_combos(steps: &[InputStep]) -> Result<(), String> {
     })
 }
 
+/// Every shown `textfield` under `node`.
+fn shown_fields<'a>(node: &'a crate::layout::ResolvedNode, out: &mut Vec<&'a crate::layout::ResolvedNode>) {
+    if node.visible && !node.leaving {
+        out.extend((node.kind == "textfield").then_some(node));
+        node.content_children().for_each(|child| shown_fields(child, out));
+    }
+}
+
 fn evdev(button: InputButton) -> u32 {
     match button {
         InputButton::Left => BTN_LEFT,
@@ -190,6 +198,16 @@ impl App {
         self.with_injected_keyboard(surface_id, (false, false), |app| {
             app.prune_text_field_focus();
             if !app.focused_text_field.as_ref().is_some_and(|field| app.text_field_takes_keys(field)) {
+                let mut fields = Vec::new();
+                app.client.scene().surface(surface_id).into_iter().for_each(|tree| shown_fields(tree, &mut fields));
+                // `focused_field` refuses only a disabled field or one without a handler.
+                if !fields.iter().any(|f| keyboard::focused_field(&[f]).is_some())
+                    && fields.iter().any(|f| !f.is_disabled_field())
+                {
+                    return Err(format!(
+                        "{surface_id}'s textfield has neither `on_change` nor `on_submit`, so it takes no focus"
+                    ));
+                }
                 return Err(format!("no textfield is focused in {surface_id}; press one first"));
             }
             app.apply_ime_edit((0, 0), Some(text));
@@ -260,14 +278,15 @@ mod tests {
         }
     }
 
-    /// A launcher (`keyboard_interactivity = mode`) with fields `a` (shown with `open`) and `b`; notes with `n`.
+    /// A launcher (`keyboard_interactivity = mode`, `visible = shown`) with fields `a` (shown with `open`) and `b`;
+    /// notes with `n`.
     fn launcher(mode: &str) -> (App, tempfile::TempDir) {
         let (app, dir, _queue, _mock) = App::test_app_with_wire(&format!(
-            r#"open, log, w = state("open", false), {{}}, state("w", 200)
-            local function field(name) return textfield {{ width = 100, height = 20, autofocus = true,
+            r#"open, log, w, shown = state("open", false), {{}}, state("w", 200), state("shown", true)
+            local function field(name) return textfield {{ width = 100, height = 20, autofocus = true, focused = focused(name),
                 on_change = function(t) log[#log + 1] = name .. ":" .. t end }} end
             return {{ panel {{ id = "launcher", layer = "top", output = "TEST", width = 200, height = 80,
-                keyboard_interactivity = {mode},
+                keyboard_interactivity = {mode}, visible = shown,
                 child = column {{ children = {{ column {{ visible = open, children = {{ field("a") }} }}, field("b") }} }} }},
               panel {{ id = "notes", layer = "top", output = "TEST", width = w, height = 80,
                 keyboard_interactivity = "on_demand", child = field("n") }} }}"#
@@ -288,11 +307,16 @@ mod tests {
         app.client.lua().load("return log").eval().unwrap()
     }
 
+    fn is_focused(app: &App, name: &str) -> bool {
+        app.client.lua().load(format!("return focused({name:?}):get()")).eval().unwrap()
+    }
+
     #[test]
     fn a_bound_keyboard_interactivity_turning_on_arms_autofocus_without_an_enter() {
         let (mut app, _dir) = launcher(r#"open:map(function(o) return o and "on_demand" or "none" end)"#);
         turn(&mut app, "open:set(true)");
-        turn(&mut app, "w:set(300)"); // #120: a later re-resolve limits control focus to the keyboard's surface
+        turn(&mut app, "w:set(300)");
+        assert!(is_focused(&app, "a"), "#130: a later re-resolve keeps the armed field until `enter`");
         assert_eq!(app.inject_text("launcher@TEST", "ze"), Ok(()));
         assert_eq!(lua_log(&app), ["a:", "a:ze"]);
         turn(&mut app, "open:set(false)");
@@ -314,9 +338,54 @@ mod tests {
     }
 
     #[test]
+    fn an_armed_field_waiting_for_the_keyboard_unfocuses_when_interactivity_turns_off() {
+        let (mut app, _dir) = launcher(r#"w:map(function(v) return v > 250 and "on_demand" or "none" end)"#);
+        for w in [300, 310, 320] {
+            turn(&mut app, &format!("w:set({w})"));
+        }
+        assert!(is_focused(&app, "b"));
+        turn(&mut app, "w:set(200)");
+        turn(&mut app, "w:set(210)");
+        assert!(!is_focused(&app, "b"));
+    }
+
+    #[test]
+    fn hiding_the_panel_ends_its_wait_for_the_keyboard() {
+        let (mut app, _dir) = launcher(r#"open:map(function(o) return o and "on_demand" or "none" end)"#);
+        for code in ["open:set(true)", "shown:set(false)", "open:set(false)", "shown:set(true)"] {
+            turn(&mut app, code);
+        }
+        let steps = vec![InputStep::Move { x: 10.0, y: 10.0 }, InputStep::Press(InputButton::Left)];
+        assert_eq!(app.inject_input(&shared::Inject { surface: "launcher@TEST".into(), steps }), Ok(()));
+        assert!(is_focused(&app, "b"));
+        turn(&mut app, "w:set(300)");
+        assert!(!is_focused(&app, "b"), "a pressed field waits for the keyboard, as before");
+    }
+
+    #[test]
+    fn typing_into_a_field_without_handlers_names_them() {
+        let (mut app, _dir, _queue, _mock) = App::test_app_with_wire(
+            r#"local function p(id, key, on) return panel { id = id, layer = "top", output = "TEST", width = 100,
+                height = 40, keyboard_interactivity = "on_demand", child = column { children = {
+                    textfield { width = 100, height = 20 }, textfield { width = 100, height = 20, on_submit = print, [key] = on } } } } end
+            return { p("p", "visible", false), p("q", "disabled", true) }"#,
+        );
+        for id in ["p@TEST", "q@TEST"] {
+            let refused = app.inject_text(id, "x").unwrap_err();
+            assert!(refused.contains("neither `on_change` nor `on_submit`"), "{refused}");
+        }
+    }
+
+    #[test]
     fn a_fixed_on_demand_panel_still_waits_for_the_keyboard_to_autofocus() {
         let (mut app, _dir) = launcher(r#""on_demand""#);
         turn(&mut app, "open:set(true)");
         assert!(app.focused_text_field.is_none(), "only `enter` or a click arms it, as before");
+        assert!(app.inject_text("launcher@TEST", "x").unwrap_err().contains("press one first"));
+        let steps = vec![InputStep::Move { x: 10.0, y: 30.0 }, InputStep::Press(InputButton::Left)];
+        assert_eq!(app.inject_input(&shared::Inject { surface: "launcher@TEST".into(), steps }), Ok(()));
+        assert!(is_focused(&app, "b"));
+        turn(&mut app, "w:set(300)");
+        assert!(!is_focused(&app, "b"), "a pressed field still waits for the keyboard");
     }
 }

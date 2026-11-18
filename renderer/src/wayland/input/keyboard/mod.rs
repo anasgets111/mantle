@@ -258,6 +258,7 @@ impl KeyboardHandler for App {
         // Ignore already-held `raw`/`keysyms`. An enter may name a surface destroyed after the
         // compositor sent it (`visible` flip or output change); `None` is not an error.
         self.keyboard_focus = self.surface_id_for(surface).map(str::to_string);
+        self.awaiting_keyboard = None;
         self.prune_control_focus();
         self.sync_focused();
         // Redraw the caret of a field whose keyboard returned (ADR-0108; see `leave`).

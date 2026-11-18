@@ -327,6 +327,10 @@ impl App {
         if should_arm_autofocus(self.focused_secure_submit.is_some(), typing, self.focused_control.as_ref()) {
             self.arm_autofocus(&scope);
         }
+        if self.keyboard_focus.is_none() && self.focused_control.as_ref().is_some_and(|c| scope.contains(&c.surface_id))
+        {
+            self.awaiting_keyboard = Some(surface_id.to_string());
+        }
     }
 
     pub(in crate::wayland) fn restore_typing_control_on_enter(&mut self, scope: &[String]) -> bool {
@@ -346,11 +350,11 @@ impl App {
     pub(in crate::wayland::input) fn secure_field_takes_keys(&self) -> bool {
         secure_focus_accepts_keys(self.focused_control.as_ref(), self.focused_secure_submit.as_deref())
     }
-    fn scoped_controls(&self) -> Vec<Control> {
+    fn scoped_controls(&self, scope: &[String]) -> Vec<Control> {
         let mut result = Vec::new();
-        for surface_id in self.keyboard_focus_scope() {
-            if let Some(tree) = self.client.scene().surface(&surface_id) {
-                controls(&surface_id, tree, &mut result);
+        for surface_id in scope {
+            if let Some(tree) = self.client.scene().surface(surface_id) {
+                controls(surface_id, tree, &mut result);
             }
         }
         result
@@ -392,11 +396,18 @@ impl App {
     }
 
     pub(in crate::wayland) fn prune_control_focus(&mut self) {
-        if self
-            .focused_control
-            .as_ref()
-            .is_some_and(|focused| !self.scoped_controls().iter().any(|control| &control.focus == focused))
-        {
+        let Some(focused) = self.focused_control.as_ref() else { return };
+        // An autofocus armed by `keyboard_interactivity` keeps its own scope until `enter` (#130).
+        // ponytail: only `enter`, `keyboard_interactivity` returning to "none" or the panel's destroy
+        // ends the hold, so on a compositor that sends no `enter` for the flip (Hyprland), clicking
+        // into another app leaves `focused()` true. Upgrade: end it on a click outside the shell, which
+        // no event reports to a client that never held the keyboard (`workspaces.active_client` stays
+        // put when the click lands on the app focused before the panel opened).
+        let scope = match (&self.keyboard_focus, &self.awaiting_keyboard) {
+            (None, Some(armed)) => self.scope_of(armed),
+            _ => self.keyboard_focus_scope(),
+        };
+        if !self.scoped_controls(&scope).iter().any(|control| &control.focus == focused) {
             self.set_control_focus(None);
         }
     }
@@ -541,7 +552,7 @@ impl App {
         }
         let backwards = event.keysym == Keysym::ISO_Left_Tab || (event.keysym == Keysym::Tab && self.held.shift);
         if matches!(event.keysym, Keysym::Tab | Keysym::KP_Tab | Keysym::ISO_Left_Tab) {
-            let list = self.scoped_controls();
+            let list = self.scoped_controls(&self.keyboard_focus_scope());
             let current = self
                 .focused_control
                 .as_ref()
