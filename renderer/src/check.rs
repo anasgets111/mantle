@@ -132,10 +132,9 @@ fn lay_out_passes(
     // the exit code or the errors. Each pass's data is restored and each surface laid out alone, so
     // one that fails shown (content valid only once opened) skips only itself, and only when no
     // pass checked it. A pass whose data or layout fails to replay skips its surfaces the same way.
-    // ponytail: a probe sees the
-    // VM as the real passes and earlier probes left it; only its geometry rolls back, so another
-    // probe's scroll, `pulse` or Lua writes can change a hidden surface's warning, never the
-    // verdict. A second VM per probe is the upgrade.
+    // ponytail: a probe sees the VM as the real passes and earlier probes left it; only its geometry
+    // rolls back, so another probe's scroll, `pulse` or Lua writes can change a hidden surface's
+    // warning, never the verdict. A second VM per probe is the upgrade.
     for (set, ids) in hidden.into_iter().filter(|(_, ids)| !ids.is_empty()) {
         let restored = match set {
             Some(set) => {

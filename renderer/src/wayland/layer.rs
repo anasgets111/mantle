@@ -428,10 +428,11 @@ impl App {
         let update = spec_update(applied, &fresh, *requested, *output_size, *measured);
         let gained_keyboard = applied.keyboard_interactivity == node::KeyboardInteractivity::None
             && update.keyboard_interactivity.is_some();
-        // #132: Hyprland, niri, sway and river focus an `on_demand` surface only at map, so a mapped one
-        // gaining it is remapped through the `visible` path. Not with a zone (windows would shift), nor
-        // while any instance (another output's copy would take the keyboard) is under the pointer (the
-        // `ponytail:` below) or has a popup shown or opening, which would close or lose its parent.
+        // #132: Hyprland, niri, sway and river focus an `on_demand` surface only at map, so a mapped panel
+        // gaining it is remapped through the `visible` path, except: with a zone, as windows would shift;
+        // with any instance (another output's copy would take the keyboard) under the pointer, as a mode
+        // bound to that hover would remap without bound (the `ponytail:` below), or with a popup shown or
+        // opening, as the drop would close it or leave it without a parent.
         let remap = gained_keyboard
             && update.keyboard_interactivity == Some(node::KeyboardInteractivity::OnDemand)
             && self.surfaces[index].map_state == MapState::Mapped
