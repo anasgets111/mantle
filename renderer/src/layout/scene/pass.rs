@@ -1206,12 +1206,17 @@ mod tests {
 
     /// #141: a face joining a family the rows draw in, a bold file where bold was synthetic, voids
     /// their unboxed sizes past the window, not a hidden row's. A new family's face voids none.
+    /// Rows past 40 are twice as wide as those the window builds, so the void moves the scroll range,
+    /// and the pass that placed the old room owes one more that turn.
     #[test]
     fn a_restyle_voids_unboxed_sizes_past_the_window_and_a_new_family_does_not() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shots/fonts/split");
         let files = [('─', "Mono-Regular-2500.ttf"), ('●', "Symbols2-25CF.ttf"), ('│', "Mono-Bold-2500-2502.ttf")];
         let lookup = move |ch| files.iter().find(|(at, _)| *at == ch).map(|(_, file)| dir.join(file));
-        let Some((shaping, open, lua, _, pass)) = face_list(r#""──", font_weight = 700"#, lookup) else { return };
+        let Some((shaping, open, lua, _, pass)) = face_list(r#"i > 40 and "────" or "──", font_weight = 700"#, lookup)
+        else {
+            return;
+        };
         lua.load("hide = function(i) return i % 10 == 0 end").exec().unwrap();
         let mut scene = Scene::new();
         let list =
@@ -1230,14 +1235,27 @@ mod tests {
         pass(&mut scene, &lua, "s:scroll_to(1000)");
         let far = list(&scene).range().start;
         let hidden = list(&scene).range().find(|&at| list(&scene).size(at).is_infinite()).unwrap();
-        pass(&mut scene, &lua, "s:scroll_to(0)");
+        pass(&mut scene, &lua, "s:scroll_to(20)");
         assert!(!list(&scene).range().contains(&far) && list(&scene).size(far).is_finite(), "row {far} measured");
         assert!(!list(&scene).range().contains(&hidden) && list(&scene).size(hidden).is_infinite());
+        let node = |scene: &Scene| scene.surface("bar@TEST").unwrap().children[0].children[0].clone();
+        let cell = node::signal_at(&node(&scene).properties, "scroll").and_then(|s| s.cell_id()).unwrap();
+        let range =
+            |scene: &Scene| super::super::scroll::extent_along(&node(scene).children, MainAxis::Horizontal, 0.0);
         land(&mut scene, "●");
         assert!(list(&scene).size(far).is_finite(), "a new family keeps row {far}");
+        assert!(scene.read_by_lua(vec![cell]).is_empty(), "and owes no pass");
         land(&mut scene, "│");
         assert!(list(&scene).size(far).is_nan(), "the bold file voids row {far}");
         assert!(list(&scene).size(hidden).is_infinite(), "and keeps row {hidden} hidden");
+        // The landing pass placed the room for the rows past the window before voiding them.
+        let landed = (range(&scene), node(&scene).scrolled);
+        assert_eq!(scene.read_by_lua(vec![cell]), [cell], "the scroll range owes a pass this turn");
+        pass(&mut scene, &lua, "");
+        assert_ne!(range(&scene), landed.0, "which moves it");
+        assert_eq!(node(&scene).scrolled, 20.0, "and not the offset");
+        assert_eq!(landed.1, 20.0);
+        assert!(scene.read_by_lua(vec![cell]).is_empty(), "once");
     }
 
     /// #125, the common path: a landing for a face no row uses leaves the list as it was, its

@@ -76,6 +76,7 @@ pub fn list_children(
         sizes: Vec::new(),
         boxed: Vec::new(),
         fonts: old.map_or((0, 0), |old| old.fonts),
+        voided: false,
         typical: old.map_or(f32::NAN, |old| old.typical),
         window: None,
         added: Vec::new(),
@@ -127,6 +128,9 @@ pub struct ListMemo {
     boxed: Vec<u8>,
     /// The font generation and restyle count `sizes` were last measured under.
     fonts: (u64, u64),
+    /// Whether the last [`Self::measured`] voided a size past the window, so the room the pass
+    /// placed for it before solving is stale.
+    pub voided: bool,
     /// The mean known length, carried across builds: an unbuilt item's estimate.
     typical: f32,
     /// The catalog items built, when not all of them.
@@ -349,7 +353,8 @@ impl ListMemo {
         }
         let end = self.range().end;
         let past = self.sizes[end..].iter_mut().zip(&mut self.boxed[end..]);
-        past.filter(|(_, flags)| **flags == STALE).for_each(|(size, flags)| (*size, *flags) = (f32::NAN, 0));
+        let stale = past.filter(|(_, flags)| **flags == STALE);
+        self.voided = stale.map(|(size, flags)| (*size, *flags) = (f32::NAN, 0)).count() > 0;
         for (item, (length, boxed)) in self.range().zip(lengths) {
             (self.sizes[item], self.boxed[item]) = (length.unwrap_or(HIDDEN), u8::from(boxed && length.is_some()));
         }

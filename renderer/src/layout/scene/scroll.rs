@@ -217,11 +217,14 @@ fn short_window(node: &ResolvedNode, cell: CellId) -> bool {
             || node.children.iter().any(|child| short_window(child, cell)))
 }
 
-/// Whether windowed list `node` shows room it holds for items it did not build (ADR-0374). Half a
-/// pixel either way: rounding is not a gap.
+/// Whether windowed list `node` shows room it holds for items it did not build (ADR-0374), or holds
+/// room for items its pass voided after placing it (#141). Half a pixel either way: rounding is not a gap.
 pub(super) fn outruns_window(node: &ResolvedNode, axis: MainAxis) -> bool {
     let Some(memo) = node.list_memo.as_deref() else { return false };
     let Some(range) = memo.window.clone() else { return false };
+    if memo.voided {
+        return true;
+    }
     let (lead, trail) = memo.room();
     let size = LogicalSize { width: node.rect.width, height: node.rect.height };
     let (length, _) = viewport(&node.layout_style, size, axis);
