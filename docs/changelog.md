@@ -123,7 +123,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 - Fixed: an update started with `mantle.updates:install()` keeps running if the shell restarts or crashes, and survives output that is not UTF-8. Its full output goes to `$XDG_RUNTIME_DIR/mantle/install.log`; `install_log` shows the last 200 lines, each cut to 4 KiB, bad bytes as `�`. After a restart the shell does not show that update, and `install()` fails until it ends.
 - Fixed: with `aur = true`, `mantle.updates.packages` leaves out AUR packages that `IgnorePkg` names, as it did for repo packages.
 - Fixed: on Arch, a `mantle.updates` check slower than 10 minutes no longer leaves a second check running beside it, which could store a half-downloaded repo database and fail later checks. `checking` stays `true` until it ends; each repo database download gives up after 10 minutes instead.
-- Fixed: `mantle.updates:configure({ interval = ... })` counts time asleep, so a daily check on a laptop that sleeps overnight runs daily. A failed scheduled check retries within 5 minutes.
+- Fixed: `mantle.updates:configure({ interval = ... })` counts time asleep, so a daily check on a laptop that sleeps overnight runs daily.
 
 ## 0.13.3 - 2026-11-10
 
