@@ -595,18 +595,29 @@ mod tests {
         assert!(!valid_secret_name(&"x".repeat(129)));
     }
 
-    #[test]
-    fn a_secure_submit_never_formats_its_secret() {
-        let submit = SecureSubmit {
-            generation_id: 3,
+    fn submit() -> SecureSubmit {
+        SecureSubmit {
+            generation_id: 4,
             capability: Capability::Polkit,
-            action: "authenticate".into(),
+            action: "authenticate".to_string(),
             name: None,
             secret: b"hunter2".to_vec(),
-        };
+        }
+    }
 
+    /// `frame` serializes to exactly `wire`, and `wire` decodes back to it.
+    fn round_trips<F>(frame: F, wire: serde_json::Value)
+    where
+        F: Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
+    {
+        assert_eq!(serde_json::to_value(&frame).unwrap(), wire);
+        assert_eq!(serde_json::from_value::<F>(wire).unwrap(), frame);
+    }
+
+    #[test]
+    fn a_secure_submit_never_formats_its_secret() {
         // Whole rejected frames go through this `Debug` via the enum too.
-        let rendered = format!("{:?}", RendererFrame::SecureSubmit(submit));
+        let rendered = format!("{:?}", RendererFrame::SecureSubmit(submit()));
 
         assert!(rendered.contains("<7 bytes redacted>"), "the length is the only thing worth logging: {rendered}");
         assert!(!rendered.contains("104"), "a byte of the plaintext reached the formatter: {rendered}");
@@ -661,14 +672,10 @@ mod tests {
             revision: 1,
             payload: serde_json::json!({"volume": 0.5}),
         });
-        let wire = serde_json::to_value(&frame).unwrap();
-        assert_eq!(
-            wire,
-            serde_json::json!({ "kind": "StateSnapshot", "data": { "capability": "audio", "revision": 1, "payload": {"volume": 0.5} } })
+        round_trips(
+            frame,
+            serde_json::json!({ "kind": "StateSnapshot", "data": { "capability": "audio", "revision": 1, "payload": {"volume": 0.5} } }),
         );
-
-        let parsed: SupervisorFrame = serde_json::from_value(wire).unwrap();
-        assert_eq!(parsed, frame);
     }
 
     #[test]
@@ -684,11 +691,7 @@ mod tests {
     fn supervisor_frame_reevaluate_is_a_bare_kind_with_no_data() {
         // The one payload-free frame: serde omits `data` for a unit variant, so the decoder must
         // accept this shape.
-        let wire = serde_json::to_value(SupervisorFrame::Reevaluate).unwrap();
-        assert_eq!(wire, serde_json::json!({ "kind": "Reevaluate" }));
-
-        let parsed: SupervisorFrame = serde_json::from_value(wire).unwrap();
-        assert_eq!(parsed, SupervisorFrame::Reevaluate);
+        round_trips(SupervisorFrame::Reevaluate, serde_json::json!({ "kind": "Reevaluate" }));
     }
 
     #[test]
@@ -703,53 +706,31 @@ mod tests {
             },
             id: 105,
         };
-        let frame = RendererFrame::Command(envelope.clone());
-        let wire = serde_json::to_value(&frame).unwrap();
-        assert_eq!(
-            wire,
+        round_trips(
+            RendererFrame::Command(envelope),
             serde_json::json!({ "kind": "Command", "data": {
                 "params": { "generation_id": 4, "capability": "audio", "action": "set_volume", "arguments": [0.75], "expected_revision": 0 },
                 "id": 105
-            } })
+            } }),
         );
-
-        let parsed: RendererFrame = serde_json::from_value(wire).unwrap();
-        assert_eq!(parsed, frame);
     }
 
     #[test]
     fn renderer_frame_secure_submit_is_adjacently_tagged() {
-        let frame = RendererFrame::SecureSubmit(SecureSubmit {
-            generation_id: 4,
-            capability: Capability::Polkit,
-            action: "authenticate".to_string(),
-            name: None,
-            secret: b"hunter2".to_vec(),
-        });
-        let wire = serde_json::to_value(&frame).unwrap();
-        assert_eq!(
-            wire,
+        round_trips(
+            RendererFrame::SecureSubmit(submit()),
             serde_json::json!({
                 "kind": "SecureSubmit",
                 "data": { "generation_id": 4, "capability": "polkit", "action": "authenticate", "secret": [104, 117, 110, 116, 101, 114, 50] }
-            })
+            }),
         );
-
-        let parsed: RendererFrame = serde_json::from_value(wire).unwrap();
-        assert_eq!(parsed, frame);
     }
 
     /// An unbounded channel carries bare `SecureSubmit` values, so the type must scrub `secret`
     /// on zeroize/drop.
     #[test]
     fn zeroizing_a_secure_submit_clears_its_secret() {
-        let mut submit = SecureSubmit {
-            generation_id: 4,
-            capability: Capability::Polkit,
-            action: "authenticate".to_string(),
-            name: None,
-            secret: b"hunter2".to_vec(),
-        };
+        let mut submit = submit();
 
         submit.zeroize();
 
@@ -763,25 +744,17 @@ mod tests {
             stream: ProcessStream::Stdout,
             line: "hello".to_string(),
         });
-        let wire = serde_json::to_value(&frame).unwrap();
-        assert_eq!(
-            wire,
-            serde_json::json!({ "kind": "ProcessOutput", "data": { "id": 3, "stream": "Stdout", "line": "hello" } })
+        round_trips(
+            frame,
+            serde_json::json!({ "kind": "ProcessOutput", "data": { "id": 3, "stream": "Stdout", "line": "hello" } }),
         );
-
-        let parsed: SupervisorFrame = serde_json::from_value(wire).unwrap();
-        assert_eq!(parsed, frame);
     }
 
     #[test]
     fn supervisor_frame_process_exited_is_adjacently_tagged() {
         for code in [Some(3), None] {
             let frame = SupervisorFrame::ProcessExited(ProcessExited { id: 3, code });
-            let wire = serde_json::to_value(&frame).unwrap();
-            assert_eq!(wire, serde_json::json!({ "kind": "ProcessExited", "data": { "id": 3, "code": code } }));
-
-            let parsed: SupervisorFrame = serde_json::from_value(wire).unwrap();
-            assert_eq!(parsed, frame);
+            round_trips(frame, serde_json::json!({ "kind": "ProcessExited", "data": { "id": 3, "code": code } }));
         }
     }
 

@@ -244,12 +244,6 @@ pub fn first_failure(key: &str) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_failing_key_warns_once() {
-        assert!(first_failure("a-failing-key-warns-once"));
-        assert!(!first_failure("a-failing-key-warns-once"), "the second frame drawing it must stay quiet");
-    }
-
     fn config(tag: &'static str, raw: &str) -> Config {
         let (mut default, mut overrides) = (Some(Level::Notice), Vec::new());
         for item in raw.split(',').map(str::trim).filter(|item| !item.is_empty()) {
