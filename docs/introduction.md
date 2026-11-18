@@ -7,6 +7,9 @@ Mantle runs a desktop shell written in Lua on Wayland. Your `shell.lua` returns
 [nodes](nodes/index.md) for layout and drawing. [Signals](guide/signals.md) keep their properties
 up to date as [capabilities](capabilities/index.md) report changes.
 
+Mantle is pre-1.0: a minor release (0.13 to 0.14) can change the Lua API. Each change that needs a
+config edit is a `Breaking` entry in the [changelog](changelog.md), with the edit to make.
+
 <video src="https://github.com/user-attachments/assets/d5a618ae-29a8-4483-b479-1eedd5ec9755" controls muted playsinline preload="metadata"></video>
 
 The video is a Mantle shell: [`demo/director`](../demo/director/shell.lua) types each save and records

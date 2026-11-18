@@ -9,7 +9,9 @@ lock screens; save your Lua config to reload the shell.
 
 > "I daily-drove quickshell until mantle fully replaced it and more"
 
-Version 0.x: a minor release can break the Lua API.
+Mantle is pre-1.0: a minor release (0.13 to 0.14) can change the Lua API. Each change that needs a
+config edit is a `Breaking` entry in the
+[changelog](https://anasgets111.github.io/mantle/changelog.html), with the edit to make.
 
 Mantle ships no shell of its own. [`share/starter`](share/starter) is a one-clock bar;
 [anasgets111/dotfiles](https://github.com/anasgets111/dotfiles) is a full shell built on it.
