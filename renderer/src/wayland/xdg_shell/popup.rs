@@ -155,10 +155,12 @@ impl App {
             TrackedRole::Popup {
                 popup: None,
                 parent_id: None,
-                // The declaration's own numbers, which for a `Content` axis is zero until the first
-                // resolve measures one. Nothing opens before then; `apply_resolved_state` writes
-                // the real pair on every pass.
-                requested: crate::wayland::surface::popup_requested_size(spec, LogicalRect::default()),
+                // Measured off this instance's resolved tree (#143): the pass its parent's
+                // configure asks for may be narrowed to the parent.
+                requested: crate::wayland::surface::popup_requested_size(
+                    spec,
+                    self.client.scene().surface(&instance.instance_id).map_or_else(LogicalRect::default, |t| t.rect),
+                ),
                 positioned: None,
                 spec: spec.clone(),
                 dismissed_at: None,
@@ -275,10 +277,16 @@ impl App {
             self.surfaces[parent].role.as_popup_parent().map(|role| (self.surfaces[parent].surface_id.clone(), role))
         }) else {
             if self.refusal_is_new(index, PopupRefusal::HiddenParent) {
-                warn!(
-                    "{surface_id}: its `parent` {:?} names no surface that is currently shown, so it is not opened",
-                    spec.parent
-                );
+                // A parent visible in the scene but not shown yet usually shows this pass; one the
+                // compositor refused logs its own refusal, so this child only debugs.
+                if self.client.scene().surfaces().any(|(id, t)| t.visible && is_instance_of(id, &spec.parent)) {
+                    debug!("{surface_id}: waits for {:?} to be shown", spec.parent);
+                } else {
+                    warn!(
+                        "{surface_id}: its `parent` {:?} names no surface that is currently shown, so it is not opened",
+                        spec.parent
+                    );
+                }
             }
             return;
         };
@@ -698,7 +706,10 @@ mod tests {
                     instance.output.clear();
                     app.create_panel(&qh, panel, &instance, &Default::default(), true, inst.available);
                 }
-                SurfaceSpec::Popup(popup) => app.create_popup(&qh, popup, inst, false),
+                SurfaceSpec::Popup(popup) => {
+                    let visible = app.client.scene().surface(&inst.instance_id).is_some_and(|tree| tree.visible);
+                    app.create_popup(&qh, popup, inst, visible);
+                }
                 _ => {}
             }
         }
@@ -852,6 +863,30 @@ mod tests {
             app.client.mark_dirty();
             assert!(pass(&mut app));
             assert_eq!(app.surfaces[idx(&app, "menu")].role.wl_surface().unwrap().id(), opened, "opened once");
+        }
+    }
+
+    /// #143: a popup visible from startup waits for its panel's first configure and then opens,
+    /// sized by its declaration or by its content.
+    #[test]
+    fn a_popup_visible_at_startup_opens_on_its_panels_first_configure() {
+        for size in ["width = 200, height = 120,", ""] {
+            let (mut app, _dir) = two_output_app(&format!(
+                r#"return {{ panel {{ id = "bar", layer = "top", output = "all", height = 32 }},
+                popup {{ id = "menu", parent = "bar", anchor_rect = {{ x = 0, y = 0, width = 10, height = 10 }}, {size}
+                    grab = false, visible = true, child = rect {{ width = 120, height = 24 }} }} }}"#
+            ));
+            assert_eq!(
+                popup_state(&app, "menu"),
+                (false, None, None, Some(PopupRefusal::UnconfiguredParent)),
+                "{size}"
+            );
+            app.set_surface_size(idx(&app, "bar@eDP-1"), (1900, 32));
+            app.map_on_configure(idx(&app, "bar@eDP-1"));
+            assert!(app.client.re_resolve_if_dirty(), "{size}: the configure requests a pass");
+            assert_eq!(app.client.take_last_resolved(), None, "{size}: a whole pass, not the panel's alone");
+            app.apply_resolved_surface_state();
+            assert_eq!(popup_state(&app, "menu"), (true, Some("bar@eDP-1".into()), None, None), "{size}");
         }
     }
 
