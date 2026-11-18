@@ -645,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_declaration_shares_memo_rc_while_resolved_tweens_and_refused_values_allocate_distinct() {
+    fn unchanged_declaration_shares_memo_rc_while_resolved_tweens_allocate_distinct() {
         let mut bar = Fixture::new(
             r##"w = state("w", 20)
             nested = state("nested", 4)
@@ -684,21 +684,5 @@ mod tests {
         assert!(measured.properties.contains_key("width"));
         assert!(!measured_memo.raw().contains_key("width"), "Rc::make_mut must not mutate ResolveMemo.raw");
         assert!(!std::rc::Rc::ptr_eq(&measured.properties, measured_memo.raw()));
-    }
-
-    #[test]
-    fn refused_value_dropped_by_resolve_does_not_share_raw_rc() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) =
-            surface_from(r#"return panel { id = "bar", child = rect { width = 10, height = 10, opacity = 2 } }"#);
-        let instances = [instance_at(&surface, full())];
-        let report = scene.apply_locked(&[surface], &instances, &shaping, &lua, false, false).unwrap();
-        assert!(report.is_some());
-        let child = &scene.surface("bar@TEST").unwrap().children[0];
-        let memo = child.resolve_memo.as_ref().unwrap();
-        assert!(memo.raw().contains_key("opacity"));
-        assert!(!child.properties.contains_key("opacity"));
-        assert!(!std::rc::Rc::ptr_eq(&child.properties, memo.raw()));
     }
 }

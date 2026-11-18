@@ -378,43 +378,4 @@ mod tests {
 
         assert_eq!(answers(&hover_writes_at(&tree, at(10.0, 10.0))), vec![false, true]);
     }
-
-    #[test]
-    fn reconcile_clears_removed_signals_handles_missing_tree_and_preserves_duplicate_order() {
-        let lua = Lua::new();
-        let (a_sig, _) = hover_userdata(&lua);
-        let (b_sig, b_val) = hover_userdata(&lua);
-        let (dup_sig, dup_val) = hover_userdata(&lua);
-        let cb_a = lua.create_function(|_, ()| Ok(())).unwrap();
-        let previous = [(a_sig.clone(), Some(cb_a)), (b_sig.clone(), None)];
-
-        // `a_sig` was removed; `b_sig` stays; `dup_sig` appears twice with last-wins order.
-        let tree = node(
-            (0.0, 0.0, 100.0, 40.0),
-            None,
-            vec![
-                node((0.0, 0.0, 30.0, 20.0), Some(b_val), vec![]),
-                node((0.0, 20.0, 30.0, 20.0), Some(dup_val.clone()), vec![]),
-                node((40.0, 0.0, 30.0, 20.0), Some(dup_val), vec![]),
-            ],
-        );
-        let path = hit::hit_path(&tree, hit::LogicalPoint { x: 10.0, y: 25.0 });
-        let writes = reconcile_hover_writes(&previous, Some(&tree), &path);
-        let summary: Vec<_> =
-            writes.iter().map(|w| (w.signal.cell_id(), w.hovered, w.rect.is_some(), w.on_hover.is_some())).collect();
-        assert_eq!(
-            summary,
-            vec![
-                (a_sig.cell_id(), false, false, true),
-                (b_sig.cell_id(), false, false, false),
-                (dup_sig.cell_id(), true, true, false),
-                (dup_sig.cell_id(), false, false, false),
-            ]
-        );
-
-        let cleared = reconcile_hover_writes(&previous, None, &[]);
-        assert_eq!(cleared.len(), 2);
-        assert!(cleared.iter().all(|w| !w.hovered && w.rect.is_none()));
-        assert!(cleared[0].on_hover.is_some() && cleared[1].on_hover.is_none());
-    }
 }

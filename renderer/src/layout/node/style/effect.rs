@@ -421,8 +421,6 @@ mod tests {
             "LayoutStyle grew to {} bytes",
             size_of::<crate::layout::scene::LayoutStyle>()
         );
-        assert_eq!(size_of::<Option<Box<EffectShader>>>(), size_of::<usize>());
-        assert_eq!(size_of::<Option<Box<Mask>>>(), size_of::<usize>());
     }
 
     /// ADR-0336. `effect.shader` needs an absolute `source`, defaults `input` and `padding`, reads

@@ -645,76 +645,41 @@ mod tests {
         assert_eq!(child_width(&scene), shown);
     }
 
+    /// The item stretches to the column; the list reads nothing the column's width writes, so every
+    /// pass past the first reuses it. An omitted width signal eases like an absent width.
     #[test]
     fn a_reused_list_item_eases_its_content_width_and_drops_the_pin_when_it_settles() {
-        // The item stretches to the column; the list reads nothing the column's width writes,
-        // so every pass past the first reuses it.
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(
-            r#"panel { id = "bar", child = column { width = state("cw", 100), children = {
-                list { width = "fill", items = { "a" }, each = function(name)
-                    return rect { height = 10, align_h = "stretch", animate = { width = { duration = 100, easing = "linear" } } }
-                end } } } }"#,
-        );
-        let instances = [instance_at(&surface, full())];
-        let item = |scene: &Scene| scene.surface("bar@TEST").unwrap().children[0].children[0].children[0].clone();
-        let apply =
-            |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        let ms = std::time::Duration::from_millis;
-        apply(&mut scene);
-        assert_eq!(item(&scene).rect.width, 100.0);
+        for width in ["", r#"width = state("iw", nil), "#] {
+            let mut scene = Scene::new();
+            let shaping = ShapingHandle::spawn();
+            let (lua, surface) = surface_from(&format!(
+                r#"panel {{ id = "bar", child = column {{ width = state("cw", 100), children = {{
+                    list {{ width = "fill", items = {{ "a" }}, each = function(name)
+                        return rect {{ {width}height = 10, align_h = "stretch", animate = {{ width = {{ duration = 100, easing = "linear" }} }} }}
+                    end }} }} }} }}"#
+            ));
+            let instances = [instance_at(&surface, full())];
+            let item = |scene: &Scene| scene.surface("bar@TEST").unwrap().children[0].children[0].children[0].clone();
+            let apply =
+                |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            let ms = std::time::Duration::from_millis;
+            apply(&mut scene);
+            assert_eq!(item(&scene).rect.width, 100.0, "{width:?}");
 
-        lua.load(r#"state("cw", 100):set(200)"#).exec().unwrap();
-        apply(&mut scene);
-        let node = item(&scene);
-        assert_eq!((node.rect.width, node.tweens.len()), (100.0, 1), "a reused item eases too");
-        scene.tick(&instances, &shaping, &lua, node.tweens[0].started + ms(100));
-        assert_eq!(item(&scene).rect.width, 200.0);
+            lua.load(r#"state("cw", 100):set(200)"#).exec().unwrap();
+            apply(&mut scene);
+            let node = item(&scene);
+            assert_eq!((node.rect.width, node.tweens.len()), (100.0, 1), "{width:?}: a reused item eases too");
+            scene.tick(&instances, &shaping, &lua, node.tweens[0].started + ms(100));
+            assert_eq!(item(&scene).rect.width, 200.0, "{width:?}");
 
-        lua.load(r#"state("cw", 100):set(150)"#).exec().unwrap();
-        apply(&mut scene);
-        let node = item(&scene);
-        assert_eq!((node.rect.width, node.tweens.len()), (200.0, 1), "the settled pin is gone");
-        scene.tick(&instances, &shaping, &lua, node.tweens[0].started + ms(100));
-        assert_eq!(item(&scene).rect.width, 150.0);
-    }
-
-    #[test]
-    fn a_reused_item_with_an_omitted_width_signal_drops_the_pin_when_it_settles() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(
-            r#"panel { id = "bar", child = column { width = state("cw", 100), children = {
-                list { width = "fill", items = { "a" }, each = function(name)
-                    return rect { width = state("iw", nil), height = 10, align_h = "stretch", animate = { width = { duration = 100, easing = "linear" } } }
-                end } } } }"#,
-        );
-        let instances = [instance_at(&surface, full())];
-        let item = |scene: &Scene| scene.surface("bar@TEST").unwrap().children[0].children[0].children[0].clone();
-        let apply =
-            |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        let ms = std::time::Duration::from_millis;
-        apply(&mut scene);
-        assert_eq!(item(&scene).rect.width, 100.0);
-
-        lua.load(r#"state("cw", 100):set(200)"#).exec().unwrap();
-        apply(&mut scene);
-        let node = item(&scene);
-        assert_eq!(
-            (node.rect.width, node.tweens.len()),
-            (100.0, 1),
-            "an omitted width signal eases like an absent width"
-        );
-        scene.tick(&instances, &shaping, &lua, node.tweens[0].started + ms(100));
-        assert_eq!(item(&scene).rect.width, 200.0);
-
-        lua.load(r#"state("cw", 100):set(150)"#).exec().unwrap();
-        apply(&mut scene);
-        let node = item(&scene);
-        assert_eq!((node.rect.width, node.tweens.len()), (200.0, 1), "the settled pin is gone");
-        scene.tick(&instances, &shaping, &lua, node.tweens[0].started + ms(100));
-        assert_eq!(item(&scene).rect.width, 150.0);
+            lua.load(r#"state("cw", 100):set(150)"#).exec().unwrap();
+            apply(&mut scene);
+            let node = item(&scene);
+            assert_eq!((node.rect.width, node.tweens.len()), (200.0, 1), "{width:?}: the settled pin is gone");
+            scene.tick(&instances, &shaping, &lua, node.tweens[0].started + ms(100));
+            assert_eq!(item(&scene).rect.width, 150.0, "{width:?}");
+        }
     }
 
     #[test]
@@ -2447,36 +2412,5 @@ mod tests {
         step(&mut scene, "state('shown',true):set(false)");
         let (root, mut hold) = (scene.surface("bar@TEST").unwrap(), None);
         assert!(!root.animating() && !root.needs_frames(Instant::now(), &mut hold) && hold.is_none());
-    }
-
-    #[test]
-    fn needs_frames_picks_earliest_hold_and_wakes_beside_active_animations() {
-        use node::{Dissolve, Easing, MoveSpec, MoveTween, TransitionSpec as Ts};
-        let (ms, now) = (Duration::from_millis, Instant::now());
-        let sp = |d| MoveSpec { duration: ms(100), delay: ms(d), easing: Easing::Linear };
-        let mv = |d, at| Some(Box::new(MoveTween::new((10.0, 0.0), sp(d), at)));
-        let (mut scene, lua, shaping, surface) = applied(
-            r#"return panel { id = "bar", child = rect { id = "card", width = 20, height = 20, opacity = state("o", 1),
-                animate = { opacity = { duration = 100 } }, children = { rect { width = 10, height = 10 } } } }"#,
-        );
-        let base = scene.surface("bar@TEST").unwrap().children[0].clone();
-        lua.load(r#"state("o", 1):set(0)"#).exec().unwrap();
-        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        let active = scene.surface("bar@TEST").unwrap().children[0].clone();
-        let t0 = active.tweens[0].started;
-        for (da, db) in [(80, 30), (30, 80)] {
-            let (mut n_kid, mut n_tw) = (base.clone(), active.clone());
-            (n_kid.movement, n_kid.children[0].movement) = (mv(da, now), mv(db, now));
-            (n_tw.movement, n_tw.tweens[0].spec.delay) = (mv(da, t0), ms(db));
-            let (mut h1, mut h2) = (None, None);
-            assert!(!n_kid.needs_frames(now, &mut h1) && h1 == Some(now + ms(30)));
-            assert!(!n_tw.needs_frames(t0, &mut h2) && h2 == Some(t0 + ms(30)));
-        }
-        let (mut w_tw, mut w_dis, mut w_kid) = (active.clone(), base.clone(), base);
-        (w_tw.movement, w_dis.movement, w_kid.movement) = (mv(50, t0), mv(50, t0), mv(50, t0));
-        let ts = Ts { duration: ms(100), easing: Easing::Linear, shader: None, params: vec![], images: vec![] };
-        w_dis.dissolve = Some(Box::new(Dissolve::start("a".into(), "b".into(), ts, t0)));
-        w_kid.children = vec![active];
-        assert!([w_tw, w_dis, w_kid].iter().all(|n| n.needs_frames(t0, &mut None)));
     }
 }

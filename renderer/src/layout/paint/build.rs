@@ -1870,43 +1870,27 @@ mod tests {
         }
     }
 
-    /// A backdrop shader's padding reaches back into an ancestor's clip from a box outside it.
+    /// A backdrop shader's padding reaches back into an ancestor's clip from a box outside it, also
+    /// when the box has a layer whose own reach stops short of the clip.
     #[test]
     fn backdrop_shader_padding_decides_whether_a_clipped_out_box_is_built() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("s.frag");
         std::fs::write(&path, "void main() {}").unwrap();
-        let drawn = |padding: u32| {
-            let src = format!(
-                r##"return panel {{ id = "bar", width = 200, height = 100, padding = 40, child = row {{ width = 30,
-                height = 20, clip = "box", children = {{ rect {{ width = 20, height = 20, margin = {{ left = 40 }},
-                effect = {{ shader = {{ source = "{}", input = "backdrop", padding = {padding} }} }} }} }} }} }}"##,
-                path.display()
-            );
-            effect_surface_src(&src).commands.iter().any(|cmd| matches!(cmd.draw, Draw::Backdrop { .. }))
-        };
-        assert!(!drawn(0), "no padding: nothing reaches the clip");
-        assert!(drawn(30), "padding reaches the clip");
-    }
-
-    /// The same reach-back when the box also has a layer, whose own reach stops short of the clip.
-    #[test]
-    fn backdrop_shader_padding_beats_a_layers_shorter_reach_in_the_cull() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("s.frag");
-        std::fs::write(&path, "void main() {}").unwrap();
-        let drawn = |padding: u32| {
-            let src = format!(
-                r##"return panel {{ id = "bar", width = 200, height = 100, padding = 40, child = row {{ width = 30,
-                height = 20, clip = "box", children = {{ rect {{ width = 20, height = 20, margin = {{ left = 40 }},
-                effect = {{ blur = 1, backdrop = {{ blur = 20 }},
-                    shader = {{ source = "{}", input = "backdrop", padding = {padding} }} }} }} }} }} }}"##,
-                path.display()
-            );
-            effect_surface_src(&src).commands.iter().any(|cmd| matches!(cmd.draw, Draw::Backdrop { .. }))
-        };
-        assert!(!drawn(0), "a backdrop blur's reach alone does not build it");
-        assert!(drawn(30), "the shader's padding does");
+        for layer in ["", "blur = 1, backdrop = { blur = 20 },"] {
+            let drawn = |padding: u32| {
+                let src = format!(
+                    r##"return panel {{ id = "bar", width = 200, height = 100, padding = 40, child = row {{ width = 30,
+                    height = 20, clip = "box", children = {{ rect {{ width = 20, height = 20, margin = {{ left = 40 }},
+                    effect = {{ {layer}
+                        shader = {{ source = "{}", input = "backdrop", padding = {padding} }} }} }} }} }} }}"##,
+                    path.display()
+                );
+                effect_surface_src(&src).commands.iter().any(|cmd| matches!(cmd.draw, Draw::Backdrop { .. }))
+            };
+            assert!(!drawn(0), "{layer:?}: without padding nothing reaches the clip");
+            assert!(drawn(30), "{layer:?}: the shader's padding reaches the clip");
+        }
     }
 
     /// Qt's `OpacityMask` covers the item, not only its children, so the node's own fill and border
