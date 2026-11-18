@@ -42,7 +42,7 @@ pub(super) fn solve_instance(
     tree: &mut taffy::TaffyTree<Measure>,
     mut prepared: PreparedNode,
     available: LogicalSize,
-    (shaping, drafts, fonts): (&ShapingHandle, &FieldDrafts, u64),
+    (shaping, drafts, fonts): (&ShapingHandle, &FieldDrafts, (u64, u64)),
     now: Instant,
 ) -> Result<ResolvedNode, LayoutError> {
     let style = &prepared.style;
@@ -557,7 +557,7 @@ fn kept_items(
 fn finish(
     tree: &taffy::TaffyTree<Measure>,
     prepared: PreparedNode,
-    (shaping, drafts, fonts): (&ShapingHandle, &FieldDrafts, u64),
+    (shaping, drafts, fonts): (&ShapingHandle, &FieldDrafts, (u64, u64)),
     now: Instant,
 ) -> Result<(ResolvedNode, bool), LayoutError> {
     let PreparedNode {
@@ -684,7 +684,7 @@ fn finish(
         site,
         field_top,
     };
-    super::field::refit(&mut node, drafts, shaping, fonts);
+    super::field::refit(&mut node, drafts, shaping, fonts.0);
     retarget_move(&mut node, prior_position, now);
     // A window the pass came up short of builds again this turn (`Scene::read_by_lua`): the
     // viewport outgrew the one it was planned for, or its new items were shorter than estimated.
@@ -1062,7 +1062,8 @@ mod tests {
             local all = {{}} for i = 1, 200 do all[i] = "r" .. i end
             L = list {{ width = 100, height = 20, direction = "horizontal", scroll = s, animate = anim,
                 visible = shown, items = all, key = function(k) return k end, each = function(k)
-                    local i = tonumber(k:sub(2)) return row {{ children = {{ text {{ font_size = 10, content = {row} }} }} }}
+                    local i = tonumber(k:sub(2))
+                    return row {{ visible = not (hide and hide(i)), children = {{ text {{ font_size = 10, content = {row} }} }} }}
                 end }}
             dot = text {{ font_size = 10, content = "●" }}
             kids = state("kids", {{ L, dot, rect {{ id = "m", width = 1, height = 1 }} }})
@@ -1201,6 +1202,42 @@ mod tests {
         let (memo, after) = (list(&scene), face_list_on(&scene, "bar@TEST"));
         assert_eq!(after.1, 0.0, "the scroll set after the landings stands");
         assert!(!memo.range().contains(&last) && memo.size(last).is_nan(), "row {last} voided past the window");
+    }
+
+    /// #141: a face joining a family the rows draw in, a bold file where bold was synthetic, voids
+    /// their unboxed sizes past the window, not a hidden row's. A new family's face voids none.
+    #[test]
+    fn a_restyle_voids_unboxed_sizes_past_the_window_and_a_new_family_does_not() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shots/fonts/split");
+        let files = [('─', "Mono-Regular-2500.ttf"), ('●', "Symbols2-25CF.ttf"), ('│', "Mono-Bold-2500-2502.ttf")];
+        let lookup = move |ch| files.iter().find(|(at, _)| *at == ch).map(|(_, file)| dir.join(file));
+        let Some((shaping, open, lua, _, pass)) = face_list(r#""──", font_weight = 700"#, lookup) else { return };
+        lua.load("hide = function(i) return i % 10 == 0 end").exec().unwrap();
+        let mut scene = Scene::new();
+        let list =
+            |scene: &Scene| scene.surface("bar@TEST").unwrap().children[0].children[0].list_memo.clone().unwrap();
+        let land = |scene: &mut Scene, content: &str| {
+            let before = shaping.font_generation();
+            let kids = format!(
+                r#"kids:set({{ L, text {{ content = "{content}" }}, rect {{ id = "m", width = 1, height = 1 }} }})"#
+            );
+            pass(scene, &lua, &kids);
+            open.send(()).unwrap();
+            crate::lua::calls::poll_until(|| (), || shaping.font_generation() > before);
+            pass(scene, &lua, "");
+        };
+        land(&mut scene, "");
+        pass(&mut scene, &lua, "s:scroll_to(1000)");
+        let far = list(&scene).range().start;
+        let hidden = list(&scene).range().find(|&at| list(&scene).size(at).is_infinite()).unwrap();
+        pass(&mut scene, &lua, "s:scroll_to(0)");
+        assert!(!list(&scene).range().contains(&far) && list(&scene).size(far).is_finite(), "row {far} measured");
+        assert!(!list(&scene).range().contains(&hidden) && list(&scene).size(hidden).is_infinite());
+        land(&mut scene, "●");
+        assert!(list(&scene).size(far).is_finite(), "a new family keeps row {far}");
+        land(&mut scene, "│");
+        assert!(list(&scene).size(far).is_nan(), "the bold file voids row {far}");
+        assert!(list(&scene).size(hidden).is_infinite(), "and keeps row {hidden} hidden");
     }
 
     /// #125, the common path: a landing for a face no row uses leaves the list as it was, its

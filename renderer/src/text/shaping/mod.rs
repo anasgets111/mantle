@@ -668,6 +668,11 @@ impl ShapingHandle {
         self.generation.load(Ordering::Acquire)
     }
 
+    /// How many faces joined a family registered before them (#133). Bumped before the generation.
+    pub fn restyles(&self) -> u64 {
+        self.restyles.load(Ordering::Acquire)
+    }
+
     /// Returns the font chain's resolved primary family: the same name `shape()` asks
     /// Parley with highest priority. Test-only. See `Request::ResolvedPrimaryFamily`.
     #[cfg(test)]

@@ -75,7 +75,7 @@ pub fn list_children(
         catalog: None,
         sizes: Vec::new(),
         boxed: Vec::new(),
-        fonts: old.map_or(0, |old| old.fonts),
+        fonts: old.map_or((0, 0), |old| old.fonts),
         typical: old.map_or(f32::NAN, |old| old.typical),
         window: None,
         added: Vec::new(),
@@ -122,10 +122,11 @@ pub struct ListMemo {
     catalog: Option<Rc<Catalog>>,
     /// Per catalog item, its last solved length with margins: NaN if never built, `HIDDEN` if not shown.
     sizes: Vec<f32>,
-    /// Per catalog item, 1 when a glyph 0 went into its size, [`STALE`] once faces changed since.
+    /// Per catalog item, 1 when a glyph 0 went into its size, [`STALE`] once faces changed since,
+    /// or for any known size once a restyle did.
     boxed: Vec<u8>,
-    /// The font generation `sizes` were last measured under.
-    fonts: u64,
+    /// The font generation and restyle count `sizes` were last measured under.
+    fonts: (u64, u64),
     /// The mean known length, carried across builds: an unbuilt item's estimate.
     typical: f32,
     /// The catalog items built, when not all of them.
@@ -320,14 +321,17 @@ impl ListMemo {
     /// Notes what the built items solved to, `None` for one not shown, and whether a glyph 0 went
     /// into each, and the viewport length, cross length and spacing the list solved to while shown.
     /// A new cross length voids the others' sizes; new `fonts` void the boxed ones past the window
-    /// (#125). One before it stays until reached or passed: voiding it would move the rows shown.
+    /// (#125), and a restyle every known one (#141). One before it stays until reached or passed:
+    /// voiding it would move the rows shown.
     /// ponytail: a row no face covers is voided at every landing, and along either axis though an
-    /// unwrapped row keeps its height. Upgrade: a height bit set only by wrapped text, 3 lines.
+    /// unwrapped row keeps its height. Upgrade: a height bit set only by wrapped text, 3 lines. A
+    /// restyle of any family voids every known row past the window of every list, whatever family
+    /// it draws in. Upgrade: per-row families, matched against the family the face joined.
     pub fn measured(
         &mut self,
         lengths: impl Iterator<Item = (Option<f32>, bool)>,
         (viewport, cross, spacing): (f32, f32, f32),
-        fonts: u64,
+        fonts: (u64, u64),
     ) {
         (self.viewport, self.spacing) = (viewport, spacing);
         if self.catalog.is_none() {
@@ -337,8 +341,10 @@ impl ListMemo {
             self.sizes.iter_mut().filter(|size| size.is_finite()).for_each(|size| *size = f32::NAN);
             self.cross = cross;
         }
-        if fonts != self.fonts {
-            self.boxed.iter_mut().for_each(|flags| *flags = STALE * u8::from(*flags != 0));
+        if fonts.0 != self.fonts.0 {
+            let restyled = fonts.1 != self.fonts.1;
+            let rows = self.boxed.iter_mut().zip(&self.sizes);
+            rows.for_each(|(flags, size)| *flags = STALE * u8::from(*flags != 0 || restyled && size.is_finite()));
             self.fonts = fonts;
         }
         let end = self.range().end;

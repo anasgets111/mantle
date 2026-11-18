@@ -119,6 +119,8 @@ pub struct Scene {
     /// and the stamp a field anchor set between passes takes. A face loaded since can fill what a
     /// kept memo measured as boxes (#55), and an unchanged node is never compared again.
     font_generation: u64,
+    /// [`ShapingHandle::restyles`] sampled after `font_generation`, so it counts every restyle up to it.
+    restyles: u64,
     next_id: u64,
     /// `initial_text` of fields created since the app last drained them, for the app to seed.
     seeds: Vec<(NodeId, String)>,
@@ -149,7 +151,7 @@ impl Scene {
         let fonts = shaping.font_generation();
         if fonts != self.font_generation {
             self.solver_trees.clear();
-            self.font_generation = fonts;
+            (self.font_generation, self.restyles) = (fonts, shaping.restyles());
         }
     }
 
@@ -438,7 +440,7 @@ impl Scene {
         let prepared =
             prepare(self, &mut tree, existing, fresh.kind, resolved, (None, 0.0), (false, false, true), lua, now, 0)?;
         close(&mut at, &mut self.resolve_split.resolve);
-        let fonts = (shaping, &self.field_drafts, self.font_generation);
+        let fonts = (shaping, &self.field_drafts, (self.font_generation, self.restyles));
         let solved = solve_instance(&mut tree, prepared, available, fonts, now)?;
         publish_geometry(&solved, 0.0, 0.0, lua, false, Some(geometry_undo))
             .map_err(|e| node::invalid("geometry", e.to_string()))?;
