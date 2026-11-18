@@ -34,6 +34,7 @@ use smithay_client_toolkit::shell::xdg::window::{
 use smithay_client_toolkit::shell::xdg::{XdgPositioner, XdgShell, XdgSurface};
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_registry, registry_handlers};
+use wayland_client::globals::GlobalList;
 use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface};
 use wayland_client::{Connection, Proxy, QueueHandle};
 use wayland_egl::WlEglSurface;
@@ -127,7 +128,7 @@ pub struct App {
     xdg_shell: Option<XdgShell>,
     /// `ext_session_lock_manager_v1` through SCTK's `GlobalProxy` (ADR-0042). Missing support
     /// surfaces as `GlobalError::MissingGlobal` from `lock` (ADR-0052 decision 4), not startup;
-    /// it binds once from the `GlobalList` in [`run`].
+    /// it binds once from the `GlobalList` in `App::new`.
     session_lock_state: SessionLockState,
     /// Live `ext_session_lock_v1` from request until Supervisor unlock, denial, or compositor
     /// teardown. `Some` with `is_locked() == false` is the in-flight window; `finished` therefore
@@ -277,6 +278,113 @@ pub struct App {
     /// Something freed memory in bulk (startup, a reload, a surface's EGL buffers, a shed tree);
     /// the loop collects Lua garbage and trims glibc once things settle (`trim::Trim`).
     trim: trim::Trim,
+}
+
+impl App {
+    /// Binds the optional globals and starts every field at rest. `run` and the test app bind the
+    /// three mandatory globals themselves, since each fails differently, and `run` then sets the
+    /// fields it reads from the host.
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        conn: Connection,
+        globals: &GlobalList,
+        qh: &QueueHandle<App>,
+        (compositor_state, layer_shell, shm): (CompositorState, LayerShell, Shm),
+        client: RendererClient,
+        shaping: ShapingHandle,
+        outbound_tx: tokio::sync::mpsc::UnboundedSender<RendererFrame>,
+        generation_id: u32,
+        waker: crate::wake::Waker,
+    ) -> Self {
+        App {
+            // Bound in the order `run` always used, so object ids and event order stay as they were.
+            scale_globals: scale::ScaleGlobals::bind(globals, qh),
+            // Optional: panel-only configs work without `xdg_wm_base`; `create_surfaces` logs any
+            // window left unbuilt.
+            xdg_shell: XdgShell::bind(globals, qh)
+                .inspect_err(|err| log_bind_failure("<xdg-shell>", "xdg_wm_base::bind", err))
+                .ok(),
+            // Optional, and quiet when absent: a compositor with no blur is not a broken session.
+            // Its `GlobalProxy` reports a missing global only when a blur region is actually asked
+            // for. Version 1 is the only version; `capabilities` arrives on the queue right after.
+            background_effect: BackgroundEffectState::new(globals, qh),
+            output_state: OutputState::new(globals, qh),
+            seat_state: SeatState::new(globals, qh),
+            data_device_manager: DataDeviceManagerState::bind(globals, qh).ok(),
+            text_input: input::TextInput::bind(globals, qh),
+            // Cannot fail: its `GlobalProxy` reports a missing lock global only when a lock is
+            // requested (ADR-0052 decision 4).
+            session_lock_state: SessionLockState::new(globals, qh),
+            registry_state: RegistryState::new(globals),
+            captures: CaptureRegistry::bind(globals, qh),
+            compositor_state,
+            layer_shell,
+            shm,
+            data_device: None,
+            clipboard_sources: Vec::new(),
+            clipboard_writers: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            paste: None,
+            field_revision: 0,
+            field_edits: 0,
+            waker: waker.clone(),
+            blur_supported: false,
+            hyprland: false,
+            session_lock: None,
+            egl: None,
+            gl: None,
+            shader_stage: crate::layout::image_shader::ShaderStage::default(),
+            conn,
+            shaping: shaping.clone(),
+            text_painter: None,
+            image_cache: ImageCache::with_waker(waker.clone()).with_fonts(shaping),
+            capture_cache: CaptureCache::default(),
+            client,
+            surfaces: Vec::new(),
+            exit: false,
+            startup_complete: false,
+            outbound_tx,
+            generation_id,
+            queue_handle: qh.clone(),
+            pointer: None,
+            cursor_shown: None,
+            pointer_at: None,
+            finger_scroll: None,
+            keyboard: None,
+            keyboard_focus: None,
+            armed: None,
+            armed_double: None,
+            last_click: None,
+            drag: None,
+            input_serial: None,
+            key_serial: None,
+            pointer_input_count: 0,
+            reposition_token: 0,
+            focused_secure_submit: None,
+            focused_text_field: None,
+            parked_drafts: HashMap::new(),
+            pending_seeds: Vec::new(),
+            focused_control: None,
+            armed_control: None,
+            awaiting_keyboard: None,
+            output_epoch: 0,
+            focus_visible: false,
+            accessibility: accessibility::Accessibility::new(waker),
+            held: Held::default(),
+            repeat_info: None,
+            repeating: None,
+            pressed_keys: Vec::new(),
+            field_input_surfaces: Vec::new(),
+            caret_blink: None,
+            caret_epoch: std::time::Instant::now(),
+            caret_painted_on: true,
+            animation_frames_due: Vec::new(),
+            surfaces_drawn: 0,
+            repaint_split: surface::RepaintSplit::default(),
+            current_egl_surface: None,
+            reload_removals: None,
+            trim: trim::Trim::default(),
+        }
+    }
 }
 
 impl ProvidesRegistryState for App {

@@ -51,116 +51,21 @@ pub fn run(
 
     let compositor_state = CompositorState::bind(&globals, &qh)
         .unwrap_or_else(|err| exit_because_the_compositor_lacks("wl_compositor", &err));
-    let scale_globals = scale::ScaleGlobals::bind(&globals, &qh);
     let layer_shell = LayerShell::bind(&globals, &qh)
         .unwrap_or_else(|err| exit_because_the_compositor_lacks("zwlr_layer_shell_v1", &err));
-    // Optional: panel-only configs work without `xdg_wm_base`; `create_surfaces` logs any window
-    // left unbuilt.
-    let xdg_shell =
-        XdgShell::bind(&globals, &qh).inspect_err(|err| log_bind_failure("<xdg-shell>", "xdg_wm_base::bind", err)).ok();
-    // Optional, and quiet when absent: a compositor with no blur is not a broken session. Its
-    // `GlobalProxy` reports a missing global only when a blur region is actually asked for.
-    // Version 1 is the only version; `capabilities` arrives on the queue right after this.
-    let background_effect = BackgroundEffectState::new(&globals, &qh);
-    let output_state = OutputState::new(&globals, &qh);
-    let seat_state = SeatState::new(&globals, &qh);
-    let data_device_manager = DataDeviceManagerState::bind(&globals, &qh).ok();
-    let text_input = input::TextInput::bind(&globals, &qh);
     // Mandatory: every compositor advertises `wl_shm`.
     let shm = Shm::bind(&globals, &qh).unwrap_or_else(|err| exit_because_the_compositor_lacks("wl_shm", &err));
-    // Cannot fail: its `GlobalProxy` reports a missing lock global only when a lock is requested
-    // (ADR-0052 decision 4).
-    let session_lock_state = SessionLockState::new(&globals, &qh);
-    let registry_state = RegistryState::new(&globals);
-    let captures = CaptureRegistry::bind(&globals, &qh);
     // One process-wide shaping handle; `RendererClient` gets a clone (ADR-0039 decision 3).
     // `Loader::new()` stays here because `mlua::Lua` is `!Send`.
     let shaping = ShapingHandle::spawn();
     shaping.probe_in_background(waker.clone());
     let client = RendererClient::start(shaping.clone(), outbound_tx.clone(), generation_id, waker.clone())?;
 
-    let mut app = App {
-        registry_state,
-        output_state,
-        shader_stage: crate::layout::image_shader::ShaderStage::default(),
-        compositor_state,
-        scale_globals,
-        seat_state,
-        data_device_manager,
-        data_device: None,
-        clipboard_sources: Vec::new(),
-        clipboard_writers: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-        paste: None,
-        field_revision: 0,
-        field_edits: 0,
-        text_input,
-        waker: waker.clone(),
-        layer_shell,
-        background_effect,
-        blur_supported: false,
-        hyprland: std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some_and(|v| !v.is_empty()),
-        xdg_shell,
-        session_lock_state,
-        session_lock: None,
-        egl: None,
-        gl: None,
-        conn,
-        shaping: shaping.clone(),
-        text_painter: None,
-        image_cache: ImageCache::with_waker(waker.clone()).with_fonts(shaping),
-        capture_cache: CaptureCache::default(),
-        captures,
-        client,
-        surfaces: Vec::new(),
-        exit: false,
-        startup_complete: false,
-        outbound_tx,
-        generation_id,
-        queue_handle: qh.clone(),
-        pointer: None,
-        cursor_shown: None,
-        pointer_at: None,
-        finger_scroll: None,
-        shm,
-        keyboard: None,
-        keyboard_focus: None,
-        armed: None,
-        armed_double: None,
-        last_click: None,
-        drag: None,
-        input_serial: None,
-        key_serial: None,
-        pointer_input_count: 0,
-        reposition_token: 0,
-        focused_secure_submit: None,
-        focused_text_field: None,
-        parked_drafts: HashMap::new(),
-        pending_seeds: Vec::new(),
-        focused_control: None,
-        armed_control: None,
-        awaiting_keyboard: None,
-        output_epoch: 0,
-        focus_visible: false,
-        accessibility: accessibility::Accessibility::new(waker.clone()),
-        held: Held::default(),
-        repeat_info: None,
-        repeating: None,
-        pressed_keys: Vec::new(),
-        field_input_surfaces: Vec::new(),
-        caret_blink: input::caret_blink(),
-        caret_epoch: std::time::Instant::now(),
-        caret_painted_on: true,
-        animation_frames_due: Vec::new(),
-        surfaces_drawn: 0,
-        repaint_split: surface::RepaintSplit::default(),
-        current_egl_surface: None,
-        reload_removals: None,
-        trim: {
-            let mut trim = trim::Trim::default();
-            trim.request(std::time::Instant::now());
-            trim
-        },
-    };
+    let mandatory = (compositor_state, layer_shell, shm);
+    let mut app = App::new(conn, &globals, &qh, mandatory, client, shaping, outbound_tx, generation_id, waker.clone());
+    app.hyprland = std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some_and(|v| !v.is_empty());
+    app.caret_blink = input::caret_blink();
+    app.trim.request(std::time::Instant::now());
 
     // Binding delivers outputs and seat capabilities as a burst; two roundtrips populate the
     // initial output list (`output = "all"` expands per monitor) and keyboard capability.

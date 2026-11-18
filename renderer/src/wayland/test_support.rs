@@ -164,98 +164,15 @@ impl App {
         let (globals, mut event_queue) = registry_queue_init::<App>(&conn).unwrap();
         let qh = event_queue.handle();
 
-        let compositor_state = CompositorState::bind(&globals, &qh).unwrap();
-        let layer_shell = LayerShell::bind(&globals, &qh).unwrap();
-        let shm = Shm::bind(&globals, &qh).unwrap();
-        let background_effect = BackgroundEffectState::new(&globals, &qh);
-        let output_state = OutputState::new(&globals, &qh);
-        let seat_state = SeatState::new(&globals, &qh);
-        let session_lock_state = SessionLockState::new(&globals, &qh);
-        let registry_state = RegistryState::new(&globals);
-        let captures = CaptureRegistry::bind(&globals, &qh);
+        let mandatory = (
+            CompositorState::bind(&globals, &qh).unwrap(),
+            LayerShell::bind(&globals, &qh).unwrap(),
+            Shm::bind(&globals, &qh).unwrap(),
+        );
         let waker = crate::wake::Waker::new().unwrap();
-        let shaping = ShapingHandle::spawn();
         let (dir, _path, client, _rx) = crate::socket::client::tests::client_for(source);
         let (outbound_tx, _app_rx) = tokio::sync::mpsc::unbounded_channel();
-
-        let mut app = App {
-            registry_state,
-            output_state,
-            compositor_state,
-            scale_globals: None,
-            seat_state,
-            data_device_manager: DataDeviceManagerState::bind(&globals, &qh).ok(),
-            data_device: None,
-            clipboard_sources: Vec::new(),
-            clipboard_writers: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            paste: None,
-            field_revision: 0,
-            field_edits: 0,
-            text_input: input::TextInput::default(),
-            waker: waker.clone(),
-            layer_shell,
-            background_effect,
-            blur_supported: false,
-            hyprland: false,
-            xdg_shell: XdgShell::bind(&globals, &qh).ok(),
-            session_lock_state,
-            session_lock: None,
-            egl: None,
-            gl: None,
-            shader_stage: crate::layout::image_shader::ShaderStage::default(),
-            conn,
-            shaping: shaping.clone(),
-            text_painter: None,
-            image_cache: ImageCache::with_waker(waker.clone()).with_fonts(shaping),
-            capture_cache: CaptureCache::default(),
-            captures,
-            client,
-            surfaces: Vec::new(),
-            exit: false,
-            startup_complete: false,
-            outbound_tx,
-            generation_id: 0,
-            queue_handle: qh.clone(),
-            pointer: None,
-            cursor_shown: None,
-            pointer_at: None,
-            finger_scroll: None,
-            shm,
-            keyboard: None,
-            keyboard_focus: None,
-            armed: None,
-            armed_double: None,
-            last_click: None,
-            drag: None,
-            input_serial: None,
-            key_serial: None,
-            pointer_input_count: 0,
-            reposition_token: 0,
-            focused_secure_submit: None,
-            focused_text_field: None,
-            parked_drafts: HashMap::new(),
-            pending_seeds: Vec::new(),
-            focused_control: None,
-            armed_control: None,
-            awaiting_keyboard: None,
-            output_epoch: 0,
-            focus_visible: false,
-            accessibility: accessibility::Accessibility::new(waker),
-            held: Held::default(),
-            repeat_info: None,
-            repeating: None,
-            pressed_keys: Vec::new(),
-            field_input_surfaces: Vec::new(),
-            caret_blink: None,
-            caret_epoch: std::time::Instant::now(),
-            caret_painted_on: true,
-            animation_frames_due: Vec::new(),
-            surfaces_drawn: 0,
-            repaint_split: surface::RepaintSplit::default(),
-            current_egl_surface: None,
-            reload_removals: None,
-            trim: trim::Trim::default(),
-        };
+        let mut app = App::new(conn, &globals, &qh, mandatory, client, ShapingHandle::spawn(), outbound_tx, 0, waker);
 
         if mock.is_some() {
             event_queue.roundtrip(&mut app).unwrap();
