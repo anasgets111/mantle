@@ -106,6 +106,8 @@ struct Frame {
     transform: Option<node::Affine>,
     /// What this paint redraws, in surface pixels (ADR-0258); nothing outside it is touched.
     region: PhysicalRect,
+    /// The alpha fallen-back layers fade this target by (#117), their product (#147).
+    fade: f32,
 }
 
 /// Executes an already-built list; keeping canvas work separate makes the list comparable and
@@ -141,7 +143,7 @@ pub fn execute(
         // buffer's stencil is undefined.
         let (x, y, w, h) = (x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32);
         painter.canvas_mut().clear_rect(x, y, w, h, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
-        let frame = Frame { size: target_size, origin: (0.0, 0.0), transform: None, region };
+        let frame = Frame { size: target_size, origin: (0.0, 0.0), transform: None, region, fade: 1.0 };
         run(painter, &mut walk, &list.commands, RenderTarget::Screen, frame);
     }
     painter.canvas_mut().reset_scissor();

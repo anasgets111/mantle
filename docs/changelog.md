@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: nested `effect.shader` nodes with `opacity` below 1 fade their subtree by the product of their opacities when the GPU refuses their offscreen textures. The inner layer used to replace the outer fade, so two at 0.5 drew at 0.5 instead of 0.25.
+
 ## 0.14.0 - 2026-11-18
 
 The "turns out there were a lot of bugs" release, also known as the "Mythos 5.2 happened" release: pointed at the codebase, it kept finding things. 109 fixes, 8 breaking changes, 3 changes, and one lonely new feature (locking before suspend). Read Breaking first; each entry names the edit. Cursed SVGs now fail to load instead of eating your RAM.

@@ -224,6 +224,7 @@ pub(super) fn offscreen(
         origin: (clip.x0 as f32, clip.y0 as f32),
         transform: None,
         region,
+        fade: 1.0,
     };
     run(painter, walk, commands, RenderTarget::Image(image), inner);
 
@@ -365,6 +366,28 @@ mod tests {
                     children = { rect { width = 32, height = 32, background = "#0000FFFF" } } } } } }"##;
         for cap in [128, 64] {
             let Some(px) = paint(faded, cap, &[(24, 24)]) else { return };
+            let (r, g, b, _) = px[0];
+            assert!(r.abs_diff(128) <= 3 && g == 0 && b.abs_diff(128) <= 3, "cap {cap}: {px:?}");
+        }
+        // #147. Nested faded layers that both fall back multiply their fades: blue at 0.25 over red.
+        let nested = r##"return panel { id = "bar", width = 96, height = 96, background = "#FF0000FF", padding = 8,
+            child = rect { width = 80, height = 80, opacity = 0.5, effect = { shader = { source = "/s.frag" } },
+                children = { rect { width = 72, height = 72, opacity = 0.5, effect = { shader = { source = "/s.frag" } },
+                    children = { rect { width = 32, height = 32, background = "#0000FFFF" } } } } } }"##;
+        for cap in [128, 64] {
+            let Some(px) = paint(nested, cap, &[(24, 24)]) else { return };
+            let (r, g, b, _) = px[0];
+            assert!(r.abs_diff(191) <= 3 && g == 0 && b.abs_diff(64) <= 3, "cap {cap}: {px:?}");
+        }
+        // A target allocated inside a fallback starts unfaded: at cap 96 the rotated middle layer
+        // allocates snug, and the aligned one inside it rounds to 128 and falls back again.
+        let reset = r##"return panel { id = "bar", width = 96, height = 96, background = "#FF0000FF", padding = 8,
+            child = rect { width = 80, height = 80, opacity = 0.5, effect = { shader = { source = "/s.frag" } },
+                children = { rect { width = 72, height = 72, rotate = 1, effect = { shader = { source = "/s.frag" } },
+                    children = { rect { width = 72, height = 72, effect = { shader = { source = "/s.frag" } },
+                        children = { rect { width = 32, height = 32, background = "#0000FFFF" } } } } } } } }"##;
+        for cap in [128, 96] {
+            let Some(px) = paint(reset, cap, &[(24, 24)]) else { return };
             let (r, g, b, _) = px[0];
             assert!(r.abs_diff(128) <= 3 && g == 0 && b.abs_diff(128) <= 3, "cap {cap}: {px:?}");
         }

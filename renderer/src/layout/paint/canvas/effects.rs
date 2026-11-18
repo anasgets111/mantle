@@ -188,11 +188,10 @@ pub(super) fn draw_layer(
             // subtree falls back into the parent, faded there (#117).
             // ponytail: GL-stage draws (a `shader` node, an image mid-cross, a backdrop shader) skip
             // femtovg's alpha and stay unfaded there; upgrade: multiply it into their run's alpha.
+            let fallback = Frame { fade: frame.fade * alpha, ..frame };
             painter.canvas_mut().save();
-            if *alpha < 1.0 {
-                painter.canvas_mut().set_global_alpha(*alpha);
-            }
-            let content = offscreen(painter, walk, rect, clip, None, None, commands, target, frame, UNCLIPPED, true);
+            painter.canvas_mut().set_global_alpha(fallback.fade);
+            let content = offscreen(painter, walk, rect, clip, None, None, commands, target, fallback, UNCLIPPED, true);
             painter.canvas_mut().restore();
             let Some(content) = content else { return };
             // The shader's output is what the shadows, blur and colour filters see. A failed build
