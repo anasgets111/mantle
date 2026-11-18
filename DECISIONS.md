@@ -2009,6 +2009,13 @@ Both fields support existing consumers, not speculative metadata completeness.
 
 Secure-field behavior is unchanged. Live reply cancellation removed the row and released keyboard focus.
 
+Amendment (#146): decision 2 also clears control focus, so `focused(name)` turns false at the Escape,
+and the cancelled field is not re-armed by `autofocus` until its surface's next keyboard `enter`, its
+panel's `keyboard_interactivity` turning on, an upkeep finding another autofocus field or none in its
+scope, or its surface or node going away. On an `on_demand` panel autofocus used to take the keys back
+at once. Rejected: stopping typing as a press elsewhere does (a hidden field stays held after it shows
+again) and clearing only on `enter` (a reopened launcher would need a click).
+
 ## 0103. `applications:open_url(url)`, so a link in a notification body can be opened
 
 1. Add open_url to applications via detached xdg-open, not generation-owned process.run.
