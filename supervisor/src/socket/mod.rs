@@ -389,7 +389,7 @@ async fn handle_connection(
         if handshake.protocol != shared::PROTOCOL_VERSION {
             error!(
                 "refusing generation {generation_id}'s renderer: it speaks protocol {} and this Supervisor \
-                 speaks {} (0 is a build from before the check). Start mantle again to run the installed pair",
+                 speaks {} (0 is a build from before the check)",
                 handshake.protocol,
                 shared::PROTOCOL_VERSION
             );

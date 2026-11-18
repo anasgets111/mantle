@@ -108,8 +108,10 @@ pub const EXIT_COMPOSITOR_GONE: i32 = 71;
 pub const EXIT_COMPOSITOR_UNSUPPORTED: i32 = 69;
 
 /// Supervisor exit code after refusing a Renderer that speaks another `PROTOCOL_VERSION`, such as
-/// one installed by a package upgrade under the running Supervisor. Nonzero, unlike the stops on
-/// `69` and `71`, because starting `mantle` again runs the installed pair. sysexits' `EX_PROTOCOL`.
+/// one installed by a package upgrade under the running Supervisor, when re-executing the installed
+/// `mantle` fails or would run the same pair again. Nonzero, unlike the stops on `69` and `71`,
+/// because starting `mantle` again, once the upgrade finishes, runs the installed pair. sysexits'
+/// `EX_PROTOCOL`.
 pub const EXIT_PROTOCOL_MISMATCH: i32 = 76;
 
 /// `~/.config/mantle/` by precedence: `$MANTLE_CONFIG_DIR`, `$XDG_CONFIG_HOME/mantle`, then

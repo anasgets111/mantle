@@ -147,7 +147,7 @@ How each failure ends:
 | The Renderer crashes | The Supervisor starts a new generation. After three crashes within 60 s, it waits 30 s before the next respawn |
 | The compositor goes away | The Renderer exits with code 71 and the Supervisor shuts down instead of respawning |
 | The compositor lacks `wl_compositor`, `wl_shm` or `wlr-layer-shell-v1` | The Renderer logs the missing protocol and exits with code 69, and the Supervisor shuts down instead of respawning |
-| A new Renderer speaks another protocol, such as after a package upgrade that changed it | The Supervisor logs both protocol versions and closes the Renderer's connection, so the Renderer exits (or is killed 5 s later), and itself exits with status 76 instead of respawning. Start `mantle` again to run the installed version |
+| A new Renderer speaks another protocol, such as after a package upgrade that changed it | The Supervisor logs both protocol versions and closes the Renderer's connection, so the Renderer exits (or is killed 5 s later), and itself stops as on `SIGTERM`, then re-executes the installed `mantle` with the same arguments. The new one starts cold and retakes a held session lock. If that `mantle` cannot be executed, or its own Renderer speaks another protocol too, it exits with status 76: start `mantle` again once the upgrade finishes |
 
 An error from an engine function, a method on an engine object (`signal:reveal`, `mantle.idle:register_threshold`) or a capability action keeps its leading `file:line:` through `pcall`. Only an unknown capability field omits it there; the logged and `mantle check` forms carry it.
 

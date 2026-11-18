@@ -25,6 +25,7 @@ mod termination;
 mod watcher;
 
 use std::error::Error;
+use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -78,17 +79,69 @@ pub(crate) fn log_unstarted(envelope: &shared::CommandEnvelope) {
 /// A launcher's stray fds (a held `flock`, say) would otherwise live as long as the shell and its Renderer.
 fn new_session_without_inherited_fds(command: &mut std::process::Command) {
     use std::os::unix::process::CommandExt;
-    // SAFETY: runs in the forked child where only this thread exists; `setsid` and `close_range` are
-    // async-signal-safe and touch no Rust state. An old kernel without `close_range` just keeps the fds.
+    // SAFETY: runs in the forked child where only this thread exists; `setsid` is async-signal-safe
+    // and touches no Rust state.
+    unsafe {
+        command.pre_exec(|| match libc::setsid() {
+            -1 => Err(std::io::Error::last_os_error()),
+            _ => Ok(()),
+        })
+    };
+    without_inherited_fds(command);
+}
+
+/// Closes every fd above stderr on `command`'s exec, the instance lock and D-Bus sockets included.
+fn without_inherited_fds(command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: `close_range` is async-signal-safe and touches no Rust state. An old kernel without it
+    // just keeps the fds.
     unsafe {
         command.pre_exec(|| {
-            if libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
             libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, libc::CLOSE_RANGE_CLOEXEC);
             Ok(())
         })
     };
+}
+
+/// Set on the `mantle` a protocol mismatch re-executes (#104): the protocol of the Supervisor that
+/// did, so the next one can tell whether the exec changed anything.
+const REEXEC_ENV: &str = "MANTLE_REEXEC_FROM";
+
+/// After an exit on `code`, the command that runs the `mantle` installed at `exe` in this process's
+/// place with the start's `argv`, `argv[0]` included, and `stdio`: only for a Renderer refused for its protocol, and not
+/// when `reexec_from` names this Supervisor's own, as then the exec changed nothing and another would
+/// loop. A cold start: the next Supervisor retakes the session lock from its marker (ADR-0060).
+fn reexec_command(
+    code: i32,
+    exe: Result<&Path, &std::io::Error>,
+    argv: impl IntoIterator<Item = std::ffi::OsString>,
+    reexec_from: Option<u32>,
+    detached: bool,
+    stdio: [std::os::fd::OwnedFd; 2],
+) -> Option<std::process::Command> {
+    if code != shared::EXIT_PROTOCOL_MISMATCH {
+        return None;
+    }
+    if reexec_from == Some(shared::PROTOCOL_VERSION) {
+        error!(
+            "the installed renderer still speaks another protocol after a re-exec; start mantle once the upgrade finishes"
+        );
+        return None;
+    }
+    let exe = exe.inspect_err(|err| error!("cannot find mantle to re-execute: {err}; start it again")).ok()?;
+    let [stdout, stderr] = stdio;
+    let mut command = std::process::Command::new(exe);
+    let mut argv = argv.into_iter();
+    // As launched, so a `/proc/<pid>/cmdline` matcher still finds it.
+    if let Some(arg0) = argv.next() {
+        std::os::unix::process::CommandExt::arg0(&mut command, arg0);
+    }
+    command.args(argv).env(REEXEC_ENV, shared::PROTOCOL_VERSION.to_string()).stdout(stdout).stderr(stderr);
+    if detached {
+        command.env(DETACHED_ENV, "1");
+    }
+    without_inherited_fds(&mut command);
+    Some(command)
 }
 
 /// Set by [`detach_self`] on its child only, so `started` can say "(detached)" without guessing
@@ -100,12 +153,12 @@ fn is_detach_marker(value: Option<&std::ffi::OsStr>) -> bool {
     value.is_some_and(|value| value == "1")
 }
 
-/// Reads and removes the marker, so nothing the Supervisor spawns inherits it.
-fn take_detach_marker() -> bool {
-    let marked = is_detach_marker(std::env::var_os(DETACHED_ENV).as_deref());
+/// Reads and removes the marker `name`, so nothing the Supervisor spawns inherits it.
+fn take_marker(name: &str) -> Option<std::ffi::OsString> {
+    let value = std::env::var_os(name);
     // SAFETY: first thing in `main`, before any thread exists.
-    unsafe { std::env::remove_var(DETACHED_ENV) };
-    marked
+    unsafe { std::env::remove_var(name) };
+    value
 }
 
 /// `mantle -d`: re-exec in a new session and return once it holds its instance, so the terminal
@@ -146,7 +199,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     unsafe {
         libc::mallopt(libc::M_ARENA_MAX, 1);
     }
-    let detached = take_detach_marker();
+    let detached = is_detach_marker(take_marker(DETACHED_ENV).as_deref());
+    let reexec_from = take_marker(REEXEC_ENV).and_then(|from| from.to_str()?.parse::<u32>().ok());
     if std::env::var_os(pam_worker::WORKER_ENV).is_some() {
         return pam_worker::run_worker();
     }
@@ -233,6 +287,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             let config_dir = config_dir()?;
             let (dir, _lock) = instance::claim(&root, std::process::id(), &config_dir)?;
+            // Before `capture` replaces them, for a re-exec to hand back (#104). The path too: after
+            // an upgrade `current_exe()` reads "(deleted)", and `/proc/self/exe` is the old binary.
+            let exe = std::env::current_exe();
+            let stdio =
+                [std::io::stdout().as_fd().try_clone_to_owned()?, std::io::stderr().as_fd().try_clone_to_owned()?];
             // Every runtime diagnostic from here on, and every Renderer that inherits these
             // descriptors (ADR-0199). Argument parsing has already had its say above, so a
             // detached run still loses a `-c` substitution notice.
@@ -242,12 +301,28 @@ fn main() -> Result<(), Box<dyn Error>> {
             // wants and `log::tee` paints the terminal's copy. Untagged: the Supervisor is most of
             // the log.
             shared::log::init("", args.verbose);
+            if let Some(from) = reexec_from {
+                notice!("re-executed by a Supervisor on protocol {from} whose renderer spoke another");
+            }
             // Exit explicitly: `run_supervisor` has finished its teardown, and dropping the runtime
             // would wait on blocking tasks. Two workers, not one per core (ADR-0124), cover
             // socket/D-Bus/inotify/timer waits; the blocking pool is separate. A twenty-core laptop
             // otherwise used twenty bar-serving threads.
             let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
             let code = runtime.block_on(run_supervisor(dir, config_dir, args.profile, args.verbose, detached))?;
+            // ponytail: a SIGTERM during the teardown is swallowed, so `mantle stop` then sees a new
+            // Supervisor; watch signals past the loop if that bites.
+            let argv = std::env::args_os();
+            if let Some(mut command) = reexec_command(code, exe.as_deref(), argv, reexec_from, detached, stdio) {
+                let log = std::io::stderr().as_fd().try_clone_to_owned();
+                let err = std::os::unix::process::CommandExt::exec(&mut command);
+                // The exec swapped stdio back before failing; the log is where this belongs. Best
+                // effort: the exit status, 76, matters more than the line.
+                if let Ok(log) = log {
+                    let _ = nix::unistd::dup2_stderr(&log);
+                }
+                error!("could not re-execute mantle: {err}; start it again to run the installed pair");
+            }
             std::process::exit(code);
         }
     }
@@ -520,6 +595,52 @@ mod tests {
         assert!(is_detach_marker(Some(OsStr::new("1"))));
         assert!(!is_detach_marker(None));
         assert!(!is_detach_marker(Some(OsStr::new(""))));
+    }
+
+    #[test]
+    fn a_protocol_mismatch_re_executes_the_installed_mantle_once() {
+        use std::os::fd::{AsRawFd, OwnedFd};
+        let dir = tempfile::tempdir().unwrap();
+        // Not CLOEXEC, like a launcher's flock: the exec must still close it.
+        let leaked = std::fs::OpenOptions::new().write(true).open("/dev/null").unwrap();
+        nix::fcntl::fcntl(&leaked, nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::empty())).unwrap();
+        let exe = crate::capabilities::test_support::fake_program(
+            dir.path(),
+            "mantle",
+            &format!(
+                r#"(: >&{}) 2>/dev/null && echo leaked; echo "$MANTLE_REEXEC_FROM ${{MANTLE_DETACHED_CHILD:-attached}}"; echo err >&2"#,
+                leaked.as_raw_fd()
+            ),
+        );
+        let stdio = |name: &str| -> [OwnedFd; 2] {
+            let file = std::fs::File::create(dir.path().join(name)).unwrap();
+            [file.try_clone().unwrap().into(), file.into()]
+        };
+        let args = || ["mantle", "-c", "/cfg"].map(std::ffi::OsString::from);
+        let mismatch = shared::EXIT_PROTOCOL_MISMATCH;
+        let command = |code, reexec_from, detached, name| {
+            reexec_command(code, Ok(Path::new(&exe)), args(), reexec_from, detached, stdio(name))
+        };
+        let run = |reexec_from, detached, name| {
+            assert!(command(mismatch, reexec_from, detached, name).unwrap().status().unwrap().success());
+            std::fs::read_to_string(dir.path().join(name)).unwrap()
+        };
+        let protocol = shared::PROTOCOL_VERSION;
+        // The first exec, and one by a Supervisor whose own exec changed its protocol, both pass on
+        // argv, the start's stdio and this protocol.
+        assert_eq!(run(None, false, "first"), format!("{protocol} attached\nerr\n"));
+        assert_eq!(run(Some(protocol + 1), true, "detached"), format!("{protocol} 1\nerr\n"));
+        let argv = std::fs::read_to_string(dir.path().join("argv")).unwrap();
+        assert_eq!(argv, "mantle -c /cfg\nmantle -c /cfg\n");
+        // A Supervisor started by one on its own protocol is the installed one already, and every
+        // other stop, a `mantle stop` included, stays a stop.
+        assert!(command(mismatch, Some(protocol), false, "again").is_none());
+        assert!(command(0, None, false, "stop").is_none());
+        // `argv[0]` as launched, which a `#!` script cannot see.
+        let argv = ["launched-as", "-c", "echo \"$0\""].map(std::ffi::OsString::from);
+        let sh = reexec_command(mismatch, Ok(Path::new("/bin/sh")), argv, None, false, stdio("arg0"));
+        assert!(sh.unwrap().status().unwrap().success());
+        assert_eq!(std::fs::read_to_string(dir.path().join("arg0")).unwrap(), "launched-as\n");
     }
 
     #[test]
