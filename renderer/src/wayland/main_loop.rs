@@ -98,6 +98,7 @@ pub fn run(
         layer_shell,
         background_effect,
         blur_supported: false,
+        hyprland: std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some_and(|v| !v.is_empty()),
         xdg_shell,
         session_lock_state,
         session_lock: None,

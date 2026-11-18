@@ -18,5 +18,5 @@ pub mod region;
 pub mod scene;
 pub mod secure_submit;
 
-pub use region::{blur_regions, overlay_input_regions};
+pub use region::{asks_for_blur, blur_regions, overlay_input_regions};
 pub use scene::{LogicalSize, NodeId, ResolvedNode, Scene};

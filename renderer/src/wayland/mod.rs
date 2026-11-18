@@ -117,6 +117,8 @@ pub struct App {
     /// repeat. Only a change invalidates every surface's pushed region. A compositor may advertise
     /// the global and still not blur, and it may withdraw the bit later.
     blur_supported: bool,
+    /// `$HYPRLAND_INSTANCE_SIGNATURE` was set and non-empty at startup, as the supervisor detects Hyprland.
+    hyprland: bool,
     /// `xdg_wm_base`, plus the `zxdg_decoration_manager_v1` that `XdgShell::bind` picks up beside
     /// it, or `None`; panels still work without xdg-shell, while a declared window logs the missing
     /// global once.
@@ -338,9 +340,12 @@ mod test_support {
     use super::*;
 
     type WireLog = Arc<Mutex<Vec<(u32, u16, u32)>>>;
+    type RectLog = Arc<Mutex<Vec<(u32, [i32; 4])>>>;
 
     pub(in crate::wayland) struct MockWayland {
         pub(in crate::wayland) requests: WireLog,
+        /// Every opcode-1 request with four `int` args, by object: what `wl_region.add` sends.
+        rects: RectLog,
         lock_id: Arc<AtomicU32>,
         writer: Mutex<UnixStream>,
     }
@@ -353,6 +358,12 @@ mod test_support {
         pub(in crate::wayland) fn blur_regions_for(&self, effect_id: u32) -> Vec<u32> {
             let reqs = self.requests.lock().unwrap();
             reqs.iter().filter_map(|&(id, op, arg)| (id == effect_id && op == 1).then_some(arg)).collect()
+        }
+
+        /// The rects of `effect_id`'s last `set_blur_region`; without `delete_id` no region id is reused.
+        pub(in crate::wayland) fn last_blur_rects(&self, effect_id: u32) -> Vec<[i32; 4]> {
+            let region = *self.blur_regions_for(effect_id).last().expect("a region was set");
+            self.rects.lock().unwrap().iter().filter(|(id, _)| *id == region).map(|&(_, r)| r).collect()
         }
 
         /// Sends one event, `payload` already wire-encoded.
@@ -382,7 +393,7 @@ mod test_support {
         buf.extend_from_slice(payload);
     }
 
-    fn spawn_mock_wayland_server(mut stream: UnixStream, wire: Option<(WireLog, Arc<AtomicU32>)>) {
+    fn spawn_mock_wayland_server(mut stream: UnixStream, wire: Option<(WireLog, RectLog, Arc<AtomicU32>)>) {
         std::thread::spawn(move || {
             let mut req = [0u8; 24]; // `wl_display.get_registry(2)` + `wl_display.sync(3)`
             if stream.read_exact(&mut req).is_err() {
@@ -413,7 +424,7 @@ mod test_support {
             if stream.write_all(&reply).is_err() {
                 return;
             }
-            let Some((requests, lock_id)) = wire else {
+            let Some((requests, rects, lock_id)) = wire else {
                 let mut discard = [0u8; 256];
                 while matches!(stream.read(&mut discard), Ok(n) if n > 0) {}
                 return;
@@ -452,6 +463,10 @@ mod test_support {
                 } else if lock_mgr_id == Some(object_id) && opcode == 1 {
                     lock_id.store(arg0, Ordering::Release);
                 }
+                if opcode == 1 && payload.len() == 16 {
+                    let arg = |i: usize| i32::from_ne_bytes(payload[i * 4..i * 4 + 4].try_into().unwrap());
+                    rects.lock().unwrap().push((object_id, [arg(0), arg(1), arg(2), arg(3)]));
+                }
                 requests.lock().unwrap().push((object_id, opcode, arg0));
                 if !out.is_empty() && stream.write_all(&out).is_err() {
                     return;
@@ -468,12 +483,13 @@ mod test_support {
             let (client_stream, server_stream) = UnixStream::pair().unwrap();
             let mock = with_wire.then(|| MockWayland {
                 requests: Arc::default(),
+                rects: Arc::default(),
                 lock_id: Arc::default(),
                 writer: Mutex::new(server_stream.try_clone().unwrap()),
             });
             spawn_mock_wayland_server(
                 server_stream,
-                mock.as_ref().map(|m| (Arc::clone(&m.requests), Arc::clone(&m.lock_id))),
+                mock.as_ref().map(|m| (Arc::clone(&m.requests), Arc::clone(&m.rects), Arc::clone(&m.lock_id))),
             );
             let conn = Connection::from_socket(client_stream).unwrap();
             let (globals, mut event_queue) = registry_queue_init::<App>(&conn).unwrap();
@@ -511,6 +527,7 @@ mod test_support {
                 layer_shell,
                 background_effect,
                 blur_supported: false,
+                hyprland: false,
                 xdg_shell: XdgShell::bind(&globals, &qh).ok(),
                 session_lock_state,
                 session_lock: None,

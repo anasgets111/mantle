@@ -75,7 +75,7 @@ impl App {
         // `Scene::surface` lends its tree, so what the tree is read for is taken here and the
         // borrow ends with this block; the role updates below write through `&mut self`. Exactly
         // one spec is parsed, the one this surface's role calls for.
-        let (panel, window, popup, tree_rect, regions, visible, blur) = {
+        let (panel, window, popup, tree_rect, regions, visible, blur, asks_for_blur) = {
             let Some(tree) = self.client.scene().surface(&surface_id) else {
                 // Startup/apply failure or rollback (`Scene::apply` restores its prior state): keep
                 // the last applied fields rather than pushing defaults over a working surface.
@@ -85,6 +85,9 @@ impl App {
             // Both regions are tree walks, and the pushes below discard them on exactly these two
             // conditions: no `wl_surface` to set them on, and for blur, no compositor support.
             let live = role.wl_surface().is_some();
+            let blur = if live && self.blur_supported { layout::blur_regions(tree, 1.0) } else { Vec::new() };
+            // A second walk only while no glass shows and no effect object exists; see `apply_blur_region`.
+            let asks = blur.is_empty() && live && self.blur_supported && self.surfaces[index].blur_effect.is_none();
             (
                 matches!(role, TrackedRole::Panel { .. }).then(|| node::panel_spec(&tree.properties)),
                 matches!(role, TrackedRole::Window { .. }).then(|| node::window_spec(&tree.properties)),
@@ -92,7 +95,8 @@ impl App {
                 tree.rect,
                 if live { layout::overlay_input_regions(tree, 1.0) } else { Vec::new() },
                 tree.visible,
-                if live && self.blur_supported { layout::blur_regions(tree, 1.0) } else { Vec::new() },
+                blur,
+                asks && layout::asks_for_blur(tree),
             )
         };
 
@@ -141,7 +145,7 @@ impl App {
         // arrives in configure. The create path parses a spec only for the role match; input region
         // handling still runs.
         self.apply_input_region(index, regions);
-        self.apply_blur_region(index, blur);
+        self.apply_blur_region(index, blur, asks_for_blur);
         self.apply_visibility(index, visible);
     }
 
@@ -188,22 +192,34 @@ impl App {
     /// A compositor with no manager, or one whose `blur` capability is absent or withdrawn, gets
     /// nothing pushed and the config sees no error: an unavailable compositor feature is not a
     /// config mistake.
-    fn apply_blur_region(&mut self, index: usize, regions: Vec<crate::text::snap::PhysicalRect>) {
+    fn apply_blur_region(&mut self, index: usize, regions: Vec<crate::text::snap::PhysicalRect>, asks_for_blur: bool) {
         if !self.blur_supported {
             return;
         }
         let Some(surface) = self.surfaces[index].role.wl_surface().cloned() else {
             return;
         };
-        let qh = self.queue_handle.clone();
-        if regions == self.surfaces[index].last_blur_region {
+        let effect = self.surfaces[index].blur_effect.is_some();
+        // Nothing to ask for and nothing asked for before: do not create the object at all. A surface
+        // whose glass starts hidden still takes it, so a blanket compositor blur rule does not blur
+        // all of it until the glass shows.
+        if !effect && !asks_for_blur && regions.is_empty() {
             return;
         }
-        if self.surfaces[index].blur_effect.is_none() {
-            // Nothing to ask for and nothing asked for before: do not create the object at all.
-            if regions.is_empty() {
-                return;
-            }
+        // ponytail: Hyprland 0.57.2 blurs a whole popup (`blur_popups`, `decoration:blur:popups`) whose
+        // region is empty or off the surface (OpenGL.cpp:1936-1944, 1702-1720; null is empty), so
+        // there a popup's hidden glass is one blurred logical pixel. Drop once it honours empty (#144).
+        let popup = matches!(self.surfaces[index].role, TrackedRole::Popup { .. });
+        let regions = if regions.is_empty() && self.hyprland && popup {
+            vec![crate::text::snap::PhysicalRect { x0: 0, y0: 0, x1: 1, y1: 1 }]
+        } else {
+            regions
+        };
+        let qh = self.queue_handle.clone();
+        if effect && regions == self.surfaces[index].last_blur_region {
+            return;
+        }
+        if !effect {
             // `blur_supported` only ever comes from a `capabilities` event, and the manager
             // global has to exist to send one, so this is unreachable. Logged rather than
             // silently skipped for exactly that reason: firing means that is wrong.
@@ -222,7 +238,7 @@ impl App {
         };
         if let Some(effect) = self.surfaces[index].blur_effect.as_ref() {
             // A null region would remove the effect; an empty one keeps the object and blurs
-            // nothing, which is what a surface whose glass is currently hidden wants.
+            // nothing (on Hyprland, only on a layer surface): what a surface whose glass is hidden wants.
             effect.set_blur_region(Some(region.wl_region()));
             // The region is double-buffered and lands on the next `wl_surface.commit`, and
             // `paint_surface` skips both the draw and the commit when the display list is
@@ -442,7 +458,7 @@ mod tests {
         );
         app.surfaces[0].map_state = MapState::Mapped;
         for (ms, want) in
-            [(400, (None, true)), (600, (Some(1), false)), (1400, (Some(1), false)), (1600, (Some(2), true))]
+            [(400, (Some(1), true)), (600, (Some(2), false)), (1400, (Some(2), false)), (1600, (Some(3), true))]
         {
             assert_eq!(fade_step(&mut app, &mut queue, &mock, "", ms), want, "at {ms} ms");
         }
@@ -472,30 +488,109 @@ mod tests {
             app.surfaces[0].map_state = MapState::Mapped;
             let (on, off) = (false, true);
             for (lua, ms, want, why) in [
-                (r#"state("kids", false):set(true)"#, 400, (None, off), "an enter from 0 at 0.4 asks for nothing"),
-                ("", 600, (Some(1), on), "and is sent at 0.6"),
-                ("", 900, (Some(1), on), "once"),
-                (r#"state("o", 1):set(0.3)"#, 800, (Some(1), on), "1 to 0.3 keeps it throughout"),
-                (r#"state("o", 1):set(1)"#, 500, (Some(1), on), "and 0.3 to 1"),
-                ("", 1000, (Some(1), on), "the box at rest at 1"),
-                (r#"state("o", 1):set(0)"#, 400, (Some(1), on), "1 to 0 keeps it at 0.6"),
-                ("", 600, (Some(2), off), "and empties it at 0.4, mid-fade"),
-                ("", 1000, (Some(2), off), "the end resends nothing"),
-                (r#"state("o", 1):set(0.4)"#, 400, (Some(2), off), "0 to 0.4 cuts at 0.2: not at 0.16"),
-                ("", 600, (Some(3), on), "but at 0.24"),
-                ("", 1000, (Some(3), on), "and at rest at 0.4"),
-                (r#"state("o", 1):set(0)"#, 400, (Some(3), on), "0.4 to 0 keeps it at 0.24"),
-                ("", 600, (Some(4), off), "and empties it at 0.16"),
-                ("", 1000, (Some(4), off), ""),
-                (r#"state("o", 1):set(1)"#, 1000, (Some(5), on), ""),
-                (r#"state("bw", 0):set(4)"#, 400, (Some(5), on), "a tween on another property cuts nothing"),
-                ("", 1000, (Some(5), on), ""),
-                (r#"state("kids", false):set(false)"#, 400, (Some(5), on), "an exit at 0.6 keeps it"),
-                ("", 600, (Some(6), off), "and at 0.4 empties it before the node goes"),
+                (r#"state("kids", false):set(true)"#, 400, (Some(1), off), "an enter from 0 sends empty at 0.4"),
+                ("", 600, (Some(2), on), "and is sent at 0.6"),
+                ("", 900, (Some(2), on), "once"),
+                (r#"state("o", 1):set(0.3)"#, 800, (Some(2), on), "1 to 0.3 keeps it throughout"),
+                (r#"state("o", 1):set(1)"#, 500, (Some(2), on), "and 0.3 to 1"),
+                ("", 1000, (Some(2), on), "the box at rest at 1"),
+                (r#"state("o", 1):set(0)"#, 400, (Some(2), on), "1 to 0 keeps it at 0.6"),
+                ("", 600, (Some(3), off), "and empties it at 0.4, mid-fade"),
+                ("", 1000, (Some(3), off), "the end resends nothing"),
+                (r#"state("o", 1):set(0.4)"#, 400, (Some(3), off), "0 to 0.4 cuts at 0.2: not at 0.16"),
+                ("", 600, (Some(4), on), "but at 0.24"),
+                ("", 1000, (Some(4), on), "and at rest at 0.4"),
+                (r#"state("o", 1):set(0)"#, 400, (Some(4), on), "0.4 to 0 keeps it at 0.24"),
+                ("", 600, (Some(5), off), "and empties it at 0.16"),
+                ("", 1000, (Some(5), off), ""),
+                (r#"state("o", 1):set(1)"#, 1000, (Some(6), on), ""),
+                (r#"state("bw", 0):set(4)"#, 400, (Some(6), on), "a tween on another property cuts nothing"),
+                ("", 1000, (Some(6), on), ""),
+                (r#"state("kids", false):set(false)"#, 400, (Some(6), on), "an exit at 0.6 keeps it"),
+                ("", 600, (Some(7), off), "and at 0.4 empties it before the node goes"),
             ] {
                 assert_eq!(fade_step(&mut app, &mut queue, &mock, lua, ms), want, "{why}, nested: {nested}");
             }
         }
+    }
+
+    /// #144: `bar` and its popup `menu` each hold a 40x20 card blurred while `glass` is on, the popup's at
+    /// opacity `fade`, fading in from 0 under `enter`. Runs `before` the popup opens and `after`.
+    fn glass_app(
+        hyprland: bool,
+        before: &str,
+        after: &str,
+    ) -> (App, tempfile::TempDir, wayland_client::EventQueue<App>, crate::wayland::test_support::MockWayland) {
+        let (mut app, dir, mut queue, mock) = App::test_app_with_wire(
+            r#"glass, fade, enter = state("glass", true), state("fade", 1), state("enter", false)
+            local function card(o, a) return rect { width = 40, height = 20, compositor_blur = glass, opacity = o, animate = a } end
+            local fade_in = enter:map(function(e) return e and { opacity = { duration = 1000, from = 0 } } or {} end)
+            return { panel { id = "bar", layer = "top", output = "TEST", width = 100, height = 40, child = card(1, {}) },
+                popup { id = "menu", parent = "bar", anchor_rect = { x = 0, y = 0, width = 10, height = 10 },
+                    width = 50, height = 50, grab = false, visible = state("open", false), child = card(fade, fade_in) } }"#,
+        );
+        app.hyprland = hyprland;
+        app.surfaces.iter_mut().for_each(|s| s.map_state = MapState::Mapped);
+        app.input_serial = Some(crate::wayland::input::ArmedSerial { serial: 1, instance_id: "bar@TEST".into() });
+        for lua in [before, r#"state("open", false):set(true)"#, after] {
+            app.client.lua().load(lua).exec().unwrap();
+            app.client.re_resolve_if_dirty(); // Not when only the hidden popup reads the edit.
+            // Twice: the opening pass has no `wl_surface` to blur yet.
+            (0..2).for_each(|_| app.apply_resolved_surface_state());
+        }
+        queue.roundtrip(&mut app).unwrap();
+        (app, dir, queue, mock)
+    }
+
+    /// The rects each surface's last `set_blur_region` sent, panel first, `None` with no effect object.
+    fn glass_rects(hyprland: bool, before: &str, after: &str) -> [Option<Vec<[i32; 4]>>; 2] {
+        let (app, _dir, _queue, mock) = glass_app(hyprland, before, after);
+        ["bar@TEST", "menu"].map(|name| {
+            let i = app.surfaces.iter().position(|s| s.surface_id == name).unwrap();
+            app.surfaces[i].blur_effect.as_ref().map(|fx| mock.last_blur_rects(fx.id().protocol_id()))
+        })
+    }
+
+    /// Hyprland blurs a whole popup on an empty region, so there a popup with its glass hidden sends 1x1:
+    /// faded out, no longer blurring, or opening with a fade from 0. Elsewhere, and on a panel, it is empty.
+    /// A popup with no `compositor_blur` takes no effect object.
+    #[test]
+    fn a_popup_with_its_glass_hidden_sends_one_pixel_on_hyprland_and_empty_elsewhere() {
+        let (card, none, pixel) = (Some(vec![[0, 0, 40, 20]]), Some(vec![]), Some(vec![[0, 0, 1, 1]]));
+        for (hyprland, before, after, want) in [
+            (true, "", "fade:set(0)", [card.clone(), pixel.clone()]),
+            (true, "", "glass:set(false)", [none.clone(), pixel.clone()]),
+            (true, "enter:set(true)", "", [card.clone(), pixel]),
+            (true, "glass:set(false)", "", [None, None]),
+            (false, "", "fade:set(0)", [card.clone(), none.clone()]),
+            (false, "enter:set(true)", "", [card, none]),
+        ] {
+            assert_eq!(glass_rects(hyprland, before, after), want, "{hyprland} {before} / {after}");
+        }
+    }
+
+    /// The blur capability withdrawn and re-announced clears the record: the Hyprland popup whose glass is
+    /// hidden sends its 1x1 once more, and nothing else.
+    #[test]
+    fn a_capability_bounce_resends_the_one_pixel_region_of_a_popup_with_hidden_glass() {
+        let (mut app, _dir, mut queue, mock) = glass_app(true, "", "fade:set(0)");
+        let fx = ids(&app, app.surfaces.iter().position(|s| s.surface_id == "menu").unwrap()).1;
+        // `get_background_effect` is opcode 1 on the manager, its first argument the effect's id.
+        let manager =
+            mock.requests.lock().unwrap().iter().find(|&&(id, op, arg)| op == 1 && arg == fx && id != fx).unwrap().0;
+        let sent = mock.blur_regions_for(fx).len();
+        for capabilities in [0u32, 1] {
+            mock.send(manager, 0, &capabilities.to_ne_bytes());
+            queue.roundtrip(&mut app).unwrap();
+            app.apply_resolved_surface_state();
+        }
+        queue.roundtrip(&mut app).unwrap();
+        assert_eq!((mock.blur_regions_for(fx).len(), mock.last_blur_rects(fx)), (sent + 1, vec![[0, 0, 1, 1]]));
+    }
+
+    #[test]
+    fn a_popup_blur_region_with_glass_is_sent_as_is() {
+        assert_eq!(glass_rects(true, "", ""), [Some(vec![[0, 0, 40, 20]]), Some(vec![[0, 0, 40, 20]])]);
     }
 
     /// #132's panels, all mapped: `flip` and `bar` (reserving 40 px) take `mode`, `fixed` is `on_demand`, and

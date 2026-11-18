@@ -76,6 +76,11 @@ pub fn blur_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<PhysicalRect
     regions
 }
 
+/// Whether any node in this subtree sets `compositor_blur`, at whatever opacity or visibility.
+pub fn asks_for_blur(node: &ResolvedNode) -> bool {
+    node.compositor_blur || node.content_children().any(asks_for_blur)
+}
+
 /// The node's accumulated matrix, the ancestors' cut in its pre-matrix space (as
 /// `layout::paint::build_node` carries it: the group's matrix moves the node and what it paints,
 /// but not the clip it is cut by), and the cut its children inherit.
@@ -137,9 +142,8 @@ fn collect_blur_regions(
 /// ponytail: a spring, or a retarget to a third value mid-fade, starts its run from the shown
 /// value, so it switches where that run puts the cut. A finite keyframe run ending above 0 but
 /// under its cut, such as `{ 0, 1, 0.1 }`, drops the blur on the way down and gets it back when it
-/// settles, because a node at rest keeps its blur. Below the cut no region is sent, so a
-/// blanket compositor blur rule applies until the crossing; sending an empty one needs the walk to
-/// report a cut node.
+/// settles, because a node at rest keeps its blur. Below the cut, a surface whose tree asks for
+/// blur ([`asks_for_blur`]) still sends a region, so a blanket compositor rule does not apply.
 fn fade_cut(node: &ResolvedNode) -> f32 {
     let fade = node.tweens.iter().find(|tween| tween.property == "opacity" && !tween.resting);
     match fade.and_then(node::Tween::span) {
