@@ -111,13 +111,22 @@ impl Scene {
 }
 
 /// Every in-flow `geometry` rect under `node` as moved: the quiet ticks wrote them, and a reader
-/// the last pass resolved has not seen the value they settled on.
+/// the last pass resolved has not seen the value they settled on. A windowed list the tween resized
+/// owes the pass that places its room again (#150), once: a pass per tick would double their cost.
+/// It writes no offset, which another holder of the signal may have clamped since.
+/// ponytail: any running layout tween in the tree defers it, an endless one forever. Upgrade: a
+/// flag down `prepare_retained` naming the tweens that move the list's cross length.
 fn note_settled_geometry(node: &ResolvedNode, lua: &Lua) {
     if !node.in_flow() {
         return;
     }
     if let Some((id, _)) = node::signal_at(&node.properties, "geometry").and_then(|signal| signal.geometry_cell()) {
         crate::lua::signal::note_layout_changed(lua, id);
+    }
+    if node.list_memo.as_deref().is_some_and(|memo| memo.resized)
+        && let Some(cell) = node::signal_at(&node.properties, "scroll").and_then(|scroll| scroll.cell_id())
+    {
+        crate::lua::signal::note_layout_changed(lua, cell);
     }
     node.children.iter().for_each(|child| note_settled_geometry(child, lua));
 }

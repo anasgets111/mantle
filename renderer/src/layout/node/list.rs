@@ -77,6 +77,8 @@ pub fn list_children(
         boxed: Vec::new(),
         fonts: old.map_or((0, 0), |old| old.fonts),
         voided: false,
+        placed: false,
+        resized: false,
         typical: old.map_or(f32::NAN, |old| old.typical),
         window: None,
         added: Vec::new(),
@@ -128,9 +130,13 @@ pub struct ListMemo {
     boxed: Vec<u8>,
     /// The font generation and restyle count `sizes` were last measured under.
     fonts: (u64, u64),
-    /// Whether the last [`Self::measured`] voided a size past the window, so the room the pass
-    /// placed for it before solving is stale.
+    /// Whether the last [`Self::measured`] voided a size past the window, or moved the room after
+    /// this pass placed it, so that room is stale.
     pub voided: bool,
+    /// Whether a pass placed the room since the last [`Self::measured`].
+    pub placed: bool,
+    /// Whether a new cross length moved the room since a pass last placed it (#150).
+    pub resized: bool,
     /// The mean known length, carried across builds: an unbuilt item's estimate.
     typical: f32,
     /// The catalog items built, when not all of them.
@@ -324,13 +330,15 @@ impl ListMemo {
 
     /// Notes what the built items solved to, `None` for one not shown, and whether a glyph 0 went
     /// into each, and the viewport length, cross length and spacing the list solved to while shown.
-    /// A new cross length voids the others' sizes; new `fonts` void the boxed ones past the window
-    /// (#125), and a restyle every known one (#141). One before it stays until reached or passed:
-    /// voiding it would move the rows shown.
+    /// A new cross length voids the others' sizes, and marks stale the room it moves (#150); new
+    /// `fonts` void the boxed ones past the window (#125), and a restyle every known one (#141). One
+    /// before it stays until reached or passed: voiding it would move the rows shown.
     /// ponytail: a row no face covers is voided at every landing, and along either axis though an
     /// unwrapped row keeps its height. Upgrade: a height bit set only by wrapped text, 3 lines. A
     /// restyle of any family voids every known row past the window of every list, whatever family
     /// it draws in. Upgrade: per-row families, matched against the family the face joined.
+    /// A room moved under half a pixel per tick is not `resized`, however far it drifts over a
+    /// tween. Upgrade: compare against the room the pass placed.
     pub fn measured(
         &mut self,
         lengths: impl Iterator<Item = (Option<f32>, bool)>,
@@ -338,9 +346,11 @@ impl ListMemo {
         fonts: (u64, u64),
     ) {
         (self.viewport, self.spacing) = (viewport, spacing);
+        let placed = std::mem::take(&mut self.placed);
         if self.catalog.is_none() {
             return;
         }
+        let room = (cross != self.cross).then(|| self.room());
         if cross != self.cross {
             self.sizes.iter_mut().filter(|size| size.is_finite()).for_each(|size| *size = f32::NAN);
             self.cross = cross;
@@ -354,7 +364,7 @@ impl ListMemo {
         let end = self.range().end;
         let past = self.sizes[end..].iter_mut().zip(&mut self.boxed[end..]);
         let stale = past.filter(|(_, flags)| **flags == STALE);
-        self.voided = stale.map(|(size, flags)| (*size, *flags) = (f32::NAN, 0)).count() > 0;
+        let voided = stale.map(|(size, flags)| (*size, *flags) = (f32::NAN, 0)).count() > 0;
         for (item, (length, boxed)) in self.range().zip(lengths) {
             (self.sizes[item], self.boxed[item]) = (length.unwrap_or(HIDDEN), u8::from(boxed && length.is_some()));
         }
@@ -363,6 +373,13 @@ impl ListMemo {
         if count > 0 {
             self.typical = sum / count as f32;
         }
+        if let Some((lead, trail)) = room {
+            let now = self.room();
+            self.resized |= (now.0 - lead).abs() > 0.5 || (now.1 - trail).abs() > 0.5;
+        }
+        // ponytail: a `reveal` placed this pass, from the old room, is clamped away by the pass this
+        // owes, so its row is lost that turn (base loses it at the next layout). Upgrade: replay it.
+        self.voided = voided || placed && self.resized;
     }
 
     /// Catalog item `item` built through `each` under its key, and its fresh memo.

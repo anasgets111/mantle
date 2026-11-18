@@ -331,7 +331,8 @@ pub(super) fn prepare(
     set_solver_children(tree, taffy_id, &node.children)?;
     // A windowed list's room for the items it did not build rides on its first and last shown ones,
     // attached first: `update_solver_node` keeps a parentless node's margin.
-    if let Some(memo) = node.list_memo.as_deref() {
+    if let Some(memo) = node.list_memo.as_deref_mut() {
+        (memo.placed, memo.resized) = (true, false);
         let (lead, trail) = memo.room();
         let first = node.children.iter().position(|child| child.style.visible);
         let last = node.children.iter().rposition(|child| child.style.visible);
@@ -1108,6 +1109,53 @@ mod tests {
         pass(&mut scene, &lua, "");
         pass(&mut scene, &lua, "");
         assert_eq!((face_list_on(&scene, "bar@TEST").0, run(&scene)), before);
+    }
+
+    /// #150: a new cross length that moves the room a pass placed owes a keyed list one pass that
+    /// turn, a width tween at the tick it settles, writing no offset over B's clamp of `s` to 0.
+    #[test]
+    fn a_cross_length_change_that_moves_the_room_owes_a_keyed_list_one_pass_once_it_settles() {
+        let (lua, dirty) = (mlua::Lua::new(), crate::lua::signal::DirtyFlag::new());
+        crate::lua::signal::register(&lua, dirty.clone()).unwrap();
+        register_node_constructors(&lua).unwrap();
+        let source = r#"s, w, anim, b = scroll("s"), state("w", 150), state("anim", {}), state("b", false)
+            local all, cells, many = {}, {}, {} for i = 1, 200 do all[i] = "r" .. i end
+            for i = 1, 60 do many[i] = rect { width = 25, height = 10 } cells[i % 6 + 1] = many[i] end
+            return panel { id = "bar", child = column { children = { list { width = w, height = 100,
+                spacing = 2, scroll = s, items = all, animate = anim, key = function(k) return k end,
+                each = function(k) return row { id = k, wrap = true, width = "fill", children = cells } end },
+                column { visible = b, width = w, height = 100, scroll = s, animate = anim,
+                    children = { row { wrap = true, width = "fill", children = many } } } } } }"#;
+        let surface = deserialize_lua_table(&lua.load(source).eval().unwrap()).unwrap();
+        let (mut scene, shaping) = (Scene::new(), ShapingHandle::spawn());
+        let pass = |scene: &mut Scene, code: &str| {
+            lua.load(code).exec().unwrap();
+            apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            scene.read_by_lua(dirty.take_quiet())
+        };
+        let signal = crate::lua::signal::from_userdata(&lua.globals().get("s").unwrap()).unwrap();
+        let cell = signal.cell_id().unwrap();
+        let list = |scene: &Scene| scene.surface("bar@TEST").unwrap().children[0].children[0].clone();
+        let at = |scene: &mut Scene| (scene.wheel(&signal, 1e6, false, Instant::now()), list(scene).scrolled);
+        pass(&mut scene, "");
+        pass(&mut scene, "s:scroll_to(1000)");
+        assert!(pass(&mut scene, "w:set(200)").is_empty(), "one line a row either way: the room stays");
+        pass(&mut scene, "w:set(50) s:scroll_to(20)");
+        assert_eq!(pass(&mut scene, "w:set(150)"), [cell], "three lines a row to one");
+        assert!(pass(&mut scene, "").is_empty(), "once");
+        assert_eq!(at(&mut scene), (WheelScroll::Write(200.0 * 12.0 - 102.0), 20.0));
+        pass(&mut scene, "w:set(50) b:set(true)");
+        pass(&mut scene, r#"anim:set({ width = { duration = 100, easing = "linear" } })"#);
+        assert!(pass(&mut scene, "w:set(150)").is_empty(), "the tween starts at 50");
+        let started = list(&scene).tweens.iter().find(|tween| tween.property == "width").unwrap().started;
+        let instances = [super::super::tests::instance_at(&surface, full())];
+        scene.tick(&instances, &shaping, &lua, started + std::time::Duration::from_millis(50));
+        let owed = || (dirty.take_quiet(), crate::lua::signal::take_layout_changed(&lua));
+        assert_eq!(owed(), (vec![], vec![]), "two lines a row at 100: a tick owes none");
+        scene.tick(&instances, &shaping, &lua, started + std::time::Duration::from_millis(100));
+        assert_eq!((owed().1, signal.scroll_offset()), (vec![cell], Some(0.0)), "a pass, not A's offset");
+        pass(&mut scene, "");
+        assert_eq!(at(&mut scene), (WheelScroll::Write(200.0 * 12.0 - 102.0), 0.0));
     }
 
     /// A `clock` text beside a `list` of `items`, counting `each` calls in `built`. `item` is the
