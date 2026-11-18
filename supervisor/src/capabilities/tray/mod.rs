@@ -67,6 +67,7 @@ type RawIconPixmap = (i32, i32, Vec<u8>);
 /// `ToolTip`'s D-Bus wire shape (`(sa(iiay)ss)`): icon name, icon pixmaps, title, text.
 type RawToolTip = (String, Vec<RawIconPixmap>, String, String);
 
+pub mod admission;
 pub mod controller;
 pub mod icon;
 pub mod item;

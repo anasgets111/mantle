@@ -4,7 +4,7 @@ use shared::{debug, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::WATCHER_OBJECT_PATH;
-use super::registration::resolve_registration;
+use super::registration::{ResolvedRegistration, resolve_registration};
 use super::registry::{ItemRegistry, RegisterOutcome, register_item};
 
 pub(super) struct StatusNotifierWatcher {
@@ -29,24 +29,13 @@ impl StatusNotifierWatcher {
             warn!("RegisterStatusNotifierItem({service:?}) could not be resolved: {err}");
             zbus::fdo::Error::Failed(format!("RegisterStatusNotifierItem({service:?}) could not be resolved: {err}"))
         })?;
-        // KDE's watcher answers `RegisterStatusNotifierItem` by storing `service + path` and
-        // publishing that, so a host never has to guess where an item sits. Ours resolves the same
-        // pair and now says so (ADR-0172).
-        let registered_id = format!("{}{}", resolved.unique_name.as_str(), resolved.object_path.as_str());
-
         // Reply before asking the item anything (ADR-0031 amendment).
         let (connection, registry, events) = (self.connection.clone(), self.registry.clone(), self.events.clone());
         tokio::spawn(async move {
-            match register_item(&connection, &registry, &events, resolved, true).await {
-                RegisterOutcome::Registered => {
-                    if let Ok(emitter) = zbus::object_server::SignalEmitter::new(&connection, WATCHER_OBJECT_PATH) {
-                        let _ = StatusNotifierWatcher::status_notifier_item_registered(&emitter, &registered_id).await;
-                    }
-                }
-                RegisterOutcome::Deferred => {}
-                RegisterOutcome::Failed(err) => {
-                    debug!("RegisterStatusNotifierItem({service:?}) failed: {err}");
-                }
+            if let (_, RegisterOutcome::Failed(err)) =
+                register_and_announce(&connection, &registry, &events, resolved).await
+            {
+                debug!("RegisterStatusNotifierItem({service:?}) failed: {err}");
             }
         });
         Ok(())
@@ -100,6 +89,24 @@ impl StatusNotifierWatcher {
     async fn status_notifier_host_unregistered(
         signal_emitter: &zbus::object_server::SignalEmitter<'_>,
     ) -> zbus::Result<()>;
+}
+
+/// [`register_item`], queueing at the cap, then `StatusNotifierItemRegistered` with the returned id:
+/// `service + path`, as KDE's watcher publishes it, so a host never guesses where an item sits (ADR-0172).
+pub(super) async fn register_and_announce(
+    connection: &zbus::Connection,
+    registry: &ItemRegistry,
+    events: &UnboundedSender<()>,
+    resolved: ResolvedRegistration,
+) -> (String, RegisterOutcome) {
+    let id = format!("{}{}", resolved.unique_name.as_str(), resolved.object_path.as_str());
+    let outcome = register_item(connection, registry, events, resolved, true).await;
+    if outcome == RegisterOutcome::Registered
+        && let Ok(emitter) = zbus::object_server::SignalEmitter::new(connection, WATCHER_OBJECT_PATH)
+    {
+        let _ = StatusNotifierWatcher::status_notifier_item_registered(&emitter, &id).await;
+    }
+    (id, outcome)
 }
 
 #[cfg(test)]
