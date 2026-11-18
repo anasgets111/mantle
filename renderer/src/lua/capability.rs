@@ -56,8 +56,9 @@ pub struct CommandSender {
     /// `lua::namespace` and `secure_submit`'s sweep both use it (ADR-0070 decisions 1, 5), so a
     /// second `mantle.audio` reader costs nothing.
     started: Rc<RefCell<HashSet<String>>>,
-    /// The last `CanLock` sent; the Supervisor's starts at `false` too.
-    can_lock: Rc<Cell<bool>>,
+    /// The last `CanLock` sent. The first is sent even when `false`: a replacement's Supervisor
+    /// waits for it when the generation before could lock.
+    can_lock: Rc<Cell<Option<bool>>>,
     folders: Rc<RefCell<FolderStaging>>,
     outbound_tx: UnboundedSender<RendererFrame>,
 }
@@ -92,9 +93,9 @@ impl CommandSender {
         }
     }
 
-    /// Tells the Supervisor whether this generation can lock, on a change only (ADR-0385).
+    /// Tells the Supervisor whether this generation can lock, first and on a change (ADR-0385).
     pub(crate) fn set_can_lock(&self, can_lock: bool) {
-        if self.can_lock.replace(can_lock) != can_lock
+        if self.can_lock.replace(Some(can_lock)) != Some(can_lock)
             && self.outbound_tx.send(RendererFrame::CanLock(can_lock)).is_err()
         {
             error!("failed to queue CanLock({can_lock}), the control-socket writer is gone");
@@ -484,12 +485,12 @@ pub(crate) mod tests {
         (lua, handle, rx)
     }
 
-    /// The next queued command, skipping the capability starts that precede it.
+    /// The next queued command, skipping the capability starts and `CanLock` that precede it.
     pub(crate) fn queued_command(rx: &mut mpsc::UnboundedReceiver<RendererFrame>) -> Option<CommandEnvelope> {
         loop {
             match rx.try_recv().ok()? {
                 RendererFrame::Command(envelope) => return Some(envelope),
-                RendererFrame::StartCapability { .. } => continue,
+                RendererFrame::StartCapability { .. } | RendererFrame::CanLock(_) => continue,
                 other => panic!("a command must be queued as RendererFrame::Command, got {other:?}"),
             }
         }

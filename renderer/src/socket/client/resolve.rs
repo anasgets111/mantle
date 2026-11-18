@@ -12,9 +12,11 @@ use crate::lua::capability::CommandSender;
 impl RendererClient {
     /// Applies the last evaluation to current instances, setting rescue on failure. Returns whether
     /// any surface applied, so `crate::wayland::run` can log a startup that applied nothing.
-    /// Instances come only from [`Self::set_instances`].
+    /// Instances come only from [`Self::set_instances`]. A failure answers `CanLock(false)`, which
+    /// a replacement's Supervisor holds a suspend for.
     pub fn apply_instances(&mut self) -> bool {
         let Some(output) = self.state.applied_output.as_ref() else {
+            self.commands.set_can_lock(false);
             return false;
         };
         let applied = self.scene.apply_locked(
@@ -40,6 +42,7 @@ impl RendererClient {
             Err(err) => {
                 error!("startup shell.lua evaluated but failed to apply to the scene: {err}");
                 self.rescue_applied_output(Some(&err.to_string()));
+                self.commands.set_can_lock(false);
                 false
             }
         }
@@ -425,7 +428,7 @@ mod tests {
     }
 
     /// The Supervisor locks on sleep only while this is `true` (ADR-0385), so a reload that drops
-    /// the lock surface must say so, and only changes are sent.
+    /// the lock surface must say so. The first answer and changes are sent.
     #[test]
     fn can_lock_follows_the_applied_lock_surface_and_is_sent_on_change() {
         let can_lock = |outbound_rx: &mut tokio::sync::mpsc::UnboundedReceiver<shared::RendererFrame>| {
@@ -438,6 +441,18 @@ mod tests {
         };
         let lock = r#"return lock { id = "screen", child = textfield {
             secure_submit = { capability = "lock", action = "authenticate" } } }"#;
+        let (_dir, _, mut client, mut outbound_rx) = client_for(r#"return panel { id = "bar", layer = "top" }"#);
+        assert!(run_startup(&mut client));
+        assert_eq!(can_lock(&mut outbound_rx), [false], "a replacement's Supervisor waits for the first answer");
+        let (_dir, _, mut client, mut outbound_rx) = client_for(r#"error("broken")"#);
+        // As `wayland::run` does: it applies after a failed evaluation too.
+        assert!(client.run_startup_evaluation().is_none() && !client.apply_instances());
+        assert_eq!(can_lock(&mut outbound_rx), [false], "a config that fails to evaluate answers too");
+        let (_dir, _, mut client, mut outbound_rx) =
+            client_for(r#"return panel { id = "bar", layer = "top", child = column { children = mantle.workspace } }"#);
+        push(&client, "workspace", 1, serde_json::json!("not a list"));
+        assert!(!run_startup(&mut client));
+        assert_eq!(can_lock(&mut outbound_rx), [false], "and one that fails to apply");
         let (_dir, path, mut client, mut outbound_rx) = client_for(lock);
         assert!(run_startup(&mut client));
         assert_eq!(can_lock(&mut outbound_rx), [true]);

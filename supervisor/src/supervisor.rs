@@ -131,7 +131,8 @@ pub(crate) struct Supervisor {
     reaps: tokio::task::JoinSet<()>,
     /// Fires when the departed generation's children are gone; see [`Supervisor::dispatch_process_command`].
     departed_reaped: Option<tokio::sync::oneshot::Receiver<()>>,
-    /// The sleep delay's wait (ADR-0385), answered by the next lock report, whatever it says.
+    /// The sleep delay's wait (ADR-0385), answered by the next lock report, whatever it says, or
+    /// by a replacement's first `CanLock` while that is unknown.
     sleep_waits: Option<tokio::sync::oneshot::Sender<()>>,
     /// Test hook replacing [`pam_worker::start_lock_conversation`] so tests never re-exec `/proc/self/exe`.
     #[cfg(test)]
@@ -167,7 +168,7 @@ impl Supervisor {
         }
         let mut supervisor = Self {
             registry,
-            authoritative: Authoritative { generation_id: 0, child: boot_child, can_lock: false },
+            authoritative: Authoritative { generation_id: 0, child: boot_child, can_lock: Some(false) },
             capabilities,
             lock,
             pam_events_tx,
@@ -480,7 +481,8 @@ impl Supervisor {
                 }
                 // The departed generation's id must not stay claimable by whatever inherits its pid.
                 let departed = self.authoritative.generation_id;
-                self.authoritative = Authoritative { generation_id: replacement_generation_id, child, can_lock: false };
+                let can_lock = self.authoritative.can_lock.filter(|can_lock| !can_lock);
+                self.authoritative = Authoritative { generation_id: replacement_generation_id, child, can_lock };
                 self.renderer_departed = false;
                 notice!("spawned generation {replacement_generation_id} to replace it");
                 self.capabilities.forget_departed_requests(departed);
@@ -532,7 +534,12 @@ impl Supervisor {
     /// the lock is up or refused, or at once if it already is up. A lock animating out after a
     /// correct password is retaken once its release lands; see [`Supervisor::record_lock_report`].
     pub(crate) fn lock_before_sleep(&mut self, locked: tokio::sync::oneshot::Sender<()>) {
-        if !self.authoritative.can_lock {
+        let Some(can_lock) = self.authoritative.can_lock else {
+            info!("the system is about to sleep; waiting for the new Renderer to say whether it can lock");
+            self.sleep_waits = Some(locked);
+            return;
+        };
+        if !can_lock {
             debug!("the system is about to sleep; this config has no lock surface, so it is not locked");
             let _ = locked.send(());
             return;
@@ -542,10 +549,21 @@ impl Supervisor {
             let _ = locked.send(());
             return;
         }
-        info!("the system is about to sleep; locking first");
         self.sleep_waits = Some(locked);
-        self.lock.lock();
-        self.push_lock_state();
+        // An owed relock is the lock already; a second frame ends a Renderer that reads neither (#123).
+        if self.relock == Relock::Idle {
+            info!("the system is about to sleep; locking first");
+            self.lock.lock();
+            self.push_lock_state();
+        }
+    }
+
+    /// `RendererFrame::CanLock`; settles a sleep that waited on an unknown answer.
+    pub(crate) fn record_can_lock(&mut self, can_lock: bool) {
+        let unknown = self.authoritative.can_lock.replace(can_lock).is_none();
+        if let Some(locked) = self.sleep_waits.take_if(|_| unknown) {
+            self.lock_before_sleep(locked);
+        }
     }
 
     /// One frame of the lock's PAM conversation (ADR-0042, ADR-0381). The serial rejects frames
@@ -800,7 +818,7 @@ mod tests {
         let bus = private_bus().await;
         let dir = tempfile::tempdir().unwrap();
         let (mut supervisor, mut lock_commands, _open) = booted(&bus, dir.path()).await;
-        supervisor.authoritative.can_lock = true;
+        supervisor.authoritative.can_lock = Some(true);
 
         let (locked_tx, mut locked) = tokio::sync::oneshot::channel();
         supervisor.lock_before_sleep(locked_tx);
@@ -828,18 +846,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sleep_asks_a_generation_without_a_lock_surface_for_nothing() {
+    async fn sleep_after_a_respawn_waits_for_the_replacement_to_say_whether_it_can_lock() {
+        use tokio::sync::oneshot::error::TryRecvError::Empty;
         let bus = private_bus().await;
         let dir = tempfile::tempdir().unwrap();
         let (mut supervisor, mut lock_commands, _open) = booted(&bus, dir.path()).await;
-        supervisor.authoritative.can_lock = true;
+        let sleep = |supervisor: &mut Supervisor| {
+            let (locked_tx, locked) = tokio::sync::oneshot::channel();
+            supervisor.lock_before_sleep(locked_tx);
+            locked
+        };
+        let report = |outcome| shared::LockReport { outcome };
+        // A config without a lock never holds a suspend, at start or after a respawn.
+        assert_eq!(sleep(&mut supervisor).try_recv(), Ok(()));
         assert!(!supervisor.respawn_renderer().await);
-        assert!(!supervisor.authoritative.can_lock, "a replacement must say again that it can lock");
-
-        let (locked_tx, mut locked) = tokio::sync::oneshot::channel();
-        supervisor.lock_before_sleep(locked_tx);
+        assert_eq!(sleep(&mut supervisor).try_recv(), Ok(()));
         assert!(lock_commands.try_recv().is_err(), "a config that cannot lock must not be asked to");
-        assert_eq!(locked.try_recv(), Ok(()), "and must not hold the suspend");
+
+        // A replacement for a config that could lock: the suspend waits, then the lock is asked for.
+        supervisor.record_can_lock(true);
+        assert!(!supervisor.respawn_renderer().await);
+        let mut waiting = sleep(&mut supervisor);
+        assert_eq!((waiting.try_recv(), lock_commands.try_recv().is_err()), (Err(Empty), true));
+        supervisor.record_can_lock(true);
+        assert_eq!(lock_commands.try_recv().unwrap(), shared::SetSessionLock { locked: true });
+        assert_eq!(waiting.try_recv(), Err(Empty), "held until the lock is up");
+        supervisor.record_lock_report(report(shared::LockOutcome::Locked));
+        assert_eq!(waiting.try_recv(), Ok(()));
+
+        // Locked when it died: the owed relock's report answers the wait.
+        assert!(!supervisor.respawn_renderer().await);
+        let mut waiting = sleep(&mut supervisor);
+        supervisor.record_can_lock(true);
+        assert_eq!((waiting.try_recv(), lock_commands.try_recv().is_err()), (Err(Empty), true), "no second lock");
+        supervisor.record_lock_report(report(shared::LockOutcome::Locked));
+        assert_eq!(waiting.try_recv(), Ok(()));
+        // The new config dropped its lock: released on its first `CanLock`, with nothing asked.
+        supervisor.record_lock_report(report(shared::LockOutcome::Unlocked));
+        supervisor.restart_brake = RestartBrake::default();
+        assert!(!supervisor.respawn_renderer().await);
+        let mut waiting = sleep(&mut supervisor);
+        assert_eq!(waiting.try_recv(), Err(Empty));
+        supervisor.record_can_lock(false);
+        assert_eq!((waiting.try_recv(), lock_commands.try_recv().is_err()), (Ok(()), true));
     }
 
     #[test]

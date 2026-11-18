@@ -430,7 +430,7 @@ async fn run_supervisor(
                 match inbound.frame {
                 RendererFrame::LockReport(report) => supervisor.record_lock_report(report),
                 RendererFrame::CanLock(can_lock) => {
-                    supervisor.authoritative.can_lock = can_lock;
+                    supervisor.record_can_lock(can_lock);
                     if let Some(requests) = sleep_locks_tx.take_if(|_| can_lock) {
                         let bound = lock::sleep::LOCK_BEFORE_SLEEP;
                         tokio::spawn(lock::sleep::delay_sleep_until_locked(connection.clone(), requests, bound));

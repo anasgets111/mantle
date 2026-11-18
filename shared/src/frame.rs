@@ -433,7 +433,8 @@ pub enum RendererFrame {
         capability: Capability,
     },
     /// Whether the applied config has a `lock` surface whose tree can authenticate, so a lock would
-    /// be taken rather than refused. Sent when it changes; a new generation starts at `false`.
+    /// be taken rather than refused. Sent after the first startup apply, failed or not, and on
+    /// each change.
     CanLock(bool),
 }
 
