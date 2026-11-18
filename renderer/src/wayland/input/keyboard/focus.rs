@@ -3,6 +3,7 @@
 use super::*;
 use crate::layout::node::fields::{common, pointer};
 use crate::lua::call_logged;
+use crate::wayland::surface::TrackedRole;
 use shared::debug;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -270,6 +271,15 @@ impl App {
         // A closed launcher can retain its tree and focus id without a `leave`; require its live
         // `wl_surface` or every turn would arm then prune the same field.
         if !self.surface_is_live(&control.surface_id) {
+            return;
+        }
+        // A panel just set to "none" (by an Escape's `on_cancel`, say) holds the keyboard until its
+        // `leave`; arming now would refocus a field that is giving the keys up.
+        if self.surfaces.iter().any(|s| {
+            scope.first() == Some(&s.surface_id)
+                && matches!(&s.role, TrackedRole::Panel { spec, .. }
+                    if spec.keyboard_interactivity == node::KeyboardInteractivity::None)
+        }) {
             return;
         }
         if control.kind != ControlKind::Plain {

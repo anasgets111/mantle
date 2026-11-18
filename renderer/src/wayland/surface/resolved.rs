@@ -560,10 +560,18 @@ mod tests {
     #[test]
     fn a_mapped_panel_turning_on_demand_is_remapped_so_the_compositor_focuses_it() {
         let (mut app, _dir, mut queue, mock) = modes_app();
-        let old = wl_ids(&app)[0];
+        let layer_id = |app: &App, index: usize| {
+            let TrackedRole::Panel { layer: Some(layer), .. } = &app.surfaces[index].role else { panic!("unshown") };
+            let smithay_client_toolkit::shell::wlr_layer::SurfaceKind::Wlr(wlr) = layer.kind() else { panic!() };
+            wlr.id().protocol_id()
+        };
+        let (old, old_layer, bar_layer) = (wl_ids(&app)[0], layer_id(&app, 0), layer_id(&app, 1));
         resolve_lua(&mut app, r#"mode:set("on_demand")"#);
         queue.roundtrip(&mut app).unwrap();
-        assert!(mock.requests.lock().unwrap().contains(&(old, 0, 0)), "the old wl_surface is destroyed");
+        let requests = mock.requests.lock().unwrap().clone();
+        assert!(requests.contains(&(old, 0, 0)), "the old wl_surface is destroyed");
+        assert!(!requests.contains(&(old_layer, 4, 2)), "no `on_demand` request on the layer it destroys");
+        assert!(requests.contains(&(bar_layer, 4, 2)), "`bar`, kept for its zone, is sent `on_demand`");
         assert_ne!(wl_ids(&app)[0], old);
         assert_eq!(app.surfaces[0].map_state, MapState::AwaitingConfigure);
         assert_eq!(app.focused_control.as_ref().map(|c| c.surface_id.as_str()), Some("flip@TEST"));

@@ -371,7 +371,8 @@ mod tests {
 
     const PASTE_CONFIG: &str = r#"
         local function prompt(id, child)
-            return panel { id = id, layer = "top", output = "active", width = 200, height = 80, child = child }
+            return panel { id = id, layer = "top", output = "active", width = 200, height = 80,
+                keyboard_interactivity = "on_demand", child = child }
         end
         return {
             prompt("lock", textfield { secure_submit = { capability = "lock", action = "authenticate" } }),

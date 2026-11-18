@@ -284,7 +284,7 @@ mod tests {
         let (app, dir, _queue, _mock) = App::test_app_with_wire(&format!(
             r#"open, log, w, shown = state("open", false), {{}}, state("w", 200), state("shown", true)
             local function field(name) return textfield {{ width = 100, height = 20, autofocus = true, focused = focused(name),
-                on_change = function(t) log[#log + 1] = name .. ":" .. t end }} end
+                on_change = function(t) log[#log + 1] = name .. ":" .. t end, on_cancel = function() w:set(200) end }} end
             return {{ panel {{ id = "launcher", layer = "top", output = "TEST", width = 200, height = 80,
                 keyboard_interactivity = {mode}, visible = shown,
                 child = column {{ children = {{ column {{ visible = open, children = {{ field("a") }} }}, field("b") }} }} }},
@@ -343,6 +343,25 @@ mod tests {
         turn(&mut app, "w:set(200)");
         turn(&mut app, "w:set(210)");
         assert!(!is_focused(&app, "b"));
+    }
+
+    /// The cancelled field is let go, but no `leave` has come yet: the main loop's upkeep must not
+    /// arm autofocus on a panel whose `keyboard_interactivity` just went to "none".
+    #[test]
+    fn escape_turning_interactivity_off_arms_no_autofocus_before_the_leave() {
+        for (draft, want) in [("x", &["b:", "b:x", "b:"][..]), ("", &["b:"][..])] {
+            let (mut app, _dir) = launcher(r#"w:map(function(v) return v > 250 and "on_demand" or "none" end)"#);
+            turn(&mut app, "w:set(300)");
+            app.keyboard_focus = Some("launcher@TEST".to_string());
+            if !draft.is_empty() {
+                assert_eq!(app.inject_text("launcher@TEST", draft), Ok(()));
+            }
+            let escape = parse_combo("Escape").unwrap().0;
+            assert_eq!(app.inject_key("launcher@TEST", &escape, (false, false)), Ok(()));
+            turn(&mut app, "");
+            app.arm_autofocus_if_unfocused(&app.keyboard_focus_scope());
+            assert_eq!(app.lua_log(), want, "draft {draft:?}");
+        }
     }
 
     #[test]

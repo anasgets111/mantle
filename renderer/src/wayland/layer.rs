@@ -468,7 +468,10 @@ impl App {
             // dead password prompt otherwise cannot distinguish a missing request from compositor
             // inaction.
             debug!(2; "{}: keyboard_interactivity -> {mode:?}", self.surfaces[index].surface_id);
-            layer.set_keyboard_interactivity(keyboard_interactivity_for(mode));
+            // A remap creates the replacement with this mode; the layer object here is destroyed.
+            if !remap {
+                layer.set_keyboard_interactivity(keyboard_interactivity_for(mode));
+            }
         }
         let mut sent = None;
         if let Some(size) = update.size {
