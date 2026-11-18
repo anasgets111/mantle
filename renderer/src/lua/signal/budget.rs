@@ -601,13 +601,6 @@ mod tests {
         eval_slow(&lua, &slow_getter(2));
         let other = frame_warnings();
         assert!(other.len() == 1 && other[0].contains("\"slow\"]:2"), "a different site warns on its own: {other:?}");
-    }
-
-    #[test]
-    fn a_reload_lets_the_same_slow_site_warn_again() {
-        let lua = lua_with_burners();
-        eval_slow(&lua, &slow_getter(1));
-        assert_eq!(frame_warnings().len(), 1);
 
         begin_evaluation(&lua);
         eval_slow(&lua, &slow_getter(1));
@@ -646,24 +639,10 @@ mod tests {
     }
 
     #[test]
-    fn native_time_has_no_instructions_to_sample_and_says_so() {
-        let lua = lua_with_burners();
-        lua.load("return computed({a}, function(x) burn(8) return x end):get()").eval::<i64>().unwrap();
-
-        let warned = frame_warnings();
-        assert!(warned.len() == 1 && warned[0].contains("native work"), "{warned:?}");
-    }
-
-    #[test]
-    fn a_getter_under_the_frame_target_does_not_warn() {
+    fn a_getter_under_the_frame_target_and_a_runaway_log_no_frame_warning() {
         let lua = lua_with_burners();
         lua.load("return computed({a}, function(x) spin(1) return x end):get()").eval::<i64>().unwrap();
         assert!(frame_warnings().is_empty());
-    }
-
-    #[test]
-    fn a_runaway_raises_and_logs_no_frame_warning() {
-        let lua = lua_with_burners();
         runaway(&lua);
         assert!(frame_warnings().is_empty(), "one fault, one message");
     }

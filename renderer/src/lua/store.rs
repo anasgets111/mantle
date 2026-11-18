@@ -209,28 +209,20 @@ mod tests {
     use crate::lua::tests::probe;
     use crate::socket::client::tests::{bare_client, push};
 
-    /// A reload's `persistent_table` call hands back the same table, so its edited defaults have to reach it.
+    /// A module and `shell.lua` may redeclare a store, and in-place reload reruns all declarations:
+    /// every execution lands on one table, or one `:set()` leaves the other stale. A reload's call
+    /// hands back that same table, so its edited defaults have to reach it.
     #[test]
-    fn a_second_declaration_of_one_file_answers_its_new_defaults() {
-        use crate::lua::capability::Capability;
-        use crate::lua::signal::DirtyFlag;
-        let lua = Lua::new();
-        crate::lua::signal::register(&lua, DirtyFlag::new()).unwrap();
-        register(&lua).unwrap();
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let (storage, _handle) =
-            Capability::new("storage", DirtyFlag::new(), crate::lua::capability::CommandSender::new(0, tx));
-        let mantle = lua.create_table().unwrap();
-        mantle.set("storage", storage).unwrap();
-        lua.globals().set("mantle", mantle).unwrap();
-        let read = |defaults: &str| {
-            lua.load(format!(r#"return persistent_table({{ path = "/s/x.json", defaults = {defaults} }}).theme:get()"#))
-                .eval::<String>()
-                .unwrap()
-        };
-        assert_eq!(read(r#"{ theme = "dark" }"#), "dark");
-        crate::lua::signal::begin_evaluation(&lua);
-        assert_eq!(read(r#"{ theme = "light" }"#), "light");
+    fn two_declarations_of_one_file_are_one_table_that_answers_the_newest_defaults() {
+        let (client, _outbound_rx) = bare_client();
+        let lua = client.loader().lua();
+        let declare = |defaults: &str| format!(r#"persistent_table({{ path = "/s/x.json", defaults = {defaults} }})"#);
+        let read = |defaults: &str| lua.load(format!("return {}.theme:get()", declare(defaults))).eval::<String>();
+        assert_eq!(read(r#"{ theme = "dark" }"#).unwrap(), "dark");
+        crate::lua::signal::begin_evaluation(lua);
+        assert_eq!(read(r#"{ theme = "light" }"#).unwrap(), "light");
+        let same = format!("return rawequal({0}, {0})", declare("{}"));
+        assert!(lua.load(same).eval::<bool>().unwrap(), "the file path is the identity");
     }
 
     #[test]
@@ -393,21 +385,6 @@ mod tests {
             envelope.params.arguments,
             vec![serde_json::json!("/tmp/bar/state.json"), serde_json::json!("theme"), serde_json::json!("latte")]
         );
-    }
-
-    #[test]
-    fn two_declarations_of_one_file_are_one_table() {
-        // A module and `shell.lua` may redeclare a store, and in-place reload reruns all
-        // declarations: all three executions land on one table and signal per key, or one `:set()`
-        // leaves the other stale.
-        let (client, _outbound_rx) = bare_client();
-
-        let setup = r#"
-            first = persistent_table { path = "/tmp/bar/state.json" }
-            second = persistent_table { path = "/tmp/bar/state.json" }
-            same = rawequal(first, second)
-        "#;
-        assert!(probe::<bool>(client.loader(), setup, "same"), "the file path is the identity");
     }
 
     #[test]

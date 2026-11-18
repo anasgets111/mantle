@@ -354,15 +354,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pump_reads_past_a_skippable_frame_whose_body_does_not_decode() {
-        let frames = forwarded_after(&[br#"{"kind":"IconTheme","data":7}"#]).await;
-        assert_eq!(frames, [SupervisorFrame::Reevaluate]);
-    }
-
-    #[tokio::test]
-    async fn pump_records_a_skipped_kind_so_only_its_first_skip_warns() {
+    async fn pump_reads_past_skippable_frames_whose_body_does_not_decode() {
         let bad = br#"{"kind":"ProcessExited","data":{}}"#;
-        assert_eq!(forwarded_after(&[bad, bad]).await, [SupervisorFrame::Reevaluate]);
+        let frames = forwarded_after(&[br#"{"kind":"IconTheme","data":7}"#, bad, bad]).await;
+        assert_eq!(frames, [SupervisorFrame::Reevaluate]);
         assert!(!shared::log::first_failure("undecodable frame ProcessExited"), "the first skip must record its kind");
     }
 

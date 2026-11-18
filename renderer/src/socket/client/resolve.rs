@@ -1142,56 +1142,46 @@ mod tests {
         assert_eq!(row.children[1].rect.height, 3.0, "the follow-up read the new value, not the carried one");
     }
 
-    /// ADR-0374: a windowed list whose viewport outgrew its window builds again in the same turn.
-    #[test]
-    fn a_windowed_list_short_of_a_grown_viewport_builds_again_in_the_same_turn() {
-        let (_dir, _, mut client, _rx) = client_for(
+    /// A 200-row windowed list whose height reads `h`, grown from 100 to 400 over two passes;
+    /// `animate` is spliced into the list.
+    fn grown_windowed_list(animate: &str) -> (tempfile::TempDir, RendererClient) {
+        let (dir, _, mut client, _rx) = client_for(&format!(
             r#"
             h = state("h", 100)
-            local rows = {}
+            local rows = {{}}
             for i = 1, 200 do rows[i] = "r" .. i end
-            return panel { id = "bar", layer = "top", child = column { children = {
-                list { width = 50, height = h, scroll = scroll("s"), items = rows,
-                    key = function(k) return k end, each = function() return rect { height = 20 } end },
-            } } }
-            "#,
-        );
+            return panel {{ id = "bar", layer = "top", child = column {{ children = {{
+                list {{ width = 50, height = h, scroll = scroll("s"), items = rows, {animate}
+                    key = function(k) return k end, each = function() return rect {{ height = 20 }} end }},
+            }} }} }}
+            "#
+        ));
         assert!(run_startup(&mut client));
-        let built = |client: &RendererClient| {
-            let list = &client.scene.surface("bar@TEST").unwrap().children[0].children[0];
-            list.children.last().map_or(0.0, |row| row.rect.y + row.rect.height)
-        };
         client.loader.lua().load("h:set(101)").exec().unwrap();
         assert!(client.re_resolve_if_dirty());
         client.loader.lua().load("h:set(400)").exec().unwrap();
         assert!(client.re_resolve_if_dirty());
+        (dir, client)
+    }
+
+    /// How far down the windowed list's built rows reach.
+    fn built(client: &RendererClient) -> f32 {
+        let list = &client.scene.surface("bar@TEST").unwrap().children[0].children[0];
+        list.children.last().map_or(0.0, |row| row.rect.y + row.rect.height)
+    }
+
+    /// ADR-0374: a windowed list whose viewport outgrew its window builds again in the same turn.
+    #[test]
+    fn a_windowed_list_short_of_a_grown_viewport_builds_again_in_the_same_turn() {
+        let (_dir, client) = grown_windowed_list("");
         assert!((400.0..4000.0).contains(&built(&client)), "windowed, and built to {}", built(&client));
     }
 
     /// The same hint when a tween, not a pass, grows the viewport: the next pass builds the rows.
     #[test]
     fn a_windowed_list_a_tween_outgrew_builds_again_on_the_next_pass() {
-        let (_dir, _, mut client, _rx) = client_for(
-            r#"
-            h = state("h", 100)
-            local rows = {}
-            for i = 1, 200 do rows[i] = "r" .. i end
-            return panel { id = "bar", layer = "top", child = column { children = {
-                list { width = 50, height = h, scroll = scroll("s"), items = rows,
-                    animate = { height = { duration = 100, easing = "linear" } },
-                    key = function(k) return k end, each = function() return rect { height = 20 } end },
-            } } }
-            "#,
-        );
-        assert!(run_startup(&mut client));
-        let built = |client: &RendererClient| {
-            let list = &client.scene.surface("bar@TEST").unwrap().children[0].children[0];
-            list.children.last().map_or(0.0, |row| row.rect.y + row.rect.height)
-        };
-        client.loader.lua().load("h:set(101)").exec().unwrap();
-        assert!(client.re_resolve_if_dirty());
-        client.loader.lua().load("h:set(400)").exec().unwrap();
-        assert!(client.re_resolve_if_dirty());
+        let (_dir, mut client) =
+            grown_windowed_list(r#"animate = { height = { duration = 100, easing = "linear" } },"#);
         let started = client.scene.surface("bar@TEST").unwrap().children[0].children[0].tweens[0].started;
         client.tick_animations(&["bar@TEST".into()], started + std::time::Duration::from_millis(200));
         assert!(client.next_wake_deadline().is_some(), "the short window owes a pass");

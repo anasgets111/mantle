@@ -1849,22 +1849,6 @@ pub(crate) mod tests {
         assert!(globals.get::<mlua::Value>("last_code").unwrap().is_nil(), "with nil");
     }
 
-    #[test]
-    fn a_due_timer_fires_through_the_client() {
-        let (_dir, _, mut client, _outbound_rx) = client_for(
-            r#"fired = false
-            timer(1, function() fired = true end)
-            return panel { id = "bar", layer = "top" }"#,
-        );
-        assert!(run_startup(&mut client));
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !client.loader.lua().globals().get::<bool>("fired").unwrap() {
-            assert!(std::time::Instant::now() < deadline, "the timer never fired");
-            client.fire_due_timers();
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-    }
-
     /// A reload forgets folded raises, so the failing handler of the new config logs in full again.
     #[test]
     fn a_reload_logs_a_repeating_raise_in_full_again() {

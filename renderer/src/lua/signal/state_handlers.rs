@@ -308,23 +308,19 @@ mod tests {
     }
 
     #[test]
-    fn a_handler_that_keeps_changing_its_own_state_stops_after_the_round_cap() {
-        let (lua, _dirty) = lua_with_state();
-        lua.load(
-            r#"
-            flip = state("flip", false)
-            runs = 0
-            flip:on_change(function(now) runs = runs + 1 flip:set(not now) end)
-            flip:set(true)
-            "#,
-        )
-        .exec()
-        .unwrap();
+    fn a_change_loop_stops_at_the_round_cap_whether_direct_or_through_a_derived_signal() {
+        for subscribe in [
+            "flip:on_change(function(now) runs = runs + 1 flip:set(not now) end)",
+            "flip:map(function(v) return not v end):on_change(function(now) runs = runs + 1 flip:set(now) end)",
+        ] {
+            let (lua, _dirty) = lua_with_state();
+            lua.load(format!("flip = state('flip', false) runs = 0 {subscribe} flip:set(true)")).exec().unwrap();
 
-        run(&lua);
-        assert_eq!(count(&lua, "runs"), MAX_ROUNDS as i64);
-        run(&lua);
-        assert_eq!(count(&lua, "runs"), MAX_ROUNDS as i64, "the write left over at the cap is dropped, not retried");
+            run(&lua);
+            assert_eq!(count(&lua, "runs"), MAX_ROUNDS as i64, "{subscribe}");
+            run(&lua);
+            assert_eq!(count(&lua, "runs"), MAX_ROUNDS as i64, "{subscribe}: the change left at the cap is dropped");
+        }
     }
 
     #[test]
@@ -416,26 +412,6 @@ mod tests {
 
         let seen: Vec<String> = lua.load("return seen").eval().unwrap();
         assert_eq!(seen, ["b1", "b2"]);
-    }
-
-    #[test]
-    fn a_loop_through_a_derived_signal_stops_at_the_round_cap() {
-        let (lua, _dirty) = lua_with_state();
-        lua.load(
-            r#"
-            flip = state("flip", false)
-            runs = 0
-            flip:map(function(v) return not v end):on_change(function(now) runs = runs + 1 flip:set(now) end)
-            flip:set(true)
-            "#,
-        )
-        .exec()
-        .unwrap();
-
-        run(&lua);
-        assert_eq!(count(&lua, "runs"), MAX_ROUNDS as i64);
-        run(&lua);
-        assert_eq!(count(&lua, "runs"), MAX_ROUNDS as i64, "the change left at the cap is the new baseline");
     }
 
     #[test]
