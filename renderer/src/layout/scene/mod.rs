@@ -9,6 +9,7 @@
 mod census;
 mod children;
 mod field;
+mod finish;
 mod fit;
 mod geometry;
 mod image_status;

@@ -162,7 +162,7 @@ pub enum PaintStyle {
         /// Paint only: drawn outside the box, over its children (`ring`).
         ring: Option<Ring>,
     },
-    /// Text before/after `layout::scene::pass::finish` rewrites it to an ellipsized prefix under `elide` or
+    /// Text before/after `layout::scene::finish::finish` rewrites it to an ellipsized prefix under `elide` or
     /// wrapped lines joined by `\n`; display-list paint may therefore receive `\n`-joined lines.
     /// `elide`, `wrap`, and `max_lines` survive for that rewrite but are dead to `layout::paint`.
     Text {
