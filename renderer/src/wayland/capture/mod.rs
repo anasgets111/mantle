@@ -395,9 +395,6 @@ impl App {
                 }
                 _ => None,
             };
-            // ponytail: wlr-screencopy carries no transform, so a wlr source stays `Normal`: Hyprland
-            // sends upright buffers, niri and Pinnacle native ones, which draw turned. Upgrade path:
-            // per-compositor detection, or ext, which declares the transform per frame.
             self.capture_cache.set_crop(id, crop);
             let source = &self.captures.sources[&id];
             if !source.failed && !source.in_flight && (node.live.is_some() || !source.captured) {

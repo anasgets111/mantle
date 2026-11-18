@@ -79,8 +79,9 @@ output change cannot revive a closed window's ID. A one-shot captures the curren
 `live` to follow opening animations.
 
 A `region` prefers `wlr-screencopy`, which crops at the source. Through `ext-image-copy-capture-v1`
-the engine crops instead. On a rotated or flipped output, ext draws upright; `wlr-screencopy` names no
-transform, so its buffer draws as the compositor sends it.
+the engine crops instead. On a rotated or flipped output, ext draws upright. `wlr-screencopy` names no
+transform: a quarter-turned buffer, flipped or not, draws upright, since its shape shows which way
+the compositor sent it. A buffer turned 180 degrees or only flipped draws as the compositor sends it.
 
 ## How do I…
 
@@ -101,7 +102,7 @@ transform, so its buffer draws as the compositor sends it.
 | Nothing draws | Give it a size; check `output` against `mantle.screens` names; check `mantle log` for a missing-protocol warning |
 | The preview is frozen | `live` is `false`, which captures once. Set `true` or a frame rate |
 | `live = 0` is refused | Use `false` for a single frame |
-| A rotated output draws sideways | The compositor sends `wlr-screencopy` buffers unrotated (niri, Pinnacle). Without `region` the engine uses `ext-image-copy-capture-v1` where offered, which reports the transform |
+| An output turned 180 degrees or only flipped draws upside down or mirrored | The compositor sends `wlr-screencopy` buffers untransformed (niri, Pinnacle). Without `region` the engine uses `ext-image-copy-capture-v1` where offered, which reports the transform |
 | `region = { width = 100, height = 100 }` is refused | All four keys are required |
 | `window` and `output` are both set | Only one may be nonempty; `region` is output-only |
 

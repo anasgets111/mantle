@@ -104,7 +104,7 @@ fn apply(transform: Transform, (u, v): (f32, f32)) -> (f32, f32) {
 }
 
 /// Whether `transform` turns the buffer a quarter, swapping its width and height.
-fn quarter_turn(transform: Transform) -> bool {
+pub(crate) fn quarter_turn(transform: Transform) -> bool {
     matches!(transform, Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270)
 }
 

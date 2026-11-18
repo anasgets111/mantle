@@ -1,15 +1,61 @@
 //! wlr-screencopy: one frame object per request, negotiated at `BufferDone`.
 
+use wayland_client::protocol::wl_output::Transform;
 use wayland_client::{Dispatch, WEnum};
 
 use super::shm::{negotiate_buffer, pick_format};
 use super::*;
+use crate::image::capture::quarter_turn;
 
 /// wlr-screencopy's `Buffer` event, checked before it is trusted: an unsupported format would
 /// silently corrupt colours (`bgrx_to_rgba` assumes BGRX), and a stride narrower than the copy
 /// assumes (`width * 4`) would panic slicing `stage_landed`'s rows.
 fn wlr_buffer_valid(format: wl_shm::Format, width: u32, stride: u32) -> bool {
     pick_format(&[format]).is_some() && stride >= width.saturating_mul(4)
+}
+
+/// The transform a wlr buffer still carries, given its output's and its upright extent: the
+/// region as the compositor clips it to the output, else the output's logical size. wlr-screencopy
+/// names none and compositors disagree: Hyprland sends upright buffers, niri and Pinnacle native
+/// ones, which a quarter turn shows as a crossed shape.
+/// ponytail: 180, the plain flips and extents under 1 px off square keep their shape and stay
+/// `Normal`, so they draw as sent on niri and Pinnacle. Upgrade path: ext, which names the
+/// transform per frame.
+fn wlr_transform(
+    output: Transform,
+    (width, height): (u32, u32),
+    region: Option<LogicalRect>,
+    logical: Option<(f32, f32)>,
+) -> Transform {
+    let (up_width, up_height) = match (region, logical) {
+        (Some(region), Some(logical)) => {
+            let clipped = crop_fraction(region, logical);
+            (clipped.width * logical.0, clipped.height * logical.1)
+        }
+        (Some(region), None) => (region.width, region.height),
+        (None, Some(logical)) => logical,
+        (None, None) => return Transform::Normal,
+    };
+    // Under 1 px off square is square: a square region comes back from its clip with f32 noise.
+    let upright = up_width - up_height;
+    let crossed = upright.abs() >= 1.0 && (width as f32 - height as f32) * upright < 0.0;
+    if crossed && quarter_turn(output) { output } else { Transform::Normal }
+}
+
+impl App {
+    /// [`wlr_transform`] for `id`'s landing frame, `None` for an output no longer known.
+    fn landing_wlr_transform(&self, id: &NodeId) -> Option<Transform> {
+        let source = self.captures.sources.get(id)?;
+        let (Some(Proto::Wlr(wlr)), CaptureTarget::Output(name)) = (&source.proto, &source.target) else { return None };
+        let buffer = if wlr.dmabuf_active {
+            source.dmabuf_state.shape().map(|shape| (shape.width, shape.height))
+        } else {
+            wlr.buffer.as_ref().map(|buffer| (buffer.width, buffer.height))
+        }?;
+        let info = self.output_state.info(&self.wl_output_named(name)?)?;
+        let logical = info.logical_size.map(|(width, height)| (width as f32, height as f32));
+        Some(wlr_transform(info.transform, buffer, source.region, logical))
+    }
 }
 
 impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, NodeId> for App {
@@ -126,6 +172,9 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, NodeId> for App {
                 {
                     buffer.flip_rows(&mut wlr.damage);
                 }
+                // After the row flip: the transform turns the buffer as its rows now run.
+                let transform = state.landing_wlr_transform(id).unwrap_or(Transform::Normal);
+                state.capture_cache.set_transform(*id, transform);
                 land_ready_frame(&mut state.captures, &mut state.capture_cache, id);
                 state.request_next_if_live(*id);
             }
@@ -189,6 +238,55 @@ mod tests {
         }
     }
 
+    /// Gives the source a `width` x `height` region and the mock's output `transform`.
+    fn turn(w: &mut Wire, transform: Transform, (width, height): (f32, f32)) -> LogicalRect {
+        let region = LogicalRect { x: 0.0, y: 0.0, width, height };
+        w.source_mut().region = Some(region);
+        let wl_output = id(w.app.wl_output_named("TEST").as_ref());
+        // `geometry` 0 (x, y, mm, mm, subpixel, make "", model "", transform), then `done` 2.
+        w.send(wl_output, 0, &[0, 0, 0, 0, 0, 1, 0, 1, 0, transform as u32]);
+        w.send(wl_output, 2, &[]);
+        region
+    }
+
+    /// A wlr buffer carries its output's transform only when its shape is the upright extent's
+    /// turned (niri, Pinnacle); Hyprland's upright buffer and every non-quarter turn stay `Normal`.
+    #[test]
+    fn a_wlr_frame_takes_its_output_transform_only_when_its_shape_shows_it() {
+        // (output transform, buffer width and height, region width and height, landed transform)
+        let cases = [
+            (Transform::Normal, (3, 1), (10.0, 30.0), Transform::Normal),
+            (Transform::_90, (3, 1), (10.0, 11.0), Transform::_90),
+            (Transform::_270, (1, 3), (30.0, 10.0), Transform::_270),
+            (Transform::Flipped270, (3, 1), (10.0, 30.0), Transform::Flipped270),
+            (Transform::_90, (1, 3), (10.0, 30.0), Transform::Normal),
+            (Transform::_90, (2, 2), (10.0, 30.0), Transform::Normal),
+            (Transform::_90, (1, 3), (20.0, 20.0), Transform::Normal),
+            (Transform::_180, (3, 1), (10.0, 30.0), Transform::Normal),
+        ];
+        for (output, (width, height), (region_width, region_height), landed) in cases {
+            let mut w = Wire::new(Protocol::Wlr, Some(f32::INFINITY));
+            let region = turn(&mut w, output, (region_width, region_height));
+            let f = frame(&mut w);
+            w.send(f, 0, &[XRGB, width, height, width * 4]);
+            w.send(f, 6, &[]);
+            w.send(f, 2, &[0, 0, 0]);
+            assert_eq!(w.app.capture_cache.transform(ID), landed, "{output:?} {width}x{height} in {region:?}");
+        }
+        // The mock sends no logical size. With one, a region clips to it: this landscape region
+        // overhangs a portrait output's right edge, so Hyprland's upright buffer is portrait.
+        let (portrait, overhang) =
+            (Some((1080.0, 1920.0)), LogicalRect { x: 1000.0, y: 0.0, width: 300.0, height: 200.0 });
+        assert_eq!(wlr_transform(Transform::_90, (80, 200), Some(overhang), portrait), Transform::Normal);
+        assert_eq!(wlr_transform(Transform::_90, (1920, 1080), None, portrait), Transform::_90, "no region");
+        let clipped_landscape = LogicalRect { x: 780.0, y: 0.0, width: 400.0, height: 200.0 };
+        assert_eq!(wlr_transform(Transform::_90, (200, 300), Some(clipped_landscape), portrait), Transform::_90);
+        // A square region comes back from its clip with f32 noise; a buffer 1 px off square from
+        // scale rounding is still square.
+        let square = LogicalRect { x: 1.0, y: 1.0, width: 300.0, height: 300.0 };
+        assert_eq!(wlr_transform(Transform::_90, (301, 300), Some(square), portrait), Transform::Normal, "near square");
+    }
+
     /// No usable shm offer at `buffer_done` fails the source, as `failed` does.
     #[test]
     fn a_frame_without_a_usable_shm_offer_fails_the_source() {
@@ -239,6 +337,8 @@ mod tests {
                 // `created` is event 0; 0xff00_0000 is the first server-allocated id.
                 w.send(params.id().protocol_id(), 0, &[0xff00_0000]);
             }
+            // A `_90` output with a portrait region: the 4x2 buffer, in either slot, turns.
+            turn(&mut w, Transform::_90, (10.0, 30.0));
             let f = frame(&mut w);
             if let Some(args) = linux_dmabuf {
                 w.send(f, 5, &args);
@@ -251,6 +351,7 @@ mod tests {
             w.send(f, 2, &[0, 0, 0]);
             assert_eq!(w.app.captures.pending_import == [ID], into_slot, "{label}");
             assert!(w.source().captured && !w.source().in_flight, "{label}");
+            assert_eq!(w.app.capture_cache.transform(ID), Transform::_90, "{label}");
         }
     }
 
