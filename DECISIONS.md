@@ -6628,10 +6628,16 @@ the compositor's copy.
    `wl_surface.set_buffer_transform` defines it, through a canvas matrix. The region stays in
    upright fractions and maps through the same matrix, so the ext crop works on any transform.
    wlr-screencopy carries no transform and compositors disagree: Hyprland 0.57 sends upright
-   buffers, niri and Pinnacle native ones. wlr stays `Normal`, so on those two a wlr capture of a
-   rotated output draws turned. Rejected: applying the output's `wl_output` transform to wlr, which
-   turns Hyprland's upright buffer a second time. The 90 and 270 directions are unverified on
-   hardware, since Hyprland reports `Normal` for ext frames too.
+   buffers, niri and Pinnacle native ones. The 90 and 270 directions are unverified on hardware,
+   since Hyprland reports `Normal` for ext frames too. Amended by #64 (wlr): a wlr frame takes the
+   output's `wl_output` transform only when it is a quarter turn and the buffer's shape crosses the
+   upright extent's (landscape against portrait, at least 1 px off square). The extent is the
+   region as the compositor clips it to the output, else the output's logical size. niri and
+   Pinnacle's native buffers turn upright; Hyprland's upright ones match the extent and stay
+   `Normal`. Rejected: applying the output transform always, which turns Hyprland's buffer twice.
+   ponytail: 180, plain flips and extents under 1 px off square look the same either way and stay
+   `Normal`, so they draw as sent on niri and Pinnacle; upgrade path: ext, or per-compositor
+   detection.
 
 Measured on Hyprland 0.56.2, release build, dma-buf path: a 480x200 overlay previewing the
 3440x1440@165 output under it, 10 s windows, Hyprland's CPU above an interleaved baseline (7-10%).
@@ -9237,6 +9243,16 @@ outputs, rollback, hidden lists and in-place wheels. Measured on a 1000-row list
 unchanged, ticks within 0–4 µs (about 3%) of base. Rejected: a registry the bump walks (misses values
 off the visited tree and in rolled-back state); packed per-row bits (+10–15 lines for 1 B/row).
 
+Amended by #133: glyph 0 is not the only thing a later face changes. A cluster whose face's cmap
+lacks a character Parley counts toward coverage (a ZWJ, a thin space faked from a space) is stamped
+like a box, without queueing a lookup; format characters outside the Inherited script, controls and
+VS15/16 are skipped, as Parley skips them. A face joining a fontique family registered before the
+current call is a restyle: a counter that moves only then is sampled on the worker with each reply
+and stored per unboxed cache entry, so a restyle reshapes cached text once while a new family's
+faces reshape nothing unboxed. Measured (debug): uncached shaping +4%, cache hits +4% median.
+Rejected: clearing the cache on a restyle (a reply inserted after the clear stays stale). Keyed
+lists' rows past the window keep pre-restyle sizes until shown (#141).
+
 ## 0400. A protocol mismatch re-executes the installed `mantle`
 
 Since ADR-0059 nothing restarts a Supervisor that stops, so exiting 76 after refusing a Renderer
@@ -9252,3 +9268,14 @@ re-exec. Lock gap: about 10 s plus a boot (5 s Renderer kill, 5 s session-proces
 not measured; the compositor's own lock screen shows meanwhile. Rejected: passing state across exec
 (the marker carries the one fact that must survive); a lifetime "already re-executed" flag (a
 long-lived session would lose the feature at its next upgrade).
+
+## 0401. Popups wait for their panel's first configure, except grabs
+
+A `grab = false` popup whose parent panel is not configured yet is not created (#136). While a
+popup holds `UnconfiguredParent`, or `HiddenParent` (a popup tracked before its panel is visited
+before that panel's show), any surface's first configure marks the whole scene dirty; the
+configure's size change alone would re-resolve only the panel. Cost: one full pass per surface
+mapped while a popup waits on a parent that stays hidden; size-only configures cost nothing. A
+`grab = true` popup opens at once, because ADR-0049 limits its serial to the input turn and a wait
+would refuse it as `Unarmed` (#142). Rejected: carrying the serial across the wait, which widens
+that window and cannot be checked against strict compositors here.
