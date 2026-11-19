@@ -73,16 +73,13 @@ struct TimerRegistry {
 impl TimerRegistry {
     /// Keeps the list sorted by deadline, and registration order within one deadline, so two
     /// timers armed for the same moment fire in the order the config wrote them.
-    fn arm(&mut self, due: Instant, callback: Function, every: Option<Duration>) -> mlua::Result<TimerId> {
+    fn arm(&mut self, due: Instant, callback: Function, every: Option<Duration>) -> TimerId {
         let id = self.next_id;
-        self.next_id = self
-            .next_id
-            .checked_add(1)
-            .ok_or_else(|| mlua::Error::runtime("timer ids are exhausted; this VM has armed 2^64 timers"))?;
+        self.next_id += 1;
         let list = if self.evaluating { &mut self.staged } else { &mut self.entries };
         insert(list, Entry { due, id, callback, every });
         debug!(2; "armed timer {id}");
-        Ok(id)
+        id
     }
 
     /// Removes `id` and hands back its callback, or `None` when it already fired or was cancelled.
@@ -133,7 +130,7 @@ fn start(lua: &Lua, name: &str, ms: Num, callback: Function, repeat: bool) -> ml
     }
     let period = Duration::from_secs_f64(ms.0 / 1000.0);
     let due = now(lua) + period;
-    super::app_data_or_default::<TimerRegistry>(lua).arm(due, callback, repeat.then_some(period)).map(TimerHandle)
+    Ok(TimerHandle(super::app_data_or_default::<TimerRegistry>(lua).arm(due, callback, repeat.then_some(period))))
 }
 
 pub fn register(lua: &Lua) -> mlua::Result<()> {
@@ -368,8 +365,8 @@ mod tests {
         lua.set_app_data(TimerRegistry::default());
         {
             let mut registry = lua.app_data_mut::<TimerRegistry>().unwrap();
-            registry.arm(due, lua.globals().get::<Function>("first").unwrap(), None).unwrap();
-            registry.arm(due, lua.globals().get::<Function>("second").unwrap(), None).unwrap();
+            registry.arm(due, lua.globals().get::<Function>("first").unwrap(), None);
+            registry.arm(due, lua.globals().get::<Function>("second").unwrap(), None);
         }
 
         dispatch_due(&lua, due);
