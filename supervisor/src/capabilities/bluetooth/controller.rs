@@ -46,9 +46,6 @@ pub struct BluetoothController {
     /// Whether the config wants discovery, from `start_discovery`/`stop_discovery`; see
     /// [`reconcile_discovery`](Self::reconcile_discovery).
     discovery_wanted: Arc<AtomicBool>,
-    /// The last discovery call an adapter accepted, until its `Discovering` shows it: BlueZ replies
-    /// before it signals the change. Held across each [`reconcile_discovery`](Self::reconcile_discovery).
-    discovery_call: Arc<tokio::sync::Mutex<Option<(OwnedObjectPath, bool)>>>,
     /// The pairing prompt, shared with the agent that fills it.
     pub(in crate::capabilities) prompts: PromptSlot,
     /// Signal sender used by [`clear_discovered`](Self::clear_discovered) to share the forwarders'
@@ -67,7 +64,6 @@ impl BluetoothController {
             state: Arc::new(Mutex::new(BluetoothState::default())),
             busy: Arc::default(),
             discovery_wanted: Arc::default(),
-            discovery_call: Arc::default(),
             prompts: PromptSlot::default(),
             events,
         };
@@ -349,23 +345,18 @@ impl BluetoothController {
     /// so a late start is stopped, and a radio switched back on resumes the scan, once BlueZ
     /// reports it.
     ///
-    /// ponytail: a `Discovering` or `Powered` flip and return, or the same adapter re-added, that no
-    /// reconcile reads leaves the accepted call standing, so the scan stays off until the next stop
-    /// and start. Upgrade path: clear it on each of those change signals after the reply.
-    ///
     /// ponytail: `Discovering` is adapter-wide. Another client scanning while this one wants none
     /// makes `StopDiscovery` fail with "No discovery started", logged once per property change.
+    ///
+    /// ponytail: a start racing the first `AdapterChanged` can send `StartDiscovery` twice; BlueZ
+    /// refuses the second (`InProgress`, one warn). Upgrade: single-flight the reconcile.
     async fn reconcile_discovery(&self) {
-        let mut accepted = self.discovery_call.lock().await;
-        // An unpowered or absent adapter has dropped every discovery session.
-        let Some(adapter) = self.adapter() else { return *accepted = None };
+        let Some(adapter) = self.adapter() else { return };
         if !adapter.powered().await.unwrap_or(false) {
-            return *accepted = None;
+            return;
         }
         let due = self.discovery_due();
-        let discovering = adapter.discovering().await.unwrap_or(false);
-        accepted.take_if(|(path, on)| path.as_ref() != *adapter.inner().path() || *on == discovering);
-        if accepted.as_ref().map_or(discovering, |(_, on)| *on) == due {
+        if adapter.discovering().await.unwrap_or(false) == due {
             return;
         }
         let (call, result) = if due {
@@ -373,7 +364,6 @@ impl BluetoothController {
         } else {
             ("StopDiscovery", adapter.stop_discovery().await)
         };
-        *accepted = result.is_ok().then(|| (adapter.inner().path().to_owned().into(), due));
         if let Err(err) = result {
             warn!("{call} failed: {err}");
         }
@@ -468,7 +458,6 @@ pub(crate) mod tests {
             state: Arc::default(),
             busy: Arc::default(),
             discovery_wanted: Arc::default(),
-            discovery_call: Arc::default(),
             prompts: Arc::default(),
             events,
         };
@@ -684,7 +673,7 @@ pub(crate) mod tests {
         const DEVICE: &str = "/org/bluez/hci1/dev_AA";
         let (removed, mut removals) = tokio::sync::mpsc::unbounded_channel();
         let (caller, _served) = crate::capabilities::test_support::p2p_pair_serving(|peer| {
-            peer.serve_at("/org/bluez/hci1", FakeAdapter(removed, AtomicBool::default(), AtomicBool::default()))
+            peer.serve_at("/org/bluez/hci1", FakeAdapter(removed, AtomicBool::default()))
         })
         .await;
         let path = OwnedObjectPath::try_from(DEVICE).unwrap();
@@ -701,18 +690,15 @@ pub(crate) mod tests {
     /// Every call the fake `bluetoothd` receives, as `Name` or `Name argument`.
     pub(crate) type Calls = tokio::sync::mpsc::UnboundedSender<String>;
 
-    /// A powered adapter recording each write, whether it is scanning, and whether it holds back
-    /// the `Discovering` signal, which real BlueZ sends only after its reply.
-    struct FakeAdapter(Calls, AtomicBool, AtomicBool);
+    /// A powered adapter recording each write, and whether it is scanning.
+    struct FakeAdapter(Calls, AtomicBool);
 
     #[zbus::interface(name = "org.bluez.Adapter1")]
     impl FakeAdapter {
         async fn start_discovery(&self, #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>) {
             let _ = self.0.send("StartDiscovery".into());
             self.1.store(true, Ordering::SeqCst);
-            if !self.2.load(Ordering::SeqCst) {
-                let _ = self.discovering_changed(&emitter).await;
-            }
+            let _ = self.discovering_changed(&emitter).await;
         }
         async fn stop_discovery(&self, #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>) {
             let _ = self.0.send("StopDiscovery".into());
@@ -813,12 +799,10 @@ pub(crate) mod tests {
             .unwrap()
             .serve_at("/org/bluez", FakeAgentManager { registered: calls.clone() })
             .unwrap()
-            .serve_at("/org/bluez/hci0", FakeAdapter(calls.clone(), AtomicBool::default(), AtomicBool::default()))
+            .serve_at("/org/bluez/hci0", FakeAdapter(calls.clone(), AtomicBool::default()))
             .unwrap();
         if second_adapter {
-            builder = builder
-                .serve_at("/org/bluez/hci1", FakeAdapter(calls.clone(), AtomicBool::default(), AtomicBool::default()))
-                .unwrap();
+            builder = builder.serve_at("/org/bluez/hci1", FakeAdapter(calls.clone(), AtomicBool::default())).unwrap();
         }
         for &(mac, paired) in devices {
             let path = format!("/org/bluez/hci0/dev_{}", mac.replace(':', "_"));
@@ -974,36 +958,6 @@ pub(crate) mod tests {
         dispatch("answer_pairing", vec![MAC.into(), false.into()]);
         assert!(controller.prompts.lock().unwrap().is_none());
         assert_eq!(answer.try_recv().ok(), Some(None), "BlueZ hears the no");
-    }
-
-    /// A start racing the adapter's first `AdapterChanged` reaches BlueZ once; a second one, sent
-    /// before `Discovering` turns true, gets `org.bluez.Error.InProgress` (#126). The adapter that
-    /// takes over gets its own start.
-    #[tokio::test]
-    async fn a_start_during_the_adapter_burst_reaches_bluez_once() {
-        let bus = private_bus().await;
-        let (calls, mut received) = tokio::sync::mpsc::unbounded_channel();
-        let bluez = serve_bluez(&bus, &[], calls, true).await;
-        let (events, _signals) = tokio::sync::mpsc::unbounded_channel();
-        let controller = BluetoothController::new(bus.connection().await, events).await;
-        assert_eq!(within(received.recv()).await.as_deref(), Some("KeyboardDisplay"));
-        let selected = controller.adapter().unwrap().inner().path().to_string();
-        let fake = bluez.object_server().interface::<_, FakeAdapter>(selected.as_str()).await.unwrap();
-        fake.get().await.2.store(true, Ordering::SeqCst);
-
-        controller.set_discovery(true);
-        controller.handle_signal(BluetoothSignal::AdapterChanged).await;
-        assert_eq!(within(received.recv()).await.as_deref(), Some("StartDiscovery"));
-        // Both reconciles queued on the lock before this; a second start would reach the fake
-        // before the known later call.
-        drop(within(controller.discovery_call.lock()).await);
-        controller.set_discoverable(true).await;
-        assert_eq!(within(received.recv()).await.as_deref(), Some("Discoverable true"));
-
-        bluez.object_server().remove::<FakeAdapter, _>(selected.as_str()).await.unwrap();
-        poll_until(|| controller.adapter().filter(|adapter| *adapter.inner().path() != *selected)).await;
-        controller.handle_signal(BluetoothSignal::AdapterChanged).await;
-        assert_eq!(within(received.recv()).await.as_deref(), Some("StartDiscovery"));
     }
 
     /// The agent answers at its path on the Supervisor's own connection, where BlueZ calls it.
