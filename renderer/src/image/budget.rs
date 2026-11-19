@@ -27,18 +27,14 @@ impl Budget {
     /// too big to run and no set of waiters can deadlock each other. `decode_within_limits` has
     /// already refused a source whose output alone is past the whole budget, so a larger charge is
     /// one decode's working copies, run alone.
-    ///
-    /// A poisoned lock hands back an uncharged permit and lets the decode through: a decode pool
-    /// that has stopped accounting is worth less than a shell that has stopped drawing.
     fn acquire(&self, bytes: u64) -> Permit<'_> {
-        let Ok(mut in_flight) = self.in_flight.lock() else { return Permit { budget: self, bytes: 0 } };
+        let mut in_flight = self.in_flight.lock().expect("decode budget poisoned");
         loop {
             if admits(*in_flight, bytes, DECODE_POOL_BYTES) {
                 *in_flight += bytes;
                 return Permit { budget: self, bytes };
             }
-            let Ok(waited) = self.room.wait(in_flight) else { return Permit { budget: self, bytes: 0 } };
-            in_flight = waited;
+            in_flight = self.room.wait(in_flight).expect("decode budget poisoned");
         }
     }
 
@@ -46,8 +42,7 @@ impl Budget {
     /// inline load runs on the Wayland dispatch thread, and stalling that to wait on a background
     /// worker is a frozen shell. It still counts, so the workers see it.
     fn charge(&self, bytes: u64) -> Permit<'_> {
-        let Ok(mut in_flight) = self.in_flight.lock() else { return Permit { budget: self, bytes: 0 } };
-        *in_flight += bytes;
+        *self.in_flight.lock().expect("decode budget poisoned") += bytes;
         Permit { budget: self, bytes }
     }
 }

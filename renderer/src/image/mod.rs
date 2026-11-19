@@ -56,13 +56,12 @@ use crate::text::shaping::{FontDatabase, ShapingHandle};
 use rustc_hash::FxHashMap as HashMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use femtovg::renderer::OpenGl;
 use femtovg::{Canvas, ImageId};
-use shared::{debug, error};
 
 /// Maximum map entries, including `Failed` and `Pending`. The texture budget bounds bytes; this
 /// keeps a config cycling through a thousand failing paths from growing the map without bound.
@@ -353,10 +352,6 @@ pub struct ImageCache {
     /// [`ImageCache::take_deferred`] straight after the `execute` that set it, which is what makes
     /// one field enough for every surface: paints are serialized on the dispatch thread.
     deferred: Option<Instant>,
-    /// Whether the pool's closed result channel has been reported. `poll` runs every turn and the
-    /// channel never reopens, so without this one dead pool writes a line per turn into a log that
-    /// does not rotate (ADR-0199).
-    workers_gone: bool,
     /// Paths whose queued decode was cancelled by an eviction, drained by [`ImageCache::poll`].
     ///
     /// A `Pending` entry evicted for capacity or budget takes its job out of the pool's `wanted`
@@ -406,7 +401,6 @@ impl ImageCache {
             failed_total: 0,
             resident_bytes: 0,
             deferred: None,
-            workers_gone: false,
             cancelled: Vec::new(),
             tick: 0,
             texture_budget: STARTING_TEXTURE_BUDGET,
@@ -485,41 +479,30 @@ impl ImageCache {
     pub fn poll(&mut self) -> Vec<PathBuf> {
         self.sync_fonts();
         let mut files = Vec::new();
-        loop {
-            match self.pool.results.try_recv() {
-                Ok(result) => {
-                    // A size-only answer (no pixels) arriving at a slot that went Pending again must
-                    // not land as that slot's pixels nor cancel its real job.
-                    let size_only = result.1.as_ref().is_ok_and(|decoded| decoded.base.is_empty());
-                    let slot = self.entries.get(&result.0).map(|entry| &entry.slot);
-                    if size_only && matches!(slot, Some(Slot::Pending)) {
-                        continue;
-                    }
-                    // A decode that finished just as its entry was evicted has nowhere to go.
-                    // `upload_landed` would skip it anyway; dropping it here also keeps its path
-                    // out of the repaint cue, which would otherwise redraw for nothing.
-                    self.unwant(&result.0);
-                    let pending = match (self.entries.get_mut(&result.0).map(|entry| &mut entry.slot), &result.1) {
-                        (Some(Slot::Pending), _) => true,
-                        // A size-only job's answer: no pixels, nothing to upload.
-                        (Some(Slot::Ready { natural: natural @ None, .. }), Ok(sized)) if sized.natural.is_some() => {
-                            *natural = sized.natural;
-                            false
-                        }
-                        _ => continue,
-                    };
-                    files.push(result.0.path.clone());
-                    if pending {
-                        self.landed.push(result);
-                    }
+        while let Ok(result) = self.pool.results.try_recv() {
+            // A size-only answer (no pixels) arriving at a slot that went Pending again must
+            // not land as that slot's pixels nor cancel its real job.
+            let size_only = result.1.as_ref().is_ok_and(|decoded| decoded.base.is_empty());
+            let slot = self.entries.get(&result.0).map(|entry| &entry.slot);
+            if size_only && matches!(slot, Some(Slot::Pending)) {
+                continue;
+            }
+            // A decode that finished just as its entry was evicted has nowhere to go.
+            // `upload_landed` would skip it anyway; dropping it here also keeps its path
+            // out of the repaint cue, which would otherwise redraw for nothing.
+            self.unwant(&result.0);
+            let pending = match (self.entries.get_mut(&result.0).map(|entry| &mut entry.slot), &result.1) {
+                (Some(Slot::Pending), _) => true,
+                // A size-only job's answer: no pixels, nothing to upload.
+                (Some(Slot::Ready { natural: natural @ None, .. }), Ok(sized)) if sized.natural.is_some() => {
+                    *natural = sized.natural;
+                    false
                 }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    if !std::mem::replace(&mut self.workers_gone, true) && self.pool.workers > 0 {
-                        error!("every decode worker is gone; background images will not load");
-                    }
-                    break;
-                }
+                _ => continue,
+            };
+            files.push(result.0.path.clone());
+            if pending {
+                self.landed.push(result);
             }
         }
         // Decodes cancelled by an eviction send no result, so they reach the invalidation the same
@@ -646,11 +629,7 @@ impl ImageCache {
                         self.unwant(&key);
                         self.deferred = Some(Instant::now());
                     }
-                    Err(Refused::Disconnected) => {
-                        debug!("{}: no decode worker left to take it", key.path.display());
-                        self.unwant(&key);
-                        self.insert(key, Slot::Failed);
-                    }
+                    Err(Refused::Disconnected) => unreachable!("workers outlive the cache that owns their pool"),
                 }
                 None
             }
@@ -733,29 +712,21 @@ impl ImageCache {
     /// find it in the set.
     ///
     /// Separate from [`ImageCache::image`] so the ceiling can be tested without a GL canvas, which
-    /// no test has. The two refusals differ and must not be merged: capacity clears on its own and
-    /// records that a repaint is owed, while a poisoned lock never clears and asking again every
-    /// frame would spin forever (ADR-0185).
+    /// no test has. A refusal records that a repaint is owed: capacity clears on its own (ADR-0185).
     fn admit(&mut self, key: &CacheKey) -> bool {
-        match self.pool.wanted.lock() {
-            Ok(mut wanted) if wanted.len() < MAX_INFLIGHT_DECODES => {
-                wanted.insert(key.clone());
-                true
-            }
-            Ok(_) => {
-                self.deferred = Some(Instant::now());
-                false
-            }
-            Err(_) => false,
+        let mut wanted = self.pool.wanted.lock().expect("decode wanted set poisoned");
+        if wanted.len() < MAX_INFLIGHT_DECODES {
+            wanted.insert(key.clone());
+            return true;
         }
+        self.deferred = Some(Instant::now());
+        false
     }
 
     /// Drops `key` from the pool's wanted set and its jobs from the queue, so a cancelled decode
-    /// frees its slot instead of waiting behind newer ones. A poisoned lock is ignored: the worst case is one wasted decode.
+    /// frees its slot instead of waiting behind newer ones.
     fn unwant(&self, key: &CacheKey) {
-        if let Ok(mut wanted) = self.pool.wanted.lock() {
-            wanted.remove(key);
-        }
+        self.pool.wanted.lock().expect("decode wanted set poisoned").remove(key);
         self.pool.jobs.remove(key);
     }
 }
