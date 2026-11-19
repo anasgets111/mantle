@@ -32,7 +32,7 @@ pub struct Census {
     pub image_landed: u64,
     /// Memoized measurements, against `SHAPE_CACHE_CAPACITY`.
     pub shape_entries: u64,
-    /// Bytes of the shape cache's own strings and ranges. Excludes `HashMap` overhead, which is
+    /// Bytes of the shape cache's entries, against `SHAPE_CACHE_BYTES`. Excludes `HashMap` overhead, which is
     /// why this is `approx` in the report: it is a floor, not a total.
     pub shape_bytes: u64,
     /// `mlua::Lua::used_memory`: the Lua VM's own heap, which the config's tables and closures

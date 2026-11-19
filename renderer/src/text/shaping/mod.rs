@@ -201,11 +201,18 @@ pub const FIT_SLACK: f32 = 0.01;
 
 /// How many measured strings [`ShapingHandle`] remembers before it drops the lot. A bar resolves
 /// about twenty text nodes and a long list a few hundred; a clock shapes strings nobody asks for
-/// again, so an unbounded map would grow for the session. Full, it holds about 400KB (under 1% of
-/// ADR-0043's 50MB-per-monitor budget; plus a 32-byte `Glyph` per glyph for [`ShapingHandle::shape_glyphs`]
-/// entries, and a 16-byte generation stamp each). Idle churn measured 2026-09-06: 3-4 new entries a minute, so about 16 h to reach the cap. `HashMap::clear` keeps its table, so the buckets are a floor after the
-/// first fill.
+/// again, so an unbounded map would grow for the session. Idle churn measured 2026-09-06: 3-4 new
+/// entries a minute, so about 16 h to reach the cap. `HashMap::clear` keeps its table, so the
+/// buckets are a floor after the first fill.
 const SHAPE_CACHE_CAPACITY: usize = 4096;
+
+/// And the bytes they may hold, as [`held`] counts them, since another app can choose the text
+/// (#70). A backstop: 500 rows of 2,000 characters peak at 21 MiB.
+const SHAPE_CACHE_BYTES: usize = 32 << 20;
+
+/// And the share holding [`ShapingHandle::shape_glyphs`]'s glyphs, which paint asks for on-screen
+/// text alone, so they go first. That list's 13 MiB of measurements alone would pass it.
+const SHAPE_GLYPH_BYTES: usize = 8 << 20;
 
 /// How many codepoints may wait for a background probe. At about 10 ms an `fc-match`, a full
 /// queue is 10 s of probing. A codepoint past it is forgotten and queued again when its text is
@@ -236,6 +243,14 @@ struct ShapeKey {
     glyphs: bool,
 }
 
+/// The memo and the [`held`] bytes of its entries, all and those keeping glyphs.
+#[derive(Default)]
+struct Memo {
+    entries: HashMap<ShapeKey, Stamped>,
+    bytes: usize,
+    glyph_bytes: usize,
+}
+
 /// A result, whether a face landing can change it (a glyph 0, or a cluster its face lacks a
 /// character of), and the generation it was shaped at if so, else the restyle count (#133).
 type Stamped = (ShapeResult, bool, u64);
@@ -253,7 +268,7 @@ pub struct ShapingHandle {
     // forced; the SHAPE_CACHE_CAPACITY cap bounds the damage. Upgrade: a keyed hasher.
     /// Each result with its stamp: stale once a face loads if boxed, else once one joins a
     /// loaded family.
-    cache: Arc<Mutex<HashMap<ShapeKey, Stamped>>>,
+    cache: Arc<Mutex<Memo>>,
     /// See [`ShapingHandle::font_generation`].
     generation: Arc<AtomicU64>,
     restyles: Arc<AtomicU64>,
@@ -397,7 +412,7 @@ impl ShapingHandle {
             .expect("failed to spawn mantle-text-shaping thread");
         Self {
             requests: Arc::new(tx),
-            cache: Arc::new(Mutex::new(HashMap::default())),
+            cache: Arc::default(),
             generation: handle_generation,
             restyles: handle_restyles,
             ensured,
@@ -515,7 +530,7 @@ impl ShapingHandle {
         };
         // A poisoned lock is recovered rather than propagated: this map is a pure memo, so no
         // invariant can break, and an unrelated thread's death shouldn't kill text measurement.
-        if let Some((hit, boxed, at)) = self.cache.lock().unwrap_or_else(PoisonError::into_inner).get(&key)
+        if let Some((hit, boxed, at)) = self.cache.lock().unwrap_or_else(PoisonError::into_inner).entries.get(&key)
             && *at == if *boxed { &self.generation } else { &self.restyles }.load(Ordering::Acquire)
         {
             return (hit.clone(), *boxed);
@@ -542,16 +557,35 @@ impl ShapingHandle {
             .expect("mantle-text-shaping worker thread died");
         let (result, boxed, at) = reply_rx.recv().expect("mantle-text-shaping worker thread died before replying");
 
-        let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-        // Cleared wholesale rather than evicted one at a time: an LRU needs a recency order
-        // maintained on every hit, work on the path this exists to make cheap.
-        //
-        // ponytail: a working set genuinely larger than the cap would re-shape everything every
-        // pass. The largest list measured is 500 rows; the fix if that changes is an LRU.
-        if cache.len() >= SHAPE_CACHE_CAPACITY {
-            cache.clear();
+        let mut memo = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
+        // A stale entry being replaced, whose bytes leave with it.
+        if let Some((stale, ..)) = memo.entries.remove(&key) {
+            let stale = held(&key, &stale);
+            memo.bytes -= stale;
+            memo.glyph_bytes -= if key.glyphs { stale } else { 0 };
         }
-        cache.insert(key, (result.clone(), boxed, at));
+        let size = held(&key, &result);
+        let glyphs = if key.glyphs { size } else { 0 };
+        // Answered but never kept: kept, it would hold the memo past its bound on every hit.
+        if size > if key.glyphs { SHAPE_GLYPH_BYTES } else { SHAPE_CACHE_BYTES } {
+            return (result, boxed);
+        }
+        // Cleared wholesale rather than evicted one at a time: an LRU needs a recency order
+        // maintained on every hit, work on the path this exists to make cheap. Clearing every
+        // measurement where only glyphs go stalled a 500-row list's pass 210 ms, against 9 ms.
+        //
+        // ponytail: a working set larger than a bound is shaped again every pass. The largest
+        // list measured is 500 rows; the fix if that changes is an LRU.
+        if memo.entries.len() >= SHAPE_CACHE_CAPACITY || memo.bytes + size > SHAPE_CACHE_BYTES {
+            memo.entries.clear();
+            (memo.bytes, memo.glyph_bytes) = (0, 0);
+        } else if memo.glyph_bytes + glyphs > SHAPE_GLYPH_BYTES {
+            memo.entries.retain(|key, _| !key.glyphs);
+            memo.bytes -= memo.glyph_bytes;
+            memo.glyph_bytes = 0;
+        }
+        (memo.bytes, memo.glyph_bytes) = (memo.bytes + size, memo.glyph_bytes + glyphs);
+        memo.entries.insert(key, (result.clone(), boxed, at));
         (result, boxed)
     }
 
@@ -570,7 +604,7 @@ impl ShapingHandle {
             return;
         }
         debug!("setting font chain to {} faces", chain.len());
-        self.cache.lock().unwrap_or_else(PoisonError::into_inner).clear();
+        *self.cache.lock().unwrap_or_else(PoisonError::into_inner) = Memo::default();
         // The worker drops its own family memo with the database those families resolved against,
         // so this side must forget them too or `ensure_family` would skip re-resolving one.
         self.ensured.lock().unwrap_or_else(PoisonError::into_inner).clear();
@@ -585,39 +619,15 @@ impl ShapingHandle {
     /// caller to reason about cache state instead of treating [`shape`](Self::shape) as pure.
     #[cfg(test)]
     fn cached_len(&self) -> usize {
-        self.cache.lock().unwrap_or_else(PoisonError::into_inner).len()
+        self.cache.lock().unwrap_or_else(PoisonError::into_inner).entries.len()
     }
 
     /// Entry count and a byte floor for `wayland::memory_profile`, which reports rather than
-    /// decides: no branch may read this, for `cached_len`'s reason. Sums the heap each entry owns
-    /// -- the key's text and font runs, the result's lines and ranges -- and not the `HashMap`'s
-    /// own table, so it under-reports and is labelled `approx` in the report. `Arc` contents count
-    /// once per entry even when two entries share one, which cannot happen here: `shape` builds a
-    /// fresh `ShapeResult` per miss.
+    /// decides: no branch may read this, for `cached_len`'s reason. Walks the map rather than
+    /// reading the memo's running total, so a drifting total shows as a difference.
     pub fn census(&self) -> (usize, usize) {
-        let cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-        let bytes: usize = cache
-            .iter()
-            .map(|(key, (result, ..))| {
-                let key_bytes = key.text.len()
-                    + key.runs.len() * std::mem::size_of::<FontRun>()
-                    + key.font.as_deref().map_or(0, str::len);
-                let line_bytes: usize = result.lines.iter().map(String::len).sum();
-                let range_bytes = result.line_ranges.len() * std::mem::size_of::<Range<usize>>();
-                let glyph_bytes: usize = result
-                    .shaped
-                    .iter()
-                    .map(|line| std::mem::size_of::<ShapedLine>() + std::mem::size_of_val(&*line.glyphs))
-                    .sum();
-                std::mem::size_of::<ShapeKey>()
-                    + std::mem::size_of::<ShapeResult>()
-                    + key_bytes
-                    + line_bytes
-                    + range_bytes
-                    + glyph_bytes
-            })
-            .sum();
-        (cache.len(), bytes)
+        let cache = &self.cache.lock().unwrap_or_else(PoisonError::into_inner).entries;
+        (cache.len(), cache.iter().map(|(key, (result, ..))| held(key, result)).sum())
     }
 
     /// Every loaded face's shared bytes, for `text::atlas::TextPainter` to register (ADR-0211).
@@ -701,6 +711,25 @@ fn paragraph_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
     }
     ranges.push(start..text.len());
     ranges
+}
+
+/// The heap one memo entry owns: the key's text and font runs, the result's lines, ranges and
+/// glyphs. A floor, labelled `approx` in the memory report: it leaves out the `HashMap`'s table,
+/// each line's `String` header and the coordinates. `Arc` contents count once per entry even when
+/// two entries share one, which cannot happen here: `shape` builds a fresh `ShapeResult` per miss.
+fn held(key: &ShapeKey, result: &ShapeResult) -> usize {
+    let key_bytes =
+        key.text.len() + key.runs.len() * std::mem::size_of::<FontRun>() + key.font.as_deref().map_or(0, str::len);
+    let line_bytes: usize = result.lines.iter().map(String::len).sum();
+    let range_bytes = result.line_ranges.len() * std::mem::size_of::<Range<usize>>();
+    let glyph_bytes: usize =
+        result.shaped.iter().map(|line| std::mem::size_of::<ShapedLine>() + std::mem::size_of_val(&*line.glyphs)).sum();
+    std::mem::size_of::<ShapeKey>()
+        + std::mem::size_of::<ShapeResult>()
+        + key_bytes
+        + line_bytes
+        + range_bytes
+        + glyph_bytes
 }
 
 #[cfg(test)]
@@ -1192,6 +1221,85 @@ pub(crate) mod tests {
         assert_eq!(handle.cached_len(), SHAPE_CACHE_CAPACITY, "the cap is where it clears, not before");
         handle.shape(req("one too many", 13.0));
         assert_eq!(handle.cached_len(), 1, "the map is dropped whole, keeping only the request that overflowed it");
+    }
+
+    /// The running totals against a walk of the map, all bytes and those keeping glyphs.
+    fn totals_match_a_walk(handle: &ShapingHandle) {
+        let census = handle.census().1;
+        let memo = handle.cache.lock().unwrap();
+        let glyphs = memo.entries.iter().filter(|(key, _)| key.glyphs).map(|(key, (result, ..))| held(key, result));
+        assert_eq!((memo.bytes, memo.glyph_bytes), (census, glyphs.sum()), "the running totals are the walk's");
+        assert!(memo.bytes <= SHAPE_CACHE_BYTES && memo.glyph_bytes <= SHAPE_GLYPH_BYTES, "within both ceilings");
+    }
+
+    /// Paint keeps a text's glyphs, many times its measurement, so under the count cap alone a
+    /// memo of long lines could hold hundreds of MiB (#70).
+    #[test]
+    fn glyphs_past_their_ceiling_go_and_measurements_stay() {
+        let handle = ShapingHandle::spawn();
+        handle.shape(req("kept", 13.0));
+        handle.shape_glyphs(req("painted", 13.0));
+        // Stale entries replaced: the totals must drop the bytes that leave with them.
+        handle.restyles.fetch_add(1, Ordering::Release);
+        handle.shape(req("kept", 13.0));
+        handle.shape_glyphs(req("painted", 13.0));
+        totals_match_a_walk(&handle);
+
+        let (mut glyph_entries, mut before) = (1, 0);
+        while handle.cached_len() == glyph_entries + 1 {
+            assert!(glyph_entries < 1000, "nothing dropped after {glyph_entries} paragraphs");
+            before = handle.cache.lock().unwrap().glyph_bytes;
+            handle.shape_glyphs(req(&format!("{glyph_entries} {}", "a wrapped paragraph ".repeat(100)), 13.0));
+            totals_match_a_walk(&handle);
+            glyph_entries += 1;
+        }
+        assert_eq!(handle.cached_len(), 2, "the measurement and the paragraph that tripped the ceiling");
+        assert!(before > SHAPE_GLYPH_BYTES / 2, "glyphs went at {before} bytes, not near their ceiling");
+        totals_match_a_walk(&handle);
+        handle.shape(req("kept", 13.0));
+        assert_eq!(handle.cached_len(), 2, "the measurement is still a hit");
+    }
+
+    /// A list of long rows measures each a few ways, past the glyphs' ceiling on its own (13 MiB
+    /// for 500 rows of 2,000 characters), and must not take the on-screen glyphs with it. Only
+    /// past the total does everything go. Words a line each, so the bytes cost little shaping.
+    #[test]
+    fn measurements_drop_glyphs_only_past_the_total() {
+        let handle = ShapingHandle::spawn();
+        let measure = |i: usize| {
+            handle.shape(ShapeRequest { max_width: Some(1.0), ..req(&format!("{i} {}", "ab ".repeat(20_000)), 13.0) });
+        };
+        let mut measured = 0;
+        while handle.census().1 <= SHAPE_GLYPH_BYTES {
+            assert!(measured < 100, "the measurements never passed the glyph ceiling's size");
+            measure(measured);
+            measured += 1;
+        }
+        handle.shape_glyphs(req("painted", 13.0));
+        measure(measured);
+        measured += 1;
+        assert_eq!(handle.cached_len(), measured + 1, "a measurement miss past the glyph ceiling kept every entry");
+
+        while handle.cached_len() == measured + 1 {
+            assert!(measured < 100, "nothing cleared after {measured} measurements");
+            measure(measured);
+            totals_match_a_walk(&handle);
+            measured += 1;
+        }
+        assert_eq!(handle.cached_len(), 1, "past the total, everything went but the request that crossed it");
+    }
+
+    /// One text whose glyphs alone pass their ceiling is answered and not kept: kept, every hit
+    /// would hold the memo past its bound.
+    #[test]
+    fn a_result_past_its_ceiling_alone_is_answered_but_not_kept() {
+        let handle = ShapingHandle::spawn();
+        let huge = "wide ".repeat(SHAPE_GLYPH_BYTES / std::mem::size_of::<Glyph>() / 5 + 1);
+        handle.shape(req(&huge, 13.0));
+        assert!(handle.census().1 > 2 * huge.len(), "its key and its line both count");
+        assert!(!handle.shape_glyphs(req(&huge, 13.0)).shaped[0].glyphs.is_empty());
+        assert_eq!(handle.cached_len(), 1, "only the measurement is kept");
+        totals_match_a_walk(&handle);
     }
 
     #[test]
