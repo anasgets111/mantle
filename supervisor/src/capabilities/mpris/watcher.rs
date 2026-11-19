@@ -145,6 +145,8 @@ pub(super) async fn spawn_discovery(
                 }
                 let was_full = registry.lock().expect("mpris registry mutex poisoned").len() >= super::MAX_PLAYERS;
                 // A slot freed: pick up the players left out at the limit.
+                // ponytail: `stream` sits unread meanwhile; 65 player-name changes queued ahead of the
+                // reply (one client dropping dozens) stall this connection to the call timeout. Upgrade: #160.
                 if unregister_player(&registry, &name, &events) && was_full {
                     found = discover_existing(&dbus_proxy, &registry).await;
                 }
