@@ -1,53 +1,96 @@
 //! Pure `Metadata` (`a{sv}`) parsing, album-art trust checks, and track identity comparison
 //! (ADR-0036).
 
-use zbus::zvariant::{OwnedValue, Value};
+use std::collections::HashMap;
+use std::fmt;
+
+use serde::de::{DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use zbus::zvariant::Signature;
 
 use super::{MAX_METADATA_URL_BYTES, MAX_TRACK_TEXT_BYTES, fits_text_cap};
 use crate::capabilities::file_url::file_url_to_path;
-use crate::capabilities::truncate_utf8_bytes;
+use crate::capabilities::{DictFields, truncate_utf8_bytes};
 
-fn value_as_str<'a>(value: &'a Value<'_>) -> Option<&'a str> {
-    match value {
-        Value::Str(s) => Some(s.as_str()),
-        _ => None,
+/// The keys [`parse_metadata`] reads.
+const KEYS: [&str; 9] = [
+    "xesam:title",
+    "xesam:artist",
+    "xesam:album",
+    "xesam:albumArtist",
+    "xesam:genre",
+    "mpris:artUrl",
+    "mpris:length",
+    "mpris:trackid",
+    "xesam:url",
+];
+
+/// One [`KEYS`] value in whichever of the types players send for it.
+#[derive(Clone)]
+enum Field {
+    Str(String),
+    Path(String),
+    /// `as`: `xesam:artist` on every checked player.
+    Strs(Vec<String>),
+    /// Any integer type: the spec says `x` for `mpris:length`, some players send `t`.
+    Int(i64),
+}
+
+/// The [`KEYS`] of one `Metadata` `a{sv}`, read through [`Dict`](crate::capabilities::Dict): a
+/// player's other keys, an `ay` among them, are skipped rather than built as one `Value` per byte.
+#[derive(Clone, Default)]
+pub(super) struct Metadata(HashMap<&'static str, Field>);
+
+impl DictFields for Metadata {
+    fn read<'de, A: MapAccess<'de>>(&mut self, key: &str, map: &mut A) -> Result<bool, A::Error> {
+        let Some(&key) = KEYS.iter().find(|&&known| known == key) else { return Ok(false) };
+        match map.next_value_seed(FieldSeed)? {
+            Some(field) => self.0.insert(key, field),
+            None => self.0.remove(key),
+        };
+        Ok(true)
     }
 }
 
-/// `xesam:artist` is `as` on every checked player; accept a bare string too for malformed metadata.
-fn value_as_str_or_joined_array(value: &Value<'_>) -> Option<String> {
-    match value {
-        Value::Str(s) => Some(s.as_str().to_string()),
-        Value::Array(array) => {
-            let parts: Vec<&str> = array.iter().filter_map(value_as_str).collect();
-            (!parts.is_empty()).then(|| parts.join(", "))
-        }
-        _ => None,
+/// Reads one variant to a [`Field`], `None` for a type none of them is.
+struct FieldSeed;
+
+impl<'de> DeserializeSeed<'de> for FieldSeed {
+    type Value = Option<Field>;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_struct("Variant", &["signature", "value"], self)
+    }
+}
+
+impl<'de> Visitor<'de> for FieldSeed {
+    type Value = Option<Field>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a variant")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        const STRS: &Signature = &Signature::static_array(&Signature::Str);
+        let signature: Signature = seq.next_element()?.ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+        Ok(match signature {
+            Signature::Str => seq.next_element()?.map(Field::Str),
+            Signature::ObjectPath => seq.next_element()?.map(Field::Path),
+            Signature::I64 => seq.next_element()?.map(Field::Int),
+            Signature::U64 => seq.next_element::<u64>()?.and_then(|n| i64::try_from(n).ok()).map(Field::Int),
+            Signature::I32 => seq.next_element::<i32>()?.map(|n| Field::Int(n.into())),
+            Signature::U32 => seq.next_element::<u32>()?.map(|n| Field::Int(n.into())),
+            signature if signature == *STRS => seq.next_element()?.map(Field::Strs),
+            _ => {
+                seq.next_element::<IgnoredAny>()?;
+                None
+            }
+        })
     }
 }
 
 /// Longer than any real media, so a length past it is a player's "infinite" marker: Firefox sends
 /// `i64::MAX` rounded to milliseconds for a live stream, which reads as unknown, like no length.
 const MAX_LENGTH_US: i64 = 100 * 365 * 24 * 3600 * 1_000_000;
-
-fn value_as_i64(value: &Value<'_>) -> Option<i64> {
-    match value {
-        Value::I64(i) => Some(*i),
-        Value::U64(u) => i64::try_from(*u).ok(),
-        Value::U32(u) => Some(i64::from(*u)),
-        Value::I32(i) => Some(i64::from(*i)),
-        _ => None,
-    }
-}
-
-/// `mpris:trackid` is an object path (`o`) on checked players (Zen, mpv-mpris). A bare string
-/// from a type-wrong player is accepted too.
-fn value_as_trackid(value: &Value<'_>) -> Option<String> {
-    match value {
-        Value::ObjectPath(path) => Some(path.as_str().to_string()),
-        _ => value_as_str(value).map(str::to_string),
-    }
-}
 
 /// One `Metadata` dict reduced to the fields exposed by `mantle.mpris`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -63,24 +106,45 @@ pub(super) struct ParsedMetadata {
     pub(super) url: Option<String>,
 }
 
-pub(super) fn parse_metadata(metadata: &std::collections::HashMap<String, OwnedValue>) -> ParsedMetadata {
-    let get = |key: &str| metadata.get(key).map(|value| &**value);
-    let text = |text: &str| truncate_utf8_bytes(text, MAX_TRACK_TEXT_BYTES);
-    let joined = |key: &str| text(&get(key).and_then(value_as_str_or_joined_array).unwrap_or_default());
-    let url = |key: &str| {
-        get(key).and_then(value_as_str).filter(|url| url.len() <= MAX_METADATA_URL_BYTES).map(str::to_string)
+pub(super) fn parse_metadata(Metadata(fields): &Metadata) -> ParsedMetadata {
+    let str = |key: &str| match fields.get(key) {
+        Some(Field::Str(text)) => Some(text.as_str()),
+        _ => None,
     };
+    let text = |text: &str| truncate_utf8_bytes(text, MAX_TRACK_TEXT_BYTES);
+    // A bare string is accepted too, for malformed metadata.
+    let joined = |key: &str| match fields.get(key) {
+        Some(Field::Strs(parts)) => text(&parts.join(", ")),
+        _ => text(str(key).unwrap_or_default()),
+    };
+    let url = |key: &str| str(key).filter(|url| url.len() <= MAX_METADATA_URL_BYTES).map(str::to_string);
     ParsedMetadata {
-        title: text(get("xesam:title").and_then(value_as_str).unwrap_or_default()),
+        title: text(str("xesam:title").unwrap_or_default()),
         artist: joined("xesam:artist"),
-        album: text(get("xesam:album").and_then(value_as_str).unwrap_or_default()),
+        album: text(str("xesam:album").unwrap_or_default()),
         album_artist: joined("xesam:albumArtist"),
         genre: joined("xesam:genre"),
         art_url: url("mpris:artUrl"),
-        length_us: get("mpris:length").and_then(value_as_i64).filter(|length| *length <= MAX_LENGTH_US),
-        trackid: get("mpris:trackid").and_then(value_as_trackid).filter(|id| fits_text_cap(id)),
+        length_us: match fields.get("mpris:length") {
+            Some(Field::Int(length)) if *length <= MAX_LENGTH_US => Some(*length),
+            _ => None,
+        },
+        // An object path (`o`) on checked players (Zen, mpv-mpris); a bare string from a
+        // type-wrong player is accepted too.
+        trackid: match fields.get("mpris:trackid") {
+            Some(Field::Path(id) | Field::Str(id)) if fits_text_cap(id) => Some(id.clone()),
+            _ => None,
+        },
         url: url("xesam:url"),
     }
+}
+
+/// `metadata` decoded as a player's `a{sv}` arrives.
+#[cfg(test)]
+pub(super) fn decoded(metadata: &HashMap<String, zbus::zvariant::OwnedValue>) -> Metadata {
+    use zbus::zvariant::{LE, serialized::Context, to_bytes};
+    let encoded = to_bytes(Context::new_dbus(LE, 0), metadata).unwrap();
+    encoded.deserialize::<crate::capabilities::Dict<Metadata>>().unwrap().0.0
 }
 
 /// [`ParsedMetadata::track_identity`]'s composite key (ADR-0036, CONTEXT.md "Track identity"):
@@ -117,11 +181,13 @@ pub(super) fn clamp_seek_target(target_us: i64, length_us: Option<i64>) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
-    use zbus::zvariant::{Array, ObjectPath, Signature, Str};
+    use zbus::zvariant::{Array, ObjectPath, OwnedValue, Signature, Str, Value};
 
     use super::*;
+
+    fn parse(metadata: &HashMap<String, OwnedValue>) -> ParsedMetadata {
+        parse_metadata(&decoded(metadata))
+    }
 
     fn owned(value: Value<'_>) -> OwnedValue {
         OwnedValue::try_from(value).unwrap()
@@ -154,7 +220,7 @@ mod tests {
 
     #[test]
     fn parse_metadata_reads_every_real_field_from_a_full_metadata_dict() {
-        let parsed = parse_metadata(&real_metadata());
+        let parsed = parse(&real_metadata());
         assert_eq!(parsed.title, "Track Title");
         assert_eq!(parsed.artist, "Ahmed Ebrahim");
         assert_eq!(parsed.album, "Record");
@@ -186,7 +252,7 @@ mod tests {
         let trackid = format!("/{}", "t".repeat(super::super::MAX_METADATA_TEXT_BYTES));
         map.insert("mpris:trackid".to_string(), owned(Value::ObjectPath(ObjectPath::try_from(trackid).unwrap())));
 
-        let parsed = parse_metadata(&map);
+        let parsed = parse(&map);
 
         let capped = "a".repeat(1023);
         for (field, value) in [
@@ -212,18 +278,30 @@ mod tests {
             (Value::U64(u64::MAX), None),
             (Value::I64(9_223_372_036_854_000_000), None),
             (Value::I64(MAX_LENGTH_US), Some(MAX_LENGTH_US)),
+            (Value::I64(99 * 365 * 24 * 3600 * 1_000_000), Some(99 * 365 * 24 * 3600 * 1_000_000)),
             (Value::U32(7), Some(7)),
             (Value::I32(-1), Some(-1)),
             (Value::F64(7.0), None),
         ] {
             let map = HashMap::from([("mpris:length".to_string(), owned(value.try_clone().unwrap()))]);
-            assert_eq!(parse_metadata(&map).length_us, expected, "{value:?}");
+            assert_eq!(parse(&map).length_us, expected, "{value:?}");
         }
+    }
+
+    /// An `ay` under a key nobody reads, or under one read as text, is skipped unbuilt.
+    #[test]
+    fn a_byte_array_is_skipped_under_any_key() {
+        let bytes = || owned(Value::from(vec![7u8; 256 * 1024]));
+        let mut map = real_metadata();
+        map.insert("x-cover-bytes".to_string(), bytes());
+        map.insert("xesam:album".to_string(), bytes());
+        let parsed = parse(&map);
+        assert_eq!((parsed.title.as_str(), parsed.album.as_str()), ("Track Title", ""));
     }
 
     #[test]
     fn parse_metadata_degrades_gracefully_on_an_empty_dict() {
-        let parsed = parse_metadata(&HashMap::new());
+        let parsed = parse(&HashMap::new());
         assert_eq!(parsed, ParsedMetadata::default());
     }
 
@@ -232,7 +310,7 @@ mod tests {
         // Real players sometimes publish the wrong D-Bus type.
         let mut map = HashMap::new();
         map.insert("mpris:trackid".to_string(), owned(Value::Str(Str::from("/0"))));
-        assert_eq!(parse_metadata(&map).trackid.as_deref(), Some("/0"));
+        assert_eq!(parse(&map).trackid.as_deref(), Some("/0"));
     }
 
     #[test]

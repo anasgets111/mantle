@@ -2,26 +2,34 @@
 
 pub use shared::state::mpris::{PlaylistSummary, PlaylistsState, TrackListState, TrackSummary};
 
-use futures_util::{FutureExt, Stream, StreamExt};
-use std::collections::HashMap;
+use futures_util::{Stream, StreamExt};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use zbus::zvariant::{OwnedObjectPath, OwnedValue};
+use zbus::zvariant::{OwnedObjectPath, Type};
 
-use super::metadata::parse_metadata;
+use super::changes::Changes;
+use super::metadata::{Metadata, parse_metadata};
 use super::player::PlayerRegistry;
 use super::proxies::{MprisPlaylistsProxy, MprisTrackListProxy};
 use super::{MAX_METADATA_TEXT_BYTES, MAX_ORDERINGS, fits_text_cap};
-use crate::capabilities::truncate_utf8_bytes;
+use crate::capabilities::{Dict, get_property, truncate_utf8_bytes};
 
 pub(super) const TRACK_LIMIT: usize = 100;
 const MAX_TRACK_IDS: usize = 10_000;
 pub(super) const PLAYLIST_PAGE_LIMIT: u32 = 100;
 
+/// One property read typed; a mistyped one is an error, as zbus's generated getter made it.
+pub(super) async fn property<T: serde::de::DeserializeOwned + Type>(
+    proxy: &zbus::Proxy<'_>,
+    name: &str,
+) -> zbus::Result<T> {
+    get_property(proxy, name).await?.ok_or_else(|| zbus::Error::Failure(format!("{name} has another type")))
+}
+
 pub(super) async fn read_track_list(
     proxy: &MprisTrackListProxy<'_>,
     current_track: Option<&str>,
 ) -> zbus::Result<TrackListState> {
-    let ids = proxy.tracks().await?;
+    let ids: Vec<OwnedObjectPath> = property(proxy.inner(), "Tracks").await?;
     // ponytail: TrackList exposes the full ID array, so D-Bus deserializes it before this cap.
     // A paged protocol or a decoder limit would bound the incoming allocation too.
     if ids.len() > MAX_TRACK_IDS {
@@ -35,17 +43,17 @@ pub(super) async fn read_track_list(
     if metadata.len() != window.len() {
         return Err(zbus::Error::Failure("GetTracksMetadata returned the wrong number of tracks".into()));
     }
-    let tracks = window.iter().zip(metadata).filter_map(|(id, metadata)| track_summary(id, &metadata)).collect();
+    let tracks = window.iter().zip(metadata).filter_map(|(id, Dict(metadata))| track_summary(id, &metadata)).collect();
     Ok(TrackListState {
         tracks,
         current_track: current_track.unwrap_or_default().to_string(),
-        can_edit: proxy.can_edit_tracks().await?,
+        can_edit: property(proxy.inner(), "CanEditTracks").await?,
     })
 }
 
 /// `None` for an id past the cap; see [`fits_text_cap`]. Title and artist take the list's tighter
 /// cap, since a hundred tracks multiply them.
-fn track_summary(id: &OwnedObjectPath, metadata: &HashMap<String, OwnedValue>) -> Option<TrackSummary> {
+fn track_summary(id: &OwnedObjectPath, metadata: &Metadata) -> Option<TrackSummary> {
     if !fits_text_cap(id.as_str()) {
         return None;
     }
@@ -66,19 +74,23 @@ pub(super) async fn read_playlists(
     reverse: bool,
     fallback_order: bool,
 ) -> zbus::Result<PlaylistsState> {
-    let orderings: Vec<String> =
-        proxy.orderings().await?.into_iter().filter(|ordering| fits_text_cap(ordering)).take(MAX_ORDERINGS).collect();
+    let orderings: Vec<String> = property::<Vec<String>>(proxy.inner(), "Orderings")
+        .await?
+        .into_iter()
+        .filter(|ordering| fits_text_cap(ordering))
+        .take(MAX_ORDERINGS)
+        .collect();
     let selected_order =
         if order.is_empty() || (fallback_order && !orderings.iter().any(|supported| supported == order)) {
             orderings.first().cloned().unwrap_or_else(|| "Alphabetical".to_string())
         } else {
             order.to_string()
         };
-    let count = proxy.playlist_count().await?;
+    let count = property(proxy.inner(), "PlaylistCount").await?;
     if !orderings.iter().any(|supported| supported == &selected_order) {
         return Err(zbus::Error::Failure(format!("unsupported playlist ordering {selected_order:?}")));
     }
-    let (active_valid, active) = proxy.active_playlist().await?;
+    let (active_valid, active): (bool, _) = property(proxy.inner(), "ActivePlaylist").await?;
     let active = active_valid.then(|| playlist_summary(active)).flatten();
     let page_size = requested_count.min(PLAYLIST_PAGE_LIMIT);
     let items = proxy.get_playlists(index, page_size, &selected_order, reverse).await?;
@@ -123,6 +135,7 @@ pub(super) async fn collections_forwarder(
     registry: PlayerRegistry,
     events: UnboundedSender<()>,
     mut refresh: UnboundedReceiver<()>,
+    changes: std::sync::Arc<Changes>,
 ) -> impl Future<Output = ()> + Send + 'static {
     let mut replaced = match &track_list {
         Some(proxy) => proxy.receive_track_list_replaced().await.ok(),
@@ -140,58 +153,22 @@ pub(super) async fn collections_forwarder(
         Some(proxy) => proxy.receive_track_metadata_changed().await.ok(),
         None => None,
     };
-    let mut can_edit = match &track_list {
-        Some(proxy) => Some(proxy.receive_can_edit_tracks_changed().await),
-        None => None,
-    };
     let mut playlist_changed = match &playlists {
         Some(proxy) => proxy.receive_playlist_changed().await.ok(),
         None => None,
     };
-    let mut playlist_count = match &playlists {
-        Some(proxy) => Some(proxy.receive_playlist_count_changed().await),
-        None => None,
-    };
-    let mut orderings = match &playlists {
-        Some(proxy) => Some(proxy.receive_orderings_changed().await),
-        None => None,
-    };
-    let mut active_playlist = match &playlists {
-        Some(proxy) => Some(proxy.receive_active_playlist_changed().await),
-        None => None,
-    };
-
-    // zbus replays each cached property on a stream's first poll, and the cache fills from a
-    // `GetAll` that these getters wait for. Dropping the replays before the caller's read leaves
-    // only later changes to wake the loop, without losing one (#102).
-    if let Some(proxy) = &track_list {
-        let _ = proxy.can_edit_tracks().await;
-    }
-    if let Some(proxy) = &playlists {
-        let _ = proxy.playlist_count().await;
-    }
-    next_optional(&mut can_edit).now_or_never();
-    next_optional(&mut playlist_count).now_or_never();
-    next_optional(&mut orderings).now_or_never();
-    next_optional(&mut active_playlist).now_or_never();
 
     async move {
         loop {
-            let changed = tokio::select! {
-                Some(_) = refresh.recv() => true,
-                Some(_) = next_optional(&mut replaced) => true,
-                Some(_) = next_optional(&mut added) => true,
-                Some(_) = next_optional(&mut removed) => true,
-                Some(_) = next_optional(&mut metadata_changed) => true,
-                Some(_) = next_optional(&mut can_edit) => true,
-                Some(_) = next_optional(&mut playlist_changed) => true,
-                Some(_) = next_optional(&mut playlist_count) => true,
-                Some(_) = next_optional(&mut orderings) => true,
-                Some(_) = next_optional(&mut active_playlist) => true,
-                else => false,
-            };
-            if !changed {
-                return;
+            // Never all disabled: `notified` has no pattern to fail.
+            tokio::select! {
+                Some(_) = refresh.recv() => {}
+                Some(_) = next_optional(&mut replaced) => {}
+                Some(_) = next_optional(&mut added) => {}
+                Some(_) = next_optional(&mut removed) => {}
+                Some(_) = next_optional(&mut metadata_changed) => {}
+                Some(_) = next_optional(&mut playlist_changed) => {}
+                () = changes.collections.notified() => {}
             }
             let (track_id, old_playlists, playlist_revision) = {
                 let guard = registry.lock().expect("mpris registry mutex poisoned");
@@ -248,7 +225,8 @@ pub(super) mod tests {
     use crate::capabilities::mpris::proxies::{MprisPlaylistsProxy, MprisTrackListProxy};
     use crate::capabilities::test_support::{p2p_pair_serving, within};
     use futures_util::StreamExt;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
@@ -270,13 +248,23 @@ pub(super) mod tests {
         pub(in crate::capabilities::mpris) edits: Arc<Mutex<Vec<String>>>,
         /// Sent as a `PlaylistCount` change by the next `GetPlaylists`, before it answers.
         pub(in crate::capabilities::mpris) count_on_get: Mutex<Option<u32>>,
+        /// `PlaylistCount`, 1000 until [`playlist_count_changed`] moves it.
+        pub(in crate::capabilities::mpris) count: Arc<AtomicU32>,
     }
 
-    /// `PlaylistCount` changed to `count`, which the proxy's property cache takes as the value.
+    impl PlaylistPeer {
+        pub(in crate::capabilities::mpris) fn new(edits: Arc<Mutex<Vec<String>>>, count_on_get: Option<u32>) -> Self {
+            Self { edits, count_on_get: Mutex::new(count_on_get), count: Arc::new(AtomicU32::new(1000)) }
+        }
+    }
+
+    /// Sets `PlaylistCount` to `count`, then announces it.
     pub(in crate::capabilities::mpris) async fn playlist_count_changed(
         emitter: &zbus::object_server::SignalEmitter<'_>,
+        playlist_count: &AtomicU32,
         count: u32,
     ) {
+        playlist_count.store(count, Ordering::Relaxed);
         let interface = zbus::names::InterfaceName::from_static_str_unchecked("org.mpris.MediaPlayer2.Playlists");
         let changed = HashMap::from([("PlaylistCount", Value::from(count))]);
         zbus::fdo::Properties::properties_changed(emitter, interface, changed, (&[][..]).into()).await.unwrap();
@@ -341,7 +329,7 @@ pub(super) mod tests {
             self.edits.lock().unwrap().push(format!("get:{index}:{max_count}:{order}:{reverse_order}"));
             let count = self.count_on_get.lock().unwrap().take();
             if let Some(count) = count {
-                playlist_count_changed(&emitter, count).await;
+                playlist_count_changed(&emitter, &self.count, count).await;
             }
             (0..max_count.min(2))
                 .map(|index| (path(&format!("/playlist/{index}")), format!("List {index}"), String::new()))
@@ -350,7 +338,7 @@ pub(super) mod tests {
 
         #[zbus(property)]
         async fn playlist_count(&self) -> u32 {
-            1000
+            self.count.load(Ordering::Relaxed)
         }
 
         /// More than [`MAX_ORDERINGS`], one of them past the text cap.
@@ -386,8 +374,8 @@ pub(super) mod tests {
             ("mpris:length", Value::from(0_i64)),
         ]);
 
-        assert_eq!(track_summary(&long_path, &HashMap::new()), None);
-        let track = track_summary(&path("/track/0"), &title).unwrap();
+        assert_eq!(track_summary(&long_path, &Metadata::default()), None);
+        let track = track_summary(&path("/track/0"), &super::super::metadata::decoded(&title)).unwrap();
         assert_eq!((track.title.len(), track.artist.len()), (MAX_METADATA_TEXT_BYTES, MAX_METADATA_TEXT_BYTES));
         assert_eq!(track.length, Some(0), "zero is a length; only a negative one is unknown");
 
@@ -412,7 +400,7 @@ pub(super) mod tests {
                     "/tracklist",
                     TrackPeer { edits: track_edits, track_count: count_for_peer, short_metadata: short_for_peer },
                 )?
-                .serve_at("/playlists", PlaylistPeer { edits: playlist_edits, count_on_get: Mutex::default() })
+                .serve_at("/playlists", PlaylistPeer::new(playlist_edits, None))
         })
         .await;
         let tracks = MprisTrackListProxy::builder(&client).path("/tracklist").unwrap().build().await.unwrap();
@@ -427,8 +415,7 @@ pub(super) mod tests {
         assert!(read_track_list(&tracks, Some("/track/250")).await.is_err());
         short_metadata.store(false, Ordering::Relaxed);
         track_count.store(MAX_TRACK_IDS + 1, Ordering::Relaxed);
-        let oversized_tracks = MprisTrackListProxy::builder(&client).path("/tracklist").unwrap().build().await.unwrap();
-        assert!(read_track_list(&oversized_tracks, Some("/track/250")).await.is_err());
+        assert!(read_track_list(&tracks, Some("/track/250")).await.is_err());
         track_count.store(300, Ordering::Relaxed);
         let mut replaced = tracks.receive_track_list_replaced().await.unwrap();
         TrackPeer::track_list_replaced(

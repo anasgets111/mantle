@@ -4,15 +4,17 @@
 //! survives Renderer crash/reload like idle/lock authority (ADR-0010). Capture position once with
 //! a monotonic timestamp and interpolate elapsed time client-side; read live position only when
 //! seeking. Hand-written proxies (`proxies.rs`), a live `HashMap<bus_name, entry>` registry with
-//! one forwarder per player (`player.rs`), controller dispatch (`controller.rs`), and pure
-//! parsing/comparison helpers in `metadata.rs` and `position.rs`, unit-testable without a live
-//! D-Bus connection, make the boundaries explicit.
+//! one forwarder per player (`player.rs`) fed by a task taking its property changes
+//! (`changes.rs`), controller dispatch (`controller.rs`), and pure parsing/comparison helpers in
+//! `metadata.rs` and `position.rs`, unit-testable without a live D-Bus connection, make the
+//! boundaries explicit.
 //!
 //! Players never register; discovery is active (`watcher.rs`): scan `ListNames` once, then watch
 //! `NameOwnerChanged` for `org.mpris.MediaPlayer2.` arrivals and departures. ADR-0036 also fixes
 //! `playerctld` exclusion, album-art trust checks, track-identity caching, and `SetPosition`'s
 //! `TrackId` fallback.
 
+mod changes;
 pub mod collections;
 pub mod controller;
 pub mod metadata;

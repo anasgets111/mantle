@@ -10,7 +10,7 @@ use futures_util::StreamExt;
 use shared::debug;
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::collections::{PlaylistsState, read_playlists};
+use super::collections::{PlaylistsState, property, read_playlists};
 use super::metadata::clamp_seek_target;
 use super::proxies::{MprisPlaylistsProxy, MprisTrackListProxy};
 use super::watcher::{service_name_for_id, spawn_discovery};
@@ -75,7 +75,7 @@ impl MprisController {
             debug!("TrackList AddTrack for {id:?} failed: {}", UNKNOWN_PLAYER);
             return;
         };
-        if !matches!(proxy.can_edit_tracks().await, Ok(true)) {
+        if !matches!(property(proxy.inner(), "CanEditTracks").await, Ok(true)) {
             debug!("TrackList AddTrack for {id:?} ignored because CanEditTracks is false or unavailable");
             return;
         }
@@ -101,7 +101,7 @@ impl MprisController {
             debug!("TrackList RemoveTrack for {id:?} ignored because track_id is not an object path");
             return;
         };
-        if !matches!(proxy.can_edit_tracks().await, Ok(true)) {
+        if !matches!(property(proxy.inner(), "CanEditTracks").await, Ok(true)) {
             debug!("TrackList RemoveTrack for {id:?} ignored because CanEditTracks is false or unavailable");
             return;
         }
@@ -323,7 +323,10 @@ impl MprisController {
     /// stale by however long the track has played since.
     async fn live_position(&self, id: &str) -> Option<i64> {
         let player = self.find_player(id)?;
-        player.position().await.inspect_err(|err| debug!("live Position read failed for {id:?}: {err}")).ok()
+        property(player.inner(), "Position")
+            .await
+            .inspect_err(|err| debug!("live Position read failed for {id:?}: {err}"))
+            .ok()
     }
 
     /// `mpris:seek(id, pos_us)`: `SetPosition(cached trackid, clamped pos_us)` when available;
@@ -555,10 +558,8 @@ mod tests {
     /// `org.mpris.MediaPlayer2.<id>`, its log cleared of what registering read.
     async fn tracked_player(controller: &MprisController, id: &str, player: Player) -> (Player, zbus::Connection) {
         let (served, root) = (player.clone(), Root(player.clone()));
-        let (tracks, playlists) = (
-            TrackPeer::new(player.calls.clone(), 3),
-            PlaylistPeer { edits: player.calls.clone(), count_on_get: Mutex::new(player.count_on_get) },
-        );
+        let (tracks, playlists) =
+            (TrackPeer::new(player.calls.clone(), 3), PlaylistPeer::new(player.calls.clone(), player.count_on_get));
         let path = "/org/mpris/MediaPlayer2";
         let (connection, peer) = p2p_pair_serving(|builder| {
             builder.serve_at(path, served)?.serve_at(path, root)?.serve_at(path, tracks)?.serve_at(path, playlists)
@@ -591,11 +592,10 @@ mod tests {
         assert_eq!(player.calls(), expected);
     }
 
-    /// zbus replays each cached property to a new subscriber; those replays must not re-read the
-    /// collections registration just read (#102). A change landing after registration read
-    /// `PlaylistCount` but before its read returns must still re-read: an unchanged replay and that
-    /// change look alike, so skipping the replay would lose it. `tracked_player` clears
-    /// registration's own read from the log before the forwarder first runs.
+    /// The forwarder subscribes before registration reads the collections, and must not read them
+    /// again unprompted (#102). A change landing after registration read `PlaylistCount` but before
+    /// its read returns must still re-read. `tracked_player` clears registration's own read from
+    /// the log before the forwarder first runs.
     #[tokio::test]
     async fn registration_reads_the_collections_once_and_a_change_during_it_reads_again() {
         // A live receiver: with `inert`'s dropped one, the forwarder ends at its first change.
@@ -606,9 +606,11 @@ mod tests {
         let count = || controller.registry.lock().unwrap()["org.mpris.MediaPlayer2.fixture"].last_known.playlists.count;
         poll_until(|| (count() == 7).then_some(())).await;
 
-        // A second change marks the end: any replay re-read would have run before it.
-        let emitter = zbus::object_server::SignalEmitter::new(&peer, "/org/mpris/MediaPlayer2").unwrap();
-        super::super::collections::tests::playlist_count_changed(&emitter, 8).await;
+        // A second change marks the end: any extra re-read would have run before it.
+        let path = "/org/mpris/MediaPlayer2";
+        let served = peer.object_server().interface::<_, PlaylistPeer>(path).await.unwrap();
+        let emitter = zbus::object_server::SignalEmitter::new(&peer, path).unwrap();
+        super::super::collections::tests::playlist_count_changed(&emitter, &served.get().await.count, 8).await;
         poll_until(|| (count() == 8).then_some(())).await;
         let read = ["metadata:3", "get:0:100:Alphabetical:false"];
         assert_eq!(player.calls(), [read, read].concat(), "one re-read per change");

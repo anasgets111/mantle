@@ -3,24 +3,26 @@
 //! Every player uses fixed `/org/mpris/MediaPlayer2` (the freedesktop spec disallows otherwise),
 //! while `destination` varies. Declare `default_path` only; binders take the bus name explicitly.
 
-use std::collections::HashMap;
+use zbus::proxy::CacheProperties;
+use zbus::zvariant::{ObjectPath, OwnedObjectPath};
 
-use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue};
+use super::metadata::Metadata;
+use crate::capabilities::Dict;
+
+// Properties go through `capabilities::get_all` and `get_property`, and changes through
+// `changes.rs`: zbus's property cache, its generated getters and `PropertiesChanged::args` decode
+// values to `OwnedValue`, one `Value` per byte of an array, and any player picks the types.
+
+pub(super) const ROOT: &str = "org.mpris.MediaPlayer2";
+pub(super) const PLAYER: &str = "org.mpris.MediaPlayer2.Player";
+pub(super) const TRACK_LIST: &str = "org.mpris.MediaPlayer2.TrackList";
+pub(super) const PLAYLISTS: &str = "org.mpris.MediaPlayer2.Playlists";
+pub(super) const PATH: &str = "/org/mpris/MediaPlayer2";
 
 #[zbus::proxy(interface = "org.mpris.MediaPlayer2", default_path = "/org/mpris/MediaPlayer2")]
 pub(super) trait MprisRoot {
     fn raise(&self) -> zbus::Result<()>;
     fn quit(&self) -> zbus::Result<()>;
-    #[zbus(property, name = "Identity")]
-    fn identity(&self) -> zbus::Result<String>;
-    /// Optional in the spec; several players publish no `.desktop` name, so absence is an answer
-    /// rather than a failure (ADR-0137).
-    #[zbus(property, name = "DesktopEntry")]
-    fn desktop_entry(&self) -> zbus::Result<String>;
-    #[zbus(property, name = "CanRaise")]
-    fn can_raise(&self) -> zbus::Result<bool>;
-    #[zbus(property, name = "CanQuit")]
-    fn can_quit(&self) -> zbus::Result<bool>;
 }
 
 #[zbus::proxy(interface = "org.mpris.MediaPlayer2.Player", default_path = "/org/mpris/MediaPlayer2")]
@@ -39,47 +41,12 @@ pub(super) trait MprisPlayer {
     /// cache stays fresh (ADR-0036).
     fn set_position(&self, track_id: ObjectPath<'_>, position_us: i64) -> zbus::Result<()>;
 
-    #[zbus(property, name = "PlaybackStatus")]
-    fn playback_status(&self) -> zbus::Result<String>;
-    /// ponytail: a player's `ay` entry lands in `OwnedValue`, one `Value` per byte; upgrade: typed `a{sv}` like `tray::item::Props`.
-    #[zbus(property, name = "Metadata")]
-    fn metadata(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
-    /// Freedesktop excludes `Position` from `PropertiesChanged` because it changes too often.
-    /// zbus otherwise caches this getter until that absent signal; live `busctl` showed a player
-    /// advancing while the getter stayed at stale `0`. Disable caching with
-    /// `emits_changed_signal = "false"`.
-    #[zbus(property(emits_changed_signal = "false"), name = "Position")]
-    fn position(&self) -> zbus::Result<i64>;
-    #[zbus(property, name = "CanControl")]
-    fn can_control(&self) -> zbus::Result<bool>;
-    #[zbus(property, name = "CanGoNext")]
-    fn can_go_next(&self) -> zbus::Result<bool>;
-    #[zbus(property, name = "CanGoPrevious")]
-    fn can_go_previous(&self) -> zbus::Result<bool>;
-    #[zbus(property, name = "CanSeek")]
-    fn can_seek(&self) -> zbus::Result<bool>;
-    #[zbus(property, name = "CanPlay")]
-    fn can_play(&self) -> zbus::Result<bool>;
-    #[zbus(property, name = "CanPause")]
-    fn can_pause(&self) -> zbus::Result<bool>;
-    #[zbus(property, name = "MinimumRate")]
-    fn minimum_rate(&self) -> zbus::Result<f64>;
-    #[zbus(property, name = "MaximumRate")]
-    fn maximum_rate(&self) -> zbus::Result<f64>;
-    #[zbus(property, name = "Volume")]
-    fn volume(&self) -> zbus::Result<f64>;
     #[zbus(property, name = "Volume")]
     fn set_volume(&self, value: f64) -> zbus::Result<()>;
     #[zbus(property, name = "LoopStatus")]
-    fn loop_status(&self) -> zbus::Result<String>;
-    #[zbus(property, name = "LoopStatus")]
     fn set_loop_status(&self, value: &str) -> zbus::Result<()>;
     #[zbus(property, name = "Shuffle")]
-    fn shuffle(&self) -> zbus::Result<bool>;
-    #[zbus(property, name = "Shuffle")]
     fn set_shuffle(&self, value: bool) -> zbus::Result<()>;
-    #[zbus(property, name = "Rate")]
-    fn rate(&self) -> zbus::Result<f64>;
     #[zbus(property, name = "Rate")]
     fn set_rate(&self, value: f64) -> zbus::Result<()>;
 
@@ -95,26 +62,19 @@ pub(super) trait MprisPlayer {
     default_path = "/org/mpris/MediaPlayer2"
 )]
 pub(super) trait MprisTrackList {
-    fn get_tracks_metadata(&self, track_ids: Vec<OwnedObjectPath>) -> zbus::Result<Vec<HashMap<String, OwnedValue>>>;
+    fn get_tracks_metadata(&self, track_ids: Vec<OwnedObjectPath>) -> zbus::Result<Vec<Dict<Metadata>>>;
     fn add_track(&self, uri: &str, after_track: ObjectPath<'_>, set_as_current: bool) -> zbus::Result<()>;
     fn remove_track(&self, track_id: ObjectPath<'_>) -> zbus::Result<()>;
     fn go_to(&self, track_id: ObjectPath<'_>) -> zbus::Result<()>;
-    #[zbus(property, name = "Tracks")]
-    fn tracks(&self) -> zbus::Result<Vec<OwnedObjectPath>>;
-    #[zbus(property, name = "CanEditTracks")]
-    fn can_edit_tracks(&self) -> zbus::Result<bool>;
     #[zbus(signal, name = "TrackListReplaced")]
     fn track_list_replaced(&self, tracks: Vec<OwnedObjectPath>, current_track: OwnedObjectPath) -> zbus::Result<()>;
+    /// The arguments of this and `TrackMetadataChanged` go unread: the forwarder rereads the window.
     #[zbus(signal, name = "TrackAdded")]
-    fn track_added(&self, metadata: HashMap<String, OwnedValue>, after_track: OwnedObjectPath) -> zbus::Result<()>;
+    fn track_added(&self) -> zbus::Result<()>;
     #[zbus(signal, name = "TrackRemoved")]
     fn track_removed(&self, track_id: OwnedObjectPath) -> zbus::Result<()>;
     #[zbus(signal, name = "TrackMetadataChanged")]
-    fn track_metadata_changed(
-        &self,
-        track_id: OwnedObjectPath,
-        metadata: HashMap<String, OwnedValue>,
-    ) -> zbus::Result<()>;
+    fn track_metadata_changed(&self) -> zbus::Result<()>;
 }
 
 #[zbus::proxy(
@@ -131,37 +91,47 @@ pub(super) trait MprisPlaylists {
         order: &str,
         reverse_order: bool,
     ) -> zbus::Result<Vec<(OwnedObjectPath, String, String)>>;
-    #[zbus(property, name = "PlaylistCount")]
-    fn playlist_count(&self) -> zbus::Result<u32>;
-    #[zbus(property, name = "Orderings")]
-    fn orderings(&self) -> zbus::Result<Vec<String>>;
-    #[zbus(property, name = "ActivePlaylist")]
-    fn active_playlist(&self) -> zbus::Result<(bool, (OwnedObjectPath, String, String))>;
     #[zbus(signal, name = "PlaylistChanged")]
     fn playlist_changed(&self, playlist: (OwnedObjectPath, String, String)) -> zbus::Result<()>;
 }
 
 pub(super) async fn bind_root(connection: &zbus::Connection, bus_name: &str) -> zbus::Result<MprisRootProxy<'static>> {
-    MprisRootProxy::builder(connection).destination(bus_name.to_string())?.build().await
+    MprisRootProxy::builder(connection)
+        .destination(bus_name.to_string())?
+        .cache_properties(CacheProperties::No)
+        .build()
+        .await
 }
 
 pub(super) async fn bind_player(
     connection: &zbus::Connection,
     bus_name: &str,
 ) -> zbus::Result<MprisPlayerProxy<'static>> {
-    MprisPlayerProxy::builder(connection).destination(bus_name.to_string())?.build().await
+    MprisPlayerProxy::builder(connection)
+        .destination(bus_name.to_string())?
+        .cache_properties(CacheProperties::No)
+        .build()
+        .await
 }
 
 pub(super) async fn bind_track_list(
     connection: &zbus::Connection,
     bus_name: &str,
 ) -> zbus::Result<MprisTrackListProxy<'static>> {
-    MprisTrackListProxy::builder(connection).destination(bus_name.to_string())?.build().await
+    MprisTrackListProxy::builder(connection)
+        .destination(bus_name.to_string())?
+        .cache_properties(CacheProperties::No)
+        .build()
+        .await
 }
 
 pub(super) async fn bind_playlists(
     connection: &zbus::Connection,
     bus_name: &str,
 ) -> zbus::Result<MprisPlaylistsProxy<'static>> {
-    MprisPlaylistsProxy::builder(connection).destination(bus_name.to_string())?.build().await
+    MprisPlaylistsProxy::builder(connection)
+        .destination(bus_name.to_string())?
+        .cache_properties(CacheProperties::No)
+        .build()
+        .await
 }

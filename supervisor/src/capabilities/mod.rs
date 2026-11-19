@@ -261,6 +261,7 @@ pub(crate) trait DictFields: Default {
 /// An `a{sv}` decoded straight into `T`, as [`Hint`] decodes one variant: keys `T` does not read
 /// are skipped with `IgnoredAny`, so they cost no memory. A repeated key keeps the last, as a
 /// `HashMap` would, where serde's derive would refuse the whole dict.
+#[derive(Clone)]
 pub(crate) struct Dict<T>(pub(crate) T);
 
 impl<T> Type for Dict<T> {
