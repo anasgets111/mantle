@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use shared::{debug, warn};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::process::Stdio;
 use tokio::process::{Child, ChildStdout, Command};
 use tokio::sync::mpsc::UnboundedSender;
@@ -287,11 +287,11 @@ async fn run_install(backend: Arc<dyn Backend>, state: Arc<Mutex<UpdatesState>>,
 /// The installer inherits a lock on the log with the fd, so while it runs another install is refused;
 /// the returned dup releases it once the installer is reaped, though a process it left holds the fd.
 /// Each install unlinks the last log and creates its own, so such a process writes only the old one.
-/// The last log stays locked until the new one is, so of two Supervisors sharing the runtime
-/// directory one finds a log locked or replaced, or loses the `create_new`.
 // ponytail: a restarted Supervisor neither knows nor shows a running install, only refuses a second,
 // also while a process the installer left keeps the fd. Upgrade: record the installer's pid beside
 // the log and follow it again.
+// ponytail: two Supervisors installing in the same instant can race the open and the lock; the
+// package manager's own lock stops the second. Upgrade: recheck the locked inode against the path.
 fn spawn_logged(
     command: &InstallCommand,
     log: &Path,
@@ -303,7 +303,7 @@ fn spawn_logged(
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
         last => {
             let last = last.map_err(failed)?;
-            lock_named(&last, log)?;
+            crate::instance::take_lock(&last).map_err(still_running)?;
             std::fs::remove_file(log).map_err(failed)?;
             Some(last)
         }
@@ -312,7 +312,7 @@ fn spawn_logged(
         std::io::ErrorKind::AlreadyExists => still_running(err),
         _ => failed(err),
     })?;
-    lock_named(&file, log)?;
+    crate::instance::take_lock(&file).map_err(still_running)?;
     drop(last);
     let reader = open(std::fs::OpenOptions::new().read(true)).map_err(failed)?;
     let lock = file.try_clone()?;
@@ -324,17 +324,6 @@ fn spawn_logged(
     let tail = Command::new(follower).args(["-c", "+1", "-f", &pid]).stdin(reader).stdout(Stdio::piped()).spawn();
     let tail = tail.map_err(|err| warn!("cannot follow {}: {err}; install_log stays empty", log.display()));
     Ok((child, tail.ok().and_then(|mut tail| tail.stdout.take()), lock))
-}
-
-/// Locks `file`, refusing unless `log` still names it: another Supervisor may have replaced it
-/// between the open and the lock, and a lock on a file no path names guards nothing.
-fn lock_named(file: &std::fs::File, log: &Path) -> std::io::Result<()> {
-    crate::instance::take_lock(file).map_err(still_running)?;
-    let (held, named) = (file.metadata()?, std::fs::symlink_metadata(log).ok());
-    match named.is_some_and(|named| (named.dev(), named.ino()) == (held.dev(), held.ino())) {
-        true => Ok(()),
-        false => Err(still_running("its log was replaced")),
-    }
 }
 
 fn still_running(why: impl std::fmt::Display) -> std::io::Error {
@@ -413,6 +402,7 @@ mod tests {
     use crate::capabilities::test_support::{dispatcher, poll_until, within};
     use crate::capabilities::updates::backend::{CheckReport, InstallStep};
     use crate::process;
+    use std::os::unix::fs::MetadataExt;
 
     /// A marker path under a fresh tempdir, so a scheduler test never watches the real `/run`
     /// file and never sees the `Changed` its presence would push.
@@ -1016,18 +1006,6 @@ exit {exit_code}"
         let refused = spawn_logged(&InstallCommand { program: "true".into(), arguments: Vec::new() }, &log, "tail");
         assert!(refused.unwrap_err().to_string().contains("still running"));
         assert_eq!(std::fs::metadata(&log).unwrap().ino(), held.metadata().unwrap().ino(), "not unlinked");
-    }
-
-    /// Another Supervisor's swap between this one's open and its lock: the lock alone would pass.
-    #[test]
-    fn a_log_replaced_before_it_is_locked_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let (log, other) = (dir.path().join("install.log"), dir.path().join("other"));
-        let opened = std::fs::File::create(&log).unwrap();
-        std::fs::write(&other, "").unwrap();
-        std::fs::rename(&other, &log).unwrap();
-        assert!(lock_named(&opened, &log).unwrap_err().to_string().contains("its log was replaced"));
-        lock_named(&std::fs::File::options().append(true).open(&log).unwrap(), &log).unwrap();
     }
 
     #[tokio::test]
