@@ -205,6 +205,9 @@ fn run_inner(
             // owes the config an answer, and waiting for a nonempty map would never end.
             state_for_done.borrow_mut().hydrate();
         })
+        // ponytail: the crate's trampolines unwrap `message` here, and a registry `global`'s type
+        // string, as UTF-8 before mantle's code runs, so either non-UTF-8 aborts; upgrade: a
+        // pipewire release that decodes them lossily.
         .error(move |id, _seq, res, message| {
             if id != pw::core::PW_ID_CORE {
                 return;
@@ -256,6 +259,12 @@ fn run_inner(
     drop((_registry_listener, _core_listener));
     debug_assert_eq!(Rc::strong_count(&state), 1, "a listener still holds the mixer state");
     Ok(hydrated)
+}
+
+/// Read raw: the crate's `NodeInfoRef::state` unwraps the peer's error string as UTF-8 and panics
+/// on a state it does not know.
+fn is_running(info: &pw::node::NodeInfoRef) -> bool {
+    info.as_raw().state == pw::sys::pw_node_state_PW_NODE_STATE_RUNNING
 }
 
 /// A `param` event's pod as a value tree; `None` for an absent or undecodable one.
@@ -377,7 +386,7 @@ fn on_node_global(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::Regi
                 NodeKind::Microphone => &mut state_mut.microphones,
                 NodeKind::Screencast => &mut state_mut.screencasts,
             };
-            let running = matches!(info.state(), pw::node::NodeState::Running);
+            let running = is_running(info);
             if apply_capture_info_event(apps, node_id, kind, has_props_change, info.props(), running) {
                 state_mut.publish_privacy();
             }
@@ -963,5 +972,20 @@ mod tests {
         });
         commands.send(AudioCommand::ToggleMute(sink)).unwrap();
         until(&mut published, |audio| audio.sinks.first().is_some_and(|sink| sink.muted));
+    }
+
+    #[test]
+    fn a_node_in_error_with_a_non_utf8_message_or_an_unknown_state_reads_as_not_running() {
+        // SAFETY: an all-zero pw_node_info is a valid C struct (null pointers, zero counts).
+        let mut raw: pw::sys::pw_node_info = unsafe { std::mem::zeroed() };
+        let mut running = |state, error: &std::ffi::CStr| {
+            raw.state = state;
+            raw.error = error.as_ptr();
+            // SAFETY: NodeInfoRef is #[repr(transparent)] over pw_node_info.
+            is_running(unsafe { &*(&raw as *const pw::sys::pw_node_info).cast() })
+        };
+        assert!(!running(pw::sys::pw_node_state_PW_NODE_STATE_ERROR, c"\xff"));
+        assert!(!running(99, c""));
+        assert!(running(pw::sys::pw_node_state_PW_NODE_STATE_RUNNING, c""));
     }
 }
