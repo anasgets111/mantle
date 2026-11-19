@@ -38,7 +38,7 @@ rect {
 | `fingerprint?` | `FingerprintState` | The fingerprint conversation beside the password one, or `nil` while none runs: no `mantle-fingerprint` stack, or it ended without a match. A password submit and the next lock start it again. `prompt`, `messages`, `attempts` and `error` stay the password's. |
 | `messages` | `PamNotice[]` | PAM's info and error lines, oldest first, at most 8. Cleared by the next answer and when the lock ends. |
 | `prompt?` | `PamPrompt` | PAM's pending question, or `nil` while it owes nothing. |
-| `unlocking` | `boolean` | PAM said yes and the lock is still up: the window for an out-animation. |
+| `unlocking` | `boolean` | PAM said yes and the lock is still up: the window for an out-animation. Turns `false` once the compositor confirms the unlock, or when a lock asked for during the window keeps the session locked. |
 
 ### `FingerprintState`
 
@@ -93,8 +93,8 @@ Call each as `mantle.lock:<action>(arguments...)`; `?` marks an argument you may
 | Unlock | Only a successful PAM conversation, run in a re-exec'd [worker](../../supervisor/src/pam_worker.rs) with the `mantle` PAM service from `/etc/pam.d` or `/usr/lib/pam.d`, else `login`. PAM must reply within 30 s of an answer; a prompt waits for you without limit. An expired password still unlocks |
 | Conversation | Starts on lock and again after a wrong password. A failure before any prompt (a faillock lockout) waits for the next submit. An answer typed before its prompt goes to the next masked prompt; a visible prompt drops it |
 | Fingerprint | Starts on lock when `mantle-fingerprint` is in `/etc/pam.d` or `/usr/lib/pam.d`, with no fallback service. pam_fprintd retries misses for the whole lock. Any other end, or a prompt from that stack, turns it off until the next password submit or lock. Misses never count as `attempts` or set `error`. Packages install the stack |
-| Unlock animation | `set_unlock_animation` delays the release by up to 600 ms; the value persists across reloads |
-| Crash | A dead Renderer never unlocks; the replacement retakes the lock. `$XDG_RUNTIME_DIR/mantle/session-locked-<display>` (such as `session-locked-wayland-1`; `/` and `%` in `$WAYLAND_DISPLAY` are escaped) carries the lock across a Supervisor restart, one per compositor, so a shell in a nested compositor never sets or clears the outer shell's marker. logind's `LockedHint` stays per login session |
+| Unlock animation | `set_unlock_animation` delays the release by up to 600 ms; the value persists across reloads. A lock asked for during the delay (`lock`, `loginctl lock-session`, a suspend) cancels the release: the session stays locked, `unlocking` turns back to `false` and PAM asks again |
+| Crash | A dead Renderer never unlocks; the replacement retakes the lock once it has loaded the config, and a refused takeover is retried after 1 s, doubling to 30 s. `$XDG_RUNTIME_DIR/mantle/session-locked-<display>` (such as `session-locked-wayland-1`; `/` and `%` in `$WAYLAND_DISPLAY` are escaped) carries the lock across a Supervisor restart, one per compositor, so a shell in a nested compositor never sets or clears the outer shell's marker. logind's `LockedHint` stays per login session |
 | Refused or lost | Sets [`mantle.rescue`](index.md#renderer-members) with the reason |
 | Reload | An edit that would recreate a lock surface is refused while locked ([lock surface](../surfaces/lock.md)) |
 

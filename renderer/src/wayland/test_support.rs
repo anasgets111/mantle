@@ -43,9 +43,18 @@ impl MockWayland {
     }
 
     pub(in crate::wayland) fn send_lock_finished(&self) {
+        self.send(self.lock_object(), 1, &[]);
+    }
+
+    /// The compositor grants the last lock asked for.
+    pub(in crate::wayland) fn send_lock_locked(&self) {
+        self.send(self.lock_object(), 0, &[]);
+    }
+
+    fn lock_object(&self) -> u32 {
         let id = self.lock_id.load(Ordering::Acquire);
-        assert_ne!(id, 0);
-        self.send(id, 1, &[]);
+        assert_ne!(id, 0, "no lock was asked for");
+        id
     }
 }
 

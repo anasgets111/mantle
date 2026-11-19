@@ -56,8 +56,7 @@ pub struct CommandSender {
     /// `lua::namespace` and `secure_submit`'s sweep both use it (ADR-0070 decisions 1, 5), so a
     /// second `mantle.audio` reader costs nothing.
     started: Rc<RefCell<HashSet<String>>>,
-    /// The last `CanLock` sent. The first is sent even when `false`: a replacement's Supervisor
-    /// waits for it when the generation before could lock.
+    /// The last `CanLock` sent. The first is sent even when `false`: a sleep waits for it.
     can_lock: Rc<Cell<Option<bool>>>,
     folders: Rc<RefCell<FolderStaging>>,
     outbound_tx: UnboundedSender<RendererFrame>,

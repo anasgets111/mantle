@@ -136,6 +136,10 @@ pub struct App {
     /// teardown. `Some` with `is_locked() == false` is the in-flight window; `finished` therefore
     /// has two meanings (ADR-0042).
     session_lock: Option<SessionLock>,
+    /// The Supervisor's id for `session_lock`, named in every report about it.
+    session_lock_id: u64,
+    /// A lock acquisition resolved the tree mid-drain; the loop's turn repaints from that pass.
+    resolved_for_lock: bool,
     /// Shared EGL display/config/GLES3 context, lazy because `eglInitialize` loads Mesa,
     /// `libgallium`, and LLVM: 125 MB mapped and 13-35 ms. No-surface configs avoid it
     /// (ADR-0070 decision 7, ADR-0071).
@@ -336,6 +340,8 @@ impl App {
             blur_supported: false,
             hyprland: false,
             session_lock: None,
+            session_lock_id: 0,
+            resolved_for_lock: false,
             egl: None,
             gl: None,
             shader_stage: crate::layout::image_shader::ShaderStage::default(),

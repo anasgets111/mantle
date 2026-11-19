@@ -106,8 +106,8 @@ impl Renderer {
 pub(super) struct Authoritative {
     pub(super) generation_id: u32,
     pub(super) child: tokio::process::Child,
-    /// This generation's last `RendererFrame::CanLock`; `None` until a replacement for one that
-    /// could lock reports, since its config is likely the same (#122).
+    /// This generation's last `RendererFrame::CanLock`; `None` until its first, which a sleep
+    /// waits for (#122).
     pub(super) can_lock: Option<bool>,
 }
 

@@ -14,9 +14,8 @@ use crate::lua;
 pub enum FrameOutcome {
     /// Fully serviced by [`RendererClient::handle_frame`].
     Handled,
-    /// ADR-0042/ADR-0052's `SetSessionLock`: match the session lock to this flag
-    /// (`crate::wayland::App::set_session_lock`).
-    SetSessionLock(bool),
+    /// ADR-0042/ADR-0052's `SetSessionLock`, for `crate::wayland::App::set_session_lock`.
+    SetSessionLock(SetSessionLock),
     /// A control client's `mantle input`: only `crate::wayland::App` has the surfaces to deliver it
     /// to, and it answers the call.
     Inject { id: u64, inject: Inject },
@@ -63,7 +62,7 @@ impl RendererClient {
             }
             // `ext_session_lock_v1` is a Wayland object; `crate::wayland::App` services it
             // (ADR-0042, ADR-0052 decision 1).
-            SupervisorFrame::SetSessionLock(SetSessionLock { locked }) => return FrameOutcome::SetSessionLock(locked),
+            SupervisorFrame::SetSessionLock(command) => return FrameOutcome::SetSessionLock(command),
             // The Supervisor addresses this process via its own socket (ADR-0032).
             SupervisorFrame::IdleEvent(IdleEvent { generation_id: _, threshold_sec, state }) => {
                 self.idle_registry.dispatch_event(threshold_sec, state);
@@ -146,14 +145,12 @@ mod tests {
         // surface (ADR-0052 decision 3); `locked = false` is the only unlock path (ADR-0042).
         let (_dir, _, mut client, _outbound_rx) = client_for(r#"return panel { id = "bar", layer = "top" }"#);
 
-        assert_eq!(
-            client.handle_frame(SupervisorFrame::SetSessionLock(SetSessionLock { locked: true })),
-            FrameOutcome::SetSessionLock(true)
-        );
-        assert_eq!(
-            client.handle_frame(SupervisorFrame::SetSessionLock(SetSessionLock { locked: false })),
-            FrameOutcome::SetSessionLock(false)
-        );
+        for command in [SetSessionLock { locked: true, id: 4 }, SetSessionLock { locked: false, id: 4 }] {
+            assert_eq!(
+                client.handle_frame(SupervisorFrame::SetSessionLock(command)),
+                FrameOutcome::SetSessionLock(command)
+            );
+        }
     }
 
     #[test]

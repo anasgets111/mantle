@@ -190,17 +190,19 @@ pub fn run(
                 }
                 // Service immediately: lock declaration is tracked-surface state, not a
                 // capability-push result (ADR-0052 decision 3), and deferring weakens "secure now".
-                FrameOutcome::SetSessionLock(locked) => {
+                FrameOutcome::SetSessionLock(command) => {
                     // ponytail: SCTK 0.21 gates `unlock` on a dispatched `locked`; drop the round-trip once it doesn't.
                     // Without it, `unlock` can no-op and `Drop` sends a forbidden `destroy` (ADR-0052). Acquire needs no round-trip because
                     // this thread owns its inputs. Do not return on a failed round-trip: that would
                     // strand the session locked; trying the unlock costs at most one failed flush.
-                    if !locked && let Err(err) = event_queue.roundtrip(&mut app) {
+                    if !command.locked
+                        && let Err(err) = event_queue.roundtrip(&mut app)
+                    {
                         warn!(
                             "the round trip before an unlock failed ({err}); attempting the unlock anyway rather than exiting with the session locked"
                         );
                     }
-                    app.set_session_lock(&qh, locked);
+                    app.set_session_lock(&qh, command);
                 }
             }
             if app.exit {
@@ -244,11 +246,10 @@ pub fn run(
         phases.mark_handlers();
         // Not folded into `re_resolved`: only a pass can change a tree, so only a pass rules out the
         // narrowed repaint and makes every surface's protocol state worth re-deriving.
-        let passed = app.client.re_resolve_if_dirty();
+        let (passed, targeted_instances) = resolve_turn(&mut app);
         if passed && app.image_cache.has_node_clocks() {
             app.image_cache.forget_idle_node_clocks(app.client.scene());
         }
-        let targeted_instances = if passed { app.client.take_last_resolved() } else { None };
         phases.mark_resolve();
         phases.mark_resolve_split(app.client.take_resolve_split());
         let ticked = if due.is_empty() { Vec::new() } else { app.client.tick_animations(&due, now) };
@@ -502,6 +503,14 @@ pub fn run(
 
 /// Whether the scene's `nodes` fell a quarter below the most it held since it last shed, which
 /// is a closed list or a reload's leftovers, not a clock tick; the mark restarts at `nodes`.
+/// This turn's pass, or a lock acquisition's from the drain, and the instances it re-resolved
+/// (`None`: all). After a lock's, all: the two passes may have narrowed to different instances.
+pub(super) fn resolve_turn(app: &mut App) -> (bool, Option<Vec<String>>) {
+    let for_lock = std::mem::take(&mut app.resolved_for_lock);
+    let passed = app.client.re_resolve_if_dirty() || for_lock;
+    (passed, if passed { app.client.take_last_resolved().filter(|_| !for_lock) } else { None })
+}
+
 fn shed_nodes(high_water: &mut usize, nodes: usize) -> bool {
     let shed = nodes < *high_water - *high_water / 4;
     *high_water = if shed { nodes } else { (*high_water).max(nodes) };

@@ -554,7 +554,7 @@ impl ReportOnDrop {
         if let Some((tag, tx)) = self.pending.take()
             && tx.send((tag, shared::PamMessage::Outcome(outcome))).is_err()
         {
-            // A closed channel means `main.rs`'s loop is gone, which `LockController::send` permits.
+            // A closed channel means `main.rs`'s loop is gone.
             warn!("{label}: the outcome channel is closed; dropping an authentication result");
         }
     }

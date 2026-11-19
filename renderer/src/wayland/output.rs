@@ -390,7 +390,7 @@ mod tests {
         app.client = client;
         while frames.try_recv().is_ok() {}
         let qh = app.queue_handle.clone();
-        app.set_session_lock(&qh, true);
+        app.set_session_lock(&qh, shared::SetSessionLock { locked: true, id: 1 });
         assert!(app.session_lock.is_some());
         while frames.try_recv().is_ok() {}
 

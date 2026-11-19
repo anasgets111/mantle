@@ -1,9 +1,7 @@
 use shared::{error, warn};
 
-use super::state::SessionLock;
-
 /// The one lock fact outliving Supervisor (ADR-0060): `$XDG_RUNTIME_DIR/mantle/session-locked-$WAYLAND_DISPLAY`
-/// exists exactly while that compositor is locked. After restart `LockState::default()` would make `active` false
+/// exists while that compositor may be locked. After restart `LockState::default()` would make `active` false
 /// and paint behind an invisible fallback (ADR-0058, 0059). A file suffices for this boolean and
 /// survives `SIGKILL`; runtime dir bounds staleness to the last session.
 pub struct SessionLockedFlag {
@@ -17,36 +15,29 @@ impl SessionLockedFlag {
         Self { path }
     }
 
-    /// Whether the compositor was locked at the last write. Read errors mean "not locked" on
-    /// purpose; the alternative relocks at every boot when one file cannot be read.
+    /// Whether the compositor may be locked: the last write said so, or the marker cannot be read.
+    /// An extra relock costs a password; a missed one leaves a lock with nothing drawn on it.
     pub fn is_set(&self) -> bool {
-        self.path.exists()
+        self.path.try_exists().unwrap_or(true)
     }
 
-    /// Idempotent both ways: repeated `Locked` reports and `Finished` after `Unlocked` are normal.
-    /// Log and swallow failures; a missed set costs a possible relock, a missed clear one password
-    /// prompt.
-    pub fn apply(&self, change: SessionLock) {
-        match change {
-            SessionLock::Taken => {
-                if let Err(err) = std::fs::File::create(&self.path) {
-                    error!(
-                        "could not write {} ; a Supervisor restart will not know the session is locked: {err}",
-                        self.path.display()
-                    );
-                }
+    /// Idempotent both ways. Set before a lock is sent, so a Supervisor that dies before the answer
+    /// still leaves it (the compositor may have granted the lock); cleared only by a report that
+    /// proves the lock gone. A missed set leaves a restarted Supervisor blind to a lock, a missed
+    /// clear costs one password prompt; both are logged.
+    pub fn set(&self, locked: bool) {
+        if locked {
+            if let Err(err) = std::fs::File::create(&self.path) {
+                // ponytail: only logged, so a crash leaves the successor idle; upgrade: retry, show in rescue.
+                error!(
+                    "could not write {} ; a Supervisor restart will not know the session is locked: {err}",
+                    self.path.display()
+                );
             }
-            SessionLock::Released => {
-                if let Err(err) = std::fs::remove_file(&self.path)
-                    && err.kind() != std::io::ErrorKind::NotFound
-                {
-                    warn!(
-                        "could not remove {} ; the next Supervisor start will lock the screen: {err}",
-                        self.path.display()
-                    );
-                }
-            }
-            SessionLock::Unchanged => {}
+        } else if let Err(err) = std::fs::remove_file(&self.path)
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            warn!("could not remove {} ; the next Supervisor start will lock the screen: {err}", self.path.display());
         }
     }
 }
@@ -54,24 +45,6 @@ impl SessionLockedFlag {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capabilities::lock::state::{LockEvent, LockState, apply, compositor_lock_change};
-
-    #[test]
-    fn a_renderer_that_died_holding_the_lock_leaves_the_marker_set() {
-        // RendererLost clears active because this shell holds nothing, but the compositor stays
-        // locked. The marker is driven off LockOutcome, not active, so RendererLost (not a
-        // Reported) cannot reach it.
-        let dir = tempfile::tempdir().unwrap();
-        let flag = SessionLockedFlag::at(dir.path().join("session-locked"));
-        flag.apply(compositor_lock_change(&shared::LockOutcome::Locked));
-
-        let mut state = LockState::default();
-        apply(&mut state, LockEvent::Reported(shared::LockOutcome::Locked));
-        apply(&mut state, LockEvent::RendererLost);
-
-        assert!(!state.active, "the crash means this shell holds nothing");
-        assert!(flag.is_set(), "but the session is still locked, and the marker is what says so");
-    }
 
     #[test]
     fn the_marker_survives_the_process_that_wrote_it_and_reads_false_when_absent() {
@@ -79,28 +52,34 @@ mod tests {
         let path = dir.path().join("session-locked");
         assert!(!SessionLockedFlag::at(path.clone()).is_set(), "a fresh login has no marker");
 
-        SessionLockedFlag::at(path.clone()).apply(SessionLock::Taken);
+        SessionLockedFlag::at(path.clone()).set(true);
         // A different SessionLockedFlag value entirely -- what a restarted Supervisor is.
         assert!(SessionLockedFlag::at(path.clone()).is_set());
 
-        SessionLockedFlag::at(path.clone()).apply(SessionLock::Released);
+        SessionLockedFlag::at(path.clone()).set(false);
         assert!(!SessionLockedFlag::at(path).is_set());
     }
 
     #[test]
-    fn repeated_and_unchanged_verdicts_are_not_errors_and_never_erase_a_lock() {
+    fn a_marker_that_cannot_be_read_reads_as_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("not-a-directory");
+        std::fs::File::create(&file).unwrap();
+        assert!(SessionLockedFlag::at(file.join("session-locked")).is_set());
+    }
+
+    #[test]
+    fn repeated_verdicts_are_not_errors() {
         // Both directions repeat in ordinary use: removing a file that isn't there is not a failure to clear.
         let dir = tempfile::tempdir().unwrap();
         let flag = SessionLockedFlag::at(dir.path().join("session-locked"));
-        flag.apply(SessionLock::Released);
-        flag.apply(SessionLock::Unchanged);
+        flag.set(false);
         assert!(!flag.is_set());
-        flag.apply(SessionLock::Taken);
-        flag.apply(SessionLock::Taken);
-        flag.apply(SessionLock::Unchanged);
-        assert!(flag.is_set(), "a refusal after a real lock must not erase it");
-        flag.apply(SessionLock::Released);
-        flag.apply(SessionLock::Released);
+        flag.set(true);
+        flag.set(true);
+        assert!(flag.is_set());
+        flag.set(false);
+        flag.set(false);
         assert!(!flag.is_set());
     }
 }

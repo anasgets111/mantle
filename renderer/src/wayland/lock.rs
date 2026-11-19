@@ -2,7 +2,7 @@
 //! decisions, rescue messages, surfaces, and callbacks. Shared bind/paint/(un)map logic is in
 //! `surface`.
 
-use shared::{debug, error, info};
+use shared::{SetSessionLock, debug, error, info, warn};
 
 use super::*;
 use crate::layout::secure_submit::tree_can_authenticate;
@@ -21,9 +21,6 @@ const NO_LOCK_DECLARED: &str = "this config declares no `lock` surface, so locki
 const LOCK_CANNOT_AUTHENTICATE: &str = "this config's `lock` surface does not hold exactly one `textfield` with `secure_submit = { capability = \"lock\", action = \"authenticate\" }` \
      and nothing else, so the compositor handing it keyboard focus would arm no field, nothing on it could ever authenticate, and the only way back in \
      would be a VT switch; the lock was refused (ADR-0052 decision 3)";
-/// A release request for a lock the compositor never acknowledged with `locked`; nothing was
-/// released (see [`App::release_session_lock`]).
-const LOCK_NEVER_GRANTED: &str = "the session lock was given up before the compositor ever granted it (no `ext_session_lock_v1::locked` arrived), so nothing was unlocked";
 /// `finished` before `locked`: the compositor refused the request, usually because another lock
 /// client holds the session; the wire cannot say more.
 const LOCK_DENIED: &str = "the compositor denied the session lock; another lock client most likely holds it already (`ext_session_lock_v1::finished` arrived in place \
@@ -59,31 +56,30 @@ enum LockCommand {
     Release,
     /// Touch no protocol object; report `LockOutcome::Refused` and set `rescue`.
     Refuse(&'static str),
-    /// The command already matches the lock state.
+    /// The command names no lock this Renderer may take or release.
     Nothing,
 }
 /// One `SetSessionLock` decision. `locked = true` refuses before `SessionLockState::lock` when the
 /// tracked set has no lock or its resolved tree cannot authenticate (a declared empty node would
 /// otherwise evade decision 3). Missing `ext_session_lock_manager_v1` arrives separately as
-/// `GlobalError::MissingGlobal`. `locked = false` with no held lock is `Nothing`, not `Release`:
-/// `unlock_and_destroy` before `locked` is protocol error `invalid_unlock`.
-fn lock_command(locked: bool, declares_lock: bool, can_authenticate: bool, lock_held: bool) -> LockCommand {
-    match (locked, lock_held) {
-        (false, true) => LockCommand::Release,
-        (false, false) | (true, true) => LockCommand::Nothing,
-        (true, false) if !declares_lock => LockCommand::Refuse(NO_LOCK_DECLARED),
-        (true, false) if !can_authenticate => LockCommand::Refuse(LOCK_CANNOT_AUTHENTICATE),
-        (true, false) => LockCommand::Acquire,
+/// `GlobalError::MissingGlobal`. `locked = false` releases only `granted`, the lock the compositor
+/// answered `locked` for, and only if it is the one named: `unlock_and_destroy` before `locked` is
+/// protocol error `invalid_unlock`, and any other lock was not the one the password answered.
+fn lock_command(
+    command: SetSessionLock,
+    declares_lock: bool,
+    can_authenticate: bool,
+    held: bool,
+    granted: Option<u64>,
+) -> LockCommand {
+    match command.locked {
+        false if granted == Some(command.id) => LockCommand::Release,
+        false => LockCommand::Nothing,
+        true if held => LockCommand::Nothing,
+        true if !declares_lock => LockCommand::Refuse(NO_LOCK_DECLARED),
+        true if !can_authenticate => LockCommand::Refuse(LOCK_CANNOT_AUTHENTICATE),
+        true => LockCommand::Acquire,
     }
-}
-/// What one ordered release actually did, given whether `ext_session_lock_v1::locked` had been
-/// dispatched on the lock object being given up (ADR-0052 decision 4). The Supervisor's
-/// `lock::apply` moves its `active` flag on `Unlocked`, so reporting one for a lock never granted
-/// would claim a locked-to-unlocked transition that never happened. Nothing was sent, and
-/// [`LOCK_NEVER_GRANTED`] says so instead.
-/// ponytail: SCTK 0.21's `SessionLock::unlock` is a no-op below `is_locked()`; drop the gate once it queues.
-fn release_outcome(was_locked: bool) -> LockOutcome {
-    if was_locked { LockOutcome::Unlocked } else { LockOutcome::Refused(LOCK_NEVER_GRANTED.to_string()) }
 }
 /// Distinguishes `finished` before `locked` (denial) from `finished` after it (compositor teardown)
 /// (ADR-0042). `lock::apply` routes them differently. SCTK's `Dispatch2` sets `is_locked()` on
@@ -155,21 +151,31 @@ impl App {
     /// from tracked lock instances; authentication comes from their resolved trees using the same
     /// [`tree_can_authenticate`] predicate keyboard focus uses. `any`, not `all`, is enough across
     /// outputs. Protocol failure is reported as refusal so the shell keeps painting.
-    pub(super) fn set_session_lock(&mut self, qh: &QueueHandle<App>, locked: bool) {
+    pub(super) fn set_session_lock(&mut self, qh: &QueueHandle<App>, command: SetSessionLock) {
+        // Snapshots drained just before this frame are not resolved yet, and the tree they make is
+        // the one the lock shows.
+        self.resolved_for_lock |= command.locked && self.client.re_resolve_if_dirty();
         let lock_instances: Vec<&str> = self
             .surfaces
             .iter()
             .filter(|tracked| matches!(tracked.role, TrackedRole::Lock { .. }))
             .map(|tracked| tracked.surface_id.as_str())
             .collect();
+        // ponytail: replayed `attempts` can hide the field and refuse every takeover; upgrade: reset it on takeover.
         let can_authenticate =
             lock_instances.iter().filter_map(|id| self.client.scene().surface(id)).any(tree_can_authenticate);
-        match lock_command(locked, !lock_instances.is_empty(), can_authenticate, self.session_lock.is_some()) {
-            LockCommand::Nothing => {}
-            LockCommand::Refuse(reason) => self.refuse_lock(reason),
+        let held = self.session_lock.as_ref();
+        let granted = held.filter(|lock| lock.is_locked()).map(|_| self.session_lock_id);
+        match lock_command(command, !lock_instances.is_empty(), can_authenticate, held.is_some(), granted) {
+            LockCommand::Nothing => {
+                let held = held.map(|_| self.session_lock_id);
+                warn!("ignoring {command:?}: it names no lock this Renderer can take or release (holding {held:?})");
+            }
+            LockCommand::Refuse(reason) => self.refuse_lock(command.id, reason),
             LockCommand::Acquire => match self.session_lock_state.lock(qh) {
                 Ok(lock) => {
                     self.session_lock = Some(lock);
+                    self.session_lock_id = command.id;
                     // Arm before `locked`: a reload in between must not strip the password field
                     // from the tree the compositor is about to show. Send only the lock fact;
                     // hotplug retires and replaces instance ids.
@@ -180,56 +186,46 @@ impl App {
                 // Preserve `GlobalError`'s own missing-global diagnosis.
                 Err(err) => {
                     let reason = format!("this compositor cannot lock the session: {err} (ADR-0042)");
-                    self.refuse_lock(&reason);
+                    self.refuse_lock(command.id, &reason);
                 }
             },
             LockCommand::Release => self.release_session_lock(),
         }
     }
 
-    /// The only `unlock_and_destroy` path (ADR-0042, ADR-0052):
-    /// `SetSessionLock { locked: false }`
-    /// sent by Supervisor only from the `pam_outcomes` arm of its `select!` loop, on
-    /// `PamOutcome::Success`, making the rule structural, not trust-based. No shutdown, `finished`,
-    /// or reload shortcut; SCTK `Drop` deliberately leaves a dying locked Renderer locked. `unlock`
-    /// is a no-op before `is_locked()`, and `run` round-trips first because the flag flips on
-    /// dispatch; otherwise `Drop` could send forbidden `destroy` and trigger `invalid_destroy`.
-    /// Report what happened, not what was requested, via [`release_outcome`].
+    /// The only `unlock_and_destroy` path (ADR-0042, ADR-0052): `SetSessionLock { locked: false }`
+    /// for the granted lock, sent by the Supervisor only after `PamOutcome::Success` answered that
+    /// lock. No shutdown, `finished`, or reload shortcut; SCTK `Drop` deliberately leaves a dying
+    /// locked Renderer locked.
     fn release_session_lock(&mut self) {
         let Some(lock) = self.session_lock.take() else {
             return;
         };
-        // Read before the destructor consumes the flag being reported.
-        let was_locked = lock.is_locked();
+        // ponytail: Hyprland skips the owner check: after a Supervisor crash a stale Renderer can unlock; fix upstream.
         lock.unlock();
-        // If `unlock` did not destroy it, `Drop` sends `destroy`; SCTK requires locked objects to
-        // be unlocked first.
+        // `unlock` destroyed it; `Drop`'s `destroy` on a destroyed object is dropped by wayland-backend.
         drop(lock);
         self.teardown_lock_surfaces();
         // The in-place reload may now reshape the lock screen.
         self.client.set_session_locked(false);
-        let outcome = release_outcome(was_locked);
-        match &outcome {
-            LockOutcome::Unlocked => info!("the session lock was released"),
-            _ => debug!(2; "{LOCK_NEVER_GRANTED}"),
-        }
-        self.report_lock(outcome);
+        info!("the session lock was released");
+        self.report_lock(self.session_lock_id, LockOutcome::Unlocked);
     }
 
     /// Logs, rescues, and reports a refused lock (ADR-0052 decision 4). Refusal leaves the normal
     /// scene visible, so `rescue` can display the message; wrong passwords reach `mantle.lock`
     /// while lock surfaces are mapped and everything else is hidden. The next reload that applies
     /// (`RendererClient::handle_apply_pending`) clears rescue.
-    fn refuse_lock(&mut self, reason: &str) {
+    fn refuse_lock(&mut self, id: u64, reason: &str) {
         error!("the session lock was refused: {reason}");
         self.client.set_rescue_state(true, reason);
-        self.report_lock(LockOutcome::Refused(reason.to_string()));
+        self.report_lock(id, LockOutcome::Refused(reason.to_string()));
     }
 
     /// Queues one `LockReport`; `lock::apply` sees every state transition exactly once and moves
     /// `active` only from these reports.
-    fn report_lock(&mut self, outcome: LockOutcome) {
-        if let Err(e) = self.outbound_tx.send(RendererFrame::LockReport(LockReport { outcome })) {
+    fn report_lock(&mut self, id: u64, outcome: LockOutcome) {
+        if let Err(e) = self.outbound_tx.send(RendererFrame::LockReport(LockReport { id, outcome })) {
             error!("failed to queue a LockReport for the socket thread: {e}");
         }
     }
@@ -253,7 +249,7 @@ impl SessionLockHandler for App {
             .filter(|tracked| matches!(tracked.role, TrackedRole::Lock { surface: Some(_), .. }))
             .count();
         info!("the session is locked; {surfaces} lock surface(s) up");
-        self.report_lock(LockOutcome::Locked);
+        self.report_lock(self.session_lock_id, LockOutcome::Locked);
     }
 
     /// `finished` before `locked` denies the request; after `locked`, the compositor ended a live
@@ -286,7 +282,7 @@ impl SessionLockHandler for App {
         };
         error!("the session lock ended: {reason}");
         self.client.set_rescue_state(true, reason);
-        self.report_lock(outcome);
+        self.report_lock(self.session_lock_id, outcome);
     }
 
     /// SCTK's `Dispatch2` has already acked the configure before this runs, so nothing here acks,
@@ -336,43 +332,58 @@ mod tests {
     }
 
     #[test]
-    fn lock_command_refuses_before_locking_never_repeats_and_releases_only_a_held_lock() {
+    fn lock_command_refuses_before_locking_never_repeats_and_releases_only_the_granted_lock_named() {
         use LockCommand::{Acquire, Nothing, Refuse, Release};
-        // (locked, declares_lock, can_authenticate, lock_held, command)
-        for (args, want) in [
+        let lock = SetSessionLock { locked: true, id: 2 };
+        let unlock = |id| SetSessionLock { locked: false, id };
+        // (command, declares_lock, can_authenticate, held, granted, decision)
+        for (command, declares, authenticates, held, granted, want) in [
             // ADR-0052 decision 3: the refusal must happen before `SessionLockState::lock` is
             // called, since a lock granted and then painted nothing is a black screen with no way out
             // but a VT switch.
-            ((true, false, false, false), Refuse(NO_LOCK_DECLARED)),
-            ((true, true, true, false), Acquire),
+            (lock, false, false, false, None, Refuse(NO_LOCK_DECLARED)),
+            (lock, true, true, false, None, Acquire),
             // `lock { id = "x" }` is a legal declaration that resolves to an empty tree, reaching
             // ADR-0052 decision 3's black screen through the guard instead of around it, so the
             // tracked-surface test alone is not enough. The two refusals are distinct: different
             // edits to make to a config.
-            ((true, true, false, false), Refuse(LOCK_CANNOT_AUTHENTICATE)),
-            // `locked = true` while already holding one would be a second `ext_session_lock_v1`,
-            // denied by the compositor. `locked = false` while holding none would be
-            // `unlock_and_destroy` on nothing, the protocol's `invalid_unlock` error.
-            ((true, true, true, true), Nothing),
-            ((false, true, true, false), Nothing),
-            ((false, false, false, false), Nothing),
+            (lock, true, false, false, None, Refuse(LOCK_CANNOT_AUTHENTICATE)),
+            // A second `ext_session_lock_v1` would be denied by the compositor.
+            (lock, true, true, true, None, Nothing),
+            (lock, true, true, true, Some(1), Nothing),
+            // `unlock_and_destroy` before `locked` is the protocol's `invalid_unlock` error.
+            (unlock(1), true, true, false, None, Nothing),
+            (unlock(1), true, true, true, None, Nothing),
+            // A password answered lock 1: lock 2, held now, is not the one it opens.
+            (unlock(1), true, true, true, Some(2), Nothing),
             // The single `Release` in the table: `unlock_and_destroy` has exactly one reachable caller
             // in this process, reached only on a `PamOutcome::Success` (ADR-0042).
-            ((false, true, true, true), Release),
-            ((false, false, false, true), Release),
+            (unlock(2), true, true, true, Some(2), Release),
+            (unlock(2), false, false, true, Some(2), Release),
         ] {
-            let (locked, declares_lock, can_authenticate, lock_held) = args;
-            assert_eq!(lock_command(locked, declares_lock, can_authenticate, lock_held), want, "{args:?}");
+            let decision = lock_command(command, declares, authenticates, held, granted);
+            assert_eq!(decision, want, "{command:?} {declares} {authenticates} {held} {granted:?}");
         }
     }
 
+    /// `hydrate` replays snapshots before the lock, so both land in one drain: the lock must judge
+    /// the tree the snapshots make, not the one resolved before them (finding 7).
     #[test]
-    fn releasing_a_lock_the_compositor_never_granted_does_not_report_it_as_unlocked() {
-        // The Supervisor's `lock::apply` moves its `active` flag on these reports alone, so an
-        // `Unlocked` for a lock that was never `locked` would tell it a transition happened that
-        // did not: SCTK's `SessionLock::unlock` is a no-op below `is_locked()`.
-        assert_eq!(release_outcome(true), LockOutcome::Unlocked);
-        assert_eq!(release_outcome(false), LockOutcome::Refused(LOCK_NEVER_GRANTED.to_string()));
+    fn a_lock_judges_the_tree_the_snapshots_drained_before_it_make() {
+        let (mut app, _dir, _queue, _mock) = App::test_app_with_wire(
+            r#"return lock { id = "lock", child = mantle.lock:map(function(lock)
+                if lock.active then return textfield { secure_submit = { capability = "lock", action = "authenticate" } } end
+                return rect {}
+            end, rect {}) }"#,
+        );
+        crate::socket::client::tests::push(&app.client, "lock", 1, serde_json::json!({ "active": true }));
+        let qh = app.queue_handle.clone();
+        app.set_session_lock(&qh, SetSessionLock { locked: true, id: 1 });
+        assert!(app.session_lock.is_some(), "the replayed state's textfield can authenticate");
+        assert!(!app.client.re_resolve_if_dirty(), "the lock's pass leaves nothing to resolve again");
+        let turn = crate::wayland::main_loop::resolve_turn(&mut app);
+        assert_eq!(turn, (true, None), "so the loop's turn repaints every instance from it");
+        assert_eq!(crate::wayland::main_loop::resolve_turn(&mut app), (false, None), "once");
     }
 
     #[test]

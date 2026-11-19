@@ -64,6 +64,40 @@ fn send_to_authoritative(supervisor: &Supervisor, call_routes: &socket::CallRout
     }
 }
 
+/// The frame `main`'s loop dispatches, or `None` once handled here or dropped. Before the
+/// stale-generation filter, from any Renderer: a report counts only for the lock it names, and a
+/// `lock()` read after its Renderer died still locks. Its other lock commands are filtered.
+fn route_inbound(supervisor: &mut Supervisor, generation_id: u32, frame: RendererFrame) -> Option<RendererFrame> {
+    use shared::action::{LockAction, decode};
+    match frame {
+        RendererFrame::LockReport(report) => supervisor.record_lock_report(generation_id, report),
+        RendererFrame::Command(envelope)
+            if envelope.params.capability == Capability::Lock.as_str()
+                && matches!(decode(&envelope.params.action, &envelope.params.arguments), Ok(LockAction::Lock)) =>
+        {
+            supervisor.request_lock()
+        }
+        frame => {
+            // No Renderer is live during a cooldown, so only control clients and call answers dispatch.
+            let authoritative = supervisor.authoritative.generation_id;
+            let live = supervisor.respawn_at.map_or(authoritative, |_| shared::CONTROL_CLIENT_GENERATION);
+            if frame_may_dispatch(&frame, generation_id, live) {
+                return Some(frame);
+            }
+            debug!("dropping a frame from stale generation {generation_id} (authoritative is {authoritative})");
+        }
+    }
+    None
+}
+
+/// Sleeps until the session lock's next deadline, or forever without one.
+async fn lock_timer(deadline: Option<std::time::Instant>) {
+    match deadline {
+        Some(at) => tokio::time::sleep_until(at.into()).await,
+        None => std::future::pending().await,
+    }
+}
+
 /// Logs a command for a controller never built (ADR-0070). A config cannot reach this: reading
 /// `mantle.<name>` sends the start before its first action on the same socket. This is a buggy Renderer
 /// or hand-written frame, so name the capability instead of staying silent.
@@ -374,18 +408,18 @@ async fn run_supervisor(
     let (registry, call_routes, mut inbound_frames, mut connected) = socket::spawn_listener(&socket_path)?;
     let mut kill_requests = registry.kill_requests();
 
-    // Lock (ADR-0042, ADR-0052): the Renderer holds and paints `ext_session_lock_v1`; this side
-    // decides whether to take it. The controller must not cache the authoritative generation id,
-    // because a respawn reassigns it.
-    let (lock_command_tx, mut lock_commands) = tokio::sync::mpsc::unbounded_channel::<shared::SetSessionLock>();
-    let lock = LockController::new(lock_command_tx);
+    // Lock (ADR-0042, ADR-0052): the Renderer holds and paints `ext_session_lock_v1`; `Supervisor`
+    // decides every `SetSessionLock`.
+    let lock = LockController::new();
     // `loginctl lock-session` in, `LockedHint` out (ADR-0138). Subscribe here, before a key press,
     // rather than after config happens to read a member.
     let (logind_lock_tx, mut logind_lock_requests) = tokio::sync::mpsc::unbounded_channel::<()>();
     let session_bridge = lock::logind::SessionBridge::new(connection.clone(), logind_lock_tx).await;
-    // Taken by the first generation that can lock, so a config that never could never delays a suspend.
+    // From boot, so a suspend before the first Renderer is up still waits to learn whether it can
+    // lock. One that cannot answers at once (ADR-0385).
     let (sleep_locks_tx, mut sleep_locks) = tokio::sync::mpsc::unbounded_channel();
-    let mut sleep_locks_tx = Some(sleep_locks_tx);
+    let bound = lock::sleep::LOCK_BEFORE_SLEEP;
+    tokio::spawn(lock::sleep::delay_sleep_until_locked(connection.clone(), sleep_locks_tx, bound));
     let (pam_events_tx, mut pam_events) = tokio::sync::mpsc::unbounded_channel::<(u64, shared::PamMessage)>();
     let (process_done_tx, mut process_done) = tokio::sync::mpsc::unbounded_channel::<(u32, u64)>();
 
@@ -428,6 +462,7 @@ async fn run_supervisor(
     let mut memory_sampler = memory::sampler(profile.map(Duration::from_secs));
 
     loop {
+        let lock_deadline = supervisor.next_lock_deadline();
         tokio::select! {
             Some(termination::Received { signal, sender }) = terminations.recv() => {
                 if matches!(signal, nix::sys::signal::Signal::SIGINT | nix::sys::signal::Signal::SIGTERM) {
@@ -471,7 +506,7 @@ async fn run_supervisor(
                 // StateSnapshot/revision path: a threshold crossing is an event, not state (ADR-0032).
                 send_frame_logged(&supervisor.registry, event.generation_id, &SupervisorFrame::IdleEvent(event));
             }
-            Some(command) = lock_commands.recv() => supervisor.send_lock_command(command),
+            () = lock_timer(lock_deadline) => supervisor.lock_deadline_passed(),
             Some(()) = logind_lock_requests.recv() => supervisor.lock_requested_by_logind(),
             Some(locked) = sleep_locks.recv() => supervisor.lock_before_sleep(locked),
             // Other half of the `secure_submit(lock, authenticate)` arm: the only path where
@@ -485,32 +520,18 @@ async fn run_supervisor(
                 process::registry::report_exit(&mut supervisor.processes, &supervisor.registry, generation_id, id, status);
             }
             Some(inbound) = inbound_frames.recv() => {
-                // No Renderer is live during a cooldown, so only control clients and call answers dispatch.
-                let live = supervisor.respawn_at.map_or(supervisor.authoritative.generation_id, |_| shared::CONTROL_CLIENT_GENERATION);
-                if !frame_may_dispatch(&inbound.frame, inbound.generation_id, live) {
-                    debug!(
-                        "dropping a frame from stale generation {} (authoritative is {})",
-                        inbound.generation_id, supervisor.authoritative.generation_id
-                    );
-                    continue;
-                }
+                let Some(frame) = route_inbound(&mut supervisor, inbound.generation_id, inbound.frame) else { continue };
                 // Never the frame itself: a command's arguments or a set value can be a password (#129).
-                match &inbound.frame {
+                match &frame {
                     RendererFrame::Command(envelope) => {
                         let shared::CommandParams { capability, action, .. } = &envelope.params;
                         debug!(2; "inbound {capability}.{action} command from generation {}", inbound.generation_id);
                     }
                     frame => debug!(2; "inbound {} frame from generation {}", frame.label(), inbound.generation_id),
                 }
-                match inbound.frame {
-                RendererFrame::LockReport(report) => supervisor.record_lock_report(report),
-                RendererFrame::CanLock(can_lock) => {
-                    supervisor.record_can_lock(can_lock);
-                    if let Some(requests) = sleep_locks_tx.take_if(|_| can_lock) {
-                        let bound = lock::sleep::LOCK_BEFORE_SLEEP;
-                        tokio::spawn(lock::sleep::delay_sleep_until_locked(connection.clone(), requests, bound));
-                    }
-                }
+                match frame {
+                RendererFrame::LockReport(_) => {} // Routed by `route_inbound`.
+                RendererFrame::CanLock(can_lock) => supervisor.record_can_lock(can_lock),
                 RendererFrame::Command(envelope) => match envelope.params.capability.as_str() {
                     // `process` is addressable but never started, so it is not a roster capability.
                     "process" => supervisor.dispatch_process_command(&envelope).await,
@@ -587,6 +608,53 @@ mod tests {
         assert!(!frame_may_dispatch(&start, 0, 1));
         assert!(frame_may_dispatch(&start, 1, 1));
         assert!(frame_may_dispatch(&start, shared::CONTROL_CLIENT_GENERATION, 1));
+    }
+
+    /// A departed generation's `lock()` still locks and its report is checked against the lock it
+    /// names; its other lock commands, such as `set_unlock_animation`, are dropped as stale.
+    #[tokio::test]
+    async fn a_departed_renderer_can_ask_for_a_lock_but_not_change_its_replacements() {
+        use crate::capabilities::lock::session::LockPhase;
+        use crate::capabilities::test_support::{envelope, private_bus};
+        use crate::supervisor::tests::{booted, crash, sent, up};
+        let bus = private_bus().await;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut supervisor, _started, _open) = booted(&bus, dir.path()).await;
+        let lock = |action, arguments| RendererFrame::Command(envelope(Capability::Lock, action, arguments));
+        let locked = |id| RendererFrame::LockReport(shared::LockReport { id, outcome: shared::LockOutcome::Locked });
+        let animation = || lock("set_unlock_animation", vec![serde_json::json!(300)]);
+        let _departed = up(&mut supervisor);
+        crash(&mut supervisor).await;
+        let mut frames = up(&mut supervisor);
+        assert!(route_inbound(&mut supervisor, 0, animation()).is_none());
+        assert_eq!(supervisor.lock.unlock_animation(), Duration::ZERO);
+        assert!(route_inbound(&mut supervisor, 0, lock("lock", Vec::new())).is_none());
+        assert_eq!(sent(&mut frames), [(true, 1)]);
+        assert!(route_inbound(&mut supervisor, 0, locked(1)).is_none());
+        assert!(matches!(supervisor.lock_phase, LockPhase::Acquiring { .. }), "lock 1 is generation 1's");
+        assert!(route_inbound(&mut supervisor, 1, locked(1)).is_none());
+        assert!(matches!(supervisor.lock_phase, LockPhase::Held { generation: 1, id: 1, .. }));
+        assert!(route_inbound(&mut supervisor, 1, animation()).is_some(), "the live one's goes on to dispatch");
+    }
+
+    /// The loop's lock timer wakes at the phase's deadline with nothing else happening, and what
+    /// was due goes out; with no deadline it never wakes.
+    #[tokio::test]
+    async fn the_lock_timer_alone_sends_a_release_once_its_window_ends() {
+        use crate::capabilities::test_support::{private_bus, within};
+        use crate::supervisor::tests::{booted, held, pam_succeeds, sent, up};
+        let bus = private_bus().await;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut supervisor, started, _open) = booted(&bus, dir.path()).await;
+        let mut frames = up(&mut supervisor);
+        let id = held(&mut supervisor, &mut frames);
+        supervisor.lock.set_unlock_animation(Duration::from_millis(50));
+        pam_succeeds(&mut supervisor, &started);
+        assert_eq!(sent(&mut frames), []);
+        within(lock_timer(supervisor.next_lock_deadline())).await;
+        supervisor.lock_deadline_passed();
+        assert_eq!(sent(&mut frames), [(false, id)]);
+        assert!(tokio::time::timeout(Duration::from_millis(50), lock_timer(None)).await.is_err());
     }
 
     #[test]

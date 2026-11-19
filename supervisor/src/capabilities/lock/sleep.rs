@@ -1,7 +1,6 @@
 //! Lock before sleep (ADR-0385): a logind `sleep` delay inhibitor, so a suspend waits until the
-//! lock screen is on the glass. `main.rs` starts it on the first `RendererFrame::CanLock(true)` and
-//! it runs for the Supervisor's lifetime; a config that has never been able to lock never delays a
-//! suspend, and one that no longer can releases the delay at once.
+//! lock screen is on the glass. `main.rs` starts it at boot and it runs for the Supervisor's
+//! lifetime; a config that cannot lock releases the delay as soon as its Renderer says so.
 
 use std::time::Duration;
 

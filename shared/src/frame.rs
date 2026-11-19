@@ -68,7 +68,7 @@ impl ConnectionHandshake {
 /// fails until the bump is made and its recorded shape updated with it.
 /// `ConnectionHandshake`'s `generation_id` and `protocol` never change shape: they are how a
 /// mismatch is read at all.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Control clients (`mantle set`, `mantle toggle`) use this `generation_id` in
 /// [`ConnectionHandshake`] (ADR-0112). It is not a generation: the Supervisor registers no
@@ -310,13 +310,14 @@ impl std::fmt::Debug for SecureSubmit {
 }
 
 /// Supervisor -> Renderer: take or release `ext_session_lock_v1` (ADR-0042, ADR-0052 decision 1).
-/// One flag covers both directions; the Renderer matches its lock state to the flag and reports
-/// the outcome. Only `locked = false` may call `unlock_and_destroy`, and only after the
-/// Supervisor's PAM worker returns [`PamOutcome::Success`]; the Renderer does not enforce it.
+/// `locked = true` asks for a new lock numbered `id`; `locked = false` releases lock `id` only, and
+/// the Supervisor sends it only after its PAM worker returns [`PamOutcome::Success`] for that lock.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SetSessionLock {
     pub locked: bool,
+    /// The Supervisor's number for one acquisition, never reused while it runs.
+    pub id: u64,
 }
 
 /// Renderer report of the lock state (ADR-0052 decision 4): "never acquired" differs from "acquired
@@ -332,15 +333,16 @@ pub enum LockOutcome {
     /// `finished` after `Locked`: the compositor tore it down through its secure mechanism, not a
     /// denial or a Supervisor request.
     Finished,
-    /// `unlock_and_destroy` ran for `SetSessionLock { locked: false }`.
+    /// The compositor processed `unlock_and_destroy` for `SetSessionLock { locked: false }`.
     Unlocked,
 }
 
-/// Renderer -> Supervisor: one [`LockOutcome`] per lock state change. The connection already
-/// carries the generation id.
+/// Renderer -> Supervisor: one [`LockOutcome`] per lock state change of lock `id`. The connection
+/// already carries the generation id.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct LockReport {
+    pub id: u64,
     pub outcome: LockOutcome,
 }
 
@@ -525,7 +527,7 @@ mod tests {
     /// when the frame types' diff shows no wire change; a needless bump makes a running `mantle`
     /// exit 76 on upgrade. Upgrade path for the schemars case: pin it to an exact version.
     #[cfg(feature = "schema")]
-    const WIRE_SHAPE: (u32, u64) = (1, 0xc5d4_698d_9690_6661);
+    const WIRE_SHAPE: (u32, u64) = (2, 0x5be5_3b5a_4bc3_73af);
 
     /// `value` as JSON with sorted keys and no doc-comment descriptions, so a reworded comment, or
     /// a `serde_json` that keeps insertion order, leaves the shape alone.

@@ -28,18 +28,10 @@ pub struct LockState {
     /// no `mantle-fingerprint` stack, or it ended without a match. A password submit and the next
     /// lock start it again. `prompt`, `messages`, `attempts` and `error` stay the password's.
     pub fingerprint: Option<FingerprintState>,
-    /// PAM said yes and the lock is still up: the window for an out-animation (ADR-0190).
+    /// PAM said yes and the lock is still up: the window for an out-animation (ADR-0190). Turns
+    /// `false` once the compositor confirms the unlock, or when a lock asked for during the window
+    /// keeps the session locked.
     pub unlocking: bool,
-    /// `SetSessionLock { locked: true }` is in flight before Renderer confirmation.
-    /// `#[serde(skip)]`: bookkeeping, not payload. `active` must mean only Renderer confirmation,
-    /// but a respawn must still retake a lock that was asked for and not yet confirmed (ADR-0058).
-    #[serde(skip)]
-    pub requested: bool,
-    /// Acquisition number, bumped only on Renderer `Locked`. `#[serde(skip)]` like `requested`.
-    /// A delayed release names it, so a lock that ended while the timer slept is not the one
-    /// released (ADR-0190). PAM answers are bound by their conversation's serial instead.
-    #[serde(skip)]
-    pub acquisition: u64,
 }
 
 /// `mantle.lock.fingerprint` while its conversation runs (ADR-0382).

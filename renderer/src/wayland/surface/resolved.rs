@@ -343,8 +343,9 @@ mod tests {
         );
         assert!(app.blur_supported);
         let qh = app.queue_handle.clone();
+        let lock = |id| shared::SetSessionLock { locked: true, id };
         // Stage blur before configure, then deny lock via `finished`.
-        app.set_session_lock(&qh, true);
+        app.set_session_lock(&qh, lock(1));
         assert_eq!(app.surfaces[0].map_state, MapState::AwaitingConfigure);
         app.apply_resolved_surface_state();
         let (wl_1, fx_1) = ids(&app, 0);
@@ -355,14 +356,18 @@ mod tests {
         queue.roundtrip(&mut app).unwrap();
         assert_eq!((mock.commits_for(wl_1), mock.blur_regions_for(fx_1).len()), (0, 1));
         assert!(app.session_lock.is_none() && app.surfaces[0].map_state == MapState::Unmapped);
-        // Same on direct unconfigured unlock, followed by relock.
-        app.set_session_lock(&qh, true);
+        // Same on an unlock granted before any configure, followed by relock.
+        app.set_session_lock(&qh, lock(2));
         app.apply_resolved_surface_state();
         let (wl_2, fx_2) = ids(&app, 0);
-        app.set_session_lock(&qh, false);
+        queue.roundtrip(&mut app).unwrap();
+        mock.send_lock_locked();
+        queue.roundtrip(&mut app).unwrap();
+        app.set_session_lock(&qh, shared::SetSessionLock { locked: false, id: 2 });
+        assert!(app.session_lock.is_none(), "the granted lock is released");
         queue.roundtrip(&mut app).unwrap();
         assert_eq!((mock.commits_for(wl_2), mock.blur_regions_for(fx_2).len()), (0, 1));
-        app.set_session_lock(&qh, true);
+        app.set_session_lock(&qh, lock(3));
         assert_eq!(app.surfaces[0].map_state, MapState::AwaitingConfigure);
         assert!(app.surfaces[0].role.wl_surface().is_some());
     }
@@ -411,15 +416,18 @@ mod tests {
         assert_ne!(mock.blur_regions_for(pfx).last(), Some(&0));
         // Mapped lock: unlock commits blur clear, then relock starts fresh unconfigured.
         let lock_idx = app.surfaces.iter().position(|s| s.surface_id == "lock@TEST").unwrap();
-        app.set_session_lock(&qh, true);
+        app.set_session_lock(&qh, shared::SetSessionLock { locked: true, id: 1 });
         app.surfaces[lock_idx].map_state = MapState::Mapped;
         app.apply_resolved_surface_state();
         let (lwl, lfx) = ids(&app, lock_idx);
         queue.roundtrip(&mut app).unwrap();
-        app.set_session_lock(&qh, false);
+        mock.send_lock_locked();
+        queue.roundtrip(&mut app).unwrap();
+        app.set_session_lock(&qh, shared::SetSessionLock { locked: false, id: 1 });
+        assert!(app.session_lock.is_none(), "the granted lock is released");
         queue.roundtrip(&mut app).unwrap();
         assert_eq!((mock.commits_for(lwl), mock.blur_regions_for(lfx).last()), (1, Some(&0)));
-        app.set_session_lock(&qh, true);
+        app.set_session_lock(&qh, shared::SetSessionLock { locked: true, id: 2 });
         assert_eq!(app.surfaces[lock_idx].map_state, MapState::AwaitingConfigure);
         assert_ne!(app.surfaces[lock_idx].role.wl_surface().unwrap().id().protocol_id(), lwl);
     }

@@ -17,7 +17,6 @@ use super::clock::{self, ClockController};
 use super::folders::{self, FoldersController};
 use super::idle::{self, IdleController};
 use super::keyboard::{self, KeyboardController};
-use super::lock::{self, LockController};
 use super::mpris::{self, MprisController};
 use super::network::{self, NetworkController};
 use super::notifications::{self, NotificationsController};
@@ -591,9 +590,9 @@ impl Capabilities {
     }
 
     /// Routes a command to its module (ADR-0037). Optional controllers exist only after the config
-    /// reads their member (ADR-0070), so missing ones call `log_unstarted`; boot-built `lock` is
-    /// passed in, and read-only `battery`/`privacy` have no dispatch.
-    pub fn dispatch(&mut self, capability: Capability, envelope: &CommandEnvelope, lock: &LockController) {
+    /// reads their member (ADR-0070), so missing ones call `log_unstarted`; `lock` and `polkit`
+    /// are the Supervisor's, and read-only `battery`/`privacy` have no dispatch.
+    pub fn dispatch(&mut self, capability: Capability, envelope: &CommandEnvelope) {
         debug!(2; "dispatching command: {capability} {}", envelope.params.action);
         macro_rules! to {
             ($held:expr, $dispatch:path) => {
@@ -625,10 +624,9 @@ impl Capabilities {
             Capability::Audio => to!(self.audio, audio::dispatch),
             Capability::Idle => to!(self.idle, idle::dispatch),
             Capability::Clock => to!(self.clock, clock::dispatch),
-            Capability::Lock => lock::dispatch(lock, envelope),
-            // Answered in `Supervisor::dispatch_capability_command`, where its controller lives
-            // beside the state push that cancel handling needs.
-            Capability::Polkit => {}
+            // Answered in `Supervisor::dispatch_capability_command`, where their controllers live
+            // beside the state pushes and lock phase they change.
+            Capability::Lock | Capability::Polkit => {}
             // Read-only: no action enum; a named command is malformed Renderer input.
             Capability::Appearance
             | Capability::AudioLevels
@@ -686,9 +684,7 @@ mod tests {
         }
 
         fn dispatch(&mut self, capability: Capability, action: &str, arguments: Vec<serde_json::Value>) {
-            let (lock_tx, _) = unbounded_channel();
-            let lock = LockController::new(lock_tx);
-            self.capabilities.dispatch(capability, &envelope(capability, action, arguments), &lock);
+            self.capabilities.dispatch(capability, &envelope(capability, action, arguments));
         }
 
         fn push(&mut self, signal: Signal) {
@@ -784,16 +780,6 @@ mod tests {
             (&false.into(), &serde_json::Value::Null),
             "killed, not finished: {spin}"
         );
-    }
-
-    /// `lock` is boot-built and passed in, so its commands need no start.
-    #[tokio::test]
-    async fn lock_commands_go_to_the_boot_built_controller() {
-        let (mut shell, _bus) = shell().await;
-        let (lock_tx, mut locks) = unbounded_channel();
-        let lock = LockController::new(lock_tx);
-        shell.capabilities.dispatch(Capability::Lock, &envelope(Capability::Lock, "lock", vec![]), &lock);
-        assert_eq!(locks.try_recv().ok(), Some(shared::SetSessionLock { locked: true }));
     }
 
     const MAC: &str = "AA:AA:AA:AA:AA:AA";

@@ -4,11 +4,13 @@ pub use shared::state::lock::LockState;
 /// Events from Lua `lock()`, the PAM worker, or the Renderer, all applied by pure [`apply`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LockEvent {
-    /// `lock.lock()` reached `lock::dispatch`; `SetSessionLock` is on its way out.
+    /// A lock was asked for: `lock.lock()`, logind's `Lock`, or a sleep.
     LockRequested,
     /// Verdict of the running conversation (ADR-0381), checked against its serial by
     /// `LockController::hear`.
     Authenticated(shared::PamOutcome),
+    /// A lock asked for during the unlock animation keeps the session locked (ADR-0190).
+    ReleaseCancelled,
     /// Renderer report of the lock outcome.
     Reported(shared::LockOutcome),
     /// The `ext_session_lock_v1` holder died without a report (ADR-0058 decision 4). The compositor
@@ -21,10 +23,8 @@ pub enum LockEvent {
 pub fn apply(state: &mut LockState, event: LockEvent) {
     match event {
         // An in-place reload must not retain the old config's refusal reason (ADR-0052 decision 3).
-        LockEvent::LockRequested => {
-            state.requested = true;
-            state.error.clear();
-        }
+        LockEvent::LockRequested => state.error.clear(),
+        LockEvent::ReleaseCancelled => state.unlocking = false,
         LockEvent::Authenticated(shared::PamOutcome::Success) => {
             state.authenticating = false;
             state.error.clear();
@@ -42,21 +42,17 @@ pub fn apply(state: &mut LockState, event: LockEvent) {
             }
             state.error = error_for_outcome(&outcome);
         }
-        // Only confirmed locks advance acquisition, invalidating answers for the prior lock.
         LockEvent::Reported(shared::LockOutcome::Locked) => {
             state.active = true;
-            state.requested = false;
             state.authenticating = false;
             state.attempts = 0;
             state.error.clear();
             // A fresh lock is not a lock being left: an idle timer can lock again while the last
             // unlock's animation is still playing, and the new screen must come up locked.
             state.unlocking = false;
-            state.acquisition += 1;
         }
         // Nothing was taken or protected (ADR-0052 decision 3).
         LockEvent::Reported(shared::LockOutcome::Refused(reason)) => {
-            state.requested = false;
             state.authenticating = false;
             // A refusal after Success (renderer never granted the lock) leaves nothing to exit.
             state.unlocking = false;
@@ -66,50 +62,19 @@ pub fn apply(state: &mut LockState, event: LockEvent) {
         // lock surfaces are gone (ADR-0052 decision 4). Keep `attempts`.
         LockEvent::Reported(shared::LockOutcome::Finished | shared::LockOutcome::Unlocked) => {
             state.active = false;
-            state.requested = false;
             state.authenticating = false;
             state.error.clear();
             // The lock is off the glass, so there is nothing left to animate out of.
             state.unlocking = false;
         }
-        // Clear `active` so a replacement can re-acquire (`lock` drops requests while active), and
-        // clear `authenticating`; keep acquisition and error.
+        // Nothing of ours is on the glass and no answer can apply; keep the error.
         LockEvent::RendererLost => {
             state.active = false;
-            state.requested = false;
             state.authenticating = false;
             // The animating screen died with its Renderer; left true, the replacement's lock screen
             // would draw permanently mid-exit. `LockRequested` does not clear it either.
             state.unlocking = false;
         }
-    }
-}
-
-/// Whether a release scheduled for `acquisition` still applies (ADR-0190). Pure so the stale-timer
-/// case can be checked without sleeping: the task re-reads exactly this before it sends.
-pub fn releases(state: &LockState, acquisition: u64) -> bool {
-    state.acquisition == acquisition && state.unlocking
-}
-
-/// What [`shared::LockOutcome`] says about the compositor's lock, distinct from [`apply`]
-/// (ADR-0060). `LockState.active` means this shell holds it, but the compositor lock outlives
-/// that: `RendererLost` clears `active` while the session stays locked. A restarted Supervisor
-/// reads this outcome.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionLock {
-    Taken,
-    Released,
-    Unchanged,
-}
-
-/// Exhaustive mapping: every new [`shared::LockOutcome`] must decide whether the session is locked,
-/// rather than defaulting to [`SessionLock::Unchanged`].
-pub fn compositor_lock_change(outcome: &shared::LockOutcome) -> SessionLock {
-    match outcome {
-        shared::LockOutcome::Locked => SessionLock::Taken,
-        shared::LockOutcome::Unlocked | shared::LockOutcome::Finished => SessionLock::Released,
-        // A refusal took and released nothing; preserve an earlier generation's marker.
-        shared::LockOutcome::Refused(_) => SessionLock::Unchanged,
     }
 }
 
@@ -148,29 +113,14 @@ pub(crate) fn error_for_outcome(outcome: &shared::PamOutcome) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_the_compositor_confirming_a_lock_sets_the_marker_and_only_a_release_clears_it() {
-        // A refusal never took a lock, so it must leave whatever the marker already said alone.
-        assert_eq!(compositor_lock_change(&shared::LockOutcome::Locked), SessionLock::Taken);
-        assert_eq!(compositor_lock_change(&shared::LockOutcome::Unlocked), SessionLock::Released);
-        assert_eq!(compositor_lock_change(&shared::LockOutcome::Finished), SessionLock::Released);
-        assert_eq!(
-            compositor_lock_change(&shared::LockOutcome::Refused("no lock node".into())),
-            SessionLock::Unchanged
-        );
-    }
-
     /// A state mid-session with one failure already recorded, so a transition's effect on
-    /// `attempts`/`error` is visible against the default. `acquisition` is non-zero for the same
-    /// reason: a transition that renumbered the lock would otherwise look like one that didn't.
+    /// `attempts`/`error` is visible against the default.
     fn locked_with_one_failure() -> LockState {
         LockState {
             active: true,
             authenticating: true,
             attempts: 1,
             error: "authentication failed".to_string(),
-            requested: false,
-            acquisition: 4,
             prompt: None,
             messages: Vec::new(),
             fingerprint: None,
@@ -186,14 +136,10 @@ mod tests {
 
         apply(&mut state, LockEvent::RendererLost);
 
-        // LockController::lock refuses while active, so the replacement's re-acquisition needs it cleared (ADR-0058 decision 4).
         assert!(!state.active, "the lock object died with the process that held it");
-        assert!(!state.requested, "a request nothing will answer must not stay pending forever");
         // A stranded authenticating flag would refuse every future attempt via may_authenticate.
         assert!(!state.authenticating, "the conversation's answer can no longer be applied, so its slot must be free");
         assert!(!state.unlocking, "the replacement's lock screen must take a password again");
-        // Only a confirmed Locked moves acquisition; bumping here would number a lock never taken.
-        assert_eq!(state.acquisition, 4);
     }
 
     /// A worker that will not start is not a wrong password. Counting it spends an allowance the
@@ -220,7 +166,7 @@ mod tests {
         apply(&mut state, LockEvent::LockRequested);
         assert_eq!(
             state,
-            LockState { requested: true, ..LockState::default() },
+            LockState::default(),
             "a fresh lock() must not show the last attempt's reason, and must not claim active before the Renderer reports it"
         );
     }
@@ -230,10 +176,6 @@ mod tests {
         assert!(
             !may_authenticate(&LockState::default()),
             "an unlocked session must not be a PAM oracle any config can drive from a bar textfield"
-        );
-        assert!(
-            !may_authenticate(&LockState { requested: true, ..LockState::default() }),
-            "an unconfirmed request is not a lock screen on the glass yet"
         );
         assert!(may_authenticate(&LockState { active: true, ..LockState::default() }));
         assert!(
@@ -257,8 +199,6 @@ mod tests {
                 authenticating: false,
                 attempts: 0,
                 error: String::new(),
-                requested: false,
-                acquisition: 1,
                 prompt: None,
                 messages: Vec::new(),
                 fingerprint: None,
@@ -278,8 +218,6 @@ mod tests {
                 authenticating: false,
                 attempts: 0,
                 error: "no lock node is declared".to_string(),
-                requested: false,
-                acquisition: 0,
                 prompt: None,
                 messages: Vec::new(),
                 fingerprint: None,
@@ -299,8 +237,6 @@ mod tests {
                 authenticating: false,
                 attempts: 1,
                 error: "authentication failed".to_string(),
-                requested: false,
-                acquisition: 0,
                 prompt: None,
                 messages: Vec::new(),
                 fingerprint: None,
@@ -325,8 +261,6 @@ mod tests {
                 authenticating: false,
                 attempts: 1,
                 error: String::new(),
-                requested: false,
-                acquisition: 4,
                 prompt: None,
                 messages: Vec::new(),
                 fingerprint: None,
@@ -367,30 +301,16 @@ mod tests {
         apply(&mut state, LockEvent::Reported(shared::LockOutcome::Refused("never granted".to_string())));
         assert!(may_authenticate(&state));
 
+        // A lock asked for during the animation keeps the lock up, and the screen locked.
+        let mut state = locked_with_one_failure();
+        apply(&mut state, LockEvent::Authenticated(shared::PamOutcome::Success));
+        apply(&mut state, LockEvent::ReleaseCancelled);
+        assert!(state.active && may_authenticate(&state), "{state:?}");
+
         // A wrong password does not open it.
         let mut state = locked_with_one_failure();
         apply(&mut state, LockEvent::Authenticated(shared::PamOutcome::AuthFailed));
         assert!(!state.unlocking);
-    }
-
-    /// ADR-0190, and the reason the delayed release names its acquisition: a lock that has already
-    /// ended must not be released by the timer belonging to the one before it. Arriving at
-    /// ADR-0042's forbidden unlock by waiting is still arriving at it.
-    #[test]
-    fn a_release_scheduled_for_one_lock_does_not_apply_to_the_next() {
-        let mut state = locked_with_one_failure();
-        let authenticated = state.acquisition;
-        apply(&mut state, LockEvent::Authenticated(shared::PamOutcome::Success));
-        assert!(releases(&state, authenticated), "the lock the password answered is still the one to release");
-
-        // That lock ends and another takes its place while the timer is still sleeping.
-        apply(&mut state, LockEvent::Reported(shared::LockOutcome::Finished));
-        apply(&mut state, LockEvent::Reported(shared::LockOutcome::Locked));
-        assert!(
-            !releases(&state, authenticated),
-            "a lock nobody authenticated for must not be opened by the last lock's timer"
-        );
-        assert!(!releases(&state, state.acquisition), "and not by its own number either, with no password given");
     }
 
     #[test]
@@ -405,8 +325,6 @@ mod tests {
                     authenticating: false,
                     attempts: 1,
                     error: String::new(),
-                    requested: false,
-                    acquisition: 4,
                     prompt: None,
                     messages: Vec::new(),
                     fingerprint: None,

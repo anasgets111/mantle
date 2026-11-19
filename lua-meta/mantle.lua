@@ -718,7 +718,7 @@
 ---@field fingerprint? FingerprintState The fingerprint conversation beside the password one (ADR-0382), or `nil` while none runs: no `mantle-fingerprint` stack, or it ended without a match. A password submit and the next lock start it again. `prompt`, `messages`, `attempts` and `error` stay the password's.
 ---@field messages PamNotice[] PAM's info and error lines, oldest first, at most 8. Cleared by the next answer and when the lock ends.
 ---@field prompt? PamPrompt PAM's pending question (ADR-0381), or `nil` while it owes nothing.
----@field unlocking boolean PAM said yes and the lock is still up: the window for an out-animation (ADR-0190).
+---@field unlocking boolean PAM said yes and the lock is still up: the window for an out-animation (ADR-0190). Turns `false` once the compositor confirms the unlock, or when a lock asked for during the window keeps the session locked.
 
 ---@class PolkitState
 ---`mantle.polkit`'s payload (ADR-0114). Every other field is empty while `active` is false.

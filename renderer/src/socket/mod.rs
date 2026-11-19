@@ -110,10 +110,10 @@ fn supervisor_state(proc_root: &Path, pid: i32) -> String {
 }
 
 /// The kinds whose loss is safe, so one that fails to decode is skipped rather than ending the
-/// connection, which respawns the Renderer to be sent the same frame again (#63). `SetSessionLock`
-/// is [`next_frame`]'s own case. Every other kind ends it: `IdleEvent`, which a config can lock
-/// from, and an unknown kind, which the wire-shape test in `shared::frame` keeps out of a matching
-/// protocol version.
+/// connection, which respawns the Renderer to be sent the same frame again (#63). Every other kind
+/// ends it: `SetSessionLock`, whose guess could release the wrong lock or none, so the Supervisor
+/// retakes it on the replacement instead; `IdleEvent`, which a config can lock from; and an unknown
+/// kind, which the wire-shape test in `shared::frame` keeps out of a matching protocol version.
 const SKIPPABLE: &[&str] = &[
     "StateSnapshot",
     "Reevaluate",
@@ -131,31 +131,13 @@ const SKIPPABLE: &[&str] = &[
 /// scrubbed on return, before the caller's `send` can park. A kind that fails once fails on every
 /// frame, so only its first skip warns.
 ///
-/// A `SetSessionLock` that fails to decode forwards its `locked` if that alone reads (#123). If not,
-/// it is a lock while the last one forwarded was not (`asked`): ending the connection would respawn
-/// into the same frame with the first lock never taken. Once a lock was asked for, it ends the
-/// connection, since a lock forced over an unlock would leave the prompt frozen; the replacement
-/// retakes the lock with a fresh prompt. If every unlock is unreadable too, each correct password
-/// costs a respawn and the session stays locked until a VT switch; the wire-shape test keeps that
-/// skew out of one protocol version.
-async fn next_frame<R: AsyncRead + Unpin>(
-    reader: &mut R,
-    asked: bool,
-) -> Result<Option<SupervisorFrame>, FramingError> {
+async fn next_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<SupervisorFrame>, FramingError> {
     let payload = Zeroizing::new(framing::read_frame(reader).await?);
     let err = match serde_json::from_slice(&payload) {
         Ok(frame) => return Ok(Some(frame)),
         Err(err) => FramingError::from(err),
     };
     let Some(kind) = SupervisorFrame::kind_of(&payload) else { return Err(err) };
-    if kind == "SetSessionLock" {
-        // Holds no secret, so this unscrubbed copy is safe.
-        let read =
-            serde_json::from_slice::<serde_json::Value>(&payload).ok().and_then(|v| v["data"]["locked"].as_bool());
-        let Some(locked) = read.or((!asked).then_some(true)) else { return Err(err) };
-        error!("could not decode a SetSessionLock frame ({err}); reading it as locked = {locked}");
-        return Ok(Some(SupervisorFrame::SetSessionLock(shared::SetSessionLock { locked })));
-    }
     if !SKIPPABLE.contains(&kind.as_str()) {
         return Err(err);
     }
@@ -183,13 +165,9 @@ async fn pump<R, W>(
     W: AsyncWrite + Unpin,
 {
     let reader = async {
-        let mut asked = false;
         loop {
-            match next_frame(read_half, asked).await {
+            match next_frame(read_half).await {
                 Ok(Some(frame)) => {
-                    if let SupervisorFrame::SetSessionLock(lock) = &frame {
-                        asked = lock.locked;
-                    }
                     // Awaited, so a Supervisor pushing faster than the Wayland thread drains parks
                     // this reader rather than growing the queue. `Sender::send` is cancel-safe --
                     // if the `select!` below drops this future, the frame was not delivered and
@@ -364,23 +342,10 @@ mod tests {
     #[tokio::test]
     async fn pump_forwards_a_valid_stream_unchanged() {
         let theme = br#"{"kind":"IconTheme","data":"Adwaita"}"#;
-        let unlock = br#"{"kind":"SetSessionLock","data":{"locked":false}}"#;
+        let unlock = br#"{"kind":"SetSessionLock","data":{"locked":false,"id":7}}"#;
         let frames = forwarded_after(&[theme, unlock]).await;
-        let unlock = SupervisorFrame::SetSessionLock(shared::SetSessionLock { locked: false });
+        let unlock = SupervisorFrame::SetSessionLock(shared::SetSessionLock { locked: false, id: 7 });
         assert_eq!(frames, [SupervisorFrame::IconTheme(Some("Adwaita".into())), unlock, SupervisorFrame::Reevaluate]);
-    }
-
-    #[tokio::test]
-    async fn pump_reads_an_unreadable_lock_request_as_a_lock_but_never_forces_one_over_a_lock() {
-        let set = |locked| SupervisorFrame::SetSessionLock(shared::SetSessionLock { locked });
-        let bad = &br#"{"kind":"SetSessionLock","data":{"locked":"no"}}"#[..];
-        let frames = forwarded_after(&[bad]).await;
-        assert_eq!(frames, [set(true), SupervisorFrame::Reevaluate], "a lost first lock leaves the session open");
-        // The second is the unlock after a correct password: forced to a lock, it would freeze the
-        // prompt. Ending the connection retakes the lock with a fresh one.
-        assert_eq!(forwarded_after(&[bad, bad]).await, [set(true)]);
-        let loose = br#"{"kind":"SetSessionLock","data":{"locked":false,"locked":false}}"#;
-        assert_eq!(forwarded_after(&[bad, loose]).await, [set(true), set(false), SupervisorFrame::Reevaluate]);
     }
 
     #[tokio::test]
@@ -392,6 +357,11 @@ mod tests {
             ("a missing kind", br#"{"data":{"locked":true}}"#),
             ("a kind that is not a string", br#"{"kind":3,"data":null}"#),
             ("a repeated kind", br#"{"kind":"IconTheme","kind":"SetSessionLock","data":7}"#),
+            // Never guessed: a lock without its id could release a lock nobody answered for.
+            ("an unlock without an id", br#"{"kind":"SetSessionLock","data":{"locked":false}}"#),
+            ("a lock without an id", br#"{"kind":"SetSessionLock","data":{"locked":true}}"#),
+            ("a lock id that is not a number", br#"{"kind":"SetSessionLock","data":{"locked":false,"id":"7"}}"#),
+            ("an unreadable lock", br#"{"kind":"SetSessionLock","data":{"locked":"no","id":7}}"#),
         ] {
             assert_eq!(forwarded_after(&[payload]).await, [], "{why} must end the connection");
         }
