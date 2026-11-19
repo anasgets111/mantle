@@ -301,8 +301,13 @@ impl Prop for Path {
 
 /// A surface's string field: `id`, `output`, `namespace`, `parent`, `title`, `app_id`. Absent, the
 /// row's literal default, where `{id}` stands for the surface's `id`, or an error when it is
-/// required. Not capped like [`Text`]: these name things, and a name is compared whole.
+/// required. Several reach Wayland requests, whose generated code panics on a NUL and whose
+/// messages stop at 4096 bytes, so either is refused; a live `title` that breaks one reads its
+/// default, as any refused signal value does.
 pub(crate) struct Name;
+
+/// Under Wayland's 4096-byte message, even after `to_string_lossy` triples invalid UTF-8.
+pub(crate) const MAX_NAME_BYTES: usize = 1024;
 
 spelled!(Name => String::lua());
 
@@ -314,7 +319,13 @@ impl Prop for Name {
                 Err(invalid(row.name, format!("surface node requires `{}`", row.name)))
             }
             None => Ok(literal(row).to_string()),
-            Some(Value::String(s)) => Ok(s.to_string_lossy()),
+            Some(Value::String(s)) => match s.as_bytes().len() {
+                _ if s.as_bytes().contains(&0) => Err(invalid(row.name, "must not contain a NUL byte")),
+                len if len > MAX_NAME_BYTES => {
+                    Err(invalid(row.name, format!("is {len} bytes, past the {MAX_NAME_BYTES}-byte cap")))
+                }
+                _ => Ok(s.to_string_lossy()),
+            },
             Some(other) => Err(invalid(row.name, format!("expected a string, got {}", preview_for_error(other)))),
         }
     }

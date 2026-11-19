@@ -571,4 +571,25 @@ mod tests {
         assert!(is_logged(&app), "a new visible run logs once again");
         assert_eq!(app.surfaces[0].map_state, MapState::Unmapped);
     }
+
+    #[test]
+    fn a_live_title_with_a_nul_reads_the_default_and_keeps_the_window() {
+        let (mut app, _dir, _queue, _mock) = App::test_app_with_wire(
+            r#"
+            title = state("title", "ok")
+            return window { id = "w", title = title }
+            "#,
+        );
+        let title = |app: &App| match &app.surfaces[0].role {
+            TrackedRole::Window { spec, window, .. } => (spec.title.clone(), window.is_some()),
+            _ => panic!("a window"),
+        };
+        app.apply_resolved_surface_state();
+        assert_eq!(title(&app), ("ok".to_string(), true));
+        app.client.lua().load(r#"title:set("a\0b")"#).exec().unwrap();
+        assert!(app.client.re_resolve_if_dirty());
+        app.apply_resolved_surface_state();
+        assert_eq!(app.surfaces.len(), 1);
+        assert_eq!(title(&app), (String::new(), true), "a refused live value reads the default, as for any property");
+    }
 }

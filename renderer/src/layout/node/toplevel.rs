@@ -771,4 +771,23 @@ mod tests {
         assert_eq!(spec.app_id, "mantle-w", "the same default an absent `app_id` takes");
         assert_eq!((spec.min_size, spec.max_size), (None, None), "absent means the request is simply not sent");
     }
+
+    #[test]
+    fn a_window_name_with_a_nul_or_past_the_cap_is_refused() {
+        let lua = mlua::Lua::new();
+        let long = "x".repeat(super::super::prop::MAX_NAME_BYTES + 1);
+        let fields = [
+            (r#"title = "a\0b""#, "`title`", "NUL"),
+            (r#"app_id = "c\0d""#, "`app_id`", "NUL"),
+            (&*format!(r#"title = "{long}""#), "`title`", "1025 bytes"),
+        ];
+        for (field, name, why) in fields {
+            let src = format!(r#"return {{ kind = "window", id = "w", {field} }}"#);
+            let err = window_spec(&props_from_src(&lua, &src)).unwrap_err().to_string();
+            assert!(err.contains(name) && err.contains(why), "{err}");
+        }
+        let edge = "x".repeat(super::super::prop::MAX_NAME_BYTES);
+        let src = format!(r#"return {{ kind = "window", id = "w", title = "{edge}" }}"#);
+        assert_eq!(window_spec(&props_from_src(&lua, &src)).unwrap().title, edge, "the cap itself is accepted");
+    }
 }

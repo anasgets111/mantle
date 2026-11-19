@@ -693,6 +693,11 @@ mod tests {
                 &["shell.lua:2: window: invalid value for `width`", "got string \"wide\"", "(on `w`)"],
             ),
             (
+                "window title with a NUL",
+                &[("shell.lua", "\nreturn window { id = \"w\", title = \"a\\0b\" }\n")],
+                &["shell.lua:2: window: invalid value for `title`", "must not contain a NUL byte"],
+            ),
+            (
                 "bad popup value",
                 &[(
                     "shell.lua",
