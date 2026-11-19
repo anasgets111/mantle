@@ -59,6 +59,10 @@ pub(crate) struct Supervisor {
     pub(crate) renderer: Renderer,
     pub(crate) restart_brake: RestartBrake,
     pub(crate) respawn_at: Option<std::time::Instant>,
+    /// When the authoritative child was spawned, until it reports `CanLock`; for the startup bound.
+    pub(crate) spawned_at: Option<Instant>,
+    /// The generation killed for the lock, until its exit replaces it.
+    pub(crate) killed: Option<u32>,
     /// Set only by [`Supervisor::replace_departed_renderer`]; distinguishes shutdown reaping from
     /// an already-gone Renderer.
     pub(crate) renderer_departed: bool,
@@ -136,6 +140,8 @@ impl Supervisor {
             renderer,
             restart_brake: RestartBrake::default(),
             respawn_at: None,
+            spawned_at: Some(Instant::now()),
+            killed: None,
             renderer_departed: false,
             exit_code: 0,
             lock_phase,
@@ -340,8 +346,12 @@ impl Supervisor {
     /// if it is the authoritative child and not yet reaped. Only this loop reaps it, so an unreaped
     /// pid is still this Renderer's and its group cannot have been reissued (#105).
     pub(crate) fn kill_hung_up(&self, generation_id: u32) {
+        self.kill_renderer(generation_id, "is still running after the hangup");
+    }
+
+    pub(crate) fn kill_renderer(&self, generation_id: u32, why: &str) {
         if let Some(pgid) = self.hung_up_group(generation_id) {
-            warn!("generation {generation_id} (pid {pgid}) is still running after the hangup; killing it");
+            warn!("generation {generation_id} (pid {pgid}) {why}; killing it");
             let _ = process::signal_group_best_effort(pgid, nix::sys::signal::Signal::SIGKILL);
         }
     }
@@ -374,6 +384,7 @@ impl Supervisor {
                 // Unknown until it says: its config may have changed since the last one read it.
                 self.authoritative = Authoritative { generation_id: replacement_generation_id, child, can_lock: None };
                 self.renderer_departed = false;
+                self.spawned_at = Some(Instant::now());
                 notice!("spawned generation {replacement_generation_id} to replace it");
                 self.capabilities.forget_departed_requests(departed);
                 // Otherwise the dead id keeps its idle fan-out entry (a failed push per idle

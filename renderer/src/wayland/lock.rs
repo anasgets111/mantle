@@ -3,6 +3,8 @@
 //! `surface`.
 
 use shared::{SetSessionLock, debug, error, info, warn};
+use wayland_client::Dispatch;
+use wayland_client::protocol::wl_callback;
 
 use super::*;
 use crate::layout::secure_submit::tree_can_authenticate;
@@ -189,15 +191,17 @@ impl App {
                     self.refuse_lock(command.id, &reason);
                 }
             },
-            LockCommand::Release => self.release_session_lock(),
+            LockCommand::Release => self.release_session_lock(qh),
         }
     }
 
     /// The only `unlock_and_destroy` path (ADR-0042, ADR-0052): `SetSessionLock { locked: false }`
     /// for the granted lock, sent by the Supervisor only after `PamOutcome::Success` answered that
     /// lock. No shutdown, `finished`, or reload shortcut; SCTK `Drop` deliberately leaves a dying
-    /// locked Renderer locked.
-    fn release_session_lock(&mut self) {
+    /// locked Renderer locked. `Unlocked` waits for a `wl_display.sync` queued behind the request:
+    /// its `done` proves the compositor processed it, and normal dispatch delivers it, so a
+    /// compositor that never answers stalls nothing but this report.
+    fn release_session_lock(&mut self, qh: &QueueHandle<App>) {
         let Some(lock) = self.session_lock.take() else {
             return;
         };
@@ -208,8 +212,7 @@ impl App {
         self.teardown_lock_surfaces();
         // The in-place reload may now reshape the lock screen.
         self.client.set_session_locked(false);
-        info!("the session lock was released");
-        self.report_lock(self.session_lock_id, LockOutcome::Unlocked);
+        self.conn.display().sync(qh, self.session_lock_id);
     }
 
     /// Logs, rescues, and reports a refused lock (ADR-0052 decision 4). Refusal leaves the normal
@@ -227,6 +230,23 @@ impl App {
     fn report_lock(&mut self, id: u64, outcome: LockOutcome) {
         if let Err(e) = self.outbound_tx.send(RendererFrame::LockReport(LockReport { id, outcome })) {
             error!("failed to queue a LockReport for the socket thread: {e}");
+        }
+    }
+}
+
+/// The `wl_display.sync` that [`App::release_session_lock`] queues behind `unlock_and_destroy`.
+impl Dispatch<wl_callback::WlCallback, u64> for App {
+    fn event(
+        app: &mut Self,
+        _: &wl_callback::WlCallback,
+        event: wl_callback::Event,
+        id: &u64,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_callback::Event::Done { .. } = event {
+            info!("the session lock was released");
+            app.report_lock(*id, LockOutcome::Unlocked);
         }
     }
 }
@@ -370,20 +390,47 @@ mod tests {
     /// the tree the snapshots make, not the one resolved before them (finding 7).
     #[test]
     fn a_lock_judges_the_tree_the_snapshots_drained_before_it_make() {
-        let (mut app, _dir, _queue, _mock) = App::test_app_with_wire(
+        let (mut app, _dir, _queue, mock) = App::test_app_with_wire(
             r#"return lock { id = "lock", child = mantle.lock:map(function(lock)
                 if lock.active then return textfield { secure_submit = { capability = "lock", action = "authenticate" } } end
                 return rect {}
             end, rect {}) }"#,
         );
-        crate::socket::client::tests::push(&app.client, "lock", 1, serde_json::json!({ "active": true }));
         let qh = app.queue_handle.clone();
         app.set_session_lock(&qh, SetSessionLock { locked: true, id: 1 });
+        let refused = LockOutcome::Refused(LOCK_CANNOT_AUTHENTICATE.into());
+        assert_eq!(mock.lock_reports(), [LockReport { id: 1, outcome: refused }], "nothing on it can authenticate");
+        crate::socket::client::tests::push(&app.client, "lock", 1, serde_json::json!({ "active": true }));
+        app.set_session_lock(&qh, SetSessionLock { locked: true, id: 2 });
         assert!(app.session_lock.is_some(), "the replayed state's textfield can authenticate");
         assert!(!app.client.re_resolve_if_dirty(), "the lock's pass leaves nothing to resolve again");
         let turn = crate::wayland::main_loop::resolve_turn(&mut app);
         assert_eq!(turn, (true, None), "so the loop's turn repaints every instance from it");
         assert_eq!(crate::wayland::main_loop::resolve_turn(&mut app), (false, None), "once");
+    }
+
+    /// `Unlocked` is the Supervisor's proof the session is open, so it waits for the compositor to
+    /// answer a sync queued behind `unlock_and_destroy` (opcode 2 on the lock object).
+    #[test]
+    fn an_unlock_is_reported_once_the_compositor_has_processed_it() {
+        let (mut app, _dir, mut queue, mock) = App::test_app_with_wire(
+            r#"return lock { id = "lock", child = textfield { secure_submit = { capability = "lock", action = "authenticate" } } }"#,
+        );
+        let qh = app.queue_handle.clone();
+        app.set_session_lock(&qh, SetSessionLock { locked: true, id: 4 });
+        queue.roundtrip(&mut app).unwrap();
+        mock.send_lock_locked();
+        queue.roundtrip(&mut app).unwrap();
+        assert_eq!(mock.lock_reports(), [LockReport { id: 4, outcome: LockOutcome::Locked }]);
+        app.set_session_lock(&qh, SetSessionLock { locked: false, id: 4 });
+        assert_eq!(mock.lock_reports(), [], "nothing has reached the compositor yet");
+        queue.roundtrip(&mut app).unwrap();
+        assert_eq!(mock.lock_reports(), [LockReport { id: 4, outcome: LockOutcome::Unlocked }]);
+        let lock = mock.lock_object();
+        let requests = mock.requests.lock().unwrap();
+        let unlock = requests.iter().position(|&(id, op, _)| (id, op) == (lock, 2)).expect("unlock_and_destroy sent");
+        let syncs = requests[unlock..].iter().filter(|&&(id, op, _)| (id, op) == (1, 0)).count();
+        assert_eq!(syncs, 2, "the release's own sync follows it, then the test's roundtrip");
     }
 
     #[test]

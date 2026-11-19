@@ -190,20 +190,7 @@ pub fn run(
                 }
                 // Service immediately: lock declaration is tracked-surface state, not a
                 // capability-push result (ADR-0052 decision 3), and deferring weakens "secure now".
-                FrameOutcome::SetSessionLock(command) => {
-                    // ponytail: SCTK 0.21 gates `unlock` on a dispatched `locked`; drop the round-trip once it doesn't.
-                    // Without it, `unlock` can no-op and `Drop` sends a forbidden `destroy` (ADR-0052). Acquire needs no round-trip because
-                    // this thread owns its inputs. Do not return on a failed round-trip: that would
-                    // strand the session locked; trying the unlock costs at most one failed flush.
-                    if !command.locked
-                        && let Err(err) = event_queue.roundtrip(&mut app)
-                    {
-                        warn!(
-                            "the round trip before an unlock failed ({err}); attempting the unlock anyway rather than exiting with the session locked"
-                        );
-                    }
-                    app.set_session_lock(&qh, command);
-                }
+                FrameOutcome::SetSessionLock(command) => app.set_session_lock(&qh, command),
             }
             if app.exit {
                 break;

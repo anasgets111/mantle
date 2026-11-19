@@ -17,6 +17,8 @@ pub(in crate::wayland) struct MockWayland {
     rects: RectLog,
     lock_id: Arc<AtomicU32>,
     writer: Mutex<UnixStream>,
+    /// Every frame the app queued for the Supervisor.
+    outbound: Mutex<tokio::sync::mpsc::UnboundedReceiver<RendererFrame>>,
 }
 
 impl MockWayland {
@@ -51,7 +53,18 @@ impl MockWayland {
         self.send(self.lock_object(), 0, &[]);
     }
 
-    fn lock_object(&self) -> u32 {
+    /// The `LockReport`s queued since the last call.
+    pub(in crate::wayland) fn lock_reports(&self) -> Vec<LockReport> {
+        let mut outbound = self.outbound.lock().unwrap();
+        std::iter::from_fn(|| outbound.try_recv().ok())
+            .filter_map(|frame| match frame {
+                RendererFrame::LockReport(report) => Some(report),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub(in crate::wayland) fn lock_object(&self) -> u32 {
         let id = self.lock_id.load(Ordering::Acquire);
         assert_ne!(id, 0, "no lock was asked for");
         id
@@ -159,11 +172,13 @@ impl App {
         with_wire: bool,
     ) -> (Self, tempfile::TempDir, EventQueue<App>, Option<MockWayland>) {
         let (client_stream, server_stream) = UnixStream::pair().unwrap();
+        let (outbound_tx, outbound) = tokio::sync::mpsc::unbounded_channel();
         let mock = with_wire.then(|| MockWayland {
             requests: Arc::default(),
             rects: Arc::default(),
             lock_id: Arc::default(),
             writer: Mutex::new(server_stream.try_clone().unwrap()),
+            outbound: Mutex::new(outbound),
         });
         spawn_mock_wayland_server(
             server_stream,
@@ -180,7 +195,6 @@ impl App {
         );
         let waker = crate::wake::Waker::new().unwrap();
         let (dir, _path, client, _rx) = crate::socket::client::tests::client_for(source);
-        let (outbound_tx, _app_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(conn, &globals, &qh, mandatory, client, ShapingHandle::spawn(), outbound_tx, 0, waker);
 
         if mock.is_some() {

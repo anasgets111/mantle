@@ -20,10 +20,12 @@ use crate::supervisor::Supervisor;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LockPhase {
     Idle,
-    /// `Lock{id}` is queued to `generation`. `debt` if the compositor may already hold a lock.
+    /// `Lock{id}` was queued to `generation` at `since`. `debt` if the compositor may already hold
+    /// a lock.
     Acquiring {
         generation: u32,
         id: u64,
+        since: Instant,
         debt: Option<Debt>,
     },
     /// `generation` reported `Locked{id}`.
@@ -46,8 +48,8 @@ pub(crate) enum Release {
     None,
     /// A correct password answered this lock; it is released at the end of the animation window.
     Scheduled(Instant),
-    /// `Unlock{id}` is queued; the lock ends on `Unlocked{id}`.
-    Sent,
+    /// `Unlock{id}` was queued at this instant; the lock ends on `Unlocked{id}`.
+    Sent(Instant),
 }
 
 /// A lock the compositor may hold, and the wait before asking again after a takeover was refused.
@@ -67,6 +69,17 @@ impl Debt {
 /// holder's disconnect. Doubling to `RESTART_COOLDOWN` keeps a config that cannot lock at one
 /// refusal per 30 s.
 const RETAKE_BACKOFF: Duration = Duration::from_secs(1);
+
+/// Watchdog bounds on a Renderer that owes the lock an answer; past one, it is killed and its exit
+/// leaves the lock to a replacement. Spawn to first `CanLock`, only while a lock or a sleep waits:
+/// `HANDSHAKE_TIMEOUT` (10 s) plus two 2 s `LAYOUT_PASS_CAP` passes (startup evaluation, first
+/// resolve), the rest for EGL and fonts.
+const STARTUP_BOUND: Duration = Duration::from_secs(20);
+/// `Lock` to `Locked` or `Refused`. `Lock` goes out after `CanLock`, so this is one loop turn and
+/// the compositor's wait for the lock surfaces' first frames.
+const ACQUIRE_BOUND: Duration = Duration::from_secs(10);
+/// `Unlock` to `Unlocked`: one loop turn and a sync round trip. `WEDGED_KILL_AFTER`'s 5 s.
+const RELEASE_BOUND: Duration = Duration::from_secs(5);
 
 /// Why a generation must take an unrequested lock. Causes differ in logs but both mean the
 /// compositor holds a lock with nothing of ours on it; a named enum beats an ambiguous `bool`.
@@ -115,7 +128,10 @@ impl Supervisor {
 
     fn lock_ready(&self) -> bool {
         let generation = Some(self.authoritative.generation_id);
-        !self.renderer_departed && self.hydrated == generation && self.resolved == generation
+        !self.renderer_departed
+            && self.hydrated == generation
+            && self.resolved == generation
+            && self.killed != generation
     }
 
     /// Sends what the phase owes the authoritative generation by `now`: a due release, or a lock
@@ -127,7 +143,7 @@ impl Supervisor {
         match self.lock_phase {
             LockPhase::Held { generation, id, release: Release::Scheduled(at) } if at <= now => {
                 if self.send_lock(shared::SetSessionLock { locked: false, id }) {
-                    self.lock_phase = LockPhase::Held { generation, id, release: Release::Sent };
+                    self.lock_phase = LockPhase::Held { generation, id, release: Release::Sent(now) };
                 }
             }
             LockPhase::Idle if self.lock_wanted => self.acquire(None),
@@ -138,18 +154,46 @@ impl Supervisor {
         }
     }
 
-    /// When [`Self::sync_lock`] next has something to send; `main.rs` sleeps until then.
+    /// When [`Self::lock_deadline_passed`] next has work: a send that is due, or a watchdog bound.
+    /// `main.rs` sleeps until then, so each can slip by the loop's latency.
+    // ponytail: a respawn's arm awaits idle's mutex across logind's `Inhibit`; upgrade: await off the loop.
     pub(crate) fn next_lock_deadline(&self) -> Option<Instant> {
+        if !self.lock_ready() {
+            let owed = matches!(self.lock_phase, LockPhase::Recovering { .. })
+                || self.lock_phase == LockPhase::Idle && self.lock_wanted
+                || self.sleep_waits.is_some();
+            return self.spawned_at.filter(|_| owed && !self.renderer_departed).map(|at| at + STARTUP_BOUND);
+        }
         match self.lock_phase {
-            _ if !self.lock_ready() => None,
+            LockPhase::Acquiring { since, .. } => Some(since + ACQUIRE_BOUND),
             LockPhase::Held { release: Release::Scheduled(at), .. } => Some(at),
+            LockPhase::Held { release: Release::Sent(at), .. } => Some(at + RELEASE_BOUND),
             LockPhase::Recovering { retry_at, .. } => retry_at,
-            _ => None,
+            LockPhase::Idle | LockPhase::Held { .. } => None,
         }
     }
 
-    pub(crate) fn lock_deadline_passed(&mut self) {
-        self.sync_lock(Instant::now());
+    /// Sends what is due by `now`, or kills a Renderer past a watchdog bound. Nothing more goes to
+    /// it, so no deadline stays armed; its exit moves the lock to `Recovering`.
+    pub(crate) fn lock_deadline_passed(&mut self, now: Instant) {
+        let overdue = match self.lock_phase {
+            _ if !self.lock_ready() => "report whether it can lock",
+            LockPhase::Acquiring { .. } => "answer a lock",
+            LockPhase::Held { release: Release::Sent(_), .. } => "confirm an unlock",
+            _ => return self.sync_lock(now),
+        };
+        if self.next_lock_deadline().is_some_and(|at| at <= now) {
+            self.retire(&format!("did not {overdue} in time, so the session lock cannot move"));
+        }
+    }
+
+    /// Kills the authoritative Renderer the lock waits on. Nothing more goes to it, even if it
+    /// reconnects or reports `CanLock` first; its exit moves the lock to `Recovering`.
+    fn retire(&mut self, why: &str) {
+        let generation = self.authoritative.generation_id;
+        self.killed = Some(generation);
+        self.spawned_at = None;
+        self.kill_renderer(generation, why);
     }
 
     /// Asks the authoritative generation for a new lock, writing the marker first: the compositor
@@ -165,17 +209,17 @@ impl Supervisor {
             );
         }
         if self.send_lock(shared::SetSessionLock { locked: true, id }) {
-            self.lock_phase = LockPhase::Acquiring { generation, id, debt };
+            self.lock_phase = LockPhase::Acquiring { generation, id, since: Instant::now(), debt };
         }
     }
 
-    /// Queues `command`. A refused enqueue (no connection, or a full queue, which hangs up) is not
-    /// sent: the phase stays, and the next registration's hydrate sends it.
+    /// Queues `command`. A refused enqueue (no connection, or a full queue, which hangs up) kills
+    /// the Renderer, and the phase stays for its departure to recover.
     fn send_lock(&mut self, command: shared::SetSessionLock) -> bool {
         let generation = self.authoritative.generation_id;
         let sent = send_frame_logged(&self.registry, generation, &SupervisorFrame::SetSessionLock(command));
         if !sent {
-            self.hydrated = None;
+            self.retire("could not be sent the session lock");
         }
         sent
     }
@@ -265,6 +309,7 @@ impl Supervisor {
     // ponytail: a sleep settles on the first `CanLock`, before snapshots can show the field; upgrade: after hydration.
     pub(crate) fn record_can_lock(&mut self, can_lock: bool) {
         self.resolved = Some(self.authoritative.generation_id);
+        self.spawned_at = None;
         let unknown = self.authoritative.can_lock.replace(can_lock).is_none();
         match self.sleep_waits.take_if(|_| unknown) {
             Some(locked) => self.lock_before_sleep(locked),
@@ -311,7 +356,7 @@ impl Supervisor {
         use shared::LockOutcome::{Finished, Locked, Refused, Unlocked};
         let names = |generation, id| (generation, id) == (generation_id, report.id);
         match (self.lock_phase, &report.outcome) {
-            (LockPhase::Acquiring { generation, id, debt }, Locked) if names(generation, id) => {
+            (LockPhase::Acquiring { generation, id, debt, .. }, Locked) if names(generation, id) => {
                 if let Some(debt) = debt {
                     info!("{} took the session lock over; the lock screen is back on the glass", debt.reason.subject());
                 }
@@ -319,7 +364,7 @@ impl Supervisor {
                 self.lock_wanted = false;
                 self.session_bridge.publish_locked_hint(true);
             }
-            (LockPhase::Acquiring { generation, id, debt }, Refused(reason)) if names(generation, id) => {
+            (LockPhase::Acquiring { generation, id, debt, .. }, Refused(reason)) if names(generation, id) => {
                 self.lock_wanted = false;
                 if let Some(debt) = debt {
                     // The compositor may still hold the lock, so the debt stands (ADR-0060).
@@ -340,7 +385,7 @@ impl Supervisor {
             // Finished: the compositor ended the lock itself. sway, niri and Hyprland unlock the
             // session on it, so the marker clears with it.
             (LockPhase::Held { generation, id, .. }, Finished)
-            | (LockPhase::Held { generation, id, release: Release::Sent }, Unlocked)
+            | (LockPhase::Held { generation, id, release: Release::Sent(_) }, Unlocked)
                 if names(generation, id) =>
             {
                 self.lock_phase = LockPhase::Idle;
@@ -391,6 +436,8 @@ mod tests {
     use super::*;
 
     use tokio::sync::mpsc;
+
+    use crate::generation::Renderer;
 
     use crate::capabilities::test_support::{private_bus, within};
     use crate::supervisor::tests::{
@@ -457,7 +504,7 @@ mod tests {
             (0, 1, refused()),
         ] {
             supervisor.record_lock_report(generation, shared::LockReport { id, outcome });
-            assert!(matches!(supervisor.lock_phase, LockPhase::Held { release: Release::Sent, .. }));
+            assert!(matches!(supervisor.lock_phase, LockPhase::Held { release: Release::Sent(_), .. }));
         }
         report(&mut supervisor, 1, shared::LockOutcome::Unlocked);
         assert_eq!(within(hints.recv()).await, Some(false));
@@ -545,7 +592,7 @@ mod tests {
         assert_eq!(sent(&mut frames), [], "the lock stays up through its out-animation");
         supervisor.sync_lock(at);
         assert_eq!(sent(&mut frames), [(false, id)]);
-        assert_eq!(supervisor.next_lock_deadline(), None, "sent once");
+        assert_eq!(supervisor.next_lock_deadline(), Some(at + RELEASE_BOUND), "sent once, then watched");
         assert!(supervisor.lock.snapshot().active, "active until the Renderer reports the release");
         report(&mut supervisor, id, shared::LockOutcome::Unlocked);
         assert!(!supervisor.lock.snapshot().active && !marked(dir.path()));
@@ -683,7 +730,7 @@ mod tests {
         let (mut supervisor, started, _open) = booted(&bus, dir.path()).await;
         let settles = |supervisor: &mut Supervisor| {
             let due = supervisor.next_lock_deadline().expect("a deadline is armed");
-            supervisor.sync_lock(due);
+            supervisor.lock_deadline_passed(due);
             assert!(supervisor.next_lock_deadline().is_none_or(|next| next > due), "{:?}", supervisor.lock_phase);
         };
         let mut frames = up(&mut supervisor);
@@ -693,7 +740,7 @@ mod tests {
         settles(&mut supervisor);
         assert_eq!(sent(&mut frames), [(false, id)]);
         report(&mut supervisor, id, shared::LockOutcome::Unlocked);
-        // A release whose enqueue fails waits for the next registration instead.
+        // A release whose enqueue fails keeps its phase for the departure its kill causes.
         let id = held(&mut supervisor, &mut frames);
         pam_succeeds(&mut supervisor, &started);
         drop(frames);
@@ -844,5 +891,101 @@ mod tests {
         guard.track(&supervisor.authoritative.child);
         let mut frames = up(&mut supervisor);
         assert_eq!(sent(&mut frames), [(true, 1)]);
+    }
+
+    /// A sleep before the first `CanLock` arms the startup bound, and its lock intent outlives the
+    /// delay timing out: the lock still goes out once the Renderer is up.
+    #[tokio::test]
+    async fn a_sleep_before_the_renderer_is_up_arms_its_startup_bound_and_outlives_the_delay() {
+        let bus = private_bus().await;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut supervisor, _started, _open) = booted(&bus, dir.path()).await;
+        let spawned = supervisor.spawned_at.expect("just booted");
+        assert_eq!(supervisor.next_lock_deadline(), None);
+        let (locked_tx, locked) = tokio::sync::oneshot::channel();
+        supervisor.lock_before_sleep(locked_tx);
+        drop(locked);
+        assert_eq!(supervisor.next_lock_deadline(), Some(spawned + STARTUP_BOUND));
+        let mut frames = up(&mut supervisor);
+        assert_eq!(sent(&mut frames), [(true, 1)]);
+    }
+
+    /// A lock frame that cannot be queued kills its Renderer as a missed bound does. A reconnect
+    /// or `CanLock` before it exits sends it nothing, the marker written before the enqueue
+    /// stands, and its exit leaves the lock to the replacement.
+    #[tokio::test]
+    async fn a_lock_that_cannot_be_queued_kills_its_renderer_and_goes_to_the_replacement() {
+        use std::os::unix::process::ExitStatusExt;
+        let bus = private_bus().await;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut supervisor, _started, _open) = booted(&bus, dir.path()).await;
+        let mut guard = ChildGuard::default();
+        supervisor.renderer = Renderer::new(make_fake_renderer(dir.path()), dir.path(), dir.path(), None, 0, None);
+        assert!(!supervisor.respawn_renderer().await);
+        guard.track(&supervisor.authoritative.child);
+        drop(up(&mut supervisor));
+        supervisor.request_lock();
+        assert!(marked(dir.path()), "written before the enqueue, so a failed one leaves it too");
+        let mut frames = up(&mut supervisor);
+        supervisor.request_lock();
+        assert_eq!(sent(&mut frames), [], "nothing more goes to it");
+        assert_eq!(supervisor.next_lock_deadline(), None, "nor fires every turn");
+        guard.release(&supervisor.authoritative.child);
+        let status = within(supervisor.authoritative.child.wait()).await.unwrap();
+        assert_eq!(status.signal(), Some(9));
+        assert!(!supervisor.replace_departed_renderer(Ok(status)).await);
+        guard.track(&supervisor.authoritative.child);
+        let mut frames = up(&mut supervisor);
+        assert_eq!(sent(&mut frames), [(true, 2)]);
+    }
+
+    /// A Renderer that owes the lock an answer and stops giving one is killed at its bound, and the
+    /// lock goes to its replacement (finding 4): one that never says whether it can lock, never
+    /// answers a lock, or never confirms an unlock.
+    #[tokio::test]
+    async fn a_renderer_that_stops_answering_the_lock_is_killed_and_the_lock_left_to_its_replacement() {
+        use std::os::unix::process::ExitStatusExt;
+        let bus = private_bus().await;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut supervisor, started, _open) = booted(&bus, dir.path()).await;
+        let mut guard = ChildGuard::default();
+        supervisor.renderer = Renderer::new(make_fake_renderer(dir.path()), dir.path(), dir.path(), None, 0, None);
+        crash(&mut supervisor).await;
+        assert_eq!(supervisor.next_lock_deadline(), None, "a start owes nothing until a lock is");
+        supervisor.request_lock();
+        let mut connections = Vec::new();
+        for stuck in ["startup", "acquire", "release"] {
+            guard.track(&supervisor.authoritative.child);
+            let due = match stuck {
+                "startup" => supervisor.spawned_at.unwrap() + STARTUP_BOUND,
+                "acquire" => {
+                    connections.push(up(&mut supervisor));
+                    let LockPhase::Acquiring { since, .. } = supervisor.lock_phase else { panic!() };
+                    since + ACQUIRE_BOUND
+                }
+                _ => {
+                    connections.push(up(&mut supervisor));
+                    let [(true, id)] = sent(connections.last_mut().unwrap())[..] else {
+                        panic!("the owed lock is retaken")
+                    };
+                    report(&mut supervisor, id, shared::LockOutcome::Locked);
+                    pam_succeeds(&mut supervisor, &started);
+                    let LockPhase::Held { release: Release::Sent(at), .. } = supervisor.lock_phase else { panic!() };
+                    at + RELEASE_BOUND
+                }
+            };
+            assert_eq!(supervisor.next_lock_deadline(), Some(due), "{stuck}");
+            supervisor.lock_deadline_passed(due - Duration::from_millis(1));
+            assert_eq!(supervisor.next_lock_deadline(), Some(due), "{stuck}: not killed before its bound");
+            supervisor.lock_deadline_passed(due);
+            assert_eq!(supervisor.next_lock_deadline(), None, "{stuck}: nothing left to fire every turn");
+            guard.release(&supervisor.authoritative.child);
+            let status = within(supervisor.authoritative.child.wait()).await.unwrap();
+            assert_eq!(status.signal(), Some(9), "{stuck}");
+            crash(&mut supervisor).await;
+        }
+        guard.track(&supervisor.authoritative.child);
+        let mut frames = up(&mut supervisor);
+        assert_eq!(sent(&mut frames), [(true, 3)], "the session stays locked for the next Renderer");
     }
 }

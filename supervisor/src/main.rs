@@ -506,7 +506,7 @@ async fn run_supervisor(
                 // StateSnapshot/revision path: a threshold crossing is an event, not state (ADR-0032).
                 send_frame_logged(&supervisor.registry, event.generation_id, &SupervisorFrame::IdleEvent(event));
             }
-            () = lock_timer(lock_deadline) => supervisor.lock_deadline_passed(),
+            () = lock_timer(lock_deadline) => supervisor.lock_deadline_passed(std::time::Instant::now()),
             Some(()) = logind_lock_requests.recv() => supervisor.lock_requested_by_logind(),
             Some(locked) = sleep_locks.recv() => supervisor.lock_before_sleep(locked),
             // Other half of the `secure_submit(lock, authenticate)` arm: the only path where
@@ -652,7 +652,7 @@ mod tests {
         pam_succeeds(&mut supervisor, &started);
         assert_eq!(sent(&mut frames), []);
         within(lock_timer(supervisor.next_lock_deadline())).await;
-        supervisor.lock_deadline_passed();
+        supervisor.lock_deadline_passed(std::time::Instant::now());
         assert_eq!(sent(&mut frames), [(false, id)]);
         assert!(tokio::time::timeout(Duration::from_millis(50), lock_timer(None)).await.is_err());
     }
