@@ -553,11 +553,12 @@ mod tests {
 
     /// Hyprland blurs a whole popup on an empty region, so there a popup with its glass hidden sends 1x1:
     /// faded out, no longer blurring, or opening with a fade from 0. Elsewhere, and on a panel, it is empty.
-    /// A popup with no `compositor_blur` takes no effect object.
+    /// A popup with no `compositor_blur` takes no effect object, and shown glass is sent as is.
     #[test]
     fn a_popup_with_its_glass_hidden_sends_one_pixel_on_hyprland_and_empty_elsewhere() {
         let (card, none, pixel) = (Some(vec![[0, 0, 40, 20]]), Some(vec![]), Some(vec![[0, 0, 1, 1]]));
         for (hyprland, before, after, want) in [
+            (true, "", "", [card.clone(), card.clone()]),
             (true, "", "fade:set(0)", [card.clone(), pixel.clone()]),
             (true, "", "glass:set(false)", [none.clone(), pixel.clone()]),
             (true, "enter:set(true)", "", [card.clone(), pixel]),
@@ -586,11 +587,6 @@ mod tests {
         }
         queue.roundtrip(&mut app).unwrap();
         assert_eq!((mock.blur_regions_for(fx).len(), mock.last_blur_rects(fx)), (sent + 1, vec![[0, 0, 1, 1]]));
-    }
-
-    #[test]
-    fn a_popup_blur_region_with_glass_is_sent_as_is() {
-        assert_eq!(glass_rects(true, "", ""), [Some(vec![[0, 0, 40, 20]]), Some(vec![[0, 0, 40, 20]])]);
     }
 
     /// #132's panels, all mapped: `flip` and `bar` (reserving 40 px) take `mode`, `fixed` is `on_demand`, and

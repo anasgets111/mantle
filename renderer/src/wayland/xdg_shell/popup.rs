@@ -621,19 +621,13 @@ mod tests {
             (PopupAnchor::TopRight, xdg_positioner::Anchor::TopRight, xdg_positioner::Gravity::TopRight),
             (PopupAnchor::BottomLeft, xdg_positioner::Anchor::BottomLeft, xdg_positioner::Gravity::BottomLeft),
             (PopupAnchor::BottomRight, xdg_positioner::Anchor::BottomRight, xdg_positioner::Gravity::BottomRight),
+            // With no edge the anchor point is "in the center of the anchor rectangle", and gravity
+            // `none` centers the surface "over the anchor point on any axis that had no gravity specified".
+            (PopupAnchor::Center, xdg_positioner::Anchor::None, xdg_positioner::Gravity::None),
         ] {
             assert_eq!(positioner_anchor(ours), anchor);
             assert_eq!(positioner_gravity(ours), gravity);
         }
-    }
-
-    #[test]
-    fn center_is_the_protocols_none_on_both_requests() {
-        // The XML is what makes this a translation, not a fudge: with no edge specified the anchor
-        // point is "in the center of the anchor rectangle", and a gravity of `none` centers the
-        // surface "over the anchor point on any axis that had no gravity specified".
-        assert_eq!(positioner_anchor(PopupAnchor::Center), xdg_positioner::Anchor::None);
-        assert_eq!(positioner_gravity(PopupAnchor::Center), xdg_positioner::Gravity::None);
     }
 
     #[test]
