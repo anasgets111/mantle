@@ -24,6 +24,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 - Fixed: a media player reporting a nonsense playback position, or a PipeWire client sending a malformed audio parameter, no longer ends the shell, taking a locked session's lock screen with it.
 - Fixed: a gradient whose last stop sits below 1, such as `{ { 0, "#FF0000" }, { 0.5, "#0000FF" } }`, holds the last colour out to the end, as CSS does. Past that stop it painted nothing, so a background showed through, a border edge vanished and a mask hid the node.
 - Breaking: `process.run`, `process.capture` and `process.detach` raise when `args` has a `nil` before its last entry, or a named key, and name the entry. `{ "-u", urgency, title }` with `urgency` nil used to run the command with only `-u`, silently dropping the rest. Give the value a default (`urgency or "normal"`) or leave it out of the list.
+- Changed: an idle shell wakes 2 fewer times a second and runs 2 fewer threads.
 
 ## 0.14.0 - 2026-11-18
 

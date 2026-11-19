@@ -92,7 +92,12 @@ rustc-hash = "2"
 # `Format`/`Modifier` are `drm_fourcc` re-exports gbm always carries, so no separate dependency.
 gbm = { version = "0.18.0", default-features = false }
 accesskit = "0.25.1"
-accesskit_unix = "0.24.0"
+# tokio, not the default async-io: async-io's `blocking` pool keeps a thread that wakes every
+# 500 ms for the Renderer's life. accesskit_unix still compiles zbus with async-io and zbus picks
+# tokio only when built with it, so name that here too; without it a `-p renderer` build, where
+# supervisor's zbus features don't unify in, keeps the pool and the async-io reactor thread.
+accesskit_unix = { version = "0.24.0", default-features = false, features = ["tokio"] }
+zbus = { version = "5.19.0", default-features = false, features = ["tokio"] }
 # Material 3 roles, Score and the Celebi/Wu quantizers for `palette`. `ahash` and `indexmap` only
 # name the map type Score takes; both are already in the tree through it and `toml_edit`.
 material-colors = { version = "0.5.0", features = ["quantize"] }
