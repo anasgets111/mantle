@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use mlua::{Function, Lua, Value};
+use mlua::{Function, Lua, Table, Value};
 use shared::ProcessStream;
 
 use super::luacats::{As, lua_class, lua_fn, spelled};
@@ -161,17 +161,17 @@ pub fn register(lua: &Lua, registry: ProcessRegistry) -> mlua::Result<()> {
         /// Callbacks run unbudgeted; a raise is logged as a warning.
         /// [docs](https://anasgets111.github.io/mantle/guide/processes.html#processrun)
         fn process.run(
-            _lua,
+            lua,
             /// Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
             cmd: String,
-            /// Already split: `"a b"` is one argument. `nil` is none.
-            args: Option<Vec<String>>,
+            /// Already split: `"a b"` is one argument. `nil` is none; a hole or a named key raises.
+            args: Option<As<Table, Vec<String>>>,
             /// Once per line, newline stripped, cut at 64 KiB. Accumulate here and decode in `on_exit`.
             on_line: fn(line: String, stream: Stream),
             /// `nil` when a signal ended it or it failed to spawn.
             on_exit: fn(code: Option<i32>),
         ) -> ProcessHandle {
-            Ok(registry.start("run", &cmd, &args.unwrap_or_default(), on_line.0, on_exit.0))
+            Ok(registry.start("run", &cmd, &arg_list(lua, "process.run", args)?, on_line.0, on_exit.0))
         }
     )?;
     lua_fn!(
@@ -184,12 +184,12 @@ pub fn register(lua: &Lua, registry: ProcessRegistry) -> mlua::Result<()> {
             lua,
             /// Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
             cmd: String,
-            /// Already split: `"a b"` is one argument. `nil` is none.
-            args: Option<Vec<String>>,
+            /// Already split: `"a b"` is one argument. `nil` is none; a hole or a named key raises.
+            args: Option<As<Table, Vec<String>>>,
             /// `stdout` and `code` are both `nil` when a signal ended it or it failed to spawn.
             on_done: fn(stdout: Option<String>, code: Option<i32>),
         ) -> ProcessHandle {
-            capture_registry.capture(lua, &cmd, &args.unwrap_or_default(), on_done.0)
+            capture_registry.capture(lua, &cmd, &arg_list(lua, "process.capture", args)?, on_done.0)
         }
     )?;
     lua_fn!(
@@ -202,8 +202,8 @@ pub fn register(lua: &Lua, registry: ProcessRegistry) -> mlua::Result<()> {
             lua,
             /// Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
             cmd: String,
-            /// Already split: `"a b"` is one argument. `nil` is none.
-            args: Option<Vec<String>>,
+            /// Already split: `"a b"` is one argument. `nil` is none; a hole or a named key raises.
+            args: Option<As<Table, Vec<String>>>,
             /// `{ env = { NAME = "value", OTHER = false } }`. A bad name or value raises.
             opts: Option<As<Value, DetachOpts>>,
         ) {
@@ -216,10 +216,24 @@ pub fn register(lua: &Lua, registry: ProcessRegistry) -> mlua::Result<()> {
                         .map_err(|err| err.to_string())
                 })
                 .map_err(|err| mlua::Error::runtime(format!("process.detach: opts: {err}")))?;
-            detach_registry.detach(&cmd, &args.unwrap_or_default(), opts);
+            detach_registry.detach(&cmd, &arg_list(lua, "process.detach", args)?, opts);
             Ok(())
         }
     )
+}
+
+/// `args` read by every key: mlua's `Vec` stops at the first `nil` and would drop the rest unseen.
+fn arg_list(lua: &Lua, name: &str, args: Option<As<Table, Vec<String>>>) -> mlua::Result<Vec<String>> {
+    let Some(args) = args else { return Ok(Vec::new()) };
+    let entries =
+        super::marshal::list_entries(&args.0).map_err(|why| mlua::Error::runtime(format!("{name}: args: {why}")))?;
+    (1..)
+        .zip(entries)
+        .map(|(index, entry)| match entry {
+            Value::Nil => Err(mlua::Error::runtime(format!("{name}: args[{index}] is nil"))),
+            entry => lua.unpack(entry).map_err(|err| mlua::Error::runtime(format!("{name}: args[{index}]: {err}"))),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -393,5 +407,22 @@ mod tests {
         lua.load(r#"process.capture("cmd", nil, function(out, code) probe = { out = out } end)"#).exec().unwrap();
         registry.dispatch_exit(2, Some(0));
         assert_eq!(probe_table(&lua).get::<String>("out").unwrap(), "", "no output is an empty string");
+    }
+
+    #[test]
+    fn a_hole_or_named_key_in_args_raises_instead_of_dropping_the_rest() {
+        let (lua, _registry, mut rx) = lua_with_process(1);
+        for (call, why) in [
+            (r#"process.run("a", { "x", nil, "y" }, function() end, function() end)"#, "process.run: args[2] is nil"),
+            (r#"process.capture("a", { "x", nil, "y" }, function() end)"#, "process.capture: args[2] is nil"),
+            (r#"process.detach("a", { "x", flag = "y" })"#, "process.detach: args: key `flag` is not a list index"),
+        ] {
+            let err = lua.load(call).exec().unwrap_err().to_string();
+            assert!(err.contains(why), "{call}: {err}");
+        }
+        assert!(queued_command(&mut rx).is_none(), "nothing runs with a shortened argv");
+        lua.load(r#"process.run("a", { "x", 2 }, function() end, function() end)"#).exec().unwrap();
+        let sent = queued_command(&mut rx).unwrap().params.arguments;
+        assert_eq!(sent[1], serde_json::json!(["x", "2"]), "a number still coerces as before");
     }
 }

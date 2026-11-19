@@ -69,7 +69,7 @@ Spawns a helper, streams its output line by line, and reports its exit.
 | :--- | :--- |
 | Signature | `process.run(cmd, args, on_line, on_exit)` → handle |
 | `cmd` | Program name, looked up on `PATH`. No shell: no globbing, pipes, `~`, `$VAR` or quoting |
-| `args` | List of already-split strings; `"a b"` is one argument. Numbers coerce. `nil` or `{}` for none |
+| `args` | List of already-split strings; `"a b"` is one argument. Numbers coerce. `nil` or `{}` for none. A hole (`{ "-u", nil, "x" }`) or a named key raises |
 | `on_line(line, stream)` | Once per line, newline stripped. `stream` is `"stdout"` or `"stderr"`. Invalid UTF-8 is replaced; a final line without a newline still arrives |
 | `on_exit(code)` | Once, after both streams close and the process exits. `code` is the exit status, or `nil` when a signal ended it or the spawn failed |
 | Handle | `handle:kill()`: `SIGTERM` to the whole process group, `SIGKILL` 100 ms later. `on_exit` still fires. A no-op after exit |

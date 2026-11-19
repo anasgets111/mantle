@@ -257,7 +257,7 @@ function ProcessHandle:kill() end
 ---Callbacks run unbudgeted; a raise is logged as a warning.
 ---[docs](https://anasgets111.github.io/mantle/guide/processes.html#processrun)
 ---@param cmd string Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
----@param args? string[] Already split: `"a b"` is one argument. `nil` is none.
+---@param args? string[] Already split: `"a b"` is one argument. `nil` is none; a hole or a named key raises.
 ---@param on_line fun(line: string, stream: "stdout"|"stderr") Once per line, newline stripped, cut at 64 KiB. Accumulate here and decode in `on_exit`.
 ---@param on_exit fun(code: integer?) `nil` when a signal ended it or it failed to spawn.
 ---@return ProcessHandle
@@ -268,7 +268,7 @@ function process.run(cmd, args, on_line, on_exit) end
 ---A reload kills it and calls `on_done(nil, nil)`.
 ---[docs](https://anasgets111.github.io/mantle/guide/processes.html#processcapture)
 ---@param cmd string Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
----@param args? string[] Already split: `"a b"` is one argument. `nil` is none.
+---@param args? string[] Already split: `"a b"` is one argument. `nil` is none; a hole or a named key raises.
 ---@param on_done fun(stdout: string?, code: integer?) `stdout` and `code` are both `nil` when a signal ended it or it failed to spawn.
 ---@return ProcessHandle
 function process.capture(cmd, args, on_done) end
@@ -278,7 +278,7 @@ function process.capture(cmd, args, on_done) end
 ---`opts.env` sets variables (a string) or unsets them (`false`) on top of the shell's environment.
 ---[docs](https://anasgets111.github.io/mantle/guide/processes.html#processdetach)
 ---@param cmd string Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
----@param args? string[] Already split: `"a b"` is one argument. `nil` is none.
+---@param args? string[] Already split: `"a b"` is one argument. `nil` is none; a hole or a named key raises.
 ---@param opts? { env?: table<string, string|false>, [string]: "no such property" } `{ env = { NAME = "value", OTHER = false } }`. A bad name or value raises.
 function process.detach(cmd, args, opts) end
 
