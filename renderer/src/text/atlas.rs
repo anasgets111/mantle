@@ -447,7 +447,7 @@ impl TextPainter {
                 let key = |glyph: &Glyph| {
                     let ink = match selected_text {
                         Some((ink, (lo, hi))) if selected(glyph, lo, hi) => ink,
-                        _ => style(glyph.start).and_then(|run| run.color).unwrap_or(color),
+                        _ => style(glyph.start as usize).and_then(|run| run.color).unwrap_or(color),
                     };
                     (glyph.face, glyph.coords, ink)
                 };
@@ -475,7 +475,9 @@ impl TextPainter {
 
                 for run in runs.iter().filter(|run| run.underline) {
                     let tint = run.color.unwrap_or(color);
-                    for (x0, x1) in x_spans(&laid.glyphs, |glyph| run.range.contains(&(line_start + glyph.start))) {
+                    for (x0, x1) in
+                        x_spans(&laid.glyphs, |glyph| run.range.contains(&(line_start + glyph.start as usize)))
+                    {
                         self.fill(
                             left + x0 * scale,
                             (baseline + thickness).round(),
@@ -516,7 +518,7 @@ impl TextPainter {
 
 /// Whether `glyph` lies in the selected bytes `lo..hi`.
 fn selected(glyph: &Glyph, lo: usize, hi: usize) -> bool {
-    glyph.start < hi && glyph.end > lo
+    (glyph.start as usize) < hi && glyph.end as usize > lo
 }
 
 #[cfg(test)]
@@ -575,7 +577,7 @@ mod tests {
     /// the pieces -- for an underline, and for the selection behind a `textfield` (ADR-0236).
     #[test]
     fn a_run_split_around_other_text_is_drawn_under_each_piece() {
-        let glyph = |x: f32, start: usize| Glyph {
+        let glyph = |x: f32, start: u32| Glyph {
             face: fontdb::ID::dummy(),
             coords: 0,
             id: 0,
@@ -597,5 +599,7 @@ mod tests {
             vec![(0.0, 20.0), (30.0, 40.0)],
             "one rect per visually contiguous stretch"
         );
+        // Half-open: the glyph ending at `lo` and the one starting at `hi` are outside it.
+        assert_eq!(x_spans(&glyphs, |glyph| selected(glyph, 1, 5)), vec![(0.0, 10.0)]);
     }
 }

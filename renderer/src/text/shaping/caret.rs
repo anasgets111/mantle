@@ -31,8 +31,8 @@ pub fn caret_at(line: &ShapedLine, x: f32, text_len: usize) -> usize {
             continue;
         }
         return match (x < (lo + hi) / 2.0) != cluster[0].rtl {
-            true => cluster[0].start,
-            false => cluster[0].end,
+            true => cluster[0].start as usize,
+            false => cluster[0].end as usize,
         };
     }
     // Past every box, so the line's own direction says which byte each side is.
@@ -53,8 +53,8 @@ pub fn caret_x(line: &ShapedLine, offset: usize) -> f32 {
     // Parley yields visual runs left to right. At a direction boundary, the preceding text's
     // trailing edge wins even if its visual run follows the next one.
     let Some(cluster) = clusters(&line.glyphs)
-        .filter(|cluster| (cluster[0].start..=cluster[0].end).contains(&offset))
-        .min_by_key(|cluster| cluster[0].start == offset)
+        .filter(|cluster| (cluster[0].start as usize..=cluster[0].end as usize).contains(&offset))
+        .min_by_key(|cluster| cluster[0].start as usize == offset)
     else {
         return match line.rtl {
             true => line.width,
@@ -65,7 +65,7 @@ pub fn caret_x(line: &ShapedLine, offset: usize) -> f32 {
     // they meet is the middle of the letter.
     let (lo, hi) = cluster_span(cluster);
     // Only the cluster's last byte sits on its trailing edge; every other offset leads it.
-    match (offset == cluster[0].end && offset != cluster[0].start) != cluster[0].rtl {
+    match (offset == cluster[0].end as usize && offset != cluster[0].start as usize) != cluster[0].rtl {
         true => hi,
         false => lo,
     }

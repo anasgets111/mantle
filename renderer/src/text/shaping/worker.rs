@@ -306,8 +306,8 @@ pub(super) fn shape(
                             x: pen + glyph.x,
                             y: glyph.y,
                             advance: glyph.advance,
-                            start: range.start,
-                            end: range.end,
+                            start: range.start as u32,
+                            end: range.end as u32,
                             rtl: run.is_rtl(),
                         });
                     }

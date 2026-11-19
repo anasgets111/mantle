@@ -85,7 +85,7 @@ pub fn link_under(node: &ResolvedNode, point: LogicalPoint, shaping: &ShapingHan
         let left = align.line_left(laid.rtl, 0.0, inner.width, laid.width);
         let glyph =
             laid.glyphs.iter().find(|glyph| (left + glyph.x..left + glyph.x + glyph.advance).contains(&point.x))?;
-        let at = line_start + glyph.start;
+        let at = line_start + glyph.start as usize;
         return runs.iter().find(|run| run.range.contains(&at)).and_then(|run| run.href.clone());
     }
     None
@@ -757,6 +757,8 @@ pub(crate) mod tests {
         let node = styled_text(text, vec![link(0..2, "https://c/")], TextAlign::End, 200.0);
         let w = width_of(&shaping, "go");
         assert_eq!(link_under(&node, LogicalPoint { x: 1.0, y: 5.0 }, &shaping), None, "left edge is empty under End");
+        let before = LogicalPoint { x: 200.0 - w - 1.0, y: 5.0 };
+        assert_eq!(link_under(&node, before, &shaping), None, "just left of the line is empty too");
         assert_eq!(
             link_under(&node, LogicalPoint { x: 200.0 - w / 2.0, y: 5.0 }, &shaping),
             Some("https://c/".to_string())

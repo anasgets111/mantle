@@ -115,8 +115,10 @@ pub struct Glyph {
     pub x: f32,
     pub y: f32,
     pub advance: f32,
-    pub start: usize,
-    pub end: usize,
+    // ponytail: u32 keeps a glyph at 36 bytes, not 48; offsets past 4 GiB of text would wrap.
+    // Upgrade: usize.
+    pub start: u32,
+    pub end: u32,
     /// This glyph's own direction, which an embedded run does not share with its line.
     pub rtl: bool,
 }
@@ -821,7 +823,7 @@ pub(crate) mod tests {
         let unreachable = hopeless.len_utf8();
         let boxes: Vec<&Glyph> = shaped.shaped[0].glyphs.iter().filter(|glyph| glyph.id == 0).collect();
         assert!(
-            boxes.iter().all(|glyph| glyph.start < unreachable),
+            boxes.iter().all(|glyph| (glyph.start as usize) < unreachable),
             "only the codepoint nothing covers may stay a box, but {boxes:?} did"
         );
     }
@@ -1026,7 +1028,7 @@ pub(crate) mod tests {
     }
 
     fn coords_at(result: &ShapeResult, start: usize) -> Vec<i16> {
-        let glyph = result.shaped[0].glyphs.iter().find(|glyph| glyph.start == start).unwrap();
+        let glyph = result.shaped[0].glyphs.iter().find(|glyph| glyph.start as usize == start).unwrap();
         result.coords[glyph.coords as usize].to_vec()
     }
 
@@ -1118,7 +1120,7 @@ pub(crate) mod tests {
         let text = "ثالث three خامس four";
         let mut glyphs = handle.shape_glyphs(req(text, 20.0)).shaped[0].glyphs.to_vec();
         for (start, _) in text.char_indices() {
-            assert!(glyphs.iter().any(|glyph| glyph.start == start), "no glyph for byte {start} of {text:?}");
+            assert!(glyphs.iter().any(|glyph| glyph.start as usize == start), "no glyph for byte {start} of {text:?}");
         }
         glyphs.sort_by(|a, b| a.x.total_cmp(&b.x));
         for pair in glyphs.windows(2) {
@@ -1439,7 +1441,7 @@ pub(crate) mod tests {
 
     /// Whether the first line has glyphs in its first `prefix_len` bytes, none of them a box.
     fn drawn_before(shaped: &ShapeResult, prefix_len: usize) -> bool {
-        let mut glyphs = shaped.shaped[0].glyphs.iter().filter(|glyph| glyph.start < prefix_len).peekable();
+        let mut glyphs = shaped.shaped[0].glyphs.iter().filter(|glyph| (glyph.start as usize) < prefix_len).peekable();
         glyphs.peek().is_some() && glyphs.all(|glyph| glyph.id != 0)
     }
 
