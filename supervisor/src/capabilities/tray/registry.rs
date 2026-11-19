@@ -831,7 +831,7 @@ pub(super) mod tests {
     impl RenamedDuringRegistration {
         #[zbus(property, name = "Status")]
         fn status(&self) -> String {
-            "Active".to_string()
+            if *self.title.lock().unwrap() == "away" { "Passive" } else { "Active" }.to_string()
         }
         #[zbus(property, name = "Id")]
         fn id(&self) -> String {
@@ -880,6 +880,15 @@ pub(super) mod tests {
         })
         .await;
         assert_eq!(icon.as_deref(), Some("first"), "a title signal reads only the text properties");
+
+        *title.lock().unwrap() = "away";
+        app.emit_signal(None::<BusName<'_>>, "/StatusNotifierItem", "org.kde.StatusNotifierItem", "NewStatus", &())
+            .await
+            .unwrap();
+        crate::capabilities::test_support::poll_until(|| {
+            (ordered_items(&registry)[0].status == shared::state::tray::TrayStatus::Passive).then_some(())
+        })
+        .await;
     }
 
     /// In-place updates must not move an item.

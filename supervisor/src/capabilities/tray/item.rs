@@ -95,9 +95,9 @@ impl DictFields for Props {
     }
 }
 
-/// Every SNI property in one `GetAll` round trip, or with `text_only` the four a title, tooltip or
-/// status signal can change as concurrent `Get`s, skipping the icon pixmaps (a failed one is left
-/// out). An item that refuses reads as all defaults.
+/// Every SNI property in one `GetAll` round trip, or with `text_only` the three a title or tooltip
+/// signal can change as concurrent `Get`s, skipping the icon pixmaps (a failed one is left out).
+/// `NewStatus` takes the full read. An item that refuses reads as all defaults.
 async fn get_props(item: &StatusNotifierItemProxy<'static>, text_only: bool) -> Props {
     let proxy = item.inner();
     if !text_only {
@@ -110,17 +110,12 @@ async fn get_props(item: &StatusNotifierItemProxy<'static>, text_only: bool) -> 
     fn sent<T: Default>(name: &str, read: zbus::Result<Option<T>>, item: &zbus::names::BusName) -> Option<T> {
         read.inspect_err(|err| debug!("Get {name} failed for {item}: {err}")).ok().map(Option::unwrap_or_default)
     }
-    let (id, title, status, tool_tip) = futures_util::join!(
-        get_property(proxy, "Id"),
-        get_property(proxy, "Title"),
-        get_property(proxy, "Status"),
-        get_property(proxy, "ToolTip"),
-    );
+    let (id, title, tool_tip) =
+        futures_util::join!(get_property(proxy, "Id"), get_property(proxy, "Title"), get_property(proxy, "ToolTip"));
     let item = proxy.destination();
     Props {
         id: sent("Id", id, item),
         title: sent("Title", title, item),
-        status: sent("Status", status, item),
         tool_tip: sent("ToolTip", tool_tip, item),
         ..Props::default()
     }
@@ -138,8 +133,7 @@ pub(super) async fn fetch_tray_item_base(
     text_only: bool,
 ) -> TrayItem {
     let mut all = get_props(item, text_only).await;
-    let (got_name, got_status, got_tooltip) =
-        (all.id.is_some() && all.title.is_some(), all.status.is_some(), all.tool_tip.is_some());
+    let (got_name, got_tooltip) = (all.id.is_some() && all.title.is_some(), all.tool_tip.is_some());
     // Every string below is whatever application owns this item; cap each on the way in
     // (`MAX_TRAY_TEXT_BYTES`) rather than trusting SNI, which bounds none of them.
     let id_prop = capped(&all.id.unwrap_or_default());
@@ -159,9 +153,6 @@ pub(super) async fn fetch_tray_item_base(
         let mut kept = TrayItem { menu: None, ..previous.clone() };
         if got_name {
             kept.name = name;
-        }
-        if got_status {
-            kept.status = status;
         }
         if got_tooltip {
             kept.tooltip = tooltip_flat;
@@ -288,12 +279,13 @@ mod tests {
         }
     }
 
-    /// A title/tooltip/status signal reads four properties and keeps the icon fields, so no pixmap is decoded.
+    /// A title or tooltip signal reads three properties and keeps the icon fields and status.
     #[tokio::test]
     async fn a_text_refetch_keeps_the_icons_and_drops_the_menu() {
         use super::super::proxies::bind_item;
         use super::super::watcher::tests::StubStatusNotifierItem;
         use crate::capabilities::test_support::p2p_pair_serving;
+        use futures_util::{FutureExt, StreamExt};
 
         struct UntitledItem;
         #[zbus::interface(name = "org.kde.StatusNotifierItem")]
@@ -304,10 +296,11 @@ mod tests {
             }
         }
 
-        let (connection, _peer) = p2p_pair_serving(|peer| {
+        let (connection, peer) = p2p_pair_serving(|peer| {
             peer.serve_at("/StatusNotifierItem", StubStatusNotifierItem)?.serve_at("/Untitled", UntitledItem)
         })
         .await;
+        let mut calls = zbus::MessageStream::from(&peer);
         let destination = zbus::names::OwnedBusName::try_from(":1.5").unwrap();
         let path = OwnedObjectPath::try_from("/StatusNotifierItem").unwrap();
         let item = bind_item(&connection, &destination, &path).await.unwrap();
@@ -323,9 +316,18 @@ mod tests {
 
         let next = fetch_tray_item_base(&item, &unique_name, &path, &previous, true).await;
 
+        let mut gets = Vec::new();
+        while let Some(Some(Ok(call))) = calls.next().now_or_never() {
+            if call.header().member().is_some_and(|member| member == "Get") {
+                gets.push(call.body().deserialize::<(String, String)>().unwrap().1);
+            }
+        }
+        gets.sort();
+        assert_eq!(gets, ["Id", "Title", "ToolTip"]);
         assert_eq!(
             (next.name.as_str(), next.status, next.icon_name.as_deref(), next.icon_path.as_deref()),
-            ("Stub Item", TrayStatus::Active, Some("kept"), Some("/kept.png"))
+            ("Stub Item", TrayStatus::Passive, Some("kept"), Some("/kept.png")),
+            "only NewStatus, which takes the full refetch, changes the status"
         );
         assert_eq!(next.menu, None);
 
