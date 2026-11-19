@@ -8,7 +8,7 @@ use ::image::{AnimationDecoder, ImageDecoder};
 use shared::debug;
 
 use super::budget::Charge;
-use super::decode::{crop_to_box, downscale, refuse_irregular, stored_size};
+use super::decode::{crop_to_box, downscale_kept, refuse_irregular, stored_size};
 use super::{Decoded, Delta, MAX_DECODE_EDGE};
 
 type Rect = (u32, u32, u32, u32);
@@ -168,10 +168,8 @@ fn assemble(
         } else {
             let image = ::image::RgbaImage::from_raw(source_width, source_height, canvas.to_vec())
                 .ok_or("canvas is not source_width * source_height * 4 bytes")?;
-            let scaled =
-                downscale(&::image::DynamicImage::ImageRgba8(image), (stored_width, stored_height))?.into_raw();
-            let kept = if cropped { crop_to_box(&scaled, stored_width, stored_height, box_px) } else { None };
-            kept.map_or(scaled, |kept| kept.0)
+            let image = ::image::DynamicImage::ImageRgba8(image);
+            downscale_kept(&image, (stored_width, stored_height), (width, height))?.into_raw()
         };
         let mapped = map_rect(rect);
         Ok(if mapped == (0, 0, width, height) { (frame, mapped) } else { (read_rect(&frame, width, mapped), mapped) })

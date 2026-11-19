@@ -230,8 +230,9 @@ pub(super) fn decode(
     {
         return Ok(animation);
     }
-    let (mut pixels, mut width, mut height, natural) = decode_raster(path, *box_px, thumbnails, charge, still_wanted)?;
-    // Here rather than inside `decode_raster`, which returns from three places and would need the crop at each.
+    let (mut pixels, mut width, mut height, natural) =
+        decode_raster(path, *box_px, *cropped, thumbnails, charge, still_wanted)?;
+    // A downscale already cropped as it resampled; this is for a raster `decode_raster` returns unscaled.
     if *cropped && let Some(kept) = crop_to_box(&pixels, width, height, *box_px) {
         (pixels, width, height) = kept; // drops the uncropped source before the blur
     }
@@ -308,9 +309,27 @@ fn blur_rgba(pixels: Vec<u8>, width: u32, height: u32, blur_px: u32, premultipli
 /// `image` scaled to exactly `size` as straight-alpha RGBA8 (ADR-0317), in its decoded pixel type
 /// so a JPEG widens to RGBA at the target size, never the source's.
 pub(super) fn downscale(image: &::image::DynamicImage, size: (u32, u32)) -> Result<::image::RgbaImage, String> {
+    downscale_kept(image, size, size)
+}
+
+/// [`downscale`] resampling only the centred `kept` part of `size` that [`crop_to_box`] keeps, so a
+/// cover crop never holds the rows it drops: 26.6 MB for a 5120x2880 source in a 3440x1440 box.
+/// The samples are the ones a whole downscale takes, and the kernel still reads past the cut.
+pub(super) fn downscale_kept(
+    image: &::image::DynamicImage,
+    size: (u32, u32),
+    kept: (u32, u32),
+) -> Result<::image::RgbaImage, String> {
     use fast_image_resize::{FilterType, ResizeAlg, ResizeOptions, Resizer};
-    let mut scaled = ::image::DynamicImage::new(size.0, size.1, image.color());
-    let options = ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Bilinear));
+    let (width, height) = (kept.0.min(size.0), kept.1.min(size.1));
+    // Multiplied before dividing, so an uncropped axis spans the source exactly.
+    let source = |stored: u32, of: u32, edge: u32| f64::from(stored) * f64::from(edge) / f64::from(of);
+    let (left, top) =
+        (source((size.0 - width) / 2, size.0, image.width()), source((size.1 - height) / 2, size.1, image.height()));
+    let (wide, high) = (source(width, size.0, image.width()), source(height, size.1, image.height()));
+    let mut scaled = ::image::DynamicImage::new(width, height, image.color());
+    let options =
+        ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Bilinear)).crop(left, top, wide, high);
     Resizer::new().resize(image, &mut scaled, &options).map_err(|err| err.to_string())?;
     Ok(scaled.into_rgba8())
 }
@@ -341,7 +360,8 @@ pub(super) fn stored_size(width: u32, height: u32, box_px: (u32, u32)) -> (u32, 
 /// femtovg's `Canvas::load_image_file` declares it `default-features = false` with no format:
 /// every PNG returned `Unsupported(Exact(Png))`, breaking tray and notification pixmaps (ADR-0031).
 /// `into_rgba8` also handles grayscale+alpha and 16-bit variants femtovg refuses, while theme
-/// icons already decode to RGBA8. Every shrink goes through [`downscale`].
+/// icons already decode to RGBA8. Every shrink goes through [`downscale_kept`], which crops a
+/// `cropped` raster to the box as it resamples.
 ///
 /// If `thumbnails` has a current thumbnail covering the box, decode it instead of the file. A full
 /// decode larger than the size covering its stored raster leaves one behind; a 32px tray icon is
@@ -350,10 +370,13 @@ pub(super) fn stored_size(width: u32, height: u32, box_px: (u32, u32)) -> (u32, 
 fn decode_raster(
     path: &Path,
     box_px: (u32, u32),
+    cropped: bool,
     thumbnails: Option<&Path>,
     charge: Charge<'_>,
     still_wanted: &dyn Fn() -> bool,
 ) -> Result<(Vec<u8>, u32, u32, Option<Natural>), String> {
+    // What a downscale to `stored` keeps: the box for a cover crop, else all of it.
+    let kept = |stored| if cropped { box_px } else { stored };
     // The smallest current thumbnail covering the box on both axes: a 16:9 source's `normal`
     // 128x72 does not cover a 100x100 box, and drawing it would upscale a wider crop than the
     // first open's. Each slot is past the last one's edge, so at most four; all are stat'd before
@@ -367,13 +390,14 @@ fn decode_raster(
             slots.push(slot);
             continue;
         };
-        let (stored_width, stored_height) = stored_size(width, height, box_px);
-        if (stored_width, stored_height) == (width, height) {
+        let stored = stored_size(width, height, box_px);
+        if stored == (width, height) {
             return Ok((pixels, width, height, None));
         }
         let image = ::image::RgbaImage::from_raw(width, height, pixels).ok_or("thumbnail pixel count is off")?;
-        let scaled = downscale(&::image::DynamicImage::ImageRgba8(image), (stored_width, stored_height))?;
-        return Ok((scaled.into_raw(), stored_width, stored_height, None));
+        let scaled = downscale_kept(&::image::DynamicImage::ImageRgba8(image), stored, kept(stored))?;
+        let (width, height) = scaled.dimensions();
+        return Ok((scaled.into_raw(), width, height, None));
     }
     // Past the thumbnail branch, so the budget is charged for the source actually decoded and a
     // covering thumbnail is never made to wait for room it does not need (ADR-0187).
@@ -405,9 +429,10 @@ fn decode_raster(
     let rgba = if (stored_width, stored_height) == (decoded.width(), decoded.height()) {
         decoded.into_rgba8()
     } else {
-        downscale(&decoded, (stored_width, stored_height))?
+        downscale_kept(&decoded, (stored_width, stored_height), kept((stored_width, stored_height)))?
     };
-    Ok((rgba.into_raw(), stored_width, stored_height, Some((width, height))))
+    let (kept_width, kept_height) = rgba.dimensions();
+    Ok((rgba.into_raw(), kept_width, kept_height, Some((width, height))))
 }
 
 /// The source's size from its header, without decoding pixels. Not free: a JPEG's is a scan of
@@ -572,8 +597,8 @@ mod tests {
         let png = dir.path().join("fixture.png");
         std::fs::write(&png, PIL_2X2_RGBA_PNG).unwrap();
 
-        let (pixels, width, height, _) =
-            decode_raster(&png, (2, 2), None, Charge::Free, &|| true).expect("a PNG decoder must be compiled in");
+        let (pixels, width, height, _) = decode_raster(&png, (2, 2), false, None, Charge::Free, &|| true)
+            .expect("a PNG decoder must be compiled in");
         assert_eq!((width, height), (2, 2));
         // Straight alpha in Pillow's order: half-transparent green stays 0x00ff00, not
         // premultiplied 0x008000.
@@ -587,7 +612,7 @@ mod tests {
         for name in ["fixture.ico", "fixture.bmp"] {
             let path = dir.path().join(name);
             ::image::RgbaImage::from_raw(2, 2, rgba.clone()).unwrap().save(&path).unwrap();
-            let (pixels, ..) = decode_raster(&path, (2, 2), None, Charge::Free, &|| true).expect(name);
+            let (pixels, ..) = decode_raster(&path, (2, 2), false, None, Charge::Free, &|| true).expect(name);
             assert_eq!(pixels, rgba, "{name}");
         }
     }
@@ -597,7 +622,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("not-really.png");
         std::fs::write(&fake, b"<svg/>").unwrap();
-        let err = decode_raster(&fake, (8, 8), None, Charge::Free, &|| true).unwrap_err();
+        let err = decode_raster(&fake, (8, 8), false, None, Charge::Free, &|| true).unwrap_err();
         assert!(err.contains("Invalid PNG signature"), "the decoder's own reason, not a bare failure: {err}");
     }
 
@@ -662,6 +687,34 @@ mod tests {
         assert_eq!(crop(2, 4, (2, 2)), ((2, 2), vec![2, 3, 4, 5]));
         // Smaller than its box: untouched, so `fitted_rect` still letterboxes a small file.
         assert_eq!(crop(2, 2, (8, 8)), ((2, 2), vec![0, 1, 2, 3]));
+    }
+
+    /// A cover downscale resamples only the box, to within a level of what a whole downscale
+    /// cropped after has once premultiplied, as upload draws it: the kernel still reads past the
+    /// cut, but the cropped coefficient table can round differently (8x10 into 1x6 is off by one).
+    /// Straight alpha can be further off where alpha is low; premultiplying scales that back. Noise
+    /// and uneven alpha, so a sample a source pixel off would show; the boxes overflow by odd amounts.
+    #[test]
+    fn a_cover_downscale_crops_as_it_resamples_to_within_a_level_of_cropping_after() {
+        let dir = tempfile::tempdir().unwrap();
+        let noise = |x: u32, y: u32| ((x * 7919) ^ (y * 104_729)) as u8;
+        for ((width, height), boxes) in [((301, 97), &[(50, 31), (40, 40), (61, 13)][..]), ((8, 10), &[(1, 6)])] {
+            let path = dir.path().join(format!("noise-{width}.png"));
+            let pixel = |x, y| ::image::Rgba([noise(x, y), noise(y, x), x as u8, 255 - y as u8]);
+            ::image::RgbaImage::from_fn(width, height, pixel).save(&path).unwrap();
+            for &box_px in boxes {
+                let (whole, width, height, _) =
+                    decode_raster(&path, box_px, false, None, Charge::Free, &|| true).unwrap();
+                let (mut after, ..) = crop_to_box(&whole, width, height, box_px).expect("the box overflows");
+                let (mut during, width, height, _) =
+                    decode_raster(&path, box_px, true, None, Charge::Free, &|| true).unwrap();
+                assert_eq!((width, height), box_px);
+                premultiply(&mut after);
+                premultiply(&mut during);
+                let off = after.iter().zip(&during).map(|(a, b)| a.abs_diff(*b)).max();
+                assert!(off <= Some(1), "{box_px:?} is off by {off:?}");
+            }
+        }
     }
 
     /// ADR-0187, the case that started it: a real wallpaper of 6024x3401 decodes to 78 MiB of RGBA
@@ -738,26 +791,28 @@ mod tests {
         ::image::RgbaImage::from_pixel(400, 200, ::image::Rgba([10, 20, 30, 255])).save(&big).unwrap();
         let cache = dir.path().join("cache");
 
-        let (_, width, height, _) = decode_raster(&big, (100, 100), Some(&cache), Charge::Free, &|| true).unwrap();
+        let (_, width, height, _) =
+            decode_raster(&big, (100, 100), false, Some(&cache), Charge::Free, &|| true).unwrap();
         assert_eq!((width, height), (200, 100), "the texture is the box's, whatever the thumbnail is");
         // A `normal` 128x64 would not cover the 100x100 box, so the slot is the stored size's.
         let slot = thumbnails::Slot::for_file(&cache, &big, (200, 100)).unwrap();
         let (_, thumb_width, thumb_height) = slot.read_valid().expect("a `large` thumbnail was written");
         assert_eq!((thumb_width, thumb_height), (256, 128));
         let (_, width, height, natural) =
-            decode_raster(&big, (100, 100), Some(&cache), Charge::Free, &|| true).unwrap();
+            decode_raster(&big, (100, 100), false, Some(&cache), Charge::Free, &|| true).unwrap();
         assert_eq!((width, height, natural), (200, 100, None), "the next open draws the thumbnail, at the same size");
 
         // Another program's `normal` thumbnail, which cannot cover the box, is passed over.
         let normal = thumbnails::Slot::for_file(&cache, &big, (100, 100)).unwrap();
         normal.write(&[9, 8, 7, 255].repeat(128 * 64), 128, 64).unwrap();
-        let (_, width, height, _) = decode_raster(&big, (100, 100), Some(&cache), Charge::Free, &|| true).unwrap();
+        let (_, width, height, _) =
+            decode_raster(&big, (100, 100), false, Some(&cache), Charge::Free, &|| true).unwrap();
         assert_eq!((width, height), (200, 100), "a 128x64 thumbnail drawn into a 100x100 cover box is upscaled");
 
         // Source gone: only the thumbnail can answer, and it does.
         std::fs::remove_file(&big).unwrap();
         assert!(
-            decode_raster(&big, (100, 100), Some(&cache), Charge::Free, &|| true).is_err(),
+            decode_raster(&big, (100, 100), false, Some(&cache), Charge::Free, &|| true).is_err(),
             "no source, no mtime, no slot"
         );
     }
@@ -777,7 +832,7 @@ mod tests {
             slot.write(&[9, 8, 7, 255].repeat(128 * 64), 128, 64).unwrap();
             let written = std::fs::read(slot.path()).unwrap();
             let (_, width, height, size) =
-                decode_raster(source, (128, 64), Some(&cache), Charge::Free, &|| true).unwrap();
+                decode_raster(source, (128, 64), false, Some(&cache), Charge::Free, &|| true).unwrap();
             assert_eq!(((width, height), size), ((128, 64), None), "the thumbnail drew: {}", source.display());
             assert_eq!(header_size(source), natural);
             assert_eq!(std::fs::read(slot.path()).unwrap(), written, "the thumbnail is never rewritten");
@@ -790,7 +845,7 @@ mod tests {
         let small = dir.path().join("icon.png");
         ::image::RgbaImage::from_pixel(32, 32, ::image::Rgba([10, 20, 30, 255])).save(&small).unwrap();
         let cache = dir.path().join("cache");
-        decode_raster(&small, (24, 24), Some(&cache), Charge::Free, &|| true).unwrap();
+        decode_raster(&small, (24, 24), false, Some(&cache), Charge::Free, &|| true).unwrap();
         assert!(!cache.exists(), "a 32px file has nothing to gain from a 128px thumbnail");
     }
 
