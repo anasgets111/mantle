@@ -58,23 +58,13 @@ fn temp_name() -> String {
 }
 
 /// A `0600` temp file in `dir` that this call owns, so the caller's cleanup can only ever unlink
-/// its own partial write.
-///
-/// More than one name is tried because the pid half of [`temp_name`] is only unique among *live*
-/// processes: a temp orphaned by a process killed mid-write, whose pid this one was later handed,
-/// would otherwise refuse this write for as long as the file sat there, and nothing above retries.
+/// its own partial write. An orphan from a killed process with a reused pid refuses at most one
+/// write: the counter moves on.
 fn create_temp(dir: &Path) -> io::Result<(PathBuf, std::fs::File)> {
     use std::os::unix::fs::OpenOptionsExt;
-    let mut taken = None;
-    for _ in 0..4 {
-        let temp = dir.join(temp_name());
-        match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp) {
-            Ok(file) => return Ok((temp, file)),
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => taken = Some(err),
-            Err(err) => return Err(err),
-        }
-    }
-    Err(taken.unwrap_or_else(|| io::Error::other("no temp name was free")))
+    let temp = dir.join(temp_name());
+    let file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp)?;
+    Ok((temp, file))
 }
 
 /// One source file's slot: path, freshness metadata, and longest edge.
