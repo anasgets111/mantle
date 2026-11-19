@@ -141,7 +141,9 @@ pub(super) fn fill_paint(fill: &Fill, rect: LogicalRect) -> Paint {
 
 /// `gradient` laid over `rect` with CSS's geometry (ADR-0255).
 pub(super) fn gradient_paint(gradient: &Gradient, rect: LogicalRect) -> Paint {
-    let stops = gradient.stops.iter().map(|(at, c)| (*at, Color::from(*c)));
+    // femtovg pads before the first stop but leaves the row past the last one transparent; CSS holds its colour.
+    let tail = gradient.stops.last().filter(|(at, _)| *at < 1.0).map(|(_, c)| (1.0, *c));
+    let stops = gradient.stops.iter().copied().chain(tail).map(|(at, c)| (at, Color::from(c)));
     let (cx, cy) = (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
     match gradient.shape {
         GradientShape::Linear { angle } => {
@@ -1062,5 +1064,13 @@ mod tests {
         for x in 22..27 {
             assert_eq!(pixel_at(canvas, x, 24), (0, 0, 0, 255), "column {x} stays black");
         }
+    }
+
+    #[test]
+    fn a_gradient_holds_its_last_stop_colour_past_it() {
+        let src = r##"return panel { id = "bar", width = 100, height = 10, child = rect { width = 100, height = 10,
+            background = { gradient = "linear", angle = 90, stops = { { 0, "#FF0000" }, { 0.5, "#0000FF" } } } } }"##;
+        let Some(px) = super::super::tests::paint_with_gl(src, (100, 10), &[(75, 5), (99, 5)]) else { return };
+        assert_eq!(px, [(0, 0, 255, 255); 2], "past the 0.5 stop the gradient stays blue");
     }
 }

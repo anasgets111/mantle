@@ -307,7 +307,7 @@ background = {
 | :--- | :--- |
 | `gradient` | `"linear"`, `"radial"` or `"conic"` |
 | `angle` | Degrees clockwise from the top, as in CSS. `"linear"` default 180 (top to bottom), `"conic"` default 0 (starts at twelve o'clock). `"radial"` refuses it |
-| `stops` | At least 2 `{ position, colour }` pairs. Positions in `[0, 1]`, never descending; two equal positions make a hard edge |
+| `stops` | At least 2 `{ position, colour }` pairs. Positions in `[0, 1]`, never descending; two equal positions make a hard edge. The first and last colours hold out to 0 and 1 |
 
 On `border_color` the gradient spans the node's box and shows only where `border_width` draws, so
 width, `radius`, `corner_shape` and `corner_smoothing` shape the ring as for a flat colour.
