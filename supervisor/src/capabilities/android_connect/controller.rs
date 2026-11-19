@@ -257,6 +257,7 @@ async fn run_watcher(
         error!("failed to bind org.freedesktop.DBus; disabled for this run");
         return;
     };
+    // ponytail: same zbus ceiling as `name_departures`; upgrade: `arg0namespace` and an exact-name check in code.
     let mut owners = match dbus.receive_name_owner_changed_with_args(&[(0, SERVICE_NAME)]).await {
         Ok(stream) => stream,
         Err(err) => {

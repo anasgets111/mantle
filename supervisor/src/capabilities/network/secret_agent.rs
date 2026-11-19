@@ -116,7 +116,7 @@ pub(super) fn drop_request(
     true
 }
 
-/// NetworkManager's policy lets any local process call the agent.
+/// NetworkManager's bus policy lets any root process call the agent, not only NetworkManager.
 async fn from_nm(bus: &zbus::Connection, header: &Header<'_>) -> Result<(), AgentError> {
     if crate::capabilities::sent_by_owner(bus, header, NM_NAME).await {
         return Ok(());

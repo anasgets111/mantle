@@ -148,8 +148,8 @@ pub(crate) fn next_request_id() -> Option<String> {
     NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1)).ok().map(|id| id.to_string())
 }
 
-/// Whether `header`'s sender owns the well-known `name`. A bus lets any local process call an
-/// exported agent; only the daemon it registered with is answered.
+/// Whether `header`'s sender owns the well-known `name`. Stock bus policies let any process of the
+/// daemon's user (root, polkitd) call an exported agent; only the daemon it registered with is answered.
 pub(crate) async fn sent_by_owner(
     bus: &zbus::Connection,
     header: &zbus::message::Header<'_>,
@@ -167,6 +167,7 @@ pub(crate) async fn name_departures(
     dbus: &zbus::fdo::DBusProxy<'_>,
     what: &str,
 ) -> Option<zbus::fdo::NameOwnerChangedStream> {
+    // ponytail: zbus decodes args to `Value`s after matching this sender, a unique name to it; upgrade: raw stream.
     dbus.receive_name_owner_changed_with_args(&[(2, "")])
         .await
         .inspect_err(|err| shared::error!("failed to subscribe to NameOwnerChanged; {what}: {err}"))
