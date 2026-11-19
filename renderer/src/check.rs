@@ -1042,33 +1042,22 @@ mod tests {
         assert!(seen > 0, "no fixtures found");
     }
 
-    /// The first set's text span and the alternate's image span both name their fields, and a
-    /// map takes any key.
+    /// Each passes: the first set's text span and the alternate's image span both name their fields,
+    /// and a map takes any key; a handler registers another, as the list is copied before any runs.
     #[test]
-    fn a_sample_reads_either_tagged_variants_fields_and_any_map_key() {
+    fn sample_variants_map_keys_and_a_handler_registering_another_pass_the_check() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("shell.lua"),
+        for shell in [
             "local s = mantle.notifications:map(function(n) local b = n.feed[1] and n.feed[1].body[1] \
              return tostring(b and (b.image_path or b.text)) end, '')\n\
              local a = mantle.applications:map(function(a) return tostring(a.by_app_id.firefox) end, '')\n\
              return panel { id = 'bar', layer = 'top', child = row { children = { text { content = s }, text { content = a } } } }\n",
-        )
-        .unwrap();
-        super::run(dir.path()).expect("both variants' fields and a map key read without raising");
-    }
-
-    /// The handler list is copied before any runs, as a running shell does.
-    #[test]
-    fn an_on_change_that_registers_another_passes_the_check() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("shell.lua"),
             "mantle.audio:on_change(function() mantle.audio:on_change(function() end) end)\n\
              return panel { id = 'bar', layer = 'top', child = text { content = 'x' } }\n",
-        )
-        .unwrap();
-        super::run(dir.path()).expect("a handler may register another");
+        ] {
+            std::fs::write(dir.path().join("shell.lua"), shell).unwrap();
+            super::run(dir.path()).unwrap_or_else(|err| panic!("{err}\n{shell}"));
+        }
     }
 
     /// An action from a handler the sample passes run queues into the check VM's own channel, on
