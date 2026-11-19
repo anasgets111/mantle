@@ -9371,3 +9371,15 @@ The Renderer reports `Unlocked` only after a `wl_display.sync` following `unlock
 config that loops forever otherwise left the session with no lock client and no way to unlock.
 Deadlines slip by the loop's latency (ponytail). Rejected: no bound; a timeout inside the Renderer,
 whose stalled loop cannot time itself out.
+
+## 0406. MPRIS players are read through one typed signal drain, not zbus's property cache
+
+zbus's property cache and generated getters decode every value as `zvariant::Value`, one 64-byte
+`Value` per byte of an `ay`, and any session app can be a player. `mpris/changes.rs` runs one task
+per player that owns its only signal subscription (one match rule: signals on the MPRIS path from
+its unique owner, no args, so zbus never decodes a body to match it), decodes `PropertiesChanged`
+and `Seeked` to typed fields, and wakes the forwarders through `Notify`. It awaits no call: zbus
+queues 64 messages per rule and then stops reading the connection, and in tests 300 signals during
+one call stalled it until the call timeout. A seed `GetAll` fills only fields no signal set; a
+seek counts only for the track it arrived on. Rejected: a `GetAll` per change (two full reads per
+wake, and a value a failed read missed was lost); a larger `set_max_queued` (moves the stall).
