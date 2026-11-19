@@ -9335,3 +9335,39 @@ drag; it re-hit-tests after every layout pass. Payloads: 64 KiB, 3 s, 256 URIs; 
 per RFC 8089 before decoding. Rejected: widening to copy|move (finishing a move lets a source
 delete what was dragged) and accepting over `drop_hover`-only nodes (the drop would vanish).
 Dragging out of the shell and the `mantle input drop` verb (#151) are not built.
+
+## 0403. PipeWire param pods are walked for bounds before libspa decodes them
+
+libspa 0.10.1's `PodDeserializer` trusts the sizes a pod declares: a Choice with child size 0
+divides by zero, short String, Array, Object and Pointer pods underflow, an odd Pointer hits
+`panic!`, an Array's length sizes `Vec::with_capacity` unread, and nesting is unbounded. Props and
+device params come from any PipeWire client, and under `panic = "abort"` one malformed pod ends the
+Supervisor and the lock screen with it. `audio/mixer/pod.rs` walks each pod the way
+`deserialize_any` reads it and refuses those shapes at any depth (16 levels; real `Props`, `Route`
+and `EnumRoute` nest four). 0.10.1 is the newest on crates.io. Rejected: reading the few
+properties the mixer needs straight from the bytes, which rewrites every extractor that reads the
+`Value` tree.
+
+## 0404. Lock frames carry an acquisition id, decided at send time
+
+`SetSessionLock { locked, id }` and `LockReport { id, outcome }`; `PROTOCOL_VERSION` 2. One
+`LockPhase` plus a wanted bit in `capabilities/lock/session.rs`; `sync_lock` alone decides a frame,
+sends only to a generation that replayed its snapshots and reported its first `CanLock`, and moves
+the phase only after a successful enqueue. A report counts only when its (generation, id) names the
+phase; a departed Renderer's report never settles recovery, so the replacement relocks. A departed
+generation may still ask to lock; its other lock commands meet the stale filter. The marker is
+written before every Lock and an unreadable one reads as set. Amends ADR-0385: the sleep inhibitor
+is taken at boot; a replacement's `CanLock` starts unknown and `CanLock(false)` releases a sleep
+only when idle. Rejected: the queued `SetSessionLock` channel, whose reports could not say which
+request they answered (five patches in review, three new races); an EOF-drain gate for a dead
+Renderer's late `Unlocked` (+65 lines against one extra password prompt, ponytail).
+
+## 0405. The Supervisor kills a Renderer the lock waits on past a bound
+
+20 s from spawn to the first `CanLock` while a lock or sleep is owed, 10 s from Lock to its answer,
+5 s from Unlock to `Unlocked`; a lock frame that cannot be queued kills the same way. The killed
+generation is marked so nothing more is sent to it, and its exit hands the lock to the replacement.
+The Renderer reports `Unlocked` only after a `wl_display.sync` following `unlock_and_destroy`. A
+config that loops forever otherwise left the session with no lock client and no way to unlock.
+Deadlines slip by the loop's latency (ponytail). Rejected: no bound; a timeout inside the Renderer,
+whose stalled loop cannot time itself out.
