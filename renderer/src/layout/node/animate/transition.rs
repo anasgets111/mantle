@@ -158,9 +158,11 @@ pub(in crate::layout::node) fn parse_shader_params(what: &str, value: &Value) ->
                         format!("expected 1 to {MAX_PARAM_NUMBERS} numbers, got a list of {len}"),
                     ));
                 }
-                (1..=len)
-                    .map(|index| finite(&list.raw_get(index).map_err(|e| invalid(field, e.to_string()))?))
-                    .collect::<Result<_, _>>()?
+                let mut numbers = Vec::with_capacity(len);
+                for index in 1..=len {
+                    numbers.push(finite(&list.raw_get(index).map_err(|e| invalid(field, e.to_string()))?)?);
+                }
+                numbers
             }
             scalar => vec![finite(scalar)?],
         };

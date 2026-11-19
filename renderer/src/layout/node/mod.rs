@@ -54,7 +54,7 @@ pub use content::{Elide, StyleRun, TextAlign, Wrap, font_runs};
 pub(crate) use content::{SpanKind, TextRun};
 pub use list::{ItemPass, ListMemo, View, list_children};
 pub(crate) use list::{Items, Limit, least_move};
-pub use paint_style::{CaptureTarget, CaretStyle, Multiline, PaintStyle, Typeface, paint_style};
+pub use paint_style::{CaptureTarget, CaretStyle, Multiline, PaintStyle, Typeface, paint_style, paint_style_with};
 use resolve::{reject_signal_in_structural_field, resolve_signal};
 pub(crate) use resolve::{resolve_declared, settle_property_signals, tables_plain};
 pub(crate) use spec::{Children, Root};

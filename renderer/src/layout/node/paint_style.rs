@@ -250,6 +250,15 @@ pub enum PaintStyle {
 
 /// Parses an already-resolved kind. `Ok(None)` means the kind draws nothing; an error fails apply.
 pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle>, LayoutError> {
+    paint_style_with(kind, properties, None)
+}
+
+/// [`paint_style()`], taking a `shader`'s `params` a pass already parsed from `properties`.
+pub fn paint_style_with(
+    kind: &str,
+    properties: &PropMap,
+    params: Option<Vec<ShaderParam>>,
+) -> Result<Option<PaintStyle>, LayoutError> {
     // Only a box has a padding box to cast inward from.
     let boxed = matches!(kind, "rect" | "row" | "column" | "list" | "panel" | "window" | "popup" | "lock");
     if !boxed && fields::common::shadows.read(properties)?.is_some_and(|layers| layers.iter().any(|layer| layer.inset))
@@ -349,7 +358,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
         "shader" => PaintStyle::Shader {
             source: shader::source.read(properties)?,
             progress: shader::progress.read(properties)?,
-            params: shader::params.read(properties)?,
+            params: params.map_or_else(|| shader::params.read(properties), Ok)?,
             images: shader::images.read(properties)?,
         },
         "textfield" => {

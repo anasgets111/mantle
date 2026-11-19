@@ -101,7 +101,8 @@ pub(super) fn resolve(
     let stamp = signal::write_clock(lua);
     let frame = ComputedFrame::enter(lua);
     let mut properties = build(node::resolve_declared(&raw, kind, tables_plain, lua)?)?;
-    let dropped = drop_refused_values(kind, &mut properties, retained.as_deref().map(|r| &*r.properties), lua)?;
+    let (dropped, params) =
+        drop_refused_values(kind, &mut properties, retained.as_deref().map(|r| &*r.properties), lua)?;
     let shown = retained.as_deref().map(|r| (r.tweens.as_slice(), &*r.properties));
     let (tweens, movement) = node::retarget(kind, shown, &mut properties, now, lua, reentry && shown.is_none())?;
     // A declaration that resolved to itself shares the map the memo keeps rather than a copy.
@@ -109,7 +110,9 @@ pub(super) fn resolve(
     let omitted = ["width", "height"].map(|key| raw.contains_key(key) && !properties.contains_key(key));
     let memo =
         Rc::new(ResolveMemo { raw, lua: lua.weak(), stamp, cells: frame.finish(), dropped, tables_plain, omitted });
-    let paint = node::paint_style(kind, &properties)?;
+    // A tween or sequence on `params` replaces the value the check parsed with its frame.
+    let params = params.filter(|(read, _)| properties.get("params") == Some(read)).map(|(_, parsed)| parsed);
+    let paint = node::paint_style_with(kind, &properties, params)?;
     let style = Rc::new(LayoutStyle::parse(&properties)?);
     Ok(Resolved { properties, style, paint, tweens, movement: movement.map(Box::new), memo })
 }
@@ -138,24 +141,29 @@ impl DroppedValues {
     }
 }
 
+/// A `shader`'s `params` value and the check's parse of it.
+type CheckedParams = (Value, Vec<node::ShaderParam>);
+
 /// Drops each value a row of `kind` refuses, as CSS drops an invalid declaration: the node reads
 /// the default and nothing animates toward the value. Errors where the row has no default, for
 /// `child`/`children`, whose default would empty the node, and for `secure_submit`, whose default
-/// would hand a password to `on_change`. A value the retained node holds already passed.
+/// would hand a password to `on_change`. A value the retained node holds already passed. Returns
+/// whether it dropped any, and a `shader`'s `params` value with the check's parse, so paint reads it once.
 fn drop_refused_values(
     kind: &str,
     properties: &mut PropMap,
     retained: Option<&PropMap>,
     lua: &Lua,
-) -> Result<bool, LayoutError> {
+) -> Result<(bool, Option<CheckedParams>), LayoutError> {
     if lua.app_data_ref::<DroppedValues>().is_none() {
-        return Ok(false);
+        return Ok((false, None));
     }
     let bit = crate::layout::node::properties::kind_bit(kind).unwrap_or(0);
     // Sorted, so which values a report names comes from the config, not the hasher.
     let mut keys: Vec<&'static str> = properties.keys().copied().collect();
     keys.sort_unstable();
     let mut refused = Vec::new();
+    let mut params = None;
     for name in keys {
         let value = properties.get(name);
         if matches!(name, "child" | "children" | "secure_submit")
@@ -168,7 +176,12 @@ fn drop_refused_values(
             .filter(|row| row.kinds & bit != 0 && !row.raw && !row.refused);
         // Every row: a root's own row and the common one both parse its `width`.
         for row in rows {
-            if let Err(err) = (row.check)(row, value) {
+            let checked = if name == "params" {
+                node::fields::shader::params.read(properties).map(|read| params = value.cloned().map(|v| (v, read)))
+            } else {
+                (row.check)(row, value)
+            };
+            if let Err(err) = checked {
                 if (row.check)(row, None).is_err() {
                     return Err(err);
                 }
@@ -182,7 +195,7 @@ fn drop_refused_values(
         properties.remove(name);
         lua.app_data_mut::<DroppedValues>().expect("checked above").0.push(err);
     }
-    Ok(dropped)
+    Ok((dropped, params))
 }
 
 /// Drops a `width`/`height` a layout injected for a content-sized axis (`pass::measure_content_sizes`)

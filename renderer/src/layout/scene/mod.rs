@@ -1285,11 +1285,15 @@ pub(super) mod tests {
         let lua = scene_lua();
         let table: Vec<mlua::Table> = lua
             .load(
-                r#"op = state("op", 2) w = state("w", 10) kids = state("kids", {})
+                r#"op = state("op", 2) w = state("w", 10) kids = state("kids", {}) pr = state("pr", { a = 1 })
+                pq = state("pq", { x = 1, y = 2 }) fo = state("fo", 1)
                 return { panel { id = "bar", child = column { children = {
                     rect { width = 10, height = 10, opacity = op },
                     list { items = { 1 }, each = function() return rect { width = 5, height = 5, opacity = op } end },
                     rect { width = w, height = 10 },
+                    shader { width = 4, height = 4, params = pr },
+                    shader { width = 4, height = 4, params = pq, animate = { params = 100 } },
+                    shader { width = 4, height = 4, params = pq, opacity = fo, animate = { opacity = 100 } },
                 } } }, panel { id = "dock", child = column { children = kids } } }"#,
             )
             .eval()
@@ -1327,6 +1331,30 @@ pub(super) mod tests {
         let strict = scene.apply_locked(&surfaces[..1], &instances[..1], &shaping, &lua, false, true).unwrap_err();
         assert_eq!(strict.to_string(), first);
         assert_eq!(column(&scene).children[0].opacity, 0.5, "and roll back");
+
+        // The check's parse of a `shader`'s `params` is what paints; a bad one paints the default.
+        let params_at = |scene: &Scene, at: usize| match &column(scene).children[at].paint {
+            Some(PaintStyle::Shader { params, .. }) => params.clone(),
+            other => panic!("{other:?}"),
+        };
+        let params = |scene: &Scene| params_at(scene, 3);
+        lua.load("op:set(0.5) pr:set({ b = { 2, 3 } })").exec().unwrap();
+        assert!(apply(&mut scene).unwrap().is_none());
+        assert_eq!(params(&scene), [("b".to_string(), vec![2.0, 3.0])]);
+        lua.load(r#"pr:set({ b = "x" })"#).exec().unwrap();
+        let report = apply(&mut scene).unwrap().expect("reported").to_string();
+        assert!(report.contains("`params.b`"), "{report}");
+        assert!(params(&scene).is_empty(), "the default");
+
+        // A tween on `params` paints its first frame, not the target the check parsed; a tween
+        // on another property leaves the target to paint.
+        lua.load(r#"pr:set({ a = 1 }) pq:set({ x = 10, y = 20 }) fo:set(0.5)"#).exec().unwrap();
+        assert!(apply(&mut scene).unwrap().is_none());
+        let eased = params_at(&scene, 4);
+        assert!(eased.iter().all(|(_, v)| v[0] < 3.0), "the start, not the target: {eased:?}");
+        let mut target = params_at(&scene, 5);
+        target.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(target, [("x".to_string(), vec![10.0]), ("y".to_string(), vec![20.0])]);
     }
 
     #[test]
