@@ -9317,3 +9317,17 @@ mapped while a popup waits on a parent that stays hidden; size-only configures c
 `grab = true` popup opens at once, because ADR-0049 limits its serial to the input turn and a wait
 would refuse it as `Unarmed` (#142). Rejected: carrying the serial across the wait, which widens
 that window and cannot be checked against strict compositors here.
+
+## 0402. Cross-app drops are taken only over `on_drop`, gated on the target, read off-thread
+
+A surface accepts a `wl_data_device` drag only while an `on_drop` node is under it, with
+`set_actions(copy, copy)` and mime preference `text/uri-list` > `text/plain;charset=utf-8` >
+`text/plain` (#18). A drop on that target is read whatever action was negotiated: Hyprland 0.57
+sends `action(move)` only before `enter` (SCTK discards it) and ignores `set_actions`, so a copy
+gate refused every drop there (live), while wlroots and smithay send `drop` only for an offer
+accepted with an action. `finish` follows only a good read while the offer and its node are alive.
+`drop_hover(name)` is its own focused-registry signal, because `wl_pointer` events stop during a
+drag; it re-hit-tests after every layout pass. Payloads: 64 KiB, 3 s, 256 URIs; `file:` URIs parsed
+per RFC 8089 before decoding. Rejected: widening to copy|move (finishing a move lets a source
+delete what was dragged) and accepting over `drop_hover`-only nodes (the drop would vanish).
+Dragging out of the shell and the `mantle input drop` verb (#151) are not built.
