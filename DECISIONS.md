@@ -5679,6 +5679,10 @@ full frame, so nothing needs the "eating the budget or failing" tradeoff they ex
 Amended by ADR-0317: `thumbnail` was box sampling, so decision 3's triangle filter only became
 true with bilinear, whose reach of one stored pixel past a change grows every scaled delta by one.
 
+Amended (#74): a delta is the part of the frame's declared rect whose pixels changed, joined to its
+disposal, so a full-size frame from an encoder without frame optimisation keeps only what changed
+(an ImageMagick clip held 25.9 -> 1.4 MB). A `Previous` restore that drew nothing is dropped.
+
 ## 0236. A plain `textfield` gets a caret and a selection; the masked one gets neither
 
 ADR-0064 and ADR-0092 both closed with "no caret in this pass", and the pass they deferred left an
@@ -9383,3 +9387,25 @@ queues 64 messages per rule and then stops reading the connection, and in tests 
 one call stalled it until the call timeout. A seed `GetAll` fills only fields no signal set; a
 seek counts only for the track it arrived on. Rejected: a `GetAll` per change (two full reads per
 wake, and a value a failed read missed was lost); a larger `set_max_queued` (moves the stall).
+
+## 0407. The shaping memo is bounded by two byte totals, not one
+
+Entries holding glyphs (painted, on-screen text) are dropped past 8 MiB; the whole memo clears
+past 32 MiB or 4,096 entries, and an entry over a ceiling alone is answered but not kept. One
+8 MiB ceiling over every entry was measured on hardware and rejected: 500 rows of 2,000
+characters hold 13 MiB of measurements alone (a min-content measurement stores a line per word),
+so it dropped the visible glyphs 122 times in 70 s and cleared everything 3 times at startup.
+With two totals that list never clears, and resolve falls from about 500 to 43 ms per 30 s
+(CPU 3.5 -> 2.2 %). Rejected: an LRU, which costs work on every hit. Narrow rows still reach the
+entry cap first (#161).
+
+## 0408. Vector paths stay logical in the display list and scale at draw
+
+A `Draw::Path` shares the node's commands and carries the build's scale; `PathData::bez`
+multiplies each number by it as it reads, before any other arithmetic, so output is bit-identical
+and the stub, arc and corner thresholds stay in buffer pixels. The old build deep-copied every
+path at scale != 1 each pass, which also defeated `damage_since`'s pointer-equality shortcut:
+100 paths of 250 points at 1.5 built in 73 -> 12 us, damage 20 -> 0.8 us. The scale is part of
+the draw's equality, or a layer of equal buffer size reused a raster from the old scale.
+Rejected: a per-node cache of scaled commands (a second copy of every path); a canvas transform
+(moves those thresholds into logical units).
