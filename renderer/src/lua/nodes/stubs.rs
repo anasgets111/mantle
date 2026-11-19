@@ -420,5 +420,13 @@ const SURFACES_HEADER: &str = r##"---@meta
 ---A key press, as `on_key` receives it.
 ---@class KeyPress: KeyRelease
 ---@field repeat boolean `true` for an auto-repeat, not the first press.
+
+---Files, links or text dropped from another app, as `on_drop` receives it.
+---@class Drop
+---@field files string[] The dropped local files as absolute paths, decoded from their `file://` URIs.
+---@field uris string[] Every URI dropped, as sent: `file://` ones and links such as `https://`.
+---@field text? string Dropped plain text, `nil` for a URI drop.
+---@field rect Rect The `on_drop` node's surface-local box.
+---@field pointer { x: number, y: number } Where the drop landed, node-local, unclamped.
 ---@alias PopupAnchor {POPUP_ANCHOR}
 "##;

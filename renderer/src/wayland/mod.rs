@@ -105,6 +105,8 @@ pub struct App {
     clipboard_sources: Vec<input::ClipboardSource>,
     clipboard_writers: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     paste: Option<input::PendingPaste>,
+    drag_over: Option<input::DragOver>,
+    pending_drop: Option<input::PendingDrop>,
     field_revision: u64,
     /// The focused field's edits, caret moves, mask and focus changes: what cancels a pending paste.
     field_edits: u64,
@@ -326,6 +328,8 @@ impl App {
             clipboard_sources: Vec::new(),
             clipboard_writers: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             paste: None,
+            drag_over: None,
+            pending_drop: None,
             field_revision: 0,
             field_edits: 0,
             waker: waker.clone(),

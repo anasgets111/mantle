@@ -16,7 +16,7 @@ pub(super) use keyboard::{FocusedField, FocusedTextField};
 
 #[cfg(test)]
 pub(crate) use pointer::apply_hover_write;
-pub(super) use pointer::{ActiveDrag, ArmedClick, ArmedSerial, ClickedNode, Fingers, LastClick};
+pub(super) use pointer::{ActiveDrag, ArmedClick, ArmedSerial, ClickedNode, DragOver, Fingers, LastClick, PendingDrop};
 
 impl SeatHandler for App {
     fn seat_state(&mut self) -> &mut SeatState {
@@ -108,7 +108,8 @@ impl SeatHandler for App {
                 self.keyboard_lost();
                 self.set_control_focus(None);
                 self.focus_secure_submit(None);
-                self.data_device = None;
+                // No leave comes for a drag over the shell; a drop being read still lands.
+                self.drop_data_device();
                 self.text_input.detach();
                 if let Some(field) = self.focused_text_field.as_mut() {
                     field.history.clear();

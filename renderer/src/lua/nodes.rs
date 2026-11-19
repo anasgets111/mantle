@@ -647,6 +647,7 @@ mod meta_stub_tests {
             ("pointer", _) => return Some("pointer(\"probe\")".to_string()),
             ("focused", _) => return Some("focused(\"probe\")".to_string()),
             ("focus_visible", _) => return Some("focus_visible(\"probe\")".to_string()),
+            ("drop_hover", _) => return Some("drop_hover(\"probe\")".to_string()),
             ("elided", _) => return Some("elided(\"probe\")".to_string()),
             ("settled", _) => return Some("settled(\"probe\")".to_string()),
             ("status", _) => return Some("image_status(\"probe\")".to_string()),

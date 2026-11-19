@@ -13,6 +13,7 @@ use crate::lua::marshal::{modifiers_table, rect_table};
 
 mod callbacks;
 mod drag;
+mod drop;
 mod position;
 mod press;
 mod target;
@@ -23,6 +24,7 @@ pub(crate) use callbacks::apply_hover_write;
 pub(in crate::wayland::input) use callbacks::call_on_click;
 use callbacks::{call_on_drag, call_on_press, local_pointer_table};
 use drag::Motion;
+pub(in crate::wayland) use drop::{DragOver, PendingDrop};
 pub(in crate::wayland) use press::{ArmedClick, ArmedSerial, ClickedNode, LastClick};
 use press::{double_click, press_chooses_focus, release_completes_click, release_ends_press};
 use target::{PressTarget, drag_local, wheel_target};
@@ -381,6 +383,7 @@ impl App {
     /// the pointer starts, or stale tint follows the old row off the viewport. No user crossing
     /// occurred.
     pub(in crate::wayland) fn refresh_hover_after_layout(&mut self) {
+        self.refresh_drag_after_layout();
         let Some((surface_id, position)) = &self.pointer_at else {
             return;
         };

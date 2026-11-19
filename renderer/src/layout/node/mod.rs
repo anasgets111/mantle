@@ -94,7 +94,7 @@ use crate::lua::luacats::{LuaType, spelled};
 use crate::lua::marshal;
 use crate::lua::signal;
 use crate::text::snap::LogicalRect;
-pub(crate) use events::{DragPhase, Escape, KeyPress, KeyRelease, MouseButton, SubmitKey};
+pub(crate) use events::{DragPhase, Dropped, Escape, KeyPress, KeyRelease, MouseButton, SubmitKey};
 use prop::Prop;
 pub(crate) use properties::{self as fields, Property};
 use std::rc::Rc;

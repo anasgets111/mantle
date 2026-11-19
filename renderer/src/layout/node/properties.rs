@@ -11,7 +11,7 @@
 
 use Absent::{Bool, Choice, Lua, Number, Prose, Required, Unset};
 
-use super::events::{DragPhase, Escape, KeyPress, KeyRelease, MouseButton, SubmitKey};
+use super::events::{DragPhase, Dropped, Escape, KeyPress, KeyRelease, MouseButton, SubmitKey};
 use crate::image::Fit;
 use crate::layout::hit::LogicalPoint;
 use crate::layout::node::prop::{
@@ -304,6 +304,10 @@ props! {
         ///
         /// Book: A `hover(name)` signal the engine sets while the pointer is over this node or its children ([hover](../guide/input.md#hover))
         hover: Handle;
+        /// A `drop_hover(name)` signal; true while a drag from another app carrying files or text is over this node or its children, whether or not a node there takes the drop.
+        ///
+        /// Book: A `drop_hover(name)` signal the engine sets while a drag carrying files or text is over this node or its children ([drag and drop](../guide/input.md#drag-and-drop))
+        drop_hover: Handle;
         /// A `pointer(name)` signal; the engine sets it to the pointer's `{ x, y }` from this node's top-left corner while the pointer is over this node or its children, `nil` otherwise.
         ///
         /// Book: A `pointer(name)` signal the engine sets to the pointer's node-local `{ x, y }` while it is over this node or its children ([pointer position](../guide/input.md#pointer-position))
@@ -329,7 +333,7 @@ props! {
     }
     /// The pointer handlers. The innermost node under the pointer with a handler for the event takes it (ADR-0050); a node with no handler for the event is skipped by that scan.
     mod pointer(ALL) {
-        /// On release over the same node that was pressed, with the same mouse button. `rect` is the node's surface-local box, before transforms. `pointer` is node-local and unclamped like `on_drag`'s; Enter, Space and screen-reader activation report the node's centre. `modifiers` is the keyboard's `Modifiers` at that moment, also for Enter and Space; every handler below takes it after its own arguments (only `on_drag`'s `velocity` follows it), and it reads all false while none of this shell's surfaces has keyboard focus. A left press on a `textfield` goes to the field instead; its other presses call its own `on_click`, never an ancestor's, and a masked field calls none.
+        /// On release over the same node that was pressed, with the same mouse button. `rect` is the node's surface-local box, before transforms. `pointer` is node-local and unclamped like `on_drag`'s; Enter, Space and screen-reader activation report the node's centre. `modifiers` is the keyboard's `Modifiers` at that moment, also for Enter and Space; every handler below but `on_drop` takes it after its own arguments (only `on_drag`'s `velocity` follows it), and it reads all false while none of this shell's surfaces has keyboard focus. A left press on a `textfield` goes to the field instead; its other presses call its own `on_click`, never an ancestor's, and a masked field calls none.
         on_click(rect: LogicalRect, button: MouseButton, pointer: LogicalPoint, modifiers: Modifiers);
         /// After `on_click`, on the release completing a second click on the same node with the same button, within 400 ms and 4 px of the first click's release; the node may move or resize in between. The innermost node with `on_double_click` takes it, independently of `on_click`'s target, so single clicks on a node with only this handler still reach an ancestor's `on_click`, which fires for both clicks. A third click starts a new pair. Arguments as `on_click`'s. A `textfield` doubles only on non-left clicks, its own handler only. Enter, Space and screen-reader activation never double-click, and a node with only this handler takes no keyboard focus.
         on_double_click(rect: LogicalRect, button: MouseButton, pointer: LogicalPoint, modifiers: Modifiers);
@@ -339,6 +343,10 @@ props! {
         on_drag(rect: LogicalRect, pointer: LogicalPoint, phase: DragPhase, modifiers: Modifiers, velocity: LogicalPoint);
         /// Vertical wheel in notches, positive away from the user, fractional on touchpads (ADR-0116). The innermost handler or scroll container wins; on one node, the `scroll`.
         on_wheel(rect: LogicalRect, steps: f64, modifiers: Modifiers);
+        /// Files, links or text dropped from another app. Only a node with `on_drop` under the pointer accepts a drag. Called once the payload is read: `drop.files` holds the local files as absolute paths, `drop.uris` every URI as sent (`file://` ones included), `drop.text` dropped plain text, raw; `drop.rect` and `drop.pointer` are as in `on_click`, at the release. A payload over 64 KiB, 256 URIs or 3 s to read, or a node gone by then, calls nothing. Never on a lock surface. Claims the node's box as input region, so an unpainted one blocks clicks to windows beneath.
+        ///
+        /// Book: Files, links or text dropped from another app; only a node with it accepts a drag ([drag and drop](../guide/input.md#drag-and-drop))
+        on_drop(drop: Dropped);
         /// A click also submits the armed `secure_submit` field, like Enter (ADR-0114). Works without `on_click` and runs before it.
         ///
         /// Book: A click also submits the armed [secure field](../guide/input.md#secure-fields), like Enter. Works without `on_click` and runs before it

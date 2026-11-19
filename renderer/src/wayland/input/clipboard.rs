@@ -41,8 +41,9 @@ pub(in crate::wayland) struct PendingPaste {
     result: std::sync::mpsc::Receiver<Option<Zeroizing<Vec<u8>>>>,
 }
 
-/// The offered text, refused whole for a control character; a `multiline` field takes newlines, as `\n`.
-fn read_offer(mut pipe: ReadPipe, multiline: bool) -> Option<Zeroizing<Vec<u8>>> {
+/// Up to [`MAX_TEXT_BYTES`] from `pipe` within [`IO_TIMEOUT`], `None` past either; paste and drop both read
+/// another client's offer through it.
+pub(super) fn read_bounded(mut pipe: ReadPipe) -> Option<shared::SecureBuffer> {
     use std::os::fd::AsFd;
     let deadline = Instant::now() + IO_TIMEOUT;
     let mut bytes = shared::SecureBuffer::new();
@@ -58,13 +59,7 @@ fn read_offer(mut pipe: ReadPipe, multiline: bool) -> Option<Zeroizing<Vec<u8>>>
         }
         let n = pipe.read(&mut chunk[..]).ok()?;
         if n == 0 {
-            let text = std::str::from_utf8(bytes.expose_secret()).ok()?;
-            let text = if multiline { crate::lua::focus::normalize_newlines(text) } else { text.into() };
-            let result =
-                (!crate::lua::focus::refuses(&text, multiline)).then(|| Zeroizing::new(text.as_bytes().to_vec()));
-            drop(text);
-            bytes.zeroize();
-            return result;
+            return Some(bytes);
         }
         if bytes.len() + n > MAX_TEXT_BYTES {
             return None;
@@ -72,6 +67,17 @@ fn read_offer(mut pipe: ReadPipe, multiline: bool) -> Option<Zeroizing<Vec<u8>>>
         bytes.push_bytes(&chunk[..n]);
         chunk.zeroize();
     }
+}
+
+/// The offered text, refused whole for a control character; a `multiline` field takes newlines, as `\n`.
+fn read_offer(pipe: ReadPipe, multiline: bool) -> Option<Zeroizing<Vec<u8>>> {
+    let mut bytes = read_bounded(pipe)?;
+    let text = std::str::from_utf8(bytes.expose_secret()).ok()?;
+    let text = if multiline { crate::lua::focus::normalize_newlines(text) } else { text.into() };
+    let result = (!crate::lua::focus::refuses(&text, multiline)).then(|| Zeroizing::new(text.as_bytes().to_vec()));
+    drop(text);
+    bytes.zeroize();
+    result
 }
 
 /// A paste lands on the field it was asked for, unless that field was edited, moved its caret,
@@ -235,11 +241,19 @@ impl App {
 }
 
 impl DataDeviceHandler for App {
-    fn enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, _: f64, _: f64, _: &WlSurface) {}
-    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
-    fn motion(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, _: f64, _: f64) {}
+    fn enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, x: f64, y: f64, surface: &WlSurface) {
+        self.drag_moved(Some(surface), (x, y));
+    }
+    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {
+        self.drag_left();
+    }
+    fn motion(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, x: f64, y: f64) {
+        self.drag_moved(None, (x, y));
+    }
     fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
-    fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+    fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {
+        self.drag_dropped();
+    }
 }
 
 impl DataOfferHandler for App {
@@ -312,6 +326,16 @@ mod tests {
         assert_eq!(offered(b"one\r\ntwo\rthree\n", true).unwrap().as_slice(), b"one\ntwo\nthree\n");
         assert!(offered(b"tab\there", true).is_none());
         assert!(offered(b"line\r\nnext", false).is_none());
+    }
+
+    /// A source that never closes its end is given up on, so a drop or paste never waits past 3 s.
+    #[test]
+    fn a_read_gives_up_at_the_timeout() {
+        let (read, write) = nix::unistd::pipe().unwrap();
+        let started = Instant::now();
+        assert!(read_bounded(ReadPipe::from(read)).is_none());
+        assert!(started.elapsed() >= IO_TIMEOUT);
+        drop(write);
     }
 
     #[test]

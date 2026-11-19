@@ -165,8 +165,8 @@ pub fn begin_evaluation(lua: &Lua) {
 #[derive(Default)]
 struct HoverRegistry(HashMap<String, (Signal, Signal)>);
 
-/// `focused`, `focus_visible` and `has_selection` signals, kept across reloads like [`HoverRegistry`];
-/// the kind keeps `focused("x")`, `focus_visible("x")` and `has_selection("x")` distinct slots. The
+/// `focused`, `focus_visible`, `has_selection` and `drop_hover` signals, kept across reloads like
+/// [`HoverRegistry`]; the kind keeps `focused("x")`, `focus_visible("x")` and the rest distinct slots. The
 /// count is the `has_selection` names the last selection sweep kept.
 #[derive(Default)]
 struct FocusedRegistry(HashMap<(FocusKind, String), Signal>, usize);
@@ -176,6 +176,7 @@ enum FocusKind {
     Focused,
     Visible,
     Selection,
+    DropHover,
 }
 
 fn focus_slot(lua: &Lua, kind: FocusKind, name: String, dirty: &DirtyFlag) -> SignalOf<bool> {
@@ -190,6 +191,18 @@ pub fn write_selection(lua: &Lua, held: Option<&str>) {
     for ((_, name), signal) in registry.0.iter().filter(|((kind, _), _)| *kind == FocusKind::Selection) {
         if let Some(handle) = signal.focused_handle() {
             handle.set_changed(Value::Boolean(held == Some(name)));
+        }
+    }
+}
+
+/// Writes every `drop_hover` signal: true for those in `over`, the drag's hit path, false for the
+/// rest, so a node removed mid-drag or a closed surface is turned off too.
+pub fn write_drop_hover(lua: &Lua, over: &[Signal]) {
+    let Some(registry) = lua.app_data_ref::<FocusedRegistry>() else { return };
+    for ((_, _), signal) in registry.0.iter().filter(|((kind, _), _)| *kind == FocusKind::DropHover) {
+        if let Some(handle) = signal.focused_handle() {
+            let on = over.iter().any(|node| node.cell_id() == signal.cell_id());
+            handle.set_changed(Value::Boolean(on));
         }
     }
 }
@@ -214,7 +227,7 @@ struct ScrollRegistry(HashMap<String, Signal>);
 #[derive(Default)]
 struct GeometryRegistry(HashMap<String, Signal>);
 
-/// Drops each `hover`, `focused`, `focus_visible`, `has_selection`, `pointer`, `scroll` and `geometry`
+/// Drops each `hover`, `focused`, `focus_visible`, `has_selection`, `drop_hover`, `pointer`, `scroll` and `geometry`
 /// name that only its registry holds: no retained tree binds it, no Lua value reaches it and no
 /// computed or surface last read its cell, so asking again makes a fresh one. No node binds
 /// `has_selection`, and a handler that asks for it by name holds nothing between runs, so its name
@@ -327,6 +340,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
     let focus_visible_dirty = dirty.clone();
     let pointer_dirty = dirty.clone();
     let selection_dirty = dirty.clone();
+    let drop_hover_dirty = dirty.clone();
     let scroll_dirty = dirty.clone();
     lua_fn!(
         lua,
@@ -494,6 +508,16 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
         /// [docs](https://anasgets111.github.io/mantle/guide/input.html#keyboard-controls-and-accessibility)
         fn focus_visible(lua, name: String) -> SignalOf<bool> {
             Ok(focus_slot(lua, FocusKind::Visible, name, &focus_visible_dirty))
+        }
+    )?;
+    lua_fn!(
+        lua,
+        /// Whether a drag from another app, carrying files or text, is over the node whose `drop_hover` is bound
+        /// to this signal or one of its children; `false` until it is. One name, one signal, across reloads.
+        /// Read-only.
+        /// [docs](https://anasgets111.github.io/mantle/guide/input.html#drag-and-drop)
+        fn drop_hover(lua, name: String) -> SignalOf<bool> {
+            Ok(focus_slot(lua, FocusKind::DropHover, name, &drop_hover_dirty))
         }
     )?;
     lua_fn!(

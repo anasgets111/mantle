@@ -230,6 +230,45 @@ return panel {
 }
 ```
 
+## Drag and drop
+
+A shell surface takes files, links and text dragged from another app, such as a file manager or a
+browser. Hyprland and niri deliver drags to layer-shell panels. Dragging out of the shell is not
+supported.
+
+| API | Contract |
+| :--- | :--- |
+| `on_drop(drop)` | Any node kind. The node accepts a drag while it is under the pointer; nowhere else does. Called once the dropped data is read: `drop.files` lists local files as absolute paths, `drop.uris` every URI as sent (`file://` and links such as `https://`), `drop.text` dropped plain text. `drop.rect` and `drop.pointer` are as in `on_click`, at the release. Not called for a payload over 64 KiB or 256 URIs, one not read within 3 s, or a node gone by then |
+| `drop_hover = drop_hover(name)` | Any node kind. `true` while a drag carrying files or text is over the node or its children, hit-tested like `hover`, whether or not a node there takes the drop. Use it to highlight a drop target, or to act on a button a drag rests over. The pointer does not move `hover` during a drag, so `hover` cannot do this |
+| Order | The innermost `on_drop` node under the pointer takes the drop. A drag that carries neither `text/uri-list` nor plain text sets no `drop_hover` and is never accepted. A `lock` surface takes no drops |
+
+Drags reach only a surface's [input region](../surfaces/index.md#input-region). An `on_drop` node
+claims its box, painted or not, so an unpainted one also blocks clicks to the windows beneath it;
+a node with only `drop_hover` and nothing painted claims nothing and sees no drag. `drop.text` is
+the sender's text as is, control characters included, and a decoded path may contain a newline:
+pass paths as separate arguments, never through a shell string. On Hyprland the first `drop_hover`
+answer can come from the surface's centre until the pointer moves.
+
+```lua
+local over = drop_hover("inbox")
+
+return panel {
+    id = "bar",
+    layer = "top",
+    anchor = { top = true },
+    child = rect {
+        padding = 8,
+        radius = 6,
+        drop_hover = over,
+        background = over:map(function(on) return on and "#45475a" or "#313244" end),
+        on_drop = function(drop)
+            for _, path in ipairs(drop.files) do log.info("dropped", path) end
+        end,
+        children = { text { content = "Drop files here" } },
+    },
+}
+```
+
 ## Scroll
 
 `scroll(name)` returns a read-only signal holding a scroll offset in px, `0` at first. Bind it to

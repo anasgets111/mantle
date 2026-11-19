@@ -34,7 +34,7 @@ pub(crate) use equality::same_value;
 pub(crate) use globals::selection_names;
 pub use globals::{
     any_focused_registered, any_hover_registered, any_pointer_registered, begin_evaluation, declared_states,
-    promote_states, register, take_layout_changed, write_selection, write_state,
+    promote_states, register, take_layout_changed, write_drop_hover, write_selection, write_state,
 };
 pub(crate) use globals::{
     forget_unheld, layout_changed_len, note_layout_changed, reset, reset_target, truncate_layout_changed,

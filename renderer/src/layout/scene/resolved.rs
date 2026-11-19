@@ -365,6 +365,12 @@ impl ResolvedNode {
                 .any(|handler| matches!(self.properties.get(*handler), Some(Value::Function(_))))
     }
 
+    /// [`Self::takes_pointer`] or `on_drop`: what claims input region, since a drag reaches only that.
+    /// A drop target alone keeps the arrow cursor.
+    pub fn takes_input(&self) -> bool {
+        self.takes_pointer() || matches!(self.properties.get("on_drop"), Some(Value::Function(_)))
+    }
+
     /// Whether this node's own `animate` tweens or `move` are running, not its children's.
     pub(in crate::layout) fn tweening(&self) -> bool {
         self.tweens.iter().any(|tween| !tween.resting) || self.movement.is_some()

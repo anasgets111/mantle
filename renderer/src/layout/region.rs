@@ -14,7 +14,7 @@ const EVERYTHING: LogicalRect = LogicalRect { x: -1e9, y: -1e9, width: 2e9, heig
 ///
 /// A visible node claims its whole box when it is *solid*: it paints something (a box with a
 /// background or a border, or any text, icon, image or field), or it has a pointer handler
-/// (`on_click`, `on_double_click`, `on_press`, `on_drag`, `on_wheel`) or `submits_secure`, which may be invisible by design but is still
+/// (`on_click`, `on_double_click`, `on_press`, `on_drag`, `on_wheel`, `on_drop`) or `submits_secure`, which may be invisible by design but is still
 /// pressable (a full-surface click-outside catcher). Transparent containers claim nothing and are walked
 /// into, so a full-surface `column` holding two cards yields the cards. Everything else is
 /// click-through and, under focus-follows-mouse, focus-through; the popup's empty space below its
@@ -38,7 +38,7 @@ pub fn overlay_input_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<Phy
     let mut regions = Vec::new();
     let scan = (scale, paint_claims);
     // A root's paint claims nothing, but its handler asks for the whole surface.
-    if surface_root.takes_pointer() {
+    if surface_root.takes_input() {
         collect_input_regions(surface_root, 0.0, 0.0, scan, node::IDENTITY_AFFINE, EVERYTHING, true, &mut regions);
         return regions;
     }
@@ -407,7 +407,7 @@ fn takes_input_as_a_box(node: &ResolvedNode, paint_claims: bool) -> bool {
             Some(PaintStyle::Shader { .. }) | None => false,
             Some(_) => true,
         };
-    paints || node.takes_pointer()
+    paints || node.takes_input()
 }
 
 #[cfg(test)]
@@ -932,6 +932,13 @@ mod tests {
             .insert("on_click", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
         let root = region_node(6, "panel", (0.0, 0.0, 120.0, 520.0), None, vec![catcher]);
         assert_eq!(overlay_input_regions(&root, 1.0), [PhysicalRect { x0: 0, y0: 0, x1: 120, y1: 520 }]);
+
+        let mut zone = region_node(50, "rect", (0.0, 0.0, 120.0, 40.0), None, Vec::new());
+        std::rc::Rc::make_mut(&mut zone.properties)
+            .insert("on_drop", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
+        let root = region_node(51, "panel", (0.0, 0.0, 120.0, 520.0), None, vec![zone]);
+        let zone = [PhysicalRect { x0: 0, y0: 0, x1: 120, y1: 40 }];
+        assert_eq!(overlay_input_regions(&root, 1.0), zone, "an unpainted drop zone claims its box: drags need it");
 
         let idle = region_node(7, "row", (0.0, 0.0, 120.0, 520.0), None, Vec::new());
         let root = region_node(8, "panel", (0.0, 0.0, 120.0, 520.0), None, vec![idle]);

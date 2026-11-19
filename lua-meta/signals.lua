@@ -110,6 +110,14 @@ function focused(name) end
 ---@return Signal<boolean>
 function focus_visible(name) end
 
+---Whether a drag from another app, carrying files or text, is over the node whose `drop_hover` is bound
+---to this signal or one of its children; `false` until it is. One name, one signal, across reloads.
+---Read-only.
+---[docs](https://anasgets111.github.io/mantle/guide/input.html#drag-and-drop)
+---@param name string
+---@return Signal<boolean>
+function drop_hover(name) end
+
 ---Whether the plain `textfield` whose `focus_target` is `name` holds the keyboard and has text selected;
 ---`false` until it does. One name, one signal, across reloads. Read-only.
 ---[docs](https://anasgets111.github.io/mantle/guide/input.html#text-fields)

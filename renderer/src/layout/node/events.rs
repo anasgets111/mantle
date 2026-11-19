@@ -85,3 +85,29 @@ impl IntoLua for KeyRelease {
         self.0.into_lua(lua)
     }
 }
+
+/// One drop from another client as `on_drop` receives it: `---@class Drop` in `surfaces.lua`.
+pub(crate) struct Dropped {
+    pub(crate) files: Vec<String>,
+    pub(crate) uris: Vec<String>,
+    pub(crate) text: Option<String>,
+    pub(crate) rect: crate::text::snap::LogicalRect,
+    pub(crate) pointer: crate::layout::hit::LogicalPoint,
+}
+
+spelled!(Dropped => "Drop");
+
+impl IntoLua for Dropped {
+    fn into_lua(self, lua: &Lua) -> mlua::Result<Value> {
+        let table = lua.create_table()?;
+        table.set("files", self.files)?;
+        table.set("uris", self.uris)?;
+        table.set("text", self.text)?;
+        table.set("rect", crate::lua::marshal::rect_table(lua, self.rect)?)?;
+        let pointer = lua.create_table()?;
+        pointer.set("x", self.pointer.x)?;
+        pointer.set("y", self.pointer.y)?;
+        table.set("pointer", pointer)?;
+        Ok(Value::Table(table))
+    }
+}

@@ -227,7 +227,7 @@ it.
 | Respawn brake | 3 Renderer deaths within 60 s | The Supervisor | The next respawn waits 30 s |
 
 Not budgeted: an evaluation's top level, input handlers (`on_click`, `on_drag`, `on_wheel`,
-`on_hover`, `on_link`, textfield callbacks, `on_close_request`, `on_dismiss`), `process.run` callbacks,
+`on_drop`, `on_hover`, `on_link`, textfield callbacks, `on_close_request`, `on_dismiss`), `process.run` callbacks,
 `palette` callbacks and idle callbacks. A slow one stalls every surface until it returns.
 
 Keep maps cheap. Build lookup tables once at the top level, which has no budget, and do only an

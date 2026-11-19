@@ -628,6 +628,7 @@ impl App {
         self.awaiting_keyboard.take_if(|armed| *armed == self.surfaces[index].surface_id);
         // More than tint: `on_hover(false)` is how a config releases what hovering took.
         self.pointer_left_destroyed_surface(index);
+        self.drag_surface_destroyed(&self.surfaces[index].surface_id.clone());
         debug!("{} destroyed", self.surfaces[index].surface_id);
     }
 

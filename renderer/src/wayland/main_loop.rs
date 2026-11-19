@@ -130,6 +130,7 @@ pub fn run(
         // SAFETY: `display` is the live connection `conn` owns, used on its dispatching thread.
         unsafe { wl_display_dispatch_pending(display.cast()) };
         app.finish_paste();
+        app.finish_drop();
         if let Some(started) = dispatch_started
             && let Some(ended) = thread_cpu_time()
             && let Some(profile) = profile.as_mut()
