@@ -232,33 +232,12 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{ID, Wire, capture_node, id};
+    use super::super::tests::{ID, Wire, buffer, capture_node, frame, id, offer, session};
     use super::*;
 
-    // Session events: `buffer_size` 0, `shm_format` 1, `dmabuf_format` 3, `done` 4, `stopped` 5;
-    // requests: `create_frame` 0, `destroy` 1. Frame events: `transform` 0, `damage` 1, `ready` 3,
-    // `failed` 4 (`unknown` 0, `buffer_constraints` 1, `stopped` 2); requests: `destroy` 0,
-    // `attach_buffer` 1, `damage_buffer` 2, `capture` 3.
-    const XRGB: u32 = wl_shm::Format::Xrgb8888 as u32;
-
-    fn session(w: &Wire) -> u32 {
-        id(w.ext().session.as_ref())
-    }
-
-    fn frame(w: &Wire) -> u32 {
-        id(w.ext().frame.as_ref())
-    }
-
-    fn buffer(w: &Wire) -> u32 {
-        id(w.ext().buffer.as_ref().map(|negotiated| negotiated.buffer.wl_buffer()))
-    }
-
-    fn offer(w: &mut Wire, width: u32, height: u32) {
-        let session = session(w);
-        w.send(session, 0, &[width, height]);
-        w.send(session, 1, &[XRGB]);
-        w.send(session, 4, &[]);
-    }
+    // Frame events: `transform` 0, `damage` 1, `ready` 3, `failed` 4 (`unknown` 0,
+    // `buffer_constraints` 1, `stopped` 2); requests: `destroy` 0, `attach_buffer` 1,
+    // `damage_buffer` 2, `capture` 3. Session events and requests: `capture::tests::session`.
 
     /// The first `done` sizes an shm buffer and captures into it; `ready` lands the frame with its
     /// damage and transform, then paces the next: a one-shot stops, an uncapped source asks again

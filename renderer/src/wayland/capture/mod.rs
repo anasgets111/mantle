@@ -634,12 +634,15 @@ fn constraints_changed(captures: &mut CaptureRegistry, id: &NodeId) -> Option<Do
 #[cfg(test)]
 mod tests {
     use wayland_client::EventQueue;
+    use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1;
 
     use super::*;
     use crate::wayland::test_support::MockWayland;
 
     /// The node every [`Wire`] captures.
     pub(super) const ID: NodeId = NodeId::test(7);
+
+    pub(super) const XRGB: u32 = wl_shm::Format::Xrgb8888 as u32;
 
     /// An `App` on the wire mock with every capture global bound by hand (the mock advertises none
     /// and answers nothing; events come from [`Wire::send`]), and a source for one capture node.
@@ -718,11 +721,42 @@ mod tests {
                 _ => panic!("not a wlr source"),
             }
         }
+
+        /// A dma-buf back slot of `shape` for the source, its params awaiting the compositor's answer.
+        pub(super) fn pending_slot(&mut self, shape: DmabufShape) -> ZwpLinuxBufferParamsV1 {
+            let params = self.dmabuf.create_params(&self.app.queue_handle.clone(), ID);
+            let source = self.source_mut();
+            source.dmabuf_state = DmabufState::Shaped(shape);
+            source.dmabuf = DmabufSwapchain::pending_for_test(shape, params.clone());
+            params
+        }
     }
 
     /// A proxy's wire id.
     pub(super) fn id(proxy: Option<&impl Proxy>) -> u32 {
         proxy.expect("a live protocol object").id().protocol_id()
+    }
+
+    // Ext session events: `buffer_size` 0, `shm_format` 1, `dmabuf_format` 3, `done` 4, `stopped` 5;
+    // requests: `create_frame` 0, `destroy` 1.
+    pub(super) fn session(w: &Wire) -> u32 {
+        id(w.ext().session.as_ref())
+    }
+
+    pub(super) fn frame(w: &Wire) -> u32 {
+        id(w.ext().frame.as_ref())
+    }
+
+    pub(super) fn buffer(w: &Wire) -> u32 {
+        id(w.ext().buffer.as_ref().map(|negotiated| negotiated.buffer.wl_buffer()))
+    }
+
+    /// The ext session's offer of a `width` x `height` XRGB shm buffer, then `done`.
+    pub(super) fn offer(w: &mut Wire, width: u32, height: u32) {
+        let session = session(w);
+        w.send(session, 0, &[width, height]);
+        w.send(session, 1, &[XRGB]);
+        w.send(session, 4, &[]);
     }
 
     fn registry() -> CaptureRegistry {

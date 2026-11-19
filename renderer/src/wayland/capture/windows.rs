@@ -174,15 +174,14 @@ delegate_noop!(App: ExtForeignToplevelImageCaptureSourceManagerV1);
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{ID, Wire, id};
+    use super::super::tests::{ID, Wire, capture_node, id, session};
     use super::*;
 
     /// A window target captures once its toplevel's mapping names the address, through the
     /// toplevel's own capture source, and stops for good when the toplevel closes.
     #[test]
     fn a_window_capture_waits_for_its_address_then_stops_when_the_toplevel_closes() {
-        let target = CaptureTarget::Window("0x10000a11ce".into());
-        let node = CaptureNode { node: ID, target, live: None, paint_cursor: false, region: None };
+        let node = capture_node(ID, CaptureTarget::Window("0x10000a11ce".into()), None);
         let mut w = Wire::with(Protocol::Ext, &node);
         let qh = w.app.queue_handle.clone();
         let registry = w.app.registry_state.registry().clone();
@@ -210,7 +209,7 @@ mod tests {
         let source = w.requests(sources);
         assert_eq!(source.len(), 1, "a capture source for the toplevel");
         let manager = id(w.app.captures.backend.ext.as_ref());
-        let session = id(w.ext().session.as_ref());
+        let session = session(&w);
         assert_eq!(w.requests(manager), [(0, session)]);
         assert!(w.source().in_flight);
 

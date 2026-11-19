@@ -568,17 +568,17 @@ mod tests {
     /// keeps the source's rate, and one that shows nothing new drops it to the idle rate.
     #[test]
     fn a_desktop_source_counts_requests_and_idles_once_a_capture_shows_no_change() {
-        use super::super::tests::{ID, Wire, id};
+        use super::super::tests::{ID, Wire, XRGB, capture_node, id};
         let region = Some(LogicalRect { x: 0.0, y: 0.0, width: 2.0, height: 1.0 });
         let target = CaptureTarget::Output("TEST".into());
-        let node = CaptureNode { node: ID, target, live: Some(f32::INFINITY), paint_cursor: false, region };
+        let node = CaptureNode { region, ..capture_node(ID, target, Some(f32::INFINITY)) };
         let mut w = Wire::with(Protocol::Wlr, &node);
         w.app.captures.desktops.insert(ID, bare(vec![0; 8], 2));
         w.source_mut().desktop = Some(Vec::new());
         let land = |w: &mut Wire, pixels: Option<[u8; 8]>| {
             let frame = id(w.wlr().frame.as_ref());
             // wlr `buffer` (XRGB 2x1, 8-byte rows), `buffer_done`, then `ready`.
-            w.send(frame, 0, &[wl_shm::Format::Xrgb8888 as u32, 2, 1, 8]);
+            w.send(frame, 0, &[XRGB, 2, 1, 8]);
             w.send(frame, 6, &[]);
             if let (Some(pixels), Some(Proto::Wlr(wlr))) = (pixels, &mut w.source_mut().proto) {
                 wlr.buffer.as_mut().unwrap().canvas_for_test()[..8].copy_from_slice(&pixels);

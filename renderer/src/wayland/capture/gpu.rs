@@ -233,7 +233,7 @@ pub(super) fn land_dmabuf_frame(captures: &mut CaptureRegistry, capture_cache: &
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{ID, Wire, id};
+    use super::super::tests::{ID, Wire, buffer, frame, offer};
     use super::*;
 
     const SHAPE: DmabufShape = DmabufShape { width: 4, height: 2, format: FormatModifier { fourcc: 0, modifier: 0 } };
@@ -287,10 +287,8 @@ mod tests {
         // An idle ext source with a pending slot skips its frame though shm is on offer, then
         // `created` completes the slot and the requested frame attaches it. 0xff00_0001 is the
         // next server id; `attach_buffer` is frame request 1.
-        let completed = w.dmabuf.create_params(&qh, ID);
+        let completed = w.pending_slot(SHAPE);
         let source = w.source_mut();
-        source.dmabuf_state = DmabufState::Shaped(SHAPE);
-        source.dmabuf = DmabufSwapchain::pending_for_test(SHAPE, completed.clone());
         let shm_negotiated = Some((4, 4, wl_shm::Format::Xrgb8888));
         source.proto =
             Some(Proto::Ext(ExtProto { session: Some(session.clone()), shm_negotiated, ..Default::default() }));
@@ -299,8 +297,7 @@ mod tests {
         w.send(completed.id().protocol_id(), 0, &[0xff00_0001]);
         let answered = (w.requests(completed.id().protocol_id()), w.requests(0xff00_0001));
         assert_eq!(answered, (vec![(0, 0)], vec![]), "only the params goes");
-        let frame = id(w.ext().frame.as_ref());
-        assert!(w.requests(frame).contains(&(1, 0xff00_0001)) && w.source().in_flight, "into the created buffer");
+        assert!(w.requests(frame(&w)).contains(&(1, 0xff00_0001)) && w.source().in_flight, "into the created buffer");
 
         // A new shape must reallocate, and without dma-buf support that fails the source to shm.
         let source = w.source_mut();
@@ -320,33 +317,25 @@ mod tests {
     #[test]
     fn a_dmabuf_frame_lands_for_import_and_a_failed_allocation_falls_back_to_shm() {
         let mut w = Wire::new(Protocol::Ext, Some(f32::INFINITY));
-        let qh = w.app.queue_handle.clone();
-        let params = w.dmabuf.create_params(&qh, ID);
-        let source = w.source_mut();
-        source.dmabuf_state = DmabufState::Shaped(SHAPE);
-        source.dmabuf = DmabufSwapchain::pending_for_test(SHAPE, params.clone());
+        let params = w.pending_slot(SHAPE);
         w.send(params.id().protocol_id(), 0, &[0xff00_0000]);
-        let session = id(w.ext().session.as_ref());
-        w.send(session, 0, &[4, 2]);
-        w.send(session, 1, &[wl_shm::Format::Xrgb8888 as u32]);
-        w.send(session, 4, &[]);
-        let frame = id(w.ext().frame.as_ref());
-        assert_eq!(w.requests(frame), [(1, 0xff00_0000), (2, 0), (3, 0)], "attached to the created slot");
+        offer(&mut w, 4, 2);
+        let landing = frame(&w);
+        assert_eq!(w.requests(landing), [(1, 0xff00_0000), (2, 0), (3, 0)], "attached to the created slot");
 
         // As a negotiation with dma-buf support leaves it: no shm buffer, only the offer.
         if let Some(Proto::Ext(ext)) = &mut w.source_mut().proto {
             ext.buffer = None;
         }
         w.app.capture_cache.poll();
-        w.send(frame, 3, &[]);
+        w.send(landing, 3, &[]);
         assert_eq!(w.app.captures.pending_import, [ID]);
         assert!(w.app.capture_cache.get(ID).is_none());
         assert_eq!(w.app.capture_cache.poll(), [ID], "an idle surface must paint before it can import");
 
-        let next = id(w.ext().frame.as_ref());
+        let next = frame(&w);
         assert!(matches!(w.source().dmabuf_state, DmabufState::Failed), "the other slot cannot allocate");
-        let shm = id(w.ext().buffer.as_ref().map(|negotiated| negotiated.buffer.wl_buffer()));
-        assert_eq!(w.requests(next), [(1, shm), (2, 0), (3, 0)], "shm from the cached offer");
+        assert_eq!(w.requests(next), [(1, buffer(&w)), (2, 0), (3, 0)], "shm from the cached offer");
         assert_eq!(w.app.captures.pending_import, [ID], "the landed front still awaits its import");
     }
 }

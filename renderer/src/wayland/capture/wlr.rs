@@ -189,12 +189,11 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, NodeId> for App {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{ID, Wire, id};
+    use super::super::tests::{ID, Wire, XRGB, id};
     use super::*;
 
     // Frame events: `buffer` 0, `flags` 1, `ready` 2, `failed` 3, `damage` 4, `linux_dmabuf` 5,
     // `buffer_done` 6; requests: `destroy` 1, `copy_with_damage` 2. Manager: `capture_output` 0.
-    const XRGB: u32 = wl_shm::Format::Xrgb8888 as u32;
 
     fn frame(w: &mut Wire) -> u32 {
         id(w.wlr().frame.as_ref())
@@ -328,11 +327,7 @@ mod tests {
         for (created, linux_dmabuf, into_slot) in cases {
             let label = format!("created {created}, offer {linux_dmabuf:?}");
             let mut w = Wire::new(Protocol::Wlr, None);
-            let qh = w.app.queue_handle.clone();
-            let params = w.dmabuf.create_params(&qh, ID);
-            let source = w.source_mut();
-            source.dmabuf_state = DmabufState::Shaped(shape);
-            source.dmabuf = DmabufSwapchain::pending_for_test(shape, params.clone());
+            let params = w.pending_slot(shape);
             if created {
                 // `created` is event 0; 0xff00_0000 is the first server-allocated id.
                 w.send(params.id().protocol_id(), 0, &[0xff00_0000]);
