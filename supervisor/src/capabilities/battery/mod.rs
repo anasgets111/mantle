@@ -64,17 +64,12 @@ pub(super) mod fixtures {
 
     pub(super) struct FakeUPower {
         pub(super) paths: Vec<OwnedObjectPath>,
-        pub(super) fail_enumeration: bool,
     }
 
     #[zbus::interface(name = "org.freedesktop.UPower")]
     impl FakeUPower {
-        fn enumerate_devices(&mut self) -> zbus::fdo::Result<Vec<OwnedObjectPath>> {
-            if self.fail_enumeration {
-                self.fail_enumeration = false;
-                return Err(zbus::fdo::Error::Failed("test enumeration failure".into()));
-            }
-            Ok(self.paths.clone())
+        fn enumerate_devices(&self) -> Vec<OwnedObjectPath> {
+            self.paths.clone()
         }
         #[zbus(signal)]
         pub(super) async fn device_added(emitter: &SignalEmitter<'_>, device: OwnedObjectPath) -> zbus::Result<()>;
@@ -89,7 +84,7 @@ pub(super) mod fixtures {
         mouse_percent: f64,
     ) -> zbus::Connection {
         bus.builder()
-            .serve_at("/org/freedesktop/UPower", FakeUPower { paths, fail_enumeration: false })
+            .serve_at("/org/freedesktop/UPower", FakeUPower { paths })
             .unwrap()
             .serve_at(DISPLAY_DEVICE, display)
             .unwrap()

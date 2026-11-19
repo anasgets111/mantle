@@ -11,7 +11,7 @@ use tokio::task::JoinHandle;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 use super::controller::{DISPLAY_DEVICE, device_properties, from_upower, get};
-use crate::capabilities::{RETRY_FIRST, forward_until_closed, next_delay, properties_proxy};
+use crate::capabilities::{forward_until_closed, properties_proxy};
 
 #[zbus::proxy(
     interface = "org.freedesktop.UPower",
@@ -133,12 +133,12 @@ async fn refresh(
     watches: &mut HashMap<OwnedObjectPath, Watch>,
     changed: &UnboundedSender<()>,
     updates: &UnboundedSender<Readings>,
-) -> bool {
+) {
     let paths = match upower.enumerate_devices().await {
         Ok(paths) => paths,
         Err(err) => {
             debug!("UPower device enumeration failed: {err}");
-            return false;
+            return;
         }
     };
     watches.retain(|path, _| paths.contains(path));
@@ -170,7 +170,6 @@ async fn refresh(
     }
     peripherals.sort_by(|a, b| a.id.cmp(&b.id));
     let _ = updates.send((peripherals, health(energy)));
-    true
 }
 
 pub(super) async fn run(connection: zbus::Connection, updates: UnboundedSender<Readings>) {
@@ -195,18 +194,14 @@ pub(super) async fn run(connection: zbus::Connection, updates: UnboundedSender<R
     };
     let (changed, mut device_changes) = tokio::sync::mpsc::unbounded_channel();
     let mut watches = HashMap::new();
-    let mut retry = RETRY_FIRST;
+    // ponytail: a failed enumeration waits for the next device or owner signal; upgrade: retry on a backoff.
     loop {
-        let enumerated = refresh(&upower, &connection, &mut watches, &changed, &updates).await;
+        refresh(&upower, &connection, &mut watches, &changed, &updates).await;
         if updates.is_closed() {
             return;
         }
-        if enumerated {
-            retry = RETRY_FIRST;
-        }
         tokio::select! {
             _ = updates.closed() => return,
-            _ = tokio::time::sleep(retry), if !enumerated => retry = next_delay(retry),
             Some(_) = added.next() => {},
             Some(_) = removed.next() => {},
             Some(_) = device_changes.recv() => {},
@@ -326,62 +321,6 @@ mod tests {
         let unreadable = next_matching(&mut updates, |list| list.first().is_some_and(|d| d.kind == "unknown")).await;
         assert_eq!((unreadable[0].percent, unreadable[0].level.as_deref()), (None, None));
 
-        follower.abort();
-    }
-
-    struct Unwell(mpsc::UnboundedSender<tokio::time::Instant>);
-
-    #[zbus::interface(name = "org.freedesktop.UPower")]
-    impl Unwell {
-        fn enumerate_devices(&self) -> zbus::fdo::Result<Vec<OwnedObjectPath>> {
-            let _ = self.0.send(tokio::time::Instant::now());
-            Err(zbus::fdo::Error::Failed("UPower is not working".into()))
-        }
-    }
-
-    /// A UPower that never answers is asked less often each time, not once a second for ever.
-    #[tokio::test]
-    async fn a_failing_enumeration_is_retried_with_a_growing_delay() {
-        let bus = private_bus().await;
-        let (asked, mut asks) = mpsc::unbounded_channel();
-        let _service = bus
-            .builder()
-            .serve_at("/org/freedesktop/UPower", Unwell(asked))
-            .unwrap()
-            .name("org.freedesktop.UPower")
-            .unwrap()
-            .build()
-            .await
-            .unwrap();
-        let (tx, _updates) = mpsc::unbounded_channel();
-        let follower = tokio::spawn(run(bus.connection().await, tx));
-
-        // Real time: paused time would jump over the bus round trips. The gaps are 1 s, then 2 s.
-        let mut times = Vec::new();
-        for _ in 0..3 {
-            times.push(within(asks.recv()).await.unwrap());
-        }
-        let gaps: Vec<_> = times.windows(2).map(|pair| pair[1] - pair[0]).collect();
-        assert!(gaps[1] >= gaps[0] * 3 / 2, "the retry gaps stayed flat: {gaps:?}");
-        follower.abort();
-    }
-
-    #[tokio::test]
-    async fn failed_initial_enumeration_retries_without_a_signal() {
-        let bus = private_bus().await;
-        let service = serve(&bus, vec![OwnedObjectPath::try_from(MOUSE).unwrap()], FakeDevice::default(), 55.0).await;
-        service
-            .object_server()
-            .interface::<_, FakeUPower>("/org/freedesktop/UPower")
-            .await
-            .unwrap()
-            .get_mut()
-            .await
-            .fail_enumeration = true;
-        let (tx, mut updates) = mpsc::unbounded_channel();
-        let follower = tokio::spawn(run(bus.connection().await, tx));
-        let (list, _) = within(updates.recv()).await.unwrap();
-        assert_eq!(list[0].percent, Some(55));
         follower.abort();
     }
 }
