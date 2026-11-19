@@ -114,7 +114,10 @@ fn run_inner(
     pw::init();
 
     let main_loop = pw::main_loop::MainLoopRc::new(None)?;
-    let context = pw::context::ContextRc::new(&main_loop, None)?;
+    // No D-Bus: it serves only module-rt, which boosts data-loop threads, and this context runs all,
+    // meters included, on its main loop; with it, each connect opens a session and a system bus link.
+    let context =
+        pw::context::ContextRc::new(&main_loop, Some(pw::properties::properties! { "support.dbus" => "false" }))?;
     let core = context.connect_rc(remote.map(|remote| pw::properties::properties! { *keys::REMOTE_NAME => remote }))?;
     let registry = core.get_registry_rc()?;
 
@@ -760,9 +763,15 @@ mod tests {
         }
     }
 
+    /// The PipeWire tools' default config, and the virtual devices' module-rt, ask RTKit for
+    /// priority over both buses; these addresses keep them off the user's.
+    const NO_BUS: [(&str, &str); 2] =
+        [("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent"), ("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/nonexistent")];
+
     /// The ids and `node.name`s of the `class` nodes `pw-dump` lists on the private daemon at `dir`.
     fn nodes(dir: &std::path::Path, class: &str) -> Vec<(u64, String)> {
-        let output = Command::new("pw-dump").env("PIPEWIRE_RUNTIME_DIR", dir).output().expect("pw-dump runs");
+        let output =
+            Command::new("pw-dump").env("PIPEWIRE_RUNTIME_DIR", dir).envs(NO_BUS).output().expect("pw-dump runs");
         let dump: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap_or_default();
         dump.iter()
             .filter(|object| object["info"]["props"]["media.class"] == class)
@@ -891,6 +900,7 @@ mod tests {
                 .args(["-n", "default"])
                 .args(args)
                 .env("PIPEWIRE_RUNTIME_DIR", dir.path())
+                .envs(NO_BUS)
                 .status()
                 .expect("pw-metadata runs");
             assert!(status.success(), "pw-metadata {args:?}");
@@ -911,8 +921,9 @@ mod tests {
     fn a_loopback_declared_before_pipewire_starts_appears_once_it_does() {
         let dir = tempfile::tempdir().unwrap();
         let Mixer { mut published, commands, requests, restarts, .. } = mixer(dir.path());
-        let (conf, envs) =
-            (dir.path().join("devices.conf"), [("PIPEWIRE_RUNTIME_DIR".to_string(), dir.path().display().to_string())]);
+        let conf = dir.path().join("devices.conf");
+        let mut envs = vec![("PIPEWIRE_RUNTIME_DIR".to_string(), dir.path().display().to_string())];
+        envs.extend(NO_BUS.map(|(key, value)| (key.to_string(), value.to_string())));
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
         runtime.spawn(virtual_devices::run(restarts, commands, move |modules| {
             virtual_devices::start(Some(&conf), modules, &envs)
