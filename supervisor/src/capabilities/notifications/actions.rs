@@ -1,7 +1,7 @@
 //! `Notify`'s flat action array: drawable buttons plus the `default` and `inline-reply` flags
 //! (ADR-0090).
 
-use super::{MAX_ACTION_LABEL_BYTES, MAX_ACTIONS, Notification, NotificationAction};
+use super::{MAX_ACTION_KEY_BYTES, MAX_ACTION_LABEL_BYTES, MAX_ACTIONS, Notification, NotificationAction};
 use crate::capabilities::truncate_utf8_bytes;
 
 /// Results of one pass over `Notify`'s flat action array, returned together rather than as three
@@ -25,7 +25,9 @@ pub(super) struct ParsedActions {
 pub(super) fn parse_actions(actions: &[String], action_icons: bool) -> ParsedActions {
     let mut parsed = ParsedActions::default();
     for pair in actions.chunks(2) {
-        let Some(key) = pair.first().filter(|key| !key.is_empty()) else { continue };
+        let Some(key) = pair.first().filter(|key| !key.is_empty() && key.len() <= MAX_ACTION_KEY_BYTES) else {
+            continue;
+        };
         match key.as_str() {
             "default" => {
                 parsed.has_default = true;
@@ -162,5 +164,14 @@ mod tests {
 
         notification.has_default_action = true;
         assert!(declares_action(&notification, "default"));
+    }
+
+    #[test]
+    fn an_oversized_action_key_is_dropped_before_it_takes_a_slot() {
+        let long = "k".repeat(MAX_ACTION_KEY_BYTES + 1);
+        let edge = "e".repeat(MAX_ACTION_KEY_BYTES);
+        let mut pairs = vec![(long.as_str(), "Open"); MAX_ACTIONS];
+        pairs.extend([(edge.as_str(), "Edge"), ("ok", "Ok")]);
+        assert_eq!(keys(&flat(&pairs), true), [edge.clone(), "ok".into()]);
     }
 }

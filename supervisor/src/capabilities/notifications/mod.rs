@@ -65,6 +65,8 @@ const MAX_BODY_BYTES: usize = 512;
 /// typical card's three; labels are capped tighter than summaries.
 const MAX_ACTIONS: usize = 8;
 const MAX_ACTION_LABEL_BYTES: usize = 64;
+/// A key round-trips in `ActionInvoked`, so one past this is dropped rather than truncated.
+const MAX_ACTION_KEY_BYTES: usize = 256;
 
 /// Theme name from `app_icon` (ADR-0091), capped like the short identifier `app_name`.
 const MAX_APP_ICON_NAME_BYTES: usize = MAX_APP_NAME_BYTES;
