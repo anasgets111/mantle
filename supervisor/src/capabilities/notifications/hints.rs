@@ -1,11 +1,12 @@
 //! Custom serde deserialization and hint extraction helpers for `a{sv}` `Notify` hints (ADR-0033).
 
 use serde::Deserialize;
+use serde::de::MapAccess;
 use zbus::zvariant::Type;
 
 use shared::state::notifications::Urgency;
 
-use crate::capabilities::{Hint, truncate_utf8_bytes};
+use crate::capabilities::{Dict, DictFields, Hint, truncate_utf8_bytes};
 
 use super::icon::RawImageData;
 use super::{MAX_DESKTOP_ENTRY_BYTES, MAX_REPLY_PLACEHOLDER_BYTES};
@@ -58,49 +59,35 @@ pub(super) struct Hints {
     pub(super) image_path_deprecated: Option<String>,
 }
 
-/// Walks the dict by hand rather than deriving it: serde's derive refuses a repeated key outright,
-/// and refusing is the one outcome a notification server cannot afford, since the sender sees a
-/// D-Bus error it ignores and the user simply never gets the notification.
+/// Read as [`Dict`] rather than derived: serde's derive refuses a repeated key outright, and
+/// refusing is the one outcome a notification server cannot afford, since the sender sees a D-Bus
+/// error it ignores and the user simply never gets the notification.
 impl<'de> Deserialize<'de> for Hints {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_map(HintsVisitor)
+        Dict::deserialize(deserializer).map(|Dict(hints)| hints)
     }
 }
 
-struct HintsVisitor;
-
-impl<'de> serde::de::Visitor<'de> for HintsVisitor {
-    type Value = Hints;
-
-    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("the Notify hints dict")
-    }
-
-    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-        let mut hints = Hints::default();
-        while let Some(key) = map.next_key::<&str>()? {
-            // A repeated key keeps the last, as a `HashMap` would.
-            match key {
-                "urgency" => hints.urgency = map.next_value_seed(Hint::new())?,
-                "action-icons" => hints.action_icons = map.next_value_seed(Hint::new())?,
-                "resident" => hints.resident = map.next_value_seed(Hint::new())?,
-                "transient" => hints.transient = map.next_value_seed(Hint::new())?,
-                "desktop-entry" => hints.desktop_entry = map.next_value_seed(Hint::new())?,
-                "x-kde-reply-placeholder-text" => hints.reply_placeholder = map.next_value_seed(Hint::new())?,
-                "suppress-sound" => hints.suppress_sound = map.next_value_seed(Hint::new())?,
-                "sound-file" => hints.sound_file = map.next_value_seed(Hint::new())?,
-                "sound-name" => hints.sound_name = map.next_value_seed(Hint::new())?,
-                "image-data" => hints.image_data = map.next_value_seed(Hint::new())?,
-                "image_data" => hints.image_data_deprecated = map.next_value_seed(Hint::new())?,
-                "icon_data" => hints.icon_data = map.next_value_seed(Hint::new())?,
-                "image-path" => hints.image_path = map.next_value_seed(Hint::new())?,
-                "image_path" => hints.image_path_deprecated = map.next_value_seed(Hint::new())?,
-                _ => {
-                    map.next_value::<serde::de::IgnoredAny>()?;
-                }
-            }
+impl DictFields for Hints {
+    fn read<'de, A: MapAccess<'de>>(&mut self, key: &str, map: &mut A) -> Result<bool, A::Error> {
+        match key {
+            "urgency" => self.urgency = map.next_value_seed(Hint::new())?,
+            "action-icons" => self.action_icons = map.next_value_seed(Hint::new())?,
+            "resident" => self.resident = map.next_value_seed(Hint::new())?,
+            "transient" => self.transient = map.next_value_seed(Hint::new())?,
+            "desktop-entry" => self.desktop_entry = map.next_value_seed(Hint::new())?,
+            "x-kde-reply-placeholder-text" => self.reply_placeholder = map.next_value_seed(Hint::new())?,
+            "suppress-sound" => self.suppress_sound = map.next_value_seed(Hint::new())?,
+            "sound-file" => self.sound_file = map.next_value_seed(Hint::new())?,
+            "sound-name" => self.sound_name = map.next_value_seed(Hint::new())?,
+            "image-data" => self.image_data = map.next_value_seed(Hint::new())?,
+            "image_data" => self.image_data_deprecated = map.next_value_seed(Hint::new())?,
+            "icon_data" => self.icon_data = map.next_value_seed(Hint::new())?,
+            "image-path" => self.image_path = map.next_value_seed(Hint::new())?,
+            "image_path" => self.image_path_deprecated = map.next_value_seed(Hint::new())?,
+            _ => return Ok(false),
         }
-        Ok(hints)
+        Ok(true)
     }
 }
 
@@ -185,6 +172,43 @@ mod tests {
     /// One hint with an off-spec signature must cost that hint and nothing else: a sender who
     /// types `transient` wrong still gets its notification shown, as it did when every value was
     /// a `Value` and a bad match simply returned `None`.
+    #[test]
+    fn every_hint_lands_in_its_own_field() {
+        let hints: HashMap<&str, Value<'_>> = HashMap::from([
+            ("urgency", Value::U8(2)),
+            ("action-icons", Value::from(true)),
+            ("resident", Value::from(true)),
+            ("transient", Value::from(true)),
+            ("desktop-entry", Value::from("app")),
+            ("x-kde-reply-placeholder-text", Value::from("reply")),
+            ("suppress-sound", Value::from(true)),
+            ("sound-file", Value::from("/s.oga")),
+            ("sound-name", Value::from("bell")),
+            ("image-data", one_pixel_image_data()),
+            ("image_data", one_pixel_image_data()),
+            ("icon_data", one_pixel_image_data()),
+            ("image-path", Value::from("/a.png")),
+            ("image_path", Value::from("/b.png")),
+        ]);
+        let encoded = to_bytes(Context::new_dbus(LE, 0), &hints).expect("a{sv} encodes");
+        let (h, _): (Hints, _) = encoded.deserialize().expect("every hint decodes");
+        let flags = (h.urgency, h.action_icons, h.resident, h.transient, h.suppress_sound);
+        assert_eq!(flags, (Some(2), Some(true), Some(true), Some(true), Some(true)));
+        let text = [
+            &h.desktop_entry,
+            &h.reply_placeholder,
+            &h.sound_file,
+            &h.sound_name,
+            &h.image_path,
+            &h.image_path_deprecated,
+        ];
+        assert_eq!(
+            text.map(|text| text.as_deref()),
+            [Some("app"), Some("reply"), Some("/s.oga"), Some("bell"), Some("/a.png"), Some("/b.png")]
+        );
+        assert!(h.image_data.is_some() && h.image_data_deprecated.is_some() && h.icon_data.is_some());
+    }
+
     #[test]
     fn a_hint_typed_against_the_spec_drops_alone_and_the_rest_of_the_dict_still_decodes() {
         let mut oversized = Array::new(&Signature::U8);

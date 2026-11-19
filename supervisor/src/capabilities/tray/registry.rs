@@ -13,12 +13,12 @@ use tokio::task::JoinHandle;
 use zbus::names::{BusName, OwnedUniqueName};
 use zbus::zvariant::OwnedObjectPath;
 
-use crate::capabilities::shm_icons;
+use crate::capabilities::{get_property, shm_icons};
 
 use super::MAX_ITEMS;
 use super::admission::{admit_waiting, enforce_menu_budget, record_at_cap, remaining_menu_budget};
 use super::icon::{SPOOL_SUBDIR, icon_filename_stem};
-use super::item::{TrayItem, fetch_tray_item_base, get_property};
+use super::item::{TrayItem, fetch_tray_item_base};
 use super::menu::{MenuItem, fetch_menu_via};
 use super::proxies::{DBusMenuProxy, NewMenuStream, StatusNotifierItemProxy, bind_dbusmenu, bind_item};
 use super::registration::{ResolvedRegistration, item_id};
@@ -125,7 +125,7 @@ pub(super) async fn register_item(
     // An object that answers nothing is not an item: `bind_item` does no I/O and
     // `fetch_tray_item_base` defaults every property, so an adoption guess at a path nobody exports
     // would insert a blank phantom (ADR-0168). SNI makes `Status` mandatory, so a live item answers.
-    let status = get_property::<String>(&item, "Status").await;
+    let status = get_property::<String>(item.inner(), "Status").await;
     if let Err(err) =
         status.and_then(|status| status.ok_or_else(|| zbus::Error::Failure("Status is not a string".into())))
     {
@@ -323,7 +323,7 @@ const MENU_SETTLE: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// The item's `Menu`, bound; `Ok(None)` for none, including the `/NO_DBUSMENU` Qt names until the app sets one.
 async fn bind_item_menu(item: &StatusNotifierItemProxy<'static>) -> zbus::Result<Option<DBusMenuProxy<'static>>> {
-    let path = get_property::<OwnedObjectPath>(item, "Menu").await?;
+    let path = get_property::<OwnedObjectPath>(item.inner(), "Menu").await?;
     let path = path.ok_or_else(|| zbus::Error::Failure("Menu is not an object path".into()))?;
     if matches!(path.as_str(), "/" | "/NO_DBUSMENU") {
         return Ok(None);

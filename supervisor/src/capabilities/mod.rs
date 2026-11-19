@@ -16,6 +16,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use serde::de::{IgnoredAny, MapAccess};
 use tokio::sync::mpsc::UnboundedSender;
 use zbus::zvariant::{Signature, Type};
 
@@ -249,6 +250,74 @@ impl<'de, T: serde::Deserialize<'de> + Type> serde::de::Visitor<'de> for HintVis
         }
         seq.next_element()
     }
+}
+
+/// The keys of a peer-sent `a{sv}` that a type reads, read through [`Dict`].
+pub(crate) trait DictFields: Default {
+    /// Decodes `key`'s value into `self` (through [`Hint`]), or `false` to have [`Dict`] skip it.
+    fn read<'de, A: MapAccess<'de>>(&mut self, key: &str, map: &mut A) -> Result<bool, A::Error>;
+}
+
+/// An `a{sv}` decoded straight into `T`, as [`Hint`] decodes one variant: keys `T` does not read
+/// are skipped with `IgnoredAny`, so they cost no memory. A repeated key keeps the last, as a
+/// `HashMap` would, where serde's derive would refuse the whole dict.
+pub(crate) struct Dict<T>(pub(crate) T);
+
+impl<T> Type for Dict<T> {
+    const SIGNATURE: &'static Signature = &Signature::static_dict(&Signature::Str, &Signature::Variant);
+}
+
+impl<'de, T: DictFields> serde::Deserialize<'de> for Dict<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_map(DictVisitor(PhantomData))
+    }
+}
+
+struct DictVisitor<T>(PhantomData<T>);
+
+impl<'de, T: DictFields> serde::de::Visitor<'de> for DictVisitor<T> {
+    type Value = Dict<T>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("an a{sv} dict")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Dict<T>, A::Error> {
+        let mut fields = T::default();
+        while let Some(key) = map.next_key::<&str>()? {
+            if !fields.read(key, &mut map)? {
+                map.next_value::<IgnoredAny>()?;
+            }
+        }
+        Ok(Dict(fields))
+    }
+}
+
+const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
+
+/// Every property of `proxy`'s interface by one `GetAll`, decoded as [`Dict`]. zbus's property
+/// cache and generated getters decode an `OwnedValue` first, one `Value` per byte of an array.
+pub(crate) async fn get_all<T: DictFields>(proxy: &zbus::Proxy<'_>) -> zbus::Result<T> {
+    let (destination, interface) = (Some(proxy.destination()), proxy.interface().as_str());
+    let reply = proxy.connection().call_method(destination, proxy.path(), Some(PROPERTIES), "GetAll", &interface);
+    Ok(reply.await?.body().deserialize::<Dict<T>>()?.0)
+}
+
+/// One property by `Properties.Get`, decoded straight to `T` as [`get_all`] does: `Ok(None)` when
+/// the peer sent another type. A reply that is not exactly one variant is an error, as zbus's
+/// generated getters make it.
+pub(crate) async fn get_property<T: serde::de::DeserializeOwned + Type>(
+    proxy: &zbus::Proxy<'_>,
+    name: &str,
+) -> zbus::Result<Option<T>> {
+    let (destination, interface) = (Some(proxy.destination()), proxy.interface().as_str());
+    let reply =
+        proxy.connection().call_method(destination, proxy.path(), Some(PROPERTIES), "Get", &(interface, name)).await?;
+    let body = reply.body();
+    if *body.signature() != Signature::Variant {
+        return Err(zbus::Error::Failure(format!("Get {name} replied ({}), not one variant", body.signature())));
+    }
+    Ok(body.data().deserialize_with_seed(Hint::new())?.0)
 }
 
 #[cfg(test)]

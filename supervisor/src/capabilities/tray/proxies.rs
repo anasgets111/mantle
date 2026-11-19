@@ -21,7 +21,7 @@ pub(super) trait StatusNotifierItem {
     #[zbus(name = "Scroll")]
     fn scroll(&self, delta: i32, orientation: &str) -> zbus::Result<()>;
 
-    // Properties go through `item::get_property` and one `GetAll`: generated getters decode an
+    // Properties go through `capabilities::get_property` and `get_all`: generated getters decode an
     // `OwnedValue`, one `Value` per byte of an array.
 
     #[zbus(signal, name = "NewTitle")]

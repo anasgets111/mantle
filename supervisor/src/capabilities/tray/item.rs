@@ -5,10 +5,10 @@ use shared::state::tray::TrayStatus;
 
 use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
 
-use serde::de::{IgnoredAny, MapAccess};
+use serde::de::MapAccess;
 use shared::debug;
 use zbus::names::OwnedUniqueName;
-use zbus::zvariant::{OwnedObjectPath, Signature, Type};
+use zbus::zvariant::{OwnedObjectPath, Type};
 
 use super::icon::{
     IconPixmap, IconSource, icon_filename_stem, largest_valid_pixmap, resolve_icon_source, write_icon_png,
@@ -16,7 +16,7 @@ use super::icon::{
 use super::proxies::StatusNotifierItemProxy;
 use super::registration::item_id;
 use super::{MAX_TRAY_TEXT_BYTES, RawIconPixmap, RawToolTip};
-use crate::capabilities::{Hint, truncate_utf8_bytes};
+use crate::capabilities::{DictFields, Hint, get_all, get_property, truncate_utf8_bytes};
 
 /// [`MAX_TRAY_TEXT_BYTES`] applied to one application-supplied property.
 fn capped(value: &str) -> String {
@@ -56,11 +56,9 @@ const VARIANTS: [(&str, &str, &str); 3] = [
 ];
 
 /// The SNI properties `tray.items` reads, each `Some` when the item sent it: its value, or the
-/// type's default when mistyped. Decoded straight to Rust types, so a pixmap's bytes land in a
-/// `Vec<u8>` rather than one `zvariant::Value` each, and keys not named here are skipped without
-/// allocating.
-#[derive(Default, Type)]
-#[zvariant(signature = "a{sv}")]
+/// type's default when mistyped. Decoded as [`Dict`](crate::capabilities::Dict), so a pixmap's bytes land in a `Vec<u8>`
+/// rather than one `zvariant::Value` each.
+#[derive(Default)]
 struct Props {
     id: Option<String>,
     title: Option<String>,
@@ -73,67 +71,28 @@ struct Props {
     pixmaps: [Option<Vec<RawIconPixmap>>; 3],
 }
 
-impl<'de> serde::Deserialize<'de> for Props {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_map(PropsVisitor)
-    }
-}
-
-struct PropsVisitor;
-
-impl<'de> serde::de::Visitor<'de> for PropsVisitor {
-    type Value = Props;
-
-    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("the StatusNotifierItem properties")
-    }
-
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Props, A::Error> {
+impl DictFields for Props {
+    fn read<'de, A: MapAccess<'de>>(&mut self, key: &str, map: &mut A) -> Result<bool, A::Error> {
         fn sent<'de, T: serde::Deserialize<'de> + Type + Default, A: MapAccess<'de>>(
             map: &mut A,
         ) -> Result<Option<T>, A::Error> {
             Ok(Some(map.next_value_seed(Hint::new())?.unwrap_or_default()))
         }
-        let mut props = Props::default();
-        while let Some(key) = map.next_key::<&str>()? {
-            match key {
-                "Id" => props.id = sent(&mut map)?,
-                "Title" => props.title = sent(&mut map)?,
-                "Status" => props.status = sent(&mut map)?,
-                "ToolTip" => props.tool_tip = sent(&mut map)?,
-                "ItemIsMenu" => props.item_is_menu = sent(&mut map)?,
-                "IconThemePath" => props.theme_path = sent(&mut map)?,
-                key => match VARIANTS.iter().position(|&(name, pixmap, _)| key == name || key == pixmap) {
-                    Some(index) if key == VARIANTS[index].0 => props.names[index] = sent(&mut map)?,
-                    Some(index) => props.pixmaps[index] = sent(&mut map)?,
-                    None => {
-                        map.next_value::<IgnoredAny>()?;
-                    }
-                },
-            }
+        match key {
+            "Id" => self.id = sent(map)?,
+            "Title" => self.title = sent(map)?,
+            "Status" => self.status = sent(map)?,
+            "ToolTip" => self.tool_tip = sent(map)?,
+            "ItemIsMenu" => self.item_is_menu = sent(map)?,
+            "IconThemePath" => self.theme_path = sent(map)?,
+            key => match VARIANTS.iter().position(|&(name, pixmap, _)| key == name || key == pixmap) {
+                Some(index) if key == VARIANTS[index].0 => self.names[index] = sent(map)?,
+                Some(index) => self.pixmaps[index] = sent(map)?,
+                None => return Ok(false),
+            },
         }
-        Ok(props)
+        Ok(true)
     }
-}
-
-const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
-
-/// One property by `Properties.Get`, decoded straight to `T` as [`Props`] is: `Ok(None)` when the
-/// item sent another type. zbus's generated getters decode an `OwnedValue` first, one `Value` per
-/// byte of an array. A reply that is not exactly one variant is an error, as those getters make it.
-pub(super) async fn get_property<T: serde::de::DeserializeOwned + Type>(
-    item: &StatusNotifierItemProxy<'static>,
-    name: &str,
-) -> zbus::Result<Option<T>> {
-    let proxy = item.inner();
-    let (destination, interface) = (Some(proxy.destination()), proxy.interface().as_str());
-    let reply =
-        proxy.connection().call_method(destination, proxy.path(), Some(PROPERTIES), "Get", &(interface, name)).await?;
-    let body = reply.body();
-    if *body.signature() != Signature::Variant {
-        return Err(zbus::Error::Failure(format!("Get {name} replied ({}), not one variant", body.signature())));
-    }
-    Ok(body.data().deserialize_with_seed(Hint::new())?.0)
 }
 
 /// Every SNI property in one `GetAll` round trip, or with `text_only` the four a title, tooltip or
@@ -142,9 +101,7 @@ pub(super) async fn get_property<T: serde::de::DeserializeOwned + Type>(
 async fn get_props(item: &StatusNotifierItemProxy<'static>, text_only: bool) -> Props {
     let proxy = item.inner();
     if !text_only {
-        let (destination, interface) = (Some(proxy.destination()), proxy.interface().as_str());
-        let reply = proxy.connection().call_method(destination, proxy.path(), Some(PROPERTIES), "GetAll", &interface);
-        return reply.await.and_then(|reply| reply.body().deserialize::<Props>()).unwrap_or_else(|err| {
+        return get_all(proxy).await.unwrap_or_else(|err| {
             debug!("property read failed for {}: {err}", proxy.destination());
             Props::default()
         });
@@ -154,10 +111,10 @@ async fn get_props(item: &StatusNotifierItemProxy<'static>, text_only: bool) -> 
         read.inspect_err(|err| debug!("Get {name} failed for {item}: {err}")).ok().map(Option::unwrap_or_default)
     }
     let (id, title, status, tool_tip) = futures_util::join!(
-        get_property(item, "Id"),
-        get_property(item, "Title"),
-        get_property(item, "Status"),
-        get_property(item, "ToolTip"),
+        get_property(proxy, "Id"),
+        get_property(proxy, "Title"),
+        get_property(proxy, "Status"),
+        get_property(proxy, "ToolTip"),
     );
     let item = proxy.destination();
     Props {
@@ -284,6 +241,7 @@ fn resolve_variant(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::Dict;
 
     #[test]
     fn resolve_display_name_prefers_the_title_and_falls_back_to_the_id() {
@@ -423,7 +381,7 @@ mod tests {
             ("XUnknown", Value::new(vec![0u8; bytes])),
         ]);
         let encoded = to_bytes(Context::new_dbus(LE, 0), &props).unwrap();
-        let (decoded, _): (Props, _) = encoded.deserialize().unwrap();
+        let (Dict(decoded), _): (Dict<Props>, _) = encoded.deserialize().unwrap();
         assert_eq!(decoded.pixmaps, [Some(pixmaps.clone()), None, Some(pixmaps)]);
         assert_eq!(decoded.tool_tip, Some(tool_tip.clone()));
         assert_eq!((decoded.title, decoded.id), (Some(String::new()), None), "mistyped is sent, empty");
