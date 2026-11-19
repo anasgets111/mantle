@@ -2491,6 +2491,28 @@ mod tests {
         let (solves, _, dropped, _) = pass(&mut scene, "kids:set({ kids:get()[3] })");
         assert_eq!((solves, dropped.len(), dropped[0].y), (1, 1, 0.0), "the kept row moves up to the top");
     }
+
+    /// A kept `list` reads its old axis from the properties it held: a horizontal one whose items
+    /// resolved to what they were keeps their solver nodes as a vertical one does.
+    #[test]
+    fn a_kept_horizontal_list_keeps_its_unchanged_items_solver_nodes() {
+        use super::super::solver::tests::SOLVER_UPDATES;
+        let updates = |direction: &str| {
+            let (mut scene, lua, shaping, surface) = applied(&format!(
+                r##"accent = state("accent", 1)
+                local white = accent:map(function() return "#ffffff" end)
+                return panel {{ id = "bar", child = list {{ direction = "{direction}", items = {{ 1, 2, 3 }},
+                    each = function() return rect {{ width = 10, height = 10, background = white }} end }} }}"##
+            ));
+            lua.load("accent:set(2)").exec().unwrap();
+            SOLVER_UPDATES.set(0);
+            apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            let items = &scene.surface("bar@TEST").unwrap().children[0].children;
+            (SOLVER_UPDATES.get(), items.iter().map(|item| (item.rect.x, item.rect.y)).collect::<Vec<_>>())
+        };
+        assert_eq!(updates("vertical"), (0, vec![(0.0, 0.0), (0.0, 10.0), (0.0, 20.0)]), "no item changed");
+        assert_eq!(updates("horizontal"), (0, vec![(0.0, 0.0), (10.0, 0.0), (20.0, 0.0)]));
+    }
     #[test]
     fn node_mask_reconciles_reacts_and_refuses_missing_targets_transactionally() {
         use crate::layout::{

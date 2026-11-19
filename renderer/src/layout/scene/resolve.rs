@@ -81,13 +81,14 @@ pub(super) fn resolve(
     {
         let memo = r.resolve_memo.take().expect("keep requires a resolve memo");
         signal::note_reads(lua, &memo.cells);
-        let mut properties = std::mem::take(&mut r.properties);
         let mut tweens = std::mem::take(&mut r.tweens);
         // A resting tween moves nothing, so what the last pass or tick parsed still holds. A `text`
         // `finish` wrapped or cut parses again: its kept paint holds the fitted string (as a tick's).
         let moving = tweens.iter().any(|tween| !tween.resting);
-        node::advance(&mut tweens, &mut properties, now, lua)?;
-        let injected = drop_injected_sizes(&mut properties, &memo);
+        // Advanced in place and shared, not taken: `prepare` reads the retained node's flow axis.
+        node::advance(&mut tweens, &mut r.properties, now, lua)?;
+        let injected = drop_injected_sizes(&mut r.properties, &memo);
+        let properties = Rc::clone(&r.properties);
         let style =
             if moving || injected { Rc::new(LayoutStyle::parse(&properties)?) } else { Rc::clone(&r.layout_style) };
         let refit = matches!(
