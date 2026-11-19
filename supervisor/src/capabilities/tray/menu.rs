@@ -1,51 +1,17 @@
-//! DBusMenu `GetLayout` parsing: recursive `zvariant::Value` walking into [`MenuItem`] (ADR-0031).
+//! DBusMenu `GetLayout` decoding: the `(ia{sv}av)` tree read straight into [`MenuItem`]s
+//! (ADR-0031). A `zvariant::Value` holds an `icon-data` array as one `Value` per byte, so the tree
+//! is decoded by typed seeds instead, and nodes past the depth or node cap are skipped unread.
 
+use std::fmt;
+
+use serde::de::{DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use shared::debug;
 pub use shared::state::tray::{MenuItem, MenuType, ToggleType};
-use zbus::zvariant::Value;
+use zbus::zvariant::{Signature, Type};
 
 use super::proxies::DBusMenuProxy;
 use super::{MAX_MENU_NODES, MAX_TRAY_TEXT_BYTES};
-use crate::capabilities::{shm_icons, truncate_utf8_bytes};
-
-/// Unwraps `Value::Value(Box<Value>)` layers; DBusMenu `av` children add one variant layer each.
-fn unwrap_variant<'a>(value: &'a Value<'_>) -> &'a Value<'a> {
-    match value {
-        Value::Value(inner) => unwrap_variant(inner),
-        other => other,
-    }
-}
-
-/// The only way this module reads a node's string, so [`MAX_TRAY_TEXT_BYTES`] cannot be forgotten
-/// on one property. DBusMenu bounds none of the four and the application owns them all, so an
-/// uncapped reader sitting beside this one would only be waiting to be picked by mistake.
-fn capped_str(value: &Value<'_>) -> Option<String> {
-    match unwrap_variant(value) {
-        Value::Str(s) => Some(truncate_utf8_bytes(s.as_str(), MAX_TRAY_TEXT_BYTES)),
-        _ => None,
-    }
-}
-
-fn value_as_bool(value: &Value<'_>) -> Option<bool> {
-    match unwrap_variant(value) {
-        Value::Bool(b) => Some(*b),
-        _ => None,
-    }
-}
-
-fn value_as_i32(value: &Value<'_>) -> Option<i32> {
-    match unwrap_variant(value) {
-        Value::I32(i) => Some(*i),
-        _ => None,
-    }
-}
-
-fn dict_str_key<'a>(key: &'a Value<'_>) -> Option<&'a str> {
-    match key {
-        Value::Str(s) => Some(s.as_str()),
-        _ => None,
-    }
-}
+use crate::capabilities::{Dict, DictFields, Hint, shm_icons, truncate_utf8_bytes};
 
 /// Maximum byte size for a menu item's raw `icon-data` PNG (512 KB).
 const MAX_MENU_ICON_BYTES: usize = 512 * 1024;
@@ -53,97 +19,215 @@ const MAX_MENU_ICON_BYTES: usize = 512 * 1024;
 /// 8-byte PNG file header.
 const PNG_MAGIC: &[u8] = b"\x89PNG\r\n\x1a\n";
 
-fn value_as_byte_array(value: &Value<'_>, max_bytes: usize) -> Option<Vec<u8>> {
-    match unwrap_variant(value) {
-        Value::Array(array) => {
-            if array.len() > max_bytes {
-                return None;
-            }
-            let mut bytes = Vec::with_capacity(array.len());
-            for elem in array.iter() {
-                match unwrap_variant(elem) {
-                    Value::U8(b) => bytes.push(*b),
-                    _ => return None,
-                }
-            }
-            Some(bytes)
+/// Recursion cap for [`Node`]. A session-bus peer controls `GetLayout`, so an encoded deep tree
+/// could otherwise stack-overflow this task. 32 is generous; real menus rarely nest more than a
+/// handful of levels.
+const MAX_MENU_DEPTH: u32 = 32;
+
+/// One node: `(ia{sv}av)`, id, properties, children.
+const NODE: &Signature = &Signature::static_structure(&[&Signature::I32, Dict::<NodeProps>::SIGNATURE, CHILDREN]);
+const CHILDREN: &Signature = &Signature::static_array(&Signature::Variant);
+
+/// The `GetLayout` reply: revision and root node.
+const LAYOUT: &Signature = &Signature::static_structure(&[&Signature::U32, NODE]);
+
+/// The node properties [`menu_item`] reads, as the application sent them.
+#[derive(Default)]
+struct NodeProps {
+    kind: Option<String>,
+    label: Option<String>,
+    enabled: Option<bool>,
+    visible: Option<bool>,
+    icon_name: Option<String>,
+    icon_data: Option<Vec<u8>>,
+    toggle_type: Option<String>,
+    toggle_state: Option<i32>,
+}
+
+impl DictFields for NodeProps {
+    fn read<'de, A: MapAccess<'de>>(&mut self, key: &str, map: &mut A) -> Result<bool, A::Error> {
+        match key {
+            "type" => self.kind = map.next_value_seed(Hint::new())?,
+            "label" => self.label = map.next_value_seed(Hint::new())?,
+            "enabled" => self.enabled = map.next_value_seed(Hint::new())?,
+            "visible" => self.visible = map.next_value_seed(Hint::new())?,
+            "icon-name" => self.icon_name = map.next_value_seed(Hint::new())?,
+            "icon-data" => self.icon_data = map.next_value_seed(Hint::new())?,
+            "toggle-type" => self.toggle_type = map.next_value_seed(Hint::new())?,
+            "toggle-state" => self.toggle_state = map.next_value_seed(Hint::new())?,
+            _ => return Ok(false),
         }
-        _ => None,
+        Ok(true)
     }
 }
 
-/// Recursion cap for [`parse_menu_node`]. A session-bus peer controls `GetLayout`, so an encoded
-/// deep tree could otherwise stack-overflow this task. 32 is generous; real menus rarely nest more
-/// than a handful of levels.
-const MAX_MENU_DEPTH: u32 = 32;
+/// A visible node as decoded, before [`menu_item`] caps its text and spools its icon. Spooling
+/// waits for the whole reply: a decode failing part way would otherwise leave files no
+/// [`MenuItem`] names, which `reap_menu_icons` never deletes.
+struct MenuNode {
+    id: i32,
+    props: NodeProps,
+    children: Vec<MenuNode>,
+}
 
-/// Parses one `(ia{sv}av)` node recursively. `None` on structural mismatch; missing or malformed
-/// properties use DBusMenu defaults.
-///
-/// `depth` is this node's depth (`0` at the root). At [`MAX_MENU_DEPTH`], this node still parses,
-/// but children become empty and the truncation is logged.
-///
-/// `budget` is the shared [`MAX_MENU_NODES`] allowance for the whole reply, decremented once per
-/// node parsed. Depth alone leaves breadth unbounded, and it is breadth an application reaches for
-/// by accident: one level of a million siblings sits well inside [`MAX_MENU_DEPTH`].
-pub(super) fn parse_menu_node(value: &Value<'_>, depth: u32, budget: &mut usize, item_stem: &str) -> Option<MenuItem> {
-    if *budget == 0 {
-        return None;
+/// With `reply`, the `GetLayout` reply `(u(ia{sv}av))`, else the root node inside it: either way
+/// decoded to the root's children, leaving the root's own properties unread.
+struct Layout<'a> {
+    reply: bool,
+    budget: &'a mut usize,
+}
+
+impl Type for Layout<'_> {
+    const SIGNATURE: &'static Signature = LAYOUT;
+}
+
+impl<'de> DeserializeSeed<'de> for Layout<'_> {
+    type Value = Vec<MenuNode>;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_seq(self)
     }
-    *budget -= 1;
-    let Value::Structure(structure) = unwrap_variant(value) else { return None };
-    let [id_field, properties_field, children_field] = structure.fields() else {
-        return None;
-    };
-    let id = value_as_i32(id_field)?;
+}
 
-    let mut menu_type = MenuType::Standard;
-    let mut label = None;
-    let mut enabled = true;
-    let mut visible = true;
-    let mut icon_name = None;
-    let mut icon_data = None;
-    let mut toggle_type = None;
-    let mut toggle_state_raw = None;
-    if let Value::Dict(dict) = unwrap_variant(properties_field) {
-        for (key, val) in dict.iter() {
-            match dict_str_key(key) {
-                Some("type") => {
-                    if capped_str(val).as_deref() == Some("separator") {
-                        menu_type = MenuType::Separator;
-                    }
-                }
-                Some("label") => label = capped_str(val),
-                Some("enabled") => {
-                    if let Some(b) = value_as_bool(val) {
-                        enabled = b;
-                    }
-                }
-                Some("visible") => {
-                    if let Some(b) = value_as_bool(val) {
-                        visible = b;
-                    }
-                }
-                Some("icon-name") => icon_name = capped_str(val).filter(|s| !s.is_empty()),
-                Some("icon-data") => icon_data = Some(val),
-                Some("toggle-type") => {
-                    toggle_type = match capped_str(val).as_deref() {
-                        Some("checkmark") => Some(ToggleType::Checkmark),
-                        Some("radio") => Some(ToggleType::Radio),
-                        _ => None,
-                    };
-                }
-                Some("toggle-state") => toggle_state_raw = value_as_i32(val),
-                _ => {}
-            }
+impl<'de> Visitor<'de> for Layout<'_> {
+    type Value = Vec<MenuNode>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a GetLayout reply")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        seq.next_element::<IgnoredAny>()?;
+        if self.reply {
+            return Ok(seq.next_element_seed(Layout { reply: false, budget: self.budget })?.unwrap_or_default());
         }
+        seq.next_element::<IgnoredAny>()?;
+        Ok(seq.next_element_seed(Children { depth: 1, budget: self.budget })?.unwrap_or_default())
     }
-    if !visible {
-        return None;
+}
+
+/// An `av` of child nodes at `depth`.
+struct Children<'a> {
+    depth: u32,
+    budget: &'a mut usize,
+}
+
+impl<'de> DeserializeSeed<'de> for Children<'_> {
+    type Value = Vec<MenuNode>;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_seq(self)
     }
+}
+
+impl<'de> Visitor<'de> for Children<'_> {
+    type Value = Vec<MenuNode>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DBusMenu children")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let mut children = Vec::new();
+        while let Some(child) = seq.next_element_seed(Node { depth: self.depth, budget: &mut *self.budget })? {
+            children.extend(child);
+        }
+        Ok(children)
+    }
+}
+
+/// One child: a variant holding a node at `depth`, `None` when hidden, not a node, or past the
+/// shared [`MAX_MENU_NODES`] `budget`. Depth alone leaves breadth unbounded, and it is breadth an
+/// application reaches for by accident: one level of a million siblings sits well inside
+/// [`MAX_MENU_DEPTH`]. What is not kept is skipped with `IgnoredAny`, allocating nothing.
+struct Node<'a> {
+    depth: u32,
+    budget: &'a mut usize,
+}
+
+/// A variant on its own, as a child of `av`.
+impl Type for Node<'_> {
+    const SIGNATURE: &'static Signature = &Signature::Variant;
+}
+
+impl<'de> DeserializeSeed<'de> for Node<'_> {
+    type Value = Option<MenuNode>;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_struct("Variant", &["signature", "value"], self)
+    }
+}
+
+impl<'de> Visitor<'de> for Node<'_> {
+    type Value = Option<MenuNode>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a DBusMenu node")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let signature: Signature = seq.next_element()?.ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+        if *self.budget == 0 {
+            seq.next_element::<IgnoredAny>()?;
+            return Ok(None);
+        }
+        *self.budget -= 1;
+        // ponytail: a child not shaped `(ia{sv}av)` is dropped; no known toolkit sends another. Upgrade: peel variants.
+        if signature != *NODE {
+            seq.next_element::<IgnoredAny>()?;
+            return Ok(None);
+        }
+        Ok(seq.next_element_seed(NodeFields(self))?.flatten())
+    }
+}
+
+/// The `(ia{sv}av)` inside a [`Node`]'s variant.
+struct NodeFields<'a>(Node<'a>);
+
+impl<'de> DeserializeSeed<'de> for NodeFields<'_> {
+    type Value = Option<MenuNode>;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_seq(self)
+    }
+}
+
+impl<'de> Visitor<'de> for NodeFields<'_> {
+    type Value = Option<MenuNode>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a DBusMenu node")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let Node { depth, budget } = self.0;
+        let id = seq.next_element()?.unwrap_or_default();
+        let props = seq.next_element::<Dict<NodeProps>>()?.map(|Dict(props)| props).unwrap_or_default();
+        if props.visible == Some(false) {
+            seq.next_element::<IgnoredAny>()?;
+            return Ok(None);
+        }
+        let children = if depth >= MAX_MENU_DEPTH {
+            debug!(2; "GetLayout reply exceeded the maximum menu depth ({MAX_MENU_DEPTH}) at node id {id}; truncating its children");
+            seq.next_element::<IgnoredAny>()?;
+            Vec::new()
+        } else {
+            seq.next_element_seed(Children { depth: depth + 1, budget })?.unwrap_or_default()
+        };
+        Ok(Some(MenuNode { id, props, children }))
+    }
+}
+
+/// Caps `node`'s text, applies DBusMenu's defaults, and spools its `icon-data` PNG when it names
+/// no icon.
+fn menu_item(node: MenuNode, item_stem: &str) -> MenuItem {
+    let MenuNode { id, props, children } = node;
+    // DBusMenu bounds none of these and the application owns them all.
+    let capped = |text: String| truncate_utf8_bytes(&text, MAX_TRAY_TEXT_BYTES);
+    let mut icon_name = props.icon_name.map(capped).filter(|name| !name.is_empty());
     if icon_name.is_none()
-        && let Some(val) = icon_data
-        && let Some(bytes) = value_as_byte_array(val, MAX_MENU_ICON_BYTES)
+        && let Some(bytes) = props.icon_data
+        && bytes.len() <= MAX_MENU_ICON_BYTES
         && bytes.starts_with(PNG_MAGIC)
     {
         match shm_icons::write_png(super::icon::SPOOL_SUBDIR, &format!("{item_stem}_menu_{id}.png"), &bytes) {
@@ -151,22 +235,21 @@ pub(super) fn parse_menu_node(value: &Value<'_>, depth: u32, budget: &mut usize,
             Err(err) => debug!("failed to spool DBusMenu icon for node {id}: {err}"),
         }
     }
-    let toggle_state = toggle_type.map(|_| toggle_state_raw.unwrap_or(-1));
-
-    let children = if depth >= MAX_MENU_DEPTH {
-        debug!(2; "GetLayout reply exceeded the maximum menu depth ({MAX_MENU_DEPTH}) at node id {id}; truncating its children"
-        );
-        Vec::new()
-    } else {
-        match unwrap_variant(children_field) {
-            Value::Array(array) => {
-                array.iter().filter_map(|child| parse_menu_node(child, depth + 1, budget, item_stem)).collect()
-            }
-            _ => Vec::new(),
-        }
+    let toggle_type = match props.toggle_type.as_deref() {
+        Some("checkmark") => Some(ToggleType::Checkmark),
+        Some("radio") => Some(ToggleType::Radio),
+        _ => None,
     };
-
-    Some(MenuItem { id, menu_type, label, enabled, icon_name, toggle_type, toggle_state, children })
+    MenuItem {
+        id,
+        menu_type: if props.kind.as_deref() == Some("separator") { MenuType::Separator } else { MenuType::Standard },
+        label: props.label.map(capped),
+        enabled: props.enabled.unwrap_or(true),
+        icon_name,
+        toggle_type,
+        toggle_state: toggle_type.map(|_| props.toggle_state.unwrap_or(-1)),
+        children: children.into_iter().map(|child| menu_item(child, item_stem)).collect(),
+    }
 }
 
 /// Total [`MenuItem`] nodes in `items` and all nested submenus.
@@ -202,23 +285,35 @@ pub(super) async fn fetch_menu_via(
     if cap == 0 {
         return Ok(Vec::new());
     }
-    let (_, (_, _, children)) = menu.get_layout(0, -1, &[]).await?;
+    let reply = menu.inner().call_method("GetLayout", &(0i32, -1i32, Vec::<&str>::new())).await?;
+    let body = reply.body();
+    if body.signature() != LAYOUT {
+        return Err(zbus::Error::Failure(format!("GetLayout replied ({}), not {LAYOUT}", body.signature())));
+    }
     let mut budget = cap;
-    let items = children.iter().filter_map(|child| parse_menu_node(child, 1, &mut budget, item_stem)).collect();
+    let (nodes, _) = body.data().deserialize_with_seed(Layout { reply: true, budget: &mut budget })?;
     // Reported here rather than at the node that ran out: exhaustion stops every remaining sibling
     // and ancestor alike, so warning inside the recursion means one line per ancestor for one reply.
     if budget == 0 {
         debug!("GetLayout reply hit the {cap}-node cap; the rest of the menu was dropped");
     }
-    Ok(items)
+    Ok(nodes.into_iter().map(|node| menu_item(node, item_stem)).collect())
 }
 
 #[cfg(test)]
 mod tests {
-    use zbus::zvariant::{Array, Dict, Signature, Str, StructureBuilder};
+    use zbus::zvariant::serialized::Context;
+    use zbus::zvariant::{Array, Dict, LE, Str, StructureBuilder, Value, to_bytes};
 
     use super::*;
     use crate::capabilities::shm_icons::init_test_spool;
+
+    /// Decodes `value` as one `av` child at `depth`, as `GetLayout` delivers it.
+    fn parse_menu_node(value: &Value<'_>, depth: u32, budget: &mut usize, item_stem: &str) -> Option<MenuItem> {
+        let encoded = to_bytes(Context::new_dbus(LE, 0), value).unwrap();
+        let (node, _) = encoded.deserialize_with_seed(Node { depth, budget }).unwrap();
+        node.map(|node| menu_item(node, item_stem))
+    }
 
     /// Parses with the full node allowance, which is what every test but the cap's own wants.
     fn parse(value: &Value<'_>, depth: u32) -> Option<MenuItem> {
@@ -328,9 +423,11 @@ mod tests {
             }
         }
 
-        let root = deep_chain(MAX_MENU_DEPTH + 20, 0);
+        // D-Bus caps nesting at 64 containers, three per level, so start near the cap.
+        let start = MAX_MENU_DEPTH - 5;
+        let root = deep_chain(10, 0);
 
-        let item = parse(&root, 0).expect("the root node itself must still parse");
+        let item = parse(&root, start).expect("the root node itself must still parse");
 
         let mut current = &item;
         let mut depth = 0;
@@ -339,7 +436,8 @@ mod tests {
             depth += 1;
         }
         assert_eq!(
-            depth, MAX_MENU_DEPTH,
+            depth,
+            MAX_MENU_DEPTH - start,
             "parsing must truncate children exactly at the depth cap, not keep recursing into the deeper levels the raw tree actually has"
         );
     }
@@ -445,6 +543,31 @@ mod tests {
             let item = parse_menu_node(&value, 0, &mut { MAX_MENU_NODES }, "test_app").expect("must parse");
             assert!(item.icon_name.expect("an icon").ends_with(expected), "icon-name {name:?}");
         }
+    }
+
+    /// The bytes land in one `Vec<u8>`, not one `zvariant::Value` each, and a key no field names
+    /// is walked without being kept.
+    #[test]
+    fn icon_data_decodes_to_bytes_and_an_unknown_key_is_skipped() {
+        init_test_spool();
+        let huge = vec![7; 1024 * 1024];
+        let mut png = PNG_MAGIC.to_vec();
+        png.resize(512 * 1024, 1);
+        let child = menu_node_value(
+            2,
+            vec![("x-unknown", byte_array_value(&huge)), ("icon-data", byte_array_value(&png))],
+            Vec::new(),
+        );
+        let root = menu_node_value(1, vec![("icon-data", byte_array_value(&huge))], vec![child]);
+        let encoded = to_bytes(Context::new_dbus(LE, 0), &root).unwrap();
+
+        let (node, _) = encoded.deserialize_with_seed(Node { depth: 0, budget: &mut { MAX_MENU_NODES } }).unwrap();
+        let node = node.expect("a well-formed node");
+        assert_eq!(node.props.icon_data.as_deref(), Some(huge.as_slice()));
+        let item = menu_item(node, "big");
+        assert_eq!(item.icon_name, None, "past MAX_MENU_ICON_BYTES");
+        let path = item.children[0].icon_name.as_deref().expect("the PNG at the cap is spooled");
+        assert_eq!(std::fs::read(path).unwrap(), png);
     }
 
     struct CapturingMenu {

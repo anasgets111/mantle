@@ -1,10 +1,11 @@
 //! Hand-written proxies for SNI, DBusMenu, and the watcher (ADR-0031: no maintained zbus proxy
 //! crate).
 
+#[cfg(test)]
 use std::collections::HashMap;
 
 use zbus::names::OwnedBusName;
-use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+use zbus::zvariant::{OwnedObjectPath, Value};
 
 #[zbus::proxy(interface = "org.kde.StatusNotifierItem")]
 pub(super) trait StatusNotifierItem {
@@ -40,21 +41,13 @@ pub(super) trait StatusNotifierItem {
     fn new_menu(&self);
 }
 
-/// `GetLayout`'s `(ia{sv}av)` reply: id, properties, children. Typed rather than one `OwnedValue`,
-/// whose signature is always `"v"` and fails `Body::deserialize`'s check against the real one.
-/// ponytail: an app's `icon-data` lands in `OwnedValue`, one `Value` per byte; upgrade: a typed recursive seed.
-pub(super) type RawMenuLayout = (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>);
+/// `GetLayout`'s `(ia{sv}av)` root node as test peers serve it: id, properties, children.
+#[cfg(test)]
+pub(super) type RawMenuLayout = (i32, HashMap<String, zbus::zvariant::OwnedValue>, Vec<zbus::zvariant::OwnedValue>);
 
+/// `GetLayout` is called by `menu::fetch_menu_via`, which decodes the reply with typed seeds.
 #[zbus::proxy(interface = "com.canonical.dbusmenu")]
 pub(super) trait DBusMenu {
-    #[zbus(name = "GetLayout")]
-    fn get_layout(
-        &self,
-        parent_id: i32,
-        recursion_depth: i32,
-        property_names: &[&str],
-    ) -> zbus::Result<(u32, RawMenuLayout)>;
-
     #[zbus(name = "Event", no_reply)]
     fn event(&self, id: i32, event_id: &str, data: &Value<'_>, timestamp: u32) -> zbus::Result<()>;
 
@@ -64,12 +57,9 @@ pub(super) trait DBusMenu {
     #[zbus(signal, name = "LayoutUpdated")]
     fn layout_updated(&self, revision: u32, parent: i32);
 
+    /// Its arguments go unread: the refetch rereads the whole layout.
     #[zbus(signal, name = "ItemsPropertiesUpdated")]
-    fn items_properties_updated(
-        &self,
-        updated_props: Vec<(i32, HashMap<String, OwnedValue>)>,
-        removed_props: Vec<(i32, Vec<String>)>,
-    );
+    fn items_properties_updated(&self);
 }
 
 /// Calls `RegisterStatusNotifierHost` at the well-known watcher name, so D-Bus routes to whichever
@@ -107,18 +97,4 @@ pub(super) async fn bind_dbusmenu(
     path: &OwnedObjectPath,
 ) -> zbus::Result<DBusMenuProxy<'static>> {
     DBusMenuProxy::builder(connection).destination(destination.clone())?.path(path.clone())?.build().await
-}
-
-#[cfg(test)]
-mod tests {
-    use zbus::zvariant::Type;
-
-    use super::*;
-
-    #[test]
-    fn raw_menu_layout_signature_matches_the_real_dbusmenu_wire_shape() {
-        // The DBusMenu wire signature must match or every real `GetLayout` fails, even if local
-        // tests pass.
-        assert_eq!(RawMenuLayout::SIGNATURE.to_string(), "(ia{sv}av)");
-    }
 }
