@@ -8,20 +8,41 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use futures_util::{StreamExt, stream_select};
+use serde::de::MapAccess;
 use shared::debug;
 pub use shared::state::appearance::{AppearanceState, ColorScheme, Contrast};
 use tokio::sync::mpsc::UnboundedSender;
 use zbus::proxy::CacheProperties;
-use zbus::zvariant::OwnedValue;
 
-use super::publish;
+use super::{Dict, DictFields, Hint, publish, variant_reply};
 
 const NAMESPACE: &str = "org.freedesktop.appearance";
 const INTERFACE: &str = "org.gnome.desktop.interface";
 const ICON_THEME: &str = "icon-theme";
 
-/// ponytail: `OwnedValue`, one `Value` per byte of an array; the portal is the only sender; upgrade: typed `icon-theme`.
-type Settings = HashMap<String, HashMap<String, OwnedValue>>;
+/// The `org.freedesktop.appearance` keys [`parse`] reads, decoded straight to their types: any
+/// session client may own the portal's name while the portal is absent, and a `zvariant::Value`
+/// holds an array as one `Value` per byte.
+#[derive(Default)]
+struct Appearance {
+    color_scheme: Option<u32>,
+    accent: Option<(f64, f64, f64)>,
+    contrast: Option<u32>,
+    reduced_motion: Option<u32>,
+}
+
+impl DictFields for Appearance {
+    fn read<'de, A: MapAccess<'de>>(&mut self, key: &str, map: &mut A) -> Result<bool, A::Error> {
+        match key {
+            "color-scheme" => self.color_scheme = map.next_value_seed(Hint::new())?,
+            "accent-color" => self.accent = map.next_value_seed(Hint::new())?,
+            "contrast" => self.contrast = map.next_value_seed(Hint::new())?,
+            "reduced-motion" => self.reduced_motion = map.next_value_seed(Hint::new())?,
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+}
 
 #[zbus::proxy(
     interface = "org.freedesktop.portal.Settings",
@@ -29,12 +50,7 @@ type Settings = HashMap<String, HashMap<String, OwnedValue>>;
     default_path = "/org/freedesktop/portal/desktop"
 )]
 trait PortalSettings {
-    fn read_all(&self, namespaces: &[&str]) -> zbus::Result<Settings>;
-
-    fn read_one(&self, namespace: &str, key: &str) -> zbus::Result<OwnedValue>;
-
-    #[zbus(signal)]
-    fn setting_changed(&self, namespace: &str, key: &str, value: OwnedValue) -> zbus::Result<()>;
+    fn read_all(&self, namespaces: &[&str]) -> zbus::Result<HashMap<String, Dict<Appearance>>>;
 }
 
 pub struct AppearanceController {
@@ -73,20 +89,16 @@ fn accent_hex(rgb: (f64, f64, f64)) -> Option<String> {
     Some(format!("#{r:02x}{g:02x}{b:02x}"))
 }
 
-fn parse(settings: &Settings) -> AppearanceState {
-    let key = |name: &str| settings.get(NAMESPACE)?.get(name);
-    let number = |name: &str| key(name).and_then(|value| u32::try_from(value).ok());
+fn parse(read: &Appearance) -> AppearanceState {
     AppearanceState {
-        color_scheme: match number("color-scheme") {
+        color_scheme: match read.color_scheme {
             Some(1) => ColorScheme::Dark,
             Some(2) => ColorScheme::Light,
             _ => ColorScheme::Default,
         },
-        accent: key("accent-color")
-            .and_then(|value| <(f64, f64, f64)>::try_from(value.try_clone().ok()?).ok())
-            .and_then(accent_hex),
-        contrast: if number("contrast") == Some(1) { Contrast::High } else { Contrast::Normal },
-        reduced_motion: number("reduced-motion") == Some(1),
+        accent: read.accent.and_then(accent_hex),
+        contrast: if read.contrast == Some(1) { Contrast::High } else { Contrast::Normal },
+        reduced_motion: read.reduced_motion == Some(1),
     }
 }
 
@@ -97,25 +109,34 @@ async fn read(proxy: &PortalSettingsProxy<'_>) -> Option<AppearanceState> {
         .await
         .inspect_err(|err| debug!("portal settings unavailable, keeping state: {err}"))
         .ok()
-        .map(|settings| parse(&settings))
+        .map(|mut settings| parse(&settings.remove(NAMESPACE).map(|Dict(read)| read).unwrap_or_default()))
 }
 
-/// The proxy and a stream that yields on each `SettingChanged` matching `args` and whenever the
-/// portal changes owner. Callers subscribe before the first read so a change during the round
-/// trip is not lost.
+/// The proxy and a stream that yields on each `SettingChanged` in `namespace` (and of `key`, if
+/// given) and whenever the portal changes owner. Callers subscribe before the first read so a
+/// change during the round trip is not lost.
 async fn subscribe(
     bus: &zbus::Connection,
-    args: &[(u8, &str)],
+    namespace: &'static str,
+    key: Option<&'static str>,
 ) -> zbus::Result<(PortalSettingsProxy<'static>, impl futures_util::Stream<Item = ()> + use<>)> {
     let proxy = PortalSettingsProxy::builder(bus).cache_properties(CacheProperties::No).build().await?;
-    let changed = proxy.receive_setting_changed_with_args(args).await?.map(drop);
+    // Filtered on the two leading strings with the value unread, not by a match rule's args: zbus
+    // tests those by decoding the whole body to `Value`s.
+    let changed = proxy.inner().receive_signal("SettingChanged").await?.filter(move |signal| {
+        let body = signal.body();
+        let wanted = matches!(body.deserialize_unchecked::<(&str, &str)>(),
+            Ok((space, name)) if space == namespace && key.is_none_or(|key| key == name));
+        std::future::ready(wanted)
+    });
+    let changed = changed.map(drop);
     let owner = proxy.inner().receive_owner_changed().await?.map(drop);
     Ok((proxy, stream_select!(changed.fuse(), owner.fuse())))
 }
 
 /// Re-reads the namespace on each `SettingChanged` in it and whenever the portal changes owner.
 async fn run(bus: zbus::Connection, state: Arc<Mutex<AppearanceState>>, events: UnboundedSender<()>) {
-    let subscribed = subscribe(&bus, &[(0, NAMESPACE)]).await;
+    let subscribed = subscribe(&bus, NAMESPACE, None).await;
     let Ok((proxy, changes)) = subscribed.inspect_err(|err| debug!("cannot follow the portal: {err}")) else {
         let _ = events.send(());
         return;
@@ -150,7 +171,7 @@ pub fn spawn_icon_theme(themes: UnboundedSender<Option<String>>) {
 /// Sends each change of the theme; `None` is a missing key or an empty or non-string value.
 /// Other failed reads keep the last theme, and nothing is sent until the portal answers.
 async fn follow_icon_theme(bus: zbus::Connection, themes: UnboundedSender<Option<String>>) {
-    let subscribed = subscribe(&bus, &[(0, INTERFACE), (1, ICON_THEME)]).await;
+    let subscribed = subscribe(&bus, INTERFACE, Some(ICON_THEME)).await;
     let Ok((proxy, changes)) = subscribed.inspect_err(|err| debug!("cannot follow the portal's icon theme: {err}"))
     else {
         return;
@@ -158,9 +179,12 @@ async fn follow_icon_theme(bus: zbus::Connection, themes: UnboundedSender<Option
     let mut changes = std::pin::pin!(changes);
     let mut last = None;
     loop {
-        let theme = match proxy.read_one(INTERFACE, ICON_THEME).await.inspect_err(|err| debug!("no icon theme: {err}"))
-        {
-            Ok(value) => Some(String::try_from(value).ok().filter(|theme| !theme.is_empty())),
+        let read = async {
+            let reply = proxy.inner().call_method("ReadOne", &(INTERFACE, ICON_THEME)).await?;
+            variant_reply::<String>(&reply, format_args!("ReadOne"))
+        };
+        let theme = match read.await.inspect_err(|err| debug!("no icon theme: {err}")) {
+            Ok(theme) => Some(theme.filter(|theme| !theme.is_empty())),
             Err(zbus::Error::MethodError(name, ..)) if name.as_str() == "org.freedesktop.portal.Error.NotFound" => {
                 Some(None)
             }
@@ -185,7 +209,7 @@ mod tests {
     use super::*;
 
     use tokio::sync::mpsc;
-    use zbus::zvariant::Value;
+    use zbus::zvariant::{OwnedValue, Value};
 
     use crate::capabilities::test_support::{PrivateBus, private_bus, within};
 
@@ -201,7 +225,7 @@ mod tests {
 
     #[zbus::interface(name = "org.freedesktop.portal.Settings")]
     impl FakePortal {
-        fn read_all(&self, _namespaces: Vec<String>) -> Settings {
+        fn read_all(&self, _namespaces: Vec<String>) -> HashMap<String, HashMap<String, OwnedValue>> {
             let values = self.values.iter().map(|(key, v)| ((*key).to_string(), OwnedValue::try_from(v).unwrap()));
             HashMap::from([(NAMESPACE.to_string(), values.collect())])
         }
@@ -258,6 +282,29 @@ mod tests {
                 reduced_motion: true,
             }
         );
+    }
+
+    /// A megabyte `ay` from whoever owns the portal's name, under a key nobody reads or as the
+    /// icon theme, is skipped unbuilt.
+    #[tokio::test]
+    async fn a_byte_array_from_the_portal_is_skipped() {
+        let bus = private_bus().await;
+        let bytes = || Value::from(vec![7u8; 1024 * 1024]);
+        let mut values = all_four((1.0, 0.0, 0.5));
+        values.extend([("x-cover", bytes()), (ICON_THEME, Value::from("Papirus"))]);
+        let portal = serve(&bus, values).await;
+        let (events, mut changed) = mpsc::unbounded_channel();
+        let appearance = AppearanceController::new(Some(bus.connection().await), events);
+        within(changed.recv()).await;
+        assert_eq!(appearance.snapshot().color_scheme, ColorScheme::Dark);
+
+        let (themes, mut sent) = mpsc::unbounded_channel();
+        tokio::spawn(follow_icon_theme(bus.connection().await, themes));
+        assert_eq!(within(sent.recv()).await, Some(Some("Papirus".into())));
+        let fake = portal.object_server().interface::<_, FakePortal>(PATH).await.unwrap();
+        fake.get_mut().await.values.last_mut().unwrap().1 = bytes();
+        FakePortal::setting_changed(fake.signal_emitter(), INTERFACE, ICON_THEME, bytes()).await.unwrap();
+        assert_eq!(within(sent.recv()).await, Some(None), "a theme that is not a string is none");
     }
 
     #[tokio::test]
@@ -328,6 +375,8 @@ mod tests {
                 .unwrap();
             assert_eq!(within(sent.recv()).await, Some(expected));
         }
+        fake.get_mut().await.values[0].1 = Value::from("unannounced");
+        FakePortal::setting_changed(fake.signal_emitter(), INTERFACE, "cursor-theme", Value::from("x")).await.unwrap();
 
         drop(fake);
         drop(portal);
@@ -352,11 +401,7 @@ mod tests {
 
     #[test]
     fn an_undefined_enum_value_is_no_preference() {
-        let value = |v: u32| OwnedValue::try_from(Value::from(v)).unwrap();
-        let settings = HashMap::from([(
-            NAMESPACE.to_string(),
-            HashMap::from([("color-scheme".to_string(), value(7)), ("contrast".to_string(), value(9))]),
-        )]);
-        assert_eq!(parse(&settings), AppearanceState::default());
+        let read = Appearance { color_scheme: Some(7), contrast: Some(9), ..Appearance::default() };
+        assert_eq!(parse(&read), AppearanceState::default());
     }
 }

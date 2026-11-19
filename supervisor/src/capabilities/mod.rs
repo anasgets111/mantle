@@ -314,9 +314,18 @@ pub(crate) async fn get_property<T: serde::de::DeserializeOwned + Type>(
     let (destination, interface) = (Some(proxy.destination()), proxy.interface().as_str());
     let reply =
         proxy.connection().call_method(destination, proxy.path(), Some(PROPERTIES), "Get", &(interface, name)).await?;
+    variant_reply(&reply, format_args!("Get {name}"))
+}
+
+/// `call`'s reply decoded straight to `T` through [`Hint`]: `Ok(None)` when the peer sent another
+/// type, an error when the reply is not exactly one variant.
+pub(crate) fn variant_reply<T: serde::de::DeserializeOwned + Type>(
+    reply: &zbus::Message,
+    call: std::fmt::Arguments<'_>,
+) -> zbus::Result<Option<T>> {
     let body = reply.body();
     if *body.signature() != Signature::Variant {
-        return Err(zbus::Error::Failure(format!("Get {name} replied ({}), not one variant", body.signature())));
+        return Err(zbus::Error::Failure(format!("{call} replied ({}), not one variant", body.signature())));
     }
     Ok(body.data().deserialize_with_seed(Hint::new())?.0)
 }
