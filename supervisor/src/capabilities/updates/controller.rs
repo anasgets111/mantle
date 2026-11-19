@@ -443,6 +443,24 @@ mod tests {
         }
     }
 
+    /// A backend whose check is the closure; it installs as [`StubBackend`] does.
+    struct Checks<F>(F);
+
+    impl<F: Fn() -> Result<CheckReport, String> + Send + Sync + 'static> Backend for Checks<F> {
+        fn name(&self) -> &'static str {
+            "checks"
+        }
+        fn check(&self) -> Result<CheckReport, String> {
+            self.0()
+        }
+        fn install_command(&self) -> InstallCommand {
+            StubBackend.install_command()
+        }
+        fn parse_install_step(&self, _: &str) -> Option<InstallStep> {
+            None
+        }
+    }
+
     fn candidate() -> UpdateCandidate {
         UpdateCandidate {
             name: "linux".into(),
@@ -512,27 +530,16 @@ mod tests {
     async fn a_slow_check_is_never_overlapped_by_the_next() {
         // Two pacman checks at once share the sync root's `.db.part` files and can swap a
         // half-downloaded db in.
-        struct Hung(std::sync::Mutex<std::sync::mpsc::Receiver<()>>, std::sync::atomic::AtomicUsize);
-        impl Backend for Hung {
-            fn name(&self) -> &'static str {
-                "hung"
-            }
-            fn check(&self) -> Result<CheckReport, String> {
-                self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let _ = self.0.lock().unwrap().recv();
-                Err("released".into())
-            }
-            fn install_command(&self) -> InstallCommand {
-                StubBackend.install_command()
-            }
-            fn parse_install_step(&self, _: &str) -> Option<InstallStep> {
-                None
-            }
-        }
-        let (release, hold) = std::sync::mpsc::channel();
+        let (release, hold) = std::sync::mpsc::channel::<()>();
+        let (hold, checks) = (std::sync::Mutex::new(hold), Arc::new(std::sync::atomic::AtomicUsize::new(0)));
+        let counted = checks.clone();
+        let backend = Checks(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = hold.lock().unwrap().recv();
+            Err("released".into())
+        });
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
-        let backend = Arc::new(Hung(hold.into(), Default::default()));
-        let controller = UpdatesController::with_backend(Some(backend.clone()), no_marker(), events_tx);
+        let controller = UpdatesController::with_backend(Some(Arc::new(backend)), no_marker(), events_tx);
         events_rx.recv().await.unwrap();
 
         controller.check_now();
@@ -549,7 +556,7 @@ mod tests {
         controller.check_now();
         drop(release);
         events_rx.recv().await.unwrap();
-        assert_eq!(backend.1.load(std::sync::atomic::Ordering::SeqCst), 1, "a second check ran beside the first");
+        assert_eq!(checks.load(std::sync::atomic::Ordering::SeqCst), 1, "a second check ran beside the first");
         assert!(!controller.snapshot().checking);
     }
 
@@ -589,28 +596,15 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_failing_scheduled_check_retries_within_minutes_then_backs_off_to_the_interval() {
-        /// Fails while its flag is set.
-        struct Flaky(std::sync::atomic::AtomicBool);
-        impl Backend for Flaky {
-            fn name(&self) -> &'static str {
-                "flaky"
-            }
-            fn check(&self) -> Result<CheckReport, String> {
-                match self.0.load(std::sync::atomic::Ordering::SeqCst) {
-                    true => StubBackend.check(),
-                    false => Ok(CheckReport { packages: vec![], aur_error: None }),
-                }
-            }
-            fn install_command(&self) -> InstallCommand {
-                StubBackend.install_command()
-            }
-            fn parse_install_step(&self, _: &str) -> Option<InstallStep> {
-                None
-            }
-        }
-        let backend = Arc::new(Flaky(true.into()));
+        // Fails while `failing` is set.
+        let failing = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let flag = failing.clone();
+        let backend = Checks(move || match flag.load(std::sync::atomic::Ordering::SeqCst) {
+            true => StubBackend.check(),
+            false => Ok(CheckReport { packages: vec![], aur_error: None }),
+        });
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
-        let controller = UpdatesController::with_backend(Some(backend.clone()), no_marker(), events_tx);
+        let controller = UpdatesController::with_backend(Some(Arc::new(backend)), no_marker(), events_tx);
         assert_eq!(events_rx.try_recv().ok(), Some(()), "construction pushes");
         controller.configure(UpdatesConfigure { interval_secs: 1500, checked_at: None, packages: vec![], aur: false });
         let mut starts = Vec::new();
@@ -621,7 +615,7 @@ mod tests {
             starts.push(tokio::time::Instant::now());
             // Round 6 succeeds. Its stamp is then aged by an interval, as paused time cannot age the
             // wall clock, so the failures after it are due at once.
-            backend.0.store(round != 5, std::sync::atomic::Ordering::SeqCst);
+            failing.store(round != 5, std::sync::atomic::Ordering::SeqCst);
             if round == 6 {
                 controller.state.lock().unwrap().last_successful_check = Some(epoch_seconds(SystemTime::now()) - 1500);
             }
@@ -633,33 +627,19 @@ mod tests {
         assert_eq!(controller.snapshot().consecutive_check_failures, 2);
     }
 
-    /// A backend whose every check succeeds once the test sends on its channel, so a check lasts
-    /// as long as the test advances paused time before releasing it.
-    struct Released(std::sync::Mutex<std::sync::mpsc::Receiver<()>>);
-
-    impl Backend for Released {
-        fn name(&self) -> &'static str {
-            "released"
-        }
-        fn check(&self) -> Result<CheckReport, String> {
-            let _ = self.0.lock().unwrap().recv();
-            Ok(CheckReport { packages: vec![], aur_error: None })
-        }
-        fn install_command(&self) -> InstallCommand {
-            StubBackend.install_command()
-        }
-        fn parse_install_step(&self, _: &str) -> Option<InstallStep> {
-            None
-        }
-    }
-
     #[tokio::test(start_paused = true)]
     async fn scheduled_checks_start_one_interval_apart_however_long_each_takes() {
         for interval in [60, 3600] {
-            let (release, hold) = std::sync::mpsc::channel();
+            // Each check succeeds once the test sends on `release`, so it lasts as long as the test
+            // advances paused time before releasing it.
+            let (release, hold) = std::sync::mpsc::channel::<()>();
+            let hold = std::sync::Mutex::new(hold);
+            let backend = Checks(move || {
+                let _ = hold.lock().unwrap().recv();
+                Ok(CheckReport { packages: vec![], aur_error: None })
+            });
             let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
-            let controller =
-                UpdatesController::with_backend(Some(Arc::new(Released(hold.into()))), no_marker(), events_tx);
+            let controller = UpdatesController::with_backend(Some(Arc::new(backend)), no_marker(), events_tx);
             events_rx.recv().await.unwrap();
             controller.configure(UpdatesConfigure {
                 interval_secs: interval,
