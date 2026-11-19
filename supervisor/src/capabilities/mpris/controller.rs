@@ -592,10 +592,10 @@ mod tests {
         assert_eq!(player.calls(), expected);
     }
 
-    /// The forwarder subscribes before registration reads the collections, and must not read them
-    /// again unprompted (#102). A change landing after registration read `PlaylistCount` but before
-    /// its read returns must still re-read. `tracked_player` clears registration's own read from
-    /// the log before the forwarder first runs.
+    /// The drain subscribes before registration reads the collections, and the forwarder must not
+    /// read them again unprompted (#102). A change landing after registration read `PlaylistCount`
+    /// but before its read returns must still re-read. `tracked_player` clears registration's own
+    /// read from the log before the forwarder first runs.
     #[tokio::test]
     async fn registration_reads_the_collections_once_and_a_change_during_it_reads_again() {
         // A live receiver: with `inert`'s dropped one, the forwarder ends at its first change.

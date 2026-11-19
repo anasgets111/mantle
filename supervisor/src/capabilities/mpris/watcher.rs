@@ -132,6 +132,9 @@ pub(super) async fn spawn_discovery(
                 continue;
             }
             shared::debug!("MPRIS player signal: {name} owner={}", args.new_owner.is_some());
+            // ponytail: on a direct owner transfer whose new owner fails registration, the old drain,
+            // pinned to the old unique name, shows its state until the name leaves. Upgrade: retire
+            // the old entry when `old_owner` is set.
             if args.new_owner.is_some() {
                 found.push(name);
             } else {

@@ -2,7 +2,6 @@
 
 pub use shared::state::mpris::{PlaylistSummary, PlaylistsState, TrackListState, TrackSummary};
 
-use futures_util::{Stream, StreamExt};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use zbus::zvariant::{OwnedObjectPath, Type};
 
@@ -119,15 +118,8 @@ fn playlist_summary((id, name, icon): (OwnedObjectPath, String, String)) -> Opti
     })
 }
 
-pub(super) async fn next_optional<S: Stream + Unpin>(stream: &mut Option<S>) -> Option<S::Item> {
-    match stream {
-        Some(stream) => stream.next().await,
-        None => std::future::pending().await,
-    }
-}
-
-/// Subscribes to every change stream, then returns the forwarder for the caller to spawn. Await it
-/// before the registration read, so a change landing after that read still wakes the forwarder.
+/// Rereads the collections on each change [`Changes`] takes for them and on each track change
+/// the player forwarder sends on `refresh`.
 pub(super) async fn collections_forwarder(
     bus_name: String,
     track_list: Option<MprisTrackListProxy<'static>>,
@@ -136,85 +128,57 @@ pub(super) async fn collections_forwarder(
     events: UnboundedSender<()>,
     mut refresh: UnboundedReceiver<()>,
     changes: std::sync::Arc<Changes>,
-) -> impl Future<Output = ()> + Send + 'static {
-    let mut replaced = match &track_list {
-        Some(proxy) => proxy.receive_track_list_replaced().await.ok(),
-        None => None,
-    };
-    let mut added = match &track_list {
-        Some(proxy) => proxy.receive_track_added().await.ok(),
-        None => None,
-    };
-    let mut removed = match &track_list {
-        Some(proxy) => proxy.receive_track_removed().await.ok(),
-        None => None,
-    };
-    let mut metadata_changed = match &track_list {
-        Some(proxy) => proxy.receive_track_metadata_changed().await.ok(),
-        None => None,
-    };
-    let mut playlist_changed = match &playlists {
-        Some(proxy) => proxy.receive_playlist_changed().await.ok(),
-        None => None,
-    };
-
-    async move {
-        loop {
-            // Never all disabled: `notified` has no pattern to fail.
-            tokio::select! {
-                Some(_) = refresh.recv() => {}
-                Some(_) = next_optional(&mut replaced) => {}
-                Some(_) = next_optional(&mut added) => {}
-                Some(_) = next_optional(&mut removed) => {}
-                Some(_) = next_optional(&mut metadata_changed) => {}
-                Some(_) = next_optional(&mut playlist_changed) => {}
-                () = changes.collections.notified() => {}
-            }
-            let (track_id, old_playlists, playlist_revision) = {
-                let guard = registry.lock().expect("mpris registry mutex poisoned");
-                let Some(entry) = guard.get(&bus_name) else { return };
-                (entry.cached_trackid.clone(), entry.last_known.playlists.clone(), entry.playlist_revision)
-            };
-            let new_track_list = match &track_list {
-                Some(proxy) => read_track_list(proxy, track_id.as_deref()).await.ok(),
-                None => None,
-            };
-            let new_playlists = match &playlists {
-                Some(proxy) => read_playlists(
-                    proxy,
-                    old_playlists.index,
-                    if old_playlists.order.is_empty() { PLAYLIST_PAGE_LIMIT } else { old_playlists.page_size },
-                    &old_playlists.order,
-                    old_playlists.reverse,
-                    true,
-                )
-                .await
-                .ok(),
-                None => None,
-            };
-            let mut guard = registry.lock().expect("mpris registry mutex poisoned");
-            let Some(entry) = guard.get_mut(&bus_name) else { return };
-            let mut changed = false;
-            if entry.cached_trackid == track_id
-                && let Some(new_track_list) = new_track_list
-                && entry.last_known.track_list != new_track_list
-            {
-                entry.last_known.track_list = new_track_list;
-                changed = true;
-            }
-            if entry.playlist_revision == playlist_revision
-                && entry.playlist_request == 0
-                && let Some(new_playlists) = new_playlists
-                && entry.last_known.playlists != new_playlists
-            {
-                entry.last_known.playlists = new_playlists;
-                entry.playlist_revision += 1;
-                changed = true;
-            }
-            drop(guard);
-            if changed && events.send(()).is_err() {
-                return;
-            }
+) {
+    loop {
+        // Never all disabled: `notified` has no pattern to fail.
+        tokio::select! {
+            Some(()) = refresh.recv() => {}
+            () = changes.collections.notified() => {}
+        }
+        let (track_id, old_playlists, playlist_revision) = {
+            let guard = registry.lock().expect("mpris registry mutex poisoned");
+            let Some(entry) = guard.get(&bus_name) else { return };
+            (entry.cached_trackid.clone(), entry.last_known.playlists.clone(), entry.playlist_revision)
+        };
+        let new_track_list = match &track_list {
+            Some(proxy) => read_track_list(proxy, track_id.as_deref()).await.ok(),
+            None => None,
+        };
+        let new_playlists = match &playlists {
+            Some(proxy) => read_playlists(
+                proxy,
+                old_playlists.index,
+                if old_playlists.order.is_empty() { PLAYLIST_PAGE_LIMIT } else { old_playlists.page_size },
+                &old_playlists.order,
+                old_playlists.reverse,
+                true,
+            )
+            .await
+            .ok(),
+            None => None,
+        };
+        let mut guard = registry.lock().expect("mpris registry mutex poisoned");
+        let Some(entry) = guard.get_mut(&bus_name) else { return };
+        let mut changed = false;
+        if entry.cached_trackid == track_id
+            && let Some(new_track_list) = new_track_list
+            && entry.last_known.track_list != new_track_list
+        {
+            entry.last_known.track_list = new_track_list;
+            changed = true;
+        }
+        if entry.playlist_revision == playlist_revision
+            && entry.playlist_request == 0
+            && let Some(new_playlists) = new_playlists
+            && entry.last_known.playlists != new_playlists
+        {
+            entry.last_known.playlists = new_playlists;
+            entry.playlist_revision += 1;
+            changed = true;
+        }
+        drop(guard);
+        if changed && events.send(()).is_err() {
+            return;
         }
     }
 }
@@ -223,8 +187,7 @@ pub(super) async fn collections_forwarder(
 pub(super) mod tests {
     use super::*;
     use crate::capabilities::mpris::proxies::{MprisPlaylistsProxy, MprisTrackListProxy};
-    use crate::capabilities::test_support::{p2p_pair_serving, within};
-    use futures_util::StreamExt;
+    use crate::capabilities::test_support::p2p_pair_serving;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -303,13 +266,6 @@ pub(super) mod tests {
         async fn can_edit_tracks(&self) -> bool {
             true
         }
-
-        #[zbus(signal)]
-        async fn track_list_replaced(
-            signal_emitter: &zbus::object_server::SignalEmitter<'_>,
-            tracks: Vec<OwnedObjectPath>,
-            current_track: OwnedObjectPath,
-        ) -> zbus::Result<()>;
     }
 
     #[zbus::interface(name = "org.mpris.MediaPlayer2.Playlists")]
@@ -352,12 +308,6 @@ pub(super) mod tests {
         async fn active_playlist(&self) -> (bool, (OwnedObjectPath, String, String)) {
             (true, (path("/playlist/0"), "List 0".into(), String::new()))
         }
-
-        #[zbus(signal)]
-        async fn playlist_changed(
-            signal_emitter: &zbus::object_server::SignalEmitter<'_>,
-            playlist: (OwnedObjectPath, String, String),
-        ) -> zbus::Result<()>;
     }
 
     /// The id goes back to the player on an action, so one past the cap drops the entry rather than
@@ -417,15 +367,6 @@ pub(super) mod tests {
         track_count.store(MAX_TRACK_IDS + 1, Ordering::Relaxed);
         assert!(read_track_list(&tracks, Some("/track/250")).await.is_err());
         track_count.store(300, Ordering::Relaxed);
-        let mut replaced = tracks.receive_track_list_replaced().await.unwrap();
-        TrackPeer::track_list_replaced(
-            &zbus::object_server::SignalEmitter::new(&server, "/tracklist").unwrap(),
-            vec![path("/track/new")],
-            path("/track/new"),
-        )
-        .await
-        .unwrap();
-        assert!(within(replaced.next()).await.is_some());
         tracks
             .add_track(
                 "file:///tmp/a.ogg",
@@ -445,14 +386,6 @@ pub(super) mod tests {
         assert!(list_state.orderings.iter().all(|ordering| ordering.len() <= MAX_METADATA_TEXT_BYTES));
         assert_eq!(list_state.playlists.len(), 2);
         assert_eq!(list_state.active.as_ref().map(|active| active.id.as_str()), Some("/playlist/0"));
-        let mut playlist_changes = playlists.receive_playlist_changed().await.unwrap();
-        PlaylistPeer::playlist_changed(
-            &zbus::object_server::SignalEmitter::new(&server, "/playlists").unwrap(),
-            (path("/playlist/0"), "Renamed".into(), String::new()),
-        )
-        .await
-        .unwrap();
-        assert!(within(playlist_changes.next()).await.is_some());
         playlists.activate_playlist(ObjectPath::try_from("/playlist/0").unwrap()).await.unwrap();
         assert_eq!(
             *edits.lock().unwrap(),

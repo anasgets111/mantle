@@ -12,14 +12,12 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use futures_util::{FutureExt, StreamExt};
+use futures_util::FutureExt;
 use shared::{debug, warn_first};
 use tokio::task::JoinHandle;
 
 use super::changes::{Changes, Drain, Props, drain};
-use super::collections::{
-    TrackListState, collections_forwarder, next_optional, property, read_playlists, read_track_list,
-};
+use super::collections::{TrackListState, collections_forwarder, property, read_playlists, read_track_list};
 use super::metadata::{TrackIdentity, parse_metadata, resolve_album_art_path};
 use super::position::{publish_seeked_position, resolve_position};
 use super::proxies::{
@@ -314,7 +312,7 @@ pub(super) async fn register_player(
     let (changes, drain) = match drain(connection, &bus_name).await {
         Ok(drain) => drain,
         Err(err) => {
-            debug!("cannot follow {bus_name}'s property changes: {err}");
+            debug!("cannot follow {bus_name}'s signals: {err}");
             return;
         }
     };
@@ -330,8 +328,7 @@ pub(super) async fn register_player(
         events.clone(),
         refresh_rx,
         Arc::clone(&changes),
-    )
-    .await;
+    );
     if let Some(proxy) = &track_list
         && let Ok(tracks) = read_track_list(proxy, trackid.as_deref()).await
     {
@@ -430,12 +427,6 @@ fn spawn_player_forwarder(
     tokio::spawn(async move {
         // Owned by this task, so the drain ends with it however it ends.
         let _drain = drain;
-        // ponytail: a failed or ended Seeked subscription is not retried; upgrade: resubscribe on a timer.
-        let mut seeked = player
-            .receive_seeked()
-            .await
-            .inspect_err(|err| debug!("Seeked subscription failed for {bus_name}: {err}"))
-            .ok();
 
         // Several players update `Position` at an indeterminate time *after* `PlaybackStatus`, so
         // the read taken while handling that signal answers with whatever the player held
@@ -445,18 +436,17 @@ fn spawn_player_forwarder(
 
         loop {
             let deadline = recheck_at;
-            let mut seeked_position = tokio::select! {
-                () = changes.player.notified() => None,
-                signal = next_optional(&mut seeked) => seeked_wake(signal, &mut seeked),
-                () = sleep_until_opt(deadline) => None,
-            };
+            tokio::select! {
+                () = changes.player.notified() => {}
+                () = sleep_until_opt(deadline) => {}
+            }
             // One resync for every queued wake. The first wake is registration's, and counts as a
             // status change, so the `Position` registration read is checked again too.
             changes.player.notified().now_or_never();
-            let status_changed = std::mem::take(&mut changes.lock().status);
-            while let Some(signal) = seeked.as_mut().and_then(|stream| stream.next().now_or_never()) {
-                seeked_position = seeked_wake(signal, &mut seeked).or(seeked_position);
-            }
+            let (status_changed, seeked_position) = {
+                let mut pending = changes.lock();
+                (std::mem::take(&mut pending.status), pending.seeked.take())
+            };
             // Only a status change arms it, and only the timer firing disarms it. Clearing on any
             // event let a `Metadata` change 20ms later cancel the correction, which is the one
             // case the delay exists for -- the player publishes the new state first and the
@@ -476,9 +466,9 @@ fn spawn_player_forwarder(
 
             let mut guard = registry.lock().expect("mutex poisoned");
             let Some(entry) = guard.get_mut(&bus_name) else { break };
-            // A `Seeked` batched with a track change belongs to the old track.
-            if let Some(position) = seeked_position
-                && entry.track_identity == identity
+            // A `Seeked` from another track than the one read is stale.
+            if let Some((position, track)) = seeked_position
+                && track == identity
             {
                 publish_seeked_position(&mut state, position);
             }
@@ -509,18 +499,6 @@ fn spawn_player_forwarder(
             }
         }
     })
-}
-
-/// A `Seeked` stream's item as the position it carries. The stream ending drops it, so it is not
-/// polled again.
-fn seeked_wake(
-    signal: Option<super::proxies::Seeked>,
-    seeked: &mut Option<super::proxies::SeekedStream>,
-) -> Option<i64> {
-    if signal.is_none() {
-        *seeked = None;
-    }
-    signal?.args().ok().map(|args| args.position_us)
 }
 
 async fn sleep_until_opt(deadline: Option<tokio::time::Instant>) {
@@ -710,11 +688,33 @@ mod resync_tests {
         #[zbus(property)] fn can_quit(&self) -> bool { true }
     }
 
+    /// A `TrackList` with no tracks, whose `Tracks` read waits on the player's `gate`.
+    struct Tracks(Player);
+
+    #[zbus::interface(name = "org.mpris.MediaPlayer2.TrackList")]
+    impl Tracks {
+        #[zbus(property)]
+        async fn tracks(&self) -> Vec<zbus::zvariant::OwnedObjectPath> {
+            self.0.asked.fetch_add(1, Ordering::Relaxed);
+            let _open = self.0.gate.lock().await;
+            Vec::new()
+        }
+        #[zbus(property)]
+        fn can_edit_tracks(&self) -> bool {
+            false
+        }
+        fn get_tracks_metadata(&self, _ids: Vec<ObjectPath<'_>>) -> Vec<HashMap<String, OwnedValue>> {
+            Vec::new()
+        }
+    }
+
     /// `(connection, peer, the peer's player)`.
     async fn serve() -> (zbus::Connection, zbus::Connection, Player) {
         let player = Player::default();
-        let served = player.clone();
-        let (connection, peer) = p2p_pair_serving(|builder| builder.serve_at(PATH, served)?.serve_at(PATH, Root)).await;
+        let (served, tracks) = (player.clone(), Tracks(player.clone()));
+        let (connection, peer) =
+            p2p_pair_serving(|builder| builder.serve_at(PATH, served)?.serve_at(PATH, Root)?.serve_at(PATH, tracks))
+                .await;
         (connection, peer, player)
     }
 
@@ -796,6 +796,41 @@ mod resync_tests {
         properties_changed(&peer, HashMap::from([("Volume", 0.25.into())])).await;
         until(&registry, |state| state.volume == 25.0).await;
         assert_eq!(last_known(&registry).pid, Some(std::process::id()));
+
+        // Only the owner's signals are its player's: another client's on the same path are not.
+        let impostor = bus.connection().await;
+        properties_changed(&impostor, HashMap::from([("Volume", 0.75.into())])).await;
+        // Answered only once the bus has routed that signal, so it reaches us ahead of the owner's.
+        zbus::fdo::DBusProxy::new(&impostor).await.unwrap().get_id().await.unwrap();
+        properties_changed(&peer, HashMap::from([("Rate", 1.25.into())])).await;
+        until(&registry, |state| state.rate == 1.25).await;
+        assert_eq!(last_known(&registry).volume, 25.0);
+    }
+
+    /// Signals flooding in while registration subscribes are taken from the moment it does.
+    #[tokio::test]
+    async fn a_flood_while_registering_still_lands() {
+        let (connection, peer, _) = serve().await;
+        let registry: PlayerRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let (events, _woken) = tokio::sync::mpsc::unbounded_channel();
+        let registered = std::sync::atomic::AtomicBool::new(false);
+        let flood = async {
+            for step in 1_u32.. {
+                if registered.load(Ordering::Relaxed) {
+                    break;
+                }
+                properties_changed(&peer, HashMap::from([("Volume", (f64::from(step % 100) / 1000.0).into())])).await;
+            }
+        };
+        let register = async {
+            register_player(&connection, &registry, &events, NAME.to_string()).await;
+            registered.store(true, Ordering::Relaxed);
+        };
+        // Inside the test connection's 5 s call backstop, which is what ends a stall otherwise.
+        let bound = Duration::from_secs(2);
+        tokio::time::timeout(bound, async { tokio::join!(flood, register) }).await.expect("registered under a flood");
+        properties_changed(&peer, HashMap::from([("Volume", 0.25.into())])).await;
+        tokio::time::timeout(bound, until(&registry, |state| state.volume == 25.0)).await.expect("the last change");
     }
 
     #[tokio::test]
@@ -974,6 +1009,39 @@ mod resync_tests {
         until(&registry, |state| state.volume == 30.0).await;
     }
 
+    /// The same for the other signals a player sends: `Seeked` while a resync awaits `Position`,
+    /// `TrackAdded` while the collections await `Tracks`.
+    #[tokio::test]
+    async fn a_flood_of_seeks_and_added_tracks_during_stalled_reads_still_lands() {
+        let (connection, peer, player) = serve().await;
+        let registry: PlayerRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let (events, _woken) = tokio::sync::mpsc::unbounded_channel();
+        register_player(&connection, &registry, &events, NAME.to_string()).await;
+        settle(&player).await;
+        let added = || async {
+            let body = (HashMap::<&str, Value<'_>>::new(), ObjectPath::from_static_str_unchecked("/t/1"));
+            peer.emit_signal(None::<&str>, PATH, "org.mpris.MediaPlayer2.TrackList", "TrackAdded", &body)
+                .await
+                .unwrap();
+        };
+        let stalled = player.gate.lock().await;
+        let asked = player.asked.load(Ordering::Relaxed);
+        properties_changed(&peer, HashMap::from([("Volume", 0.75.into())])).await;
+        added().await;
+        poll_until(|| (player.asked.load(Ordering::Relaxed) >= asked + 2).then_some(())).await;
+        within(async {
+            for step in 1..=300 {
+                seeked(&peer, step * 1_000).await;
+                added().await;
+            }
+        })
+        .await;
+        drop(stalled);
+        // Inside the test connection's 5 s call backstop, which is what ends a stall otherwise.
+        let landed = until(&registry, |state| state.volume == 75.0 && state.position == Some(300_000));
+        tokio::time::timeout(Duration::from_secs(2), landed).await.expect("landed without a call timing out");
+    }
+
     /// The value a signal carries is the update: a failing read after it must not lose it.
     #[tokio::test]
     async fn a_status_carried_by_its_signal_lands_when_the_next_read_fails() {
@@ -995,6 +1063,27 @@ mod resync_tests {
         let (events, _woken) = tokio::sync::mpsc::unbounded_channel();
         register_player(&connection, &registry, &events, NAME.to_string()).await;
         settle(&player).await;
+        // Sent while the metadata is unknown, a seek cannot be told from the last track's, even
+        // when the read that follows finds the track it was on.
+        let stalled = player.volume_gate.lock().await;
+        let interface = zbus::names::InterfaceName::from_static_str_unchecked(PLAYER);
+        let emitter = zbus::object_server::SignalEmitter::new(&peer, PATH).unwrap();
+        let (changed, invalidated) = (HashMap::<&str, Value<'_>>::new(), ["Metadata"]);
+        zbus::fdo::Properties::properties_changed(&emitter, interface, changed, (&invalidated[..]).into())
+            .await
+            .unwrap();
+        seeked(&peer, 200_000_000).await;
+        // Taken after the `Seeked`, so the reread it starts shows the seek was taken too.
+        let asked = player.asked.load(Ordering::Relaxed);
+        let body = (HashMap::<&str, Value<'_>>::new(), ObjectPath::from_static_str_unchecked("/t/1"));
+        peer.emit_signal(None::<&str>, PATH, "org.mpris.MediaPlayer2.TrackList", "TrackAdded", &body).await.unwrap();
+        poll_until(|| (player.asked.load(Ordering::Relaxed) > asked).then_some(())).await;
+        let reads = player.position_reads.load(Ordering::Relaxed);
+        drop(stalled);
+        poll_until(|| (player.position_reads.load(Ordering::Relaxed) > reads).then_some(())).await;
+        settle(&player).await;
+        assert_ne!(last_known(&registry).position, Some(200_000_000), "a seek from an unknown track");
+
         let stalled = player.gate.lock().await;
         // A resync stuck on `Position` while the next batch queues up behind it.
         properties_changed(&peer, HashMap::from([("Volume", 0.75.into())])).await;

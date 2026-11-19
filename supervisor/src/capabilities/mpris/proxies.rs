@@ -49,11 +49,6 @@ pub(super) trait MprisPlayer {
     fn set_shuffle(&self, value: bool) -> zbus::Result<()>;
     #[zbus(property, name = "Rate")]
     fn set_rate(&self, value: f64) -> zbus::Result<()>;
-
-    /// Freedesktop excludes `Position` from `PropertiesChanged`; this signal marks discontinuous
-    /// jumps. `player.rs` waits on it for position-only changes beside `PlaybackStatus`/`Metadata`.
-    #[zbus(signal, name = "Seeked")]
-    fn seeked(&self, position_us: i64) -> zbus::Result<()>;
 }
 
 #[zbus::proxy(
@@ -66,15 +61,6 @@ pub(super) trait MprisTrackList {
     fn add_track(&self, uri: &str, after_track: ObjectPath<'_>, set_as_current: bool) -> zbus::Result<()>;
     fn remove_track(&self, track_id: ObjectPath<'_>) -> zbus::Result<()>;
     fn go_to(&self, track_id: ObjectPath<'_>) -> zbus::Result<()>;
-    #[zbus(signal, name = "TrackListReplaced")]
-    fn track_list_replaced(&self, tracks: Vec<OwnedObjectPath>, current_track: OwnedObjectPath) -> zbus::Result<()>;
-    /// The arguments of this and `TrackMetadataChanged` go unread: the forwarder rereads the window.
-    #[zbus(signal, name = "TrackAdded")]
-    fn track_added(&self) -> zbus::Result<()>;
-    #[zbus(signal, name = "TrackRemoved")]
-    fn track_removed(&self, track_id: OwnedObjectPath) -> zbus::Result<()>;
-    #[zbus(signal, name = "TrackMetadataChanged")]
-    fn track_metadata_changed(&self) -> zbus::Result<()>;
 }
 
 #[zbus::proxy(
@@ -91,8 +77,6 @@ pub(super) trait MprisPlaylists {
         order: &str,
         reverse_order: bool,
     ) -> zbus::Result<Vec<(OwnedObjectPath, String, String)>>;
-    #[zbus(signal, name = "PlaylistChanged")]
-    fn playlist_changed(&self, playlist: (OwnedObjectPath, String, String)) -> zbus::Result<()>;
 }
 
 pub(super) async fn bind_root(connection: &zbus::Connection, bus_name: &str) -> zbus::Result<MprisRootProxy<'static>> {
