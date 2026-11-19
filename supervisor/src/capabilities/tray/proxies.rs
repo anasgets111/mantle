@@ -21,11 +21,8 @@ pub(super) trait StatusNotifierItem {
     #[zbus(name = "Scroll")]
     fn scroll(&self, delta: i32, orientation: &str) -> zbus::Result<()>;
 
-    // The rest of the properties arrive through one `GetAll` in `item::fetch_tray_item_base`.
-    #[zbus(property, name = "Status")]
-    fn status(&self) -> zbus::Result<String>;
-    #[zbus(property, name = "Menu")]
-    fn menu(&self) -> zbus::Result<OwnedObjectPath>;
+    // Properties go through `item::get_property` and one `GetAll`: generated getters decode an
+    // `OwnedValue`, one `Value` per byte of an array.
 
     #[zbus(signal, name = "NewTitle")]
     fn new_title(&self);
@@ -45,6 +42,7 @@ pub(super) trait StatusNotifierItem {
 
 /// `GetLayout`'s `(ia{sv}av)` reply: id, properties, children. Typed rather than one `OwnedValue`,
 /// whose signature is always `"v"` and fails `Body::deserialize`'s check against the real one.
+/// ponytail: an app's `icon-data` lands in `OwnedValue`, one `Value` per byte; upgrade: a typed recursive seed.
 pub(super) type RawMenuLayout = (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>);
 
 #[zbus::proxy(interface = "com.canonical.dbusmenu")]

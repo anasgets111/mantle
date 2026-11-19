@@ -41,6 +41,7 @@ pub(super) trait MprisPlayer {
 
     #[zbus(property, name = "PlaybackStatus")]
     fn playback_status(&self) -> zbus::Result<String>;
+    /// ponytail: a player's `ay` entry lands in `OwnedValue`, one `Value` per byte; upgrade: typed `a{sv}` like `tray::item::Props`.
     #[zbus(property, name = "Metadata")]
     fn metadata(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
     /// Freedesktop excludes `Position` from `PropertiesChanged` because it changes too often.

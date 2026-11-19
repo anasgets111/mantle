@@ -28,6 +28,7 @@ const FLAG_REQUEST_NEW: u32 = 2;
 const SECRET_FLAGS_ASKED: u32 = 3;
 const ASK_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// ponytail: `OwnedValue` holds an `ay` as one `Value` per byte; NetworkManager is the only sender; upgrade: typed fields.
 type Settings = HashMap<String, HashMap<String, OwnedValue>>;
 
 /// `org.freedesktop.NetworkManager.SecretAgent.*`, the names libnm agents reply with.

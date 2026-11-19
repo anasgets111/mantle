@@ -20,6 +20,7 @@ const NAMESPACE: &str = "org.freedesktop.appearance";
 const INTERFACE: &str = "org.gnome.desktop.interface";
 const ICON_THEME: &str = "icon-theme";
 
+/// ponytail: `OwnedValue`, one `Value` per byte of an array; the portal is the only sender; upgrade: typed `icon-theme`.
 type Settings = HashMap<String, HashMap<String, OwnedValue>>;
 
 #[zbus::proxy(

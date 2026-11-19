@@ -11,11 +11,13 @@
 //! `mantle.<name>`, and command `capability`. [`read_attr`] lives here, `polkit` in
 //! `crate::polkit`, and `shm_icons` beside its two consumers (ADR-0076).
 
+use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::mpsc::UnboundedSender;
+use zbus::zvariant::{Signature, Type};
 
 pub use latest_writes::{LatestWrites, Writer};
 pub use lifecycle::Capabilities;
@@ -199,6 +201,54 @@ where
         .cache_properties(zbus::proxy::CacheProperties::No)
         .build()
         .await
+}
+
+/// Seeds one peer-sent variant, yielding `None` where the sender's signature is not `T`'s.
+///
+/// A `zvariant::Value` holds an array as one `Value` per element, so an `ay` that reaches one
+/// costs 72 bytes for every byte at a length the peer picks; this decodes straight to `T`.
+/// `zvariant::as_value::optional` fails the whole call on a mismatch, which would drop a
+/// notification or a tray item over a single malformed property; a mismatch is skipped instead.
+pub(crate) struct Hint<T>(PhantomData<T>);
+
+/// A variant on its own, such as a `Properties.Get` reply.
+impl<T> Type for Hint<T> {
+    const SIGNATURE: &'static Signature = &Signature::Variant;
+}
+
+impl<T> Hint<T> {
+    pub(crate) fn new() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<'de, T: serde::Deserialize<'de> + Type> serde::de::DeserializeSeed<'de> for Hint<T> {
+    type Value = Option<T>;
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_struct("Variant", &["signature", "value"], HintVisitor(PhantomData))
+    }
+}
+
+struct HintVisitor<T>(PhantomData<T>);
+
+impl<'de, T: serde::Deserialize<'de> + Type> serde::de::Visitor<'de> for HintVisitor<T> {
+    type Value = Option<T>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a variant")
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let signature: Signature = seq.next_element()?.ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+        if T::SIGNATURE != &signature {
+            // Draining keeps the dict in step. `IgnoredAny` walks the value without allocating, so
+            // an oversized array costs time and no memory.
+            seq.next_element::<serde::de::IgnoredAny>()?;
+            return Ok(None);
+        }
+        seq.next_element()
+    }
 }
 
 #[cfg(test)]

@@ -1,13 +1,11 @@
 //! Custom serde deserialization and hint extraction helpers for `a{sv}` `Notify` hints (ADR-0033).
 
-use std::marker::PhantomData;
-
 use serde::Deserialize;
-use zbus::zvariant::{Signature, Type};
+use zbus::zvariant::Type;
 
 use shared::state::notifications::Urgency;
 
-use crate::capabilities::truncate_utf8_bytes;
+use crate::capabilities::{Hint, truncate_utf8_bytes};
 
 use super::icon::RawImageData;
 use super::{MAX_DESKTOP_ENTRY_BYTES, MAX_REPLY_PLACEHOLDER_BYTES};
@@ -103,48 +101,6 @@ impl<'de> serde::de::Visitor<'de> for HintsVisitor {
             }
         }
         Ok(hints)
-    }
-}
-
-/// Seeds one hint value, yielding `None` where the sender's signature is not `T`'s.
-///
-/// `zvariant::as_value::optional` fails the whole call on a mismatch, which would drop a
-/// notification over a single malformed hint; every other server on the bus ignores the hint and
-/// shows the notification.
-struct Hint<T>(PhantomData<T>);
-
-impl<T> Hint<T> {
-    fn new() -> Self {
-        Self(PhantomData)
-    }
-}
-
-impl<'de, T: Deserialize<'de> + Type> serde::de::DeserializeSeed<'de> for Hint<T> {
-    type Value = Option<T>;
-
-    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
-        deserializer.deserialize_struct("Variant", &["signature", "value"], HintVisitor(PhantomData))
-    }
-}
-
-struct HintVisitor<T>(PhantomData<T>);
-
-impl<'de, T: Deserialize<'de> + Type> serde::de::Visitor<'de> for HintVisitor<T> {
-    type Value = Option<T>;
-
-    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("a notification hint")
-    }
-
-    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-        let signature: Signature = seq.next_element()?.ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
-        if T::SIGNATURE != &signature {
-            // Draining keeps the dict in step. `IgnoredAny` walks the value without allocating, so
-            // an oversized array costs time and no memory.
-            seq.next_element::<serde::de::IgnoredAny>()?;
-            return Ok(None);
-        }
-        seq.next_element()
     }
 }
 

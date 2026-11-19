@@ -83,6 +83,7 @@ pub struct BeginAuthenticationCall {
     pub icon_name: String,
     pub details: HashMap<String, String>,
     pub cookie: String,
+    /// ponytail: `OwnedValue`, one `Value` per byte of an array; polkitd is the only sender; upgrade: a typed `uid` seed.
     pub identities: Vec<(String, HashMap<String, OwnedValue>)>,
 }
 
