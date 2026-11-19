@@ -315,11 +315,8 @@ impl MprisController {
             debug!("seek to {target} for {id:?} needs a position to convert against and has none");
             return Ok(());
         };
-        let Some(offset) = target.checked_sub(position) else {
-            debug!("seek to {target} for {id:?} does not fit an i64 offset from {position}");
-            return Ok(());
-        };
-        player.seek(offset).await
+        // `target` is clamped into `[0, length]` with `length >= 0`, so this cannot overflow.
+        player.seek(target - position).await
     }
 
     /// A live `Position` read. Never the cached snapshot: it dates from the last signal, so it is
