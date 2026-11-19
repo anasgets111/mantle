@@ -52,7 +52,12 @@ pub(super) fn resolve_position(
     match read {
         Ok(0) if same_track && matches!(last, Some((Some(position), _)) if position > 0) => last.unwrap_or((None, 0)),
         // ponytail: a seek back under 1 s that sends no `Seeked` is ignored; MPRIS requires `Seeked`.
-        Ok(position) if reached.is_some_and(|reached| (0..1_000_000).contains(&(reached - position))) => {
+        Ok(position)
+            if position >= 0
+                && reached
+                    .and_then(|reached| reached.checked_sub(position))
+                    .is_some_and(|d| (0..1_000_000).contains(&d)) =>
+        {
             if settled {
                 last.unwrap_or((None, 0))
             } else {
@@ -221,5 +226,13 @@ mod tests {
         assert_ne!(state.position_updated_at, 42);
         publish_seeked_position(&mut state, -1);
         assert_eq!(state.position, None, "a negative offset is unknown, as on the property read");
+    }
+
+    #[test]
+    fn a_min_position_on_the_same_track_is_unknown_not_an_overflow() {
+        for negative in [i64::MIN, -1] {
+            let (position, _) = resolve_position(Ok(negative), Some(&previous_at(5)), true, PlayState::Stopped, "test");
+            assert_eq!(position, None, "{negative}");
+        }
     }
 }
