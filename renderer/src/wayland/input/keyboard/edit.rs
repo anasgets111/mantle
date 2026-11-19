@@ -43,11 +43,6 @@ impl EditHistory {
         }
         self.typing_end = typed_to;
         // ponytail: 100 snapshots or 1 MiB of text; use edit deltas if long drafts need deeper history.
-        if snapshot.0.len() > Self::LIMIT {
-            self.undo.clear();
-            self.typing_end = None;
-            return;
-        }
         self.undo.push_back(snapshot);
         self.trim();
     }
@@ -57,10 +52,6 @@ impl EditHistory {
         let (from, to) = if redo { (&mut self.redo, &mut self.undo) } else { (&mut self.undo, &mut self.redo) };
         let Some((previous, previous_selection)) = from.pop_back() else { return false };
         let current = (std::mem::replace(text, previous), std::mem::replace(selection, previous_selection));
-        if current.0.len() > Self::LIMIT {
-            self.clear();
-            return true;
-        }
         to.push_back(current);
         self.trim();
         true
