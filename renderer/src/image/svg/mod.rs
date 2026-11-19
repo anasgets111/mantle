@@ -612,6 +612,15 @@ pub(super) mod tests {
         // calling the resolver, would inflate the cap again per copy.
         let refused = data_url("image/svg+xml", &bomb);
         assert_eq!(side_by_side(&[refused, data_url("image/svg+xml", RED_SVG.as_bytes())]), [CLEAR, CLEAR]);
+
+        // An entity the guard does not allow is refused at its raw size, not as an overrun. roxmltree
+        // keeps the reference in this comment literal, so counting it expanded would over-charge.
+        let label = "x".repeat(1100);
+        let refs = "&c;".repeat(8000);
+        let refused =
+            format!("<!DOCTYPE svg [<!ENTITY label '{label}'><!ENTITY c '<!-- &label; -->'>]><svg>{refs}</svg>");
+        let refused = data_url("image/svg+xml", refused.as_bytes());
+        assert_eq!(side_by_side(&[refused, data_url("image/svg+xml", RED_SVG.as_bytes())]), [CLEAR, RED]);
     }
 
     #[test]

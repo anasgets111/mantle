@@ -142,206 +142,56 @@ pub(super) enum XmlError {
     Parse(String),
 }
 
-/// Extracts entity definitions from the prolog's internal DTD subset and returns
-/// the byte offset where the document body starts, or `None` when no entity is declared.
-fn dtd_entities(text: &str) -> Option<(std::collections::HashMap<&str, &str>, usize)> {
-    let body = text.trim_prefix('\u{feff}');
-    let mut i = text.len() - body.len();
-    let bytes = text.as_bytes();
-    let skip_ws = |i: &mut usize| {
-        while bytes.get(*i).is_some_and(u8::is_ascii_whitespace) {
-            *i += 1;
-        }
-    };
-    let skip_until = |i: &mut usize, pat: &[u8]| -> Option<()> {
-        let pos = bytes[*i..].windows(pat.len()).position(|w| w == pat)?;
-        *i += pos + pat.len();
-        Some(())
-    };
-    loop {
-        skip_ws(&mut i);
-        if bytes[i..].starts_with(b"<?") {
-            i += 2;
-            skip_until(&mut i, b"?>")?;
-        } else if bytes[i..].starts_with(b"<!--") {
-            i += 4;
-            skip_until(&mut i, b"-->")?;
-        } else {
-            break;
-        }
-    }
-    if !bytes[i..].starts_with(b"<!DOCTYPE") {
-        return None;
-    }
-    i += b"<!DOCTYPE".len();
-    skip_ws(&mut i);
-    while bytes.get(i).is_some_and(|b| !b.is_ascii_whitespace() && !matches!(b, b'[' | b'>')) {
-        i += 1;
-    }
-    skip_ws(&mut i);
-    let skip_quoted = |i: &mut usize| -> Option<&str> {
-        let quote = *bytes.get(*i).filter(|b| matches!(b, b'"' | b'\''))?;
-        *i += 1;
-        let start = *i;
-        let end = bytes[start..].iter().position(|&b| b == quote)?;
-        *i = start + end + 1;
-        text.get(start..start + end)
-    };
-    if bytes[i..].starts_with(b"SYSTEM") || bytes[i..].starts_with(b"PUBLIC") {
-        let is_public = bytes[i..].starts_with(b"PUBLIC");
-        i += 6;
-        skip_ws(&mut i);
-        skip_quoted(&mut i)?;
-        if is_public {
-            skip_ws(&mut i);
-            skip_quoted(&mut i)?;
-        }
-        skip_ws(&mut i);
-    }
-    if bytes.get(i) != Some(&b'[') {
-        return None;
-    }
-    i += 1;
-    let mut entities = std::collections::HashMap::new();
-    let skip_decl = |i: &mut usize| -> Option<()> {
-        while let Some(&b) = bytes.get(*i) {
-            *i += 1;
-            if b == b'>' {
-                return Some(());
-            }
-            if matches!(b, b'"' | b'\'') {
-                let end = bytes[*i..].iter().position(|&c| c == b)?;
-                *i += end + 1;
-            }
-        }
-        None
-    };
-    loop {
-        skip_ws(&mut i);
-        if bytes.get(i) == Some(&b']') {
-            i += 1;
-            skip_ws(&mut i);
-            if bytes.get(i) != Some(&b'>') {
-                return None;
-            }
-            i += 1;
-            break;
-        }
-        if bytes[i..].starts_with(b"<!--") {
-            i += 4;
-            skip_until(&mut i, b"-->")?;
-        } else if bytes[i..].starts_with(b"<?") {
-            i += 2;
-            skip_until(&mut i, b"?>")?;
-        } else if bytes[i..].starts_with(b"<!ENTITY") {
-            i += b"<!ENTITY".len();
-            skip_ws(&mut i);
-            // roxmltree registers parameter entities in the same map as general entities.
-            if bytes.get(i) == Some(&b'%') {
-                i += 1;
-                skip_ws(&mut i);
-            }
-            let name_start = i;
-            while bytes.get(i).is_some_and(|b| !b.is_ascii_whitespace()) {
-                i += 1;
-            }
-            let name = text.get(name_start..i)?;
-            skip_ws(&mut i);
-            if bytes.get(i).is_some_and(|b| matches!(b, b'"' | b'\'')) {
-                let def = skip_quoted(&mut i)?;
-                skip_ws(&mut i);
-                if bytes.get(i) != Some(&b'>') {
-                    return None;
-                }
-                i += 1;
-                entities.entry(name).or_insert(def);
-            } else {
-                skip_decl(&mut i)?;
-            }
-        } else if bytes[i..].starts_with(b"<!") {
-            skip_decl(&mut i)?;
-        } else {
-            return None;
-        }
-    }
-    (!entities.is_empty()).then_some((entities, i))
-}
+/// `<!ENTITY` candidates times bytes a document with a DTD may hold. roxmltree resolves each
+/// reference by comparing its name with every declaration's, so many entities referenced many
+/// times cost quadratic CPU inside the byte bound: 9.4 s for 4096 in 8 MiB. Every reference and
+/// every name compared lies in the text, so this bounds both: 120 ms at worst, the cost of 32
+/// at the 8 MiB cap. A smaller file may hold more: Breeze's `ktouch.svg` has 44 in 38 KB.
+const MAX_ENTITY_BYTES: usize = 32 * 8 * 1024 * 1024;
 
-#[derive(Clone, Copy)]
-enum EntitySize {
-    Visiting,
-    Done(usize),
-}
-
-fn expanded_size<'a>(
-    text: &'a str,
-    entities: &std::collections::HashMap<&'a str, &'a str>,
-    cache: &mut std::collections::HashMap<&'a str, EntitySize>,
-    depth: u8,
-    cap: usize,
-    skip_markup: bool,
-) -> Option<usize> {
-    let bytes = text.as_bytes();
-    let (mut i, mut total) = (0usize, 0usize);
-    while i < bytes.len() {
-        if skip_markup && bytes[i..].starts_with(b"<!--") {
-            let len = bytes[i + 4..].windows(3).position(|w| w == b"-->").map_or(bytes.len() - i, |p| p + 7);
-            total = total.checked_add(len).filter(|&t| t <= cap)?;
-            i += len;
-            continue;
+/// An upper bound on the bytes `roxmltree` produces once it expands entities, found without
+/// tokenizing the document. It declares entities only inside a literal `<!DOCTYPE`; without one,
+/// every reference is predefined or a character, no longer than its own text. Every entity it
+/// registers starts at a literal `<!ENTITY`, and its value runs from the next quote byte to the
+/// next byte of the same quote: names and spaces hold no quotes, and external entities resolve to
+/// nothing. So the span after each literal occurrence covers every declared value, wherever
+/// comments, instructions or declarations put it. A span with `&`, `%` or `<` could nest or add
+/// markup, so the document is refused (`Parse`, charged at its raw size), as is one past
+/// [`MAX_ENTITY_BYTES`]. Otherwise each `&` in the text expands to at most the longest
+/// span.
+///
+/// With a DTD, a literal `<!ENTITY` outside a declaration is scanned too: the bound over-counts.
+///
+/// ponytail: flat entities only, at `raw + count('&') x longest`; upgrade: count real expansion.
+fn expanded_xml_bytes(text: &str, cap: usize) -> Result<usize, XmlError> {
+    let refused = || XmlError::Parse("an SVG entity holds `&`, `%` or `<`; only flat entities load".into());
+    let refs = text.bytes().filter(|&b| b == b'&').count();
+    let (mut longest, mut last_open) = (0, 0);
+    if text.contains("<!DOCTYPE") {
+        let entities = text.matches("<!ENTITY").count();
+        if entities.saturating_mul(text.len()) > MAX_ENTITY_BYTES {
+            let most = MAX_ENTITY_BYTES / text.len();
+            return Err(XmlError::Parse(format!(
+                "an SVG of {} bytes may declare {most} entities, not {entities}",
+                text.len()
+            )));
         }
-        if skip_markup && bytes[i..].starts_with(b"<![CDATA[") {
-            let len = bytes[i + 9..].windows(3).position(|w| w == b"]]>").map_or(bytes.len() - i, |p| p + 12);
-            total = total.checked_add(len).filter(|&t| t <= cap)?;
-            i += len;
-            continue;
+        for (at, _) in text.match_indices("<!ENTITY") {
+            // No quote lies between an earlier occurrence and its opening quote, so one before the
+            // last opening quote shares its span. Skipping it keeps the scan linear: same-kind
+            // spans never overlap.
+            if at < last_open {
+                continue;
+            }
+            last_open = text[at..].find(['"', '\'']).ok_or_else(refused)? + at;
+            let quoted = &text[last_open + 1..];
+            match quoted.find(char::from(text.as_bytes()[last_open])).map(|end| &quoted[..end]) {
+                Some(value) if !value.contains(['&', '%', '<']) => longest = longest.max(value.len()),
+                _ => return Err(refused()),
+            }
         }
-        if bytes[i] == b'&'
-            && let Some(rel_semi) =
-                bytes[i + 1..].iter().position(|&b| matches!(b, b';' | b'<' | b'&' | b' ' | b'\t' | b'\r' | b'\n'))
-            && bytes[i + 1 + rel_semi] == b';'
-        {
-            let name = std::str::from_utf8(&bytes[i + 1..i + 1 + rel_semi]).ok()?;
-            let add = if entities.contains_key(name) {
-                if depth >= 10 {
-                    return None;
-                }
-                match cache.get(name).copied() {
-                    Some(EntitySize::Visiting) => return None,
-                    Some(EntitySize::Done(n)) => n,
-                    None => {
-                        let def = entities[name];
-                        cache.insert(name, EntitySize::Visiting);
-                        let n = expanded_size(def, entities, cache, depth + 1, cap, false)?;
-                        cache.insert(name, EntitySize::Done(n));
-                        n
-                    }
-                }
-            } else {
-                rel_semi + 2
-            };
-            total = total.checked_add(add).filter(|&t| t <= cap)?;
-            i += rel_semi + 2;
-            continue;
-        }
-        total = total.checked_add(1).filter(|&t| t <= cap)?;
-        i += 1;
     }
-    Some(total)
-}
-
-/// Expanded body byte length, or `None` if DTD entity expansion cycles, nests past `roxmltree`'s
-/// 10-level cap, or exceeds `cap` bytes. `roxmltree` bounds per-ref nesting and nested counts,
-/// not expanded bytes or repeated root refs.
-fn expanded_xml_bytes(text: &str, cap: usize) -> Option<usize> {
-    if !text.contains("<!ENTITY") {
-        return (text.len() <= cap).then_some(text.len());
-    }
-    let Some((entities, body_start)) = dtd_entities(text) else {
-        return (text.len() <= cap).then_some(text.len());
-    };
-    let mut cache = std::collections::HashMap::new();
-    expanded_size(&text[body_start..], &entities, &mut cache, 0, cap, true)
+    refs.checked_mul(longest).and_then(|n| n.checked_add(text.len())).filter(|&n| n <= cap).ok_or(XmlError::EntityLimit)
 }
 
 /// `data` parsed as `Tree::from_data` parses it, bounded to `cap` entity-expanded bytes so the
@@ -349,7 +199,7 @@ fn expanded_xml_bytes(text: &str, cap: usize) -> Option<usize> {
 pub(super) fn parse_xml(data: &[u8], cap: u64) -> Result<(resvg::usvg::roxmltree::Document<'_>, u64), XmlError> {
     let text = std::str::from_utf8(data).map_err(|_| XmlError::Parse(resvg::usvg::Error::NotAnUtf8Str.to_string()))?;
     let cap_usize = usize::try_from(cap).unwrap_or(usize::MAX);
-    let expanded = expanded_xml_bytes(text, cap_usize).ok_or(XmlError::EntityLimit)?;
+    let expanded = expanded_xml_bytes(text, cap_usize)?;
     let options = resvg::usvg::roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
     let doc = resvg::usvg::roxmltree::Document::parse_with_options(text, options)
         .map_err(|err| XmlError::Parse(err.to_string()))?;
@@ -406,14 +256,6 @@ mod tests {
         assert!(draws(svg(&nested("g", MAX_SVG_DEPTH - 2, rect))));
         assert!(!draws(svg(&nested("g", MAX_SVG_DEPTH - 1, rect))));
         assert!(!draws(svg(&format!("<text>{}</text>", nested("tspan", 200_000, "x")))));
-        // Elements an entity expands to count: usvg parses with a DTD allowed.
-        for marker in ["", "% "] {
-            assert!(draws(format!("<!DOCTYPE svg [<!ENTITY {marker}ok '{rect}'>]>{}", svg("&ok;"))));
-        }
-        let entity = nested("g", MAX_SVG_DEPTH - 1, rect);
-        let deep_dtd = format!("<!DOCTYPE svg [<!ENTITY deep '{entity}'>]>{}", svg("&deep;"));
-        assert!(rasterize_at(&deep_dtd, 2).is_err_and(|err| err.contains("nests past")));
-        assert!(!draws(deep_dtd));
         // Direct `<use>` hops and shallow `<g><use/></g>` hops both count against `MAX_SVG_DEPTH`.
         let use_hops = |hops: usize, suffix: &str| {
             let mut body = format!(r#"<rect id="target{suffix}" width="2" height="2" fill="red"/>"#);
@@ -501,55 +343,143 @@ mod tests {
     }
 
     #[test]
-    fn xml_entity_expansion_is_bounded_without_breaking_dtd_entities() {
-        // Nested entity bombs, both classic 10-level billion-laughs and 7-level binary trees that
-        // stay under roxmltree's 10-depth and 255-reference caps, are refused before parsing.
+    fn an_svg_with_a_few_flat_entities_loads_and_any_other_entity_is_refused() {
+        // Illustrator names its namespaces as short, flat entities and references them throughout.
+        let names = ["ns_extend", "ns_ai", "ns_graphs", "ns_vars", "ns_imrep", "ns_sfw"];
+        let mut doc = String::from(
+            "\u{feff}<?xml version='1.0' encoding='utf-8'?><!-- Generator: Adobe Illustrator -->\
+             <!DOCTYPE svg PUBLIC '-//W3C//DTD SVG 1.1//EN' 'http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd' [",
+        );
+        for name in names {
+            doc.push_str(&format!("<!ENTITY {name} \"http://ns.adobe.com/{name}/1.0/\">"));
+        }
+        doc.push_str("<!ENTITY ns_svg 'http://www.w3.org/2000/svg'><!ENTITY fill 'red'> ]>");
+        let refs: String = (0..200).map(|i| format!("<desc>&{};</desc>", names[i % names.len()])).collect();
+        doc.push_str(&format!(
+            "<svg xmlns='&ns_svg;' width='2' height='2'><rect width='2' height='2' fill='&fill;'/>{refs}</svg>"
+        ));
+        assert!(rasterize_at(&doc, 2).is_ok_and(|pixels| all_red(&pixels)));
+
         let mut lol = String::from("<!DOCTYPE svg [<!ENTITY lol0 '0123456789'>");
         for i in 1..=9 {
-            let refs = format!("&lol{};", i - 1).repeat(10);
-            lol.push_str(&format!("<!ENTITY lol{i} '{refs}'>"));
+            lol.push_str(&format!("<!ENTITY lol{i} '{}'>", format!("&lol{};", i - 1).repeat(10)));
         }
-        lol.push_str(&format!("]>{}", svg("<text>&lol9;</text>")));
-        let err = rasterize_at(&lol, 2).expect_err("billion laughs must be refused");
-        assert!(err.contains("expands entities past"), "{err}");
-
-        let leaf = "x".repeat(128 * 1024);
-        let mut tree = format!("<!DOCTYPE svg [<!ENTITY t0 '{leaf}'>");
-        for i in 1..=7 {
-            tree.push_str(&format!("<!ENTITY t{i} '&t{};&t{};'>", i - 1, i - 1));
+        let dtd = |entities: &str, body: &str| format!("<!DOCTYPE svg [{entities}]>{}", svg(body));
+        for (name, doc) in [
+            ("billion laughs", format!("{lol}]>{}", svg("<text>&lol9;</text>"))),
+            ("nested", dtd("<!ENTITY a 'x'><!ENTITY b '&a;&a;'>", "&b;")),
+            ("cycle", dtd("<!ENTITY a '&b;'><!ENTITY b '&a;'>", "&a;")),
+            ("markup", dtd(r#"<!ENTITY r '<rect width="2" height="2" fill="red"/>'>"#, "&r;")),
+            ("comment holding a reference", dtd("<!ENTITY label 'x'><!ENTITY c '<!-- &label; -->'>", "&c;")),
+            ("parameter reference", dtd("<!ENTITY % pe 'x'><!ENTITY p '%pe;'>", "&p;")),
+            ("unterminated", "<!DOCTYPE svg [<!ENTITY u 'x>]><svg/>".to_string()),
+        ] {
+            assert!(matches!(expanded_xml_bytes(&doc, usize::MAX), Err(XmlError::Parse(_))), "{name}");
+            assert!(rasterize_at(&doc, 2).is_err_and(|err| err.contains("only flat entities")), "{name}");
         }
-        tree.push_str(&format!("]>{}", svg("<text>&t7;</text>")));
-        let err = rasterize_at(&tree, 2).expect_err("16 MiB 254-ref binary entity tree must be refused");
-        assert!(err.contains("expands entities past"), "{err}");
 
+        // 256 entities load in a file of exactly 1 MiB, and one byte more is refused.
+        let entities: String = (0..256).map(|i| format!("<!ENTITY e{i} 'red'>")).collect();
+        let base = dtd(&entities, r#"<rect width="2" height="2" fill="&e255;"/><desc></desc>"#);
+        let pad = MAX_ENTITY_BYTES / 256 - base.len();
+        for (extra, loads) in [(0, true), (1, false)] {
+            let refs = "&e255;".repeat(pad / 6) + &"x".repeat(pad % 6 + extra);
+            let doc = base.replace("<desc>", &format!("<desc>{refs}"));
+            let drawn = rasterize_at(&doc, 2);
+            match loads {
+                true => assert!(drawn.is_ok_and(|pixels| all_red(&pixels))),
+                false => {
+                    assert!(matches!(expanded_xml_bytes(&doc, usize::MAX), Err(XmlError::Parse(_))));
+                    assert!(drawn.is_err_and(|err| err.contains("may declare 255 entities, not 256")));
+                }
+            }
+        }
+    }
+
+    /// Only a DTD declares entities, so without one a literal `<!ENTITY` is text and costs nothing.
+    #[test]
+    fn an_svg_without_a_dtd_skips_the_entity_scan() {
+        let rect = r#"<rect width="2" height="2" fill="red"/>"#;
+        let unquoted = svg(&format!("{rect}<!-- <!ENTITY -->"));
+        assert!(rasterize_at(&unquoted, 2).is_ok_and(|pixels| all_red(&pixels)));
+        // Before a quote, its span once counted 64 KiB per `&`: 4.6 MB, over half the budget the
+        // sibling images share.
+        let quoted =
+            svg(&format!("<!-- <!ENTITY --><desc id='{}'/>{rect}{}", "x".repeat(64 * 1024), "&amp;".repeat(70)));
+        assert_eq!(expanded_xml_bytes(&quoted, usize::MAX).ok(), Some(quoted.len()));
+        let url = data_url("image/svg+xml", quoted.as_bytes());
+        assert_eq!(side_by_side(&[url.clone(), url]), [RED, RED]);
+    }
+
+    #[test]
+    fn a_flat_entity_expansion_is_bounded_however_the_document_is_tokenized() {
         let flat = "x".repeat(2 * 1024 * 1024);
         for marker in ["", "% "] {
             let repeated =
                 format!("<!DOCTYPE svg [<!ENTITY {marker}f '{flat}'>]>{}", svg("<text>&f;&f;&f;&f;&f;</text>"));
-            assert!(expanded_xml_bytes(&repeated, MAX_SVG_BYTES as usize).is_none(), "{marker}");
+            assert!(matches!(expanded_xml_bytes(&repeated, MAX_SVG_BYTES as usize), Err(XmlError::EntityLimit)));
             assert!(rasterize_at(&repeated, 2).is_err_and(|err| err.contains("expands entities past")));
         }
-
-        let cycle = format!("<!DOCTYPE svg [<!ENTITY a '&b;'><!ENTITY b '&a;'>]>{}", svg("&a;"));
-        assert!(rasterize_at(&cycle, 2).is_err_and(|err| err.contains("expands entities past")));
-
-        // Entity nesting of 10 passes; 11 is refused.
-        let chain_doc = |hops: usize| {
-            let mut dtd = String::from("<!DOCTYPE svg [<!ENTITY e0 '<rect width=\"2\" height=\"2\" fill=\"red\"/>'>");
-            for i in 1..hops {
-                dtd.push_str(&format!("<!ENTITY e{i} '&e{};'>", i - 1));
-            }
-            format!("{dtd}]>{}", svg(&format!("&e{};", hops - 1)))
-        };
-        assert!(rasterize_at(&chain_doc(10), 2).is_ok_and(|pixels| all_red(&pixels)));
-        assert!(rasterize_at(&chain_doc(11), 2).is_err_and(|err| err.contains("expands entities past")));
-
-        // Nested SVG `<image>` holding an entity bomb is refused and drains the nested budget, while
-        // entity-expanded bytes count against the shared budget across siblings.
+        let exact = "<!DOCTYPE svg [<!ENTITY e 'abc'><!ENTITY f 'abcde'>]><svg>&e;&amp;</svg>";
         assert_eq!(
-            side_by_side(&[data_url("image/svg+xml", tree.as_bytes()), data_url("image/svg+xml", RED_SVG.as_bytes())]),
-            [CLEAR, CLEAR]
+            expanded_xml_bytes(exact, usize::MAX).ok(),
+            Some(exact.len() + 2 * 5),
+            "each `&` at the longest value"
         );
+        assert_eq!(expanded_xml_bytes(exact, exact.len() + 10).ok(), Some(exact.len() + 10));
+        assert_eq!(expanded_xml_bytes(exact, exact.len() + 9).ok(), None);
+        assert_eq!(expanded_xml_bytes("<svg/>", 5).ok(), None);
+        let first = "<!ENTITY e 'abcd'>&e;<!DOCTYPE";
+        assert_eq!(expanded_xml_bytes(first, usize::MAX).ok(), Some(first.len() + 4), "a candidate at byte 0");
+        // Every occurrence shares one far quote, and the skip reads its span once.
+        let shared_quote = format!("<!DOCTYPE{}{}'x'", "<!ENTITY ".repeat(32), " ".repeat(1024 * 1024));
+        assert_eq!(expanded_xml_bytes(&shared_quote, usize::MAX).ok(), Some(shared_quote.len()));
+
+        // Each hides the declaration or the references from a scanner that tokenizes the prolog,
+        // DTD or body differently from roxmltree.
+        let entity = "A".repeat(1024);
+        let refs = "&x;".repeat(500);
+        let body = svg(&format!("<desc>{refs}</desc>"));
+        for (name, doc, roxmltree_reads) in [
+            (
+                "quote in an ATTLIST",
+                format!(r#"<!DOCTYPE svg [<!ATTLIST a b CDATA "><!ENTITY x '{entity}'><!--"> -->]>{body}"#),
+                true,
+            ),
+            (
+                "comment opener in an instruction",
+                format!(
+                    "<!DOCTYPE svg [<!ENTITY x '{entity}'>]>{}",
+                    svg(&format!("<desc><?pi <!-- ?>{refs} --></desc>"))
+                ),
+                true,
+            ),
+            (
+                "`?>` in the XML declaration",
+                format!(
+                    r#"<?xml version="1.0" encoding="?><!--"?><!DOCTYPE svg [<!ENTITY x '{entity}'>]>{body}<!---->"#
+                ),
+                false,
+            ),
+            ("spaced subset end", format!("<!DOCTYPE svg [<!ENTITY x '{entity}'> ] >{body}"), true),
+        ] {
+            let guard = expanded_xml_bytes(&doc, usize::MAX).ok();
+            assert!(guard.is_some_and(|guard| guard >= 500 * entity.len()), "{name}: {guard:?}");
+            if roxmltree_reads {
+                let options = resvg::usvg::roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
+                let parsed = resvg::usvg::roxmltree::Document::parse_with_options(&doc, options).unwrap();
+                let text: usize = parsed
+                    .descendants()
+                    .filter(|node| node.is_text())
+                    .filter_map(|node| node.text())
+                    .map(str::len)
+                    .sum();
+                assert!(guard.is_some_and(|guard| guard >= text), "{name}: guard {guard:?}, roxmltree text {text} B");
+            }
+            assert!(matches!(parse_xml(doc.as_bytes(), 64 * 1024), Err(XmlError::EntityLimit)), "{name}");
+        }
+
+        // Expanded bytes count against the budget the sibling images share.
         let half_leaf = "x".repeat(1024 * 1024);
         let half_entities = format!(
             "<!DOCTYPE svg [<!ENTITY h '{half_leaf}'>]>{}",
@@ -557,58 +487,6 @@ mod tests {
         );
         let half_url = data_url("image/svg+xml", half_entities.as_bytes());
         assert_eq!(side_by_side(&[half_url.clone(), half_url]), [RED, CLEAR]);
-
-        // Realistic Illustrator-style DTD entities, BOM, PUBLIC/SYSTEM external IDs, `<!ELEMENT>`/`<!ENTITY ... SYSTEM>`,
-        // parameter entities, comments and CDATA `&...;` keep drawing, while bombs behind the same prolog are still caught.
-        let big = "x".repeat(2 * 1024 * 1024);
-        let prolog = "\u{feff}<?xml version='1.0'?><!-- prolog -->\
-             <!DOCTYPE svg PUBLIC '-//W3C//DTD SVG 1.1//EN' 'http://example.org/svg11.dtd' [\
-             <!-- dtd comment --><!-- dtd2 --><?pi target?><?pi2?>\
-             <!ELEMENT svg ANY>\
-             <!ENTITY ext SYSTEM 'a>b'>\
-             <!ENTITY % pe 'ignored'>\
-             <!ENTITY ns_svg 'http://www.w3.org/2000/svg'>\
-             <!ENTITY fill 'red'>";
-        let valid = format!(
-            "{prolog}\
-             <!ENTITY unused '{big}'>\
-             <!ENTITY shape '<rect width=\"2\" height=\"2\" fill=\"&fill;\"/>'>\
-             <!ENTITY shape '<circle r=\"1\"/>'>\
-             ]><svg xmlns='&ns_svg;' width='2' height='2'><!-- &unused;&unused;&unused;&unused;&unused; -->\
-             <text><![CDATA[&unused;&unused;&unused;&unused;&unused;]]></text>&shape;</svg>"
-        );
-        assert!(rasterize_at(&valid, 2).is_ok_and(|pixels| all_red(&pixels)));
-        let prolog_bomb = format!("{prolog}<!ENTITY f '{flat}'> ] >{}", svg("<!--a--><![CDATA[b]]>&f;&f;&f;&f;&f;"));
-        assert!(rasterize_at(&prolog_bomb, 2).is_err_and(|err| err.contains("expands entities past")));
-        let bare_prolog_bomb = format!(
-            "<?xml version='1.0'?><?pi a?><!--a--><!--b--><!DOCTYPE svg [<!ENTITY f '{flat}'>]>{}",
-            svg("&f;&f;&f;&f;&f;")
-        );
-        assert!(rasterize_at(&bare_prolog_bomb, 2).is_err_and(|err| err.contains("expands entities past")));
-        let sys_dtd = format!(
-            "<!DOCTYPE svg SYSTEM 'svg.dtd' [<!ENTITY r '<rect width=\"2\" height=\"2\" fill=\"red\"/>'>]>{}",
-            svg("&r;")
-        );
-        assert!(rasterize_at(&sys_dtd, 2).is_ok_and(|pixels| all_red(&pixels)));
-        let sys_bomb = format!("<!DOCTYPE svg SYSTEM 'svg.dtd' [<!ENTITY f '{flat}'>]>{}", svg("&f;&f;&f;&f;&f;"));
-        assert!(rasterize_at(&sys_bomb, 2).is_err_and(|err| err.contains("expands entities past")));
-
-        // Exact cap bounds across plain SVG, skipped DTD, comments, CDATA, built-in `&apos;` and expanded entities.
-        assert_eq!(expanded_xml_bytes("<svg/>", 6), Some(6));
-        assert_eq!(expanded_xml_bytes("<svg/>", 5), None);
-        let no_dtd = "<!-- <!ENTITY -->";
-        assert_eq!(expanded_xml_bytes(no_dtd, no_dtd.len()), Some(no_dtd.len()));
-        assert_eq!(expanded_xml_bytes(no_dtd, no_dtd.len() - 1), None);
-        let exact = "<!DOCTYPE svg [<!ENTITY e 'abcde'>]><svg><!--xxxxxxxxxx--><![CDATA[yyyyyyyyyy]]>&apos;&e;</svg>";
-        let expected_len = "<svg><!--xxxxxxxxxx--><![CDATA[yyyyyyyyyy]]>&apos;abcde</svg>".len();
-        assert_eq!(expanded_xml_bytes(exact, expected_len), Some(expected_len));
-        assert_eq!(expanded_xml_bytes(exact, expected_len - 1), None);
-        assert_eq!(expanded_xml_bytes("<!DOCTYPE svg [<!ENTITY e 'abc'>]>a<!--", 5), Some(5));
-        assert_eq!(expanded_xml_bytes("<!DOCTYPE svg [<!ENTITY e 'abc'>]><svg><!--&e;", 12), Some(12));
-        assert_eq!(expanded_xml_bytes("<!DOCTYPE svg [<!ENTITY e 'abc'>]><svg><!--&e;", 11), None);
-        assert_eq!(expanded_xml_bytes("<!DOCTYPE svg [<!ENTITY e 'abc'>]>a<![CDATA[", 10), Some(10));
-        assert_eq!(expanded_xml_bytes("<!DOCTYPE svg [<!ENTITY e 'abc'>]><svg><![CDATA[&e;", 17), Some(17));
-        assert_eq!(expanded_xml_bytes("<!DOCTYPE svg [<!ENTITY e 'abc'>]><svg><![CDATA[&e;", 16), None);
     }
 
     /// The worst document the limits accept, on the smallest stack that decodes one: at every level
