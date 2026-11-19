@@ -9288,8 +9288,12 @@ rows of other families included.
 Amended after the release audit: the pass that voids rows past a keyed list's window has already
 placed its room from the old sizes, so a measure that voids any owes the list one follow-up pass that
 turn, through the short-window path. Only a voiding pass pays it; a list with rows no face covers
-pays it at every landing. The shared scroll offset does not move. A cross-length change voids rows
-too but owes no pass (#150).
+pays it at every landing. The shared scroll offset does not move. A cross-length change that moves
+the placed room by over 0.5 px owes the same pass; a width tween owes it once, at settle, through the
+scroll cell's layout readers, never by writing the offset (#150). Live: +1 pass per widening tween,
+ticks unchanged. Six rounds that also kept a same-pass `reveal`'s row (freezing the lead, holding the
+request in the memo, reserving it on the signal) each broke request lifecycles base handles
+(rollback, removal, hide, second holder, wheel); that row is lost that turn instead, as ponytail.
 
 ## 0400. A protocol mismatch re-executes the installed `mantle`
 
