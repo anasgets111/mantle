@@ -89,7 +89,7 @@ impl LogicalRect {
 /// release builds set `overflow-checks`, so the Renderer aborts. Region walks push those
 /// differences straight into `wl_region::add` (`wayland::surface`) and `region::push_rounded_rect`
 /// without an intervening clip.
-const COORD_LIMIT: f32 = 1_048_576.0;
+pub(crate) const COORD_LIMIT: f32 = 1_048_576.0;
 
 /// Snaps `rect` to physical pixel boundaries at fractional output scale `scale`.
 ///

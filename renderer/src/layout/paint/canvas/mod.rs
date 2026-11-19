@@ -2125,4 +2125,13 @@ pub(crate) mod tests {
         run(&["a"]);
         assert_eq!(stage.program_count(), 2);
     }
+
+    #[test]
+    fn a_rotated_child_under_a_blur_in_an_unclipped_root_paints() {
+        let src = r##"return panel { id = "bar", width = 200, height = 100, clip = "none",
+            child = rect { width = 80, height = 40, effect = { blur = 4 },
+                children = { rect { width = 20, height = 20, background = "#ffffff", rotate = 5 } } } }"##;
+        let Some(px) = paint_with_gl(src, (200, 100), &[(10, 10)]) else { return };
+        assert!(px[0].3 > 0, "the rotated square paints under the blur: {px:?}");
+    }
 }

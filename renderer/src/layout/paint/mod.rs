@@ -37,7 +37,7 @@ pub(crate) fn compose_preedit(
 use crate::image::{self, Fit, Load};
 use crate::layout::node::{self, BorderPaint, CaretStyle, EdgeInsets, Fill, Radii, Rgba, StyleRun, TextAlign};
 use crate::layout::scene::NodeId;
-use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
+use crate::text::snap::{COORD_LIMIT, LogicalRect, PhysicalRect, snap_to_physical};
 
 /// Typed draw data. A kind with no [`PaintStyle`](node::PaintStyle) contributes no [`DrawCmd`]. No Lua values are
 /// kept: mlua table identity would make a signal-resolved table unequal every pass.
@@ -602,8 +602,11 @@ pub(crate) fn shadow_reach(rect: LogicalRect, shadow: node::Shadow) -> LogicalRe
     grow(shadow_rect(rect, rect, shadow), 1.5 * shadow.blur)
 }
 
-/// Identity clip before any scissor is pushed.
-pub(crate) const UNCLIPPED: PhysicalRect = PhysicalRect { x0: i32::MIN, y0: i32::MIN, x1: i32::MAX, y1: i32::MAX };
+const LIMIT: i32 = COORD_LIMIT as i32;
+/// Identity clip before any scissor is pushed: everywhere a snapped edge can be. A root's
+/// `clip = "none"` and a non-finite matrix hand it to commands that take `x1 - x0` and `y1 - y0`
+/// as a scissor or offscreen size, so both extents must fit an `i32` when subtracted.
+pub(crate) const UNCLIPPED: PhysicalRect = PhysicalRect { x0: -LIMIT, y0: -LIMIT, x1: LIMIT, y1: LIMIT };
 
 #[cfg(test)]
 mod tests {
@@ -616,6 +619,14 @@ mod tests {
     use crate::lua::nodes::{deserialize_lua_table, register_node_constructors};
     use crate::lua::signal;
     use crate::text::shaping::ShapingHandle;
+
+    #[test]
+    fn a_non_finite_matrix_bounds_a_rect_whose_width_fits_an_i32() {
+        let rect = PhysicalRect { x0: 0, y0: 0, x1: 10, y1: 10 };
+        let bounds = transformed([f32::INFINITY, 0.0, 0.0, 1.0, 0.0, 0.0], rect);
+        assert!(bounds.x1.checked_sub(bounds.x0).is_some() && bounds.y1.checked_sub(bounds.y0).is_some(), "{bounds:?}");
+        assert!(bounds.x0 < 0 && bounds.x1 > 10, "still covers anywhere it could draw: {bounds:?}");
+    }
 
     #[test]
     fn preedit_replaces_the_selection_and_floors_utf8_cursor_offsets() {
