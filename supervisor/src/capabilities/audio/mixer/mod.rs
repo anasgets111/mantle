@@ -35,6 +35,7 @@ mod devices;
 mod graph;
 mod meters;
 mod null_sinks;
+mod pod;
 mod publish;
 mod registry;
 mod state;

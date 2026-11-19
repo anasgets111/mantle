@@ -267,9 +267,11 @@ fn is_running(info: &pw::node::NodeInfoRef) -> bool {
     info.as_raw().state == pw::sys::pw_node_state_PW_NODE_STATE_RUNNING
 }
 
-/// A `param` event's pod as a value tree; `None` for an absent or undecodable one.
+/// A `param` event's pod as a value tree; `None` for an absent or undecodable one. Any PipeWire
+/// client chooses these bytes, so [`super::pod::readable`] vets them first.
 fn decode(param: Option<&pw::spa::pod::Pod>) -> Option<Value> {
-    PodDeserializer::deserialize_from::<Value>(param?.as_bytes()).ok().map(|(_, value)| value)
+    let bytes = param?.as_bytes();
+    super::pod::readable(bytes).then(|| PodDeserializer::deserialize_from::<Value>(bytes).ok())?.map(|(_, value)| value)
 }
 
 fn record_route(state: &Rc<RefCell<MixerState>>, device_id: u32, value: &Value) {
@@ -987,5 +989,90 @@ mod tests {
         assert!(!running(pw::sys::pw_node_state_PW_NODE_STATE_ERROR, c"\xff"));
         assert!(!running(99, c""));
         assert!(running(pw::sys::pw_node_state_PW_NODE_STATE_RUNNING, c""));
+    }
+
+    /// `decode` on `bytes` copied into 8-byte-aligned storage, as PipeWire hands pods over.
+    fn decode_bytes(bytes: &[u8]) -> Option<Value> {
+        let mut words = vec![0u64; bytes.len().div_ceil(8)];
+        // SAFETY: `words` holds at least `bytes.len()` bytes.
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), words.as_mut_ptr().cast::<u8>(), bytes.len()) };
+        // SAFETY: the u64 buffer is valid for `bytes.len()` bytes.
+        let aligned = unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), bytes.len()) };
+        decode(Some(pw::spa::pod::Pod::from_bytes(aligned).expect("Pod::from_bytes accepts the header")))
+    }
+
+    /// A pod header: size, then type, native-endian.
+    fn header(size: u32, kind: u32) -> Vec<u8> {
+        [size.to_ne_bytes(), kind.to_ne_bytes()].concat()
+    }
+
+    #[test]
+    fn a_param_pod_whose_sizes_would_panic_the_deserializer_is_dropped_at_any_depth() {
+        use pw::spa::sys as spa;
+        let choice_zero_child = [header(16, spa::SPA_TYPE_Choice), vec![0; 8], header(0, spa::SPA_TYPE_Int)].concat();
+        let empty_string = header(0, spa::SPA_TYPE_String);
+        let pointer_16 = [header(24, spa::SPA_TYPE_Pointer), vec![0; 24]].concat();
+        // The next three reach their site only nested: `Pod::from_bytes` cuts a top-level pod to its size.
+        let short_array = [header(4, spa::SPA_TYPE_Array), header(4, spa::SPA_TYPE_Int), vec![0; 8]].concat();
+        let short_object = [header(4, spa::SPA_TYPE_Object), vec![0; 16]].concat();
+        // A Struct declaring 8 bytes around an Int the deserializer reads as 16: its count underflows.
+        let overrun_struct = [header(8, spa::SPA_TYPE_Struct), header(4, spa::SPA_TYPE_Int), vec![0; 8]].concat();
+        let in_object = |value: &[u8]| {
+            let size = (8 + 8 + value.len()) as u32;
+            [header(size, spa::SPA_TYPE_Object), vec![0; 8], vec![0; 8], value.to_vec()].concat()
+        };
+        let in_struct = |value: &[u8]| [header(value.len() as u32, spa::SPA_TYPE_Struct), value.to_vec()].concat();
+        for (name, pod) in [
+            ("choice with child size 0", choice_zero_child.clone()),
+            ("choice of None", [header(16, spa::SPA_TYPE_Choice), vec![0; 8], header(0, spa::SPA_TYPE_None)].concat()),
+            ("empty string", empty_string.clone()),
+            ("16-byte pointer", pointer_16),
+            ("array under 8 bytes", in_struct(&short_array)),
+            ("object under 8 bytes", in_struct(&short_object)),
+            ("struct overrun by its child", in_struct(&overrun_struct)),
+            ("choice in an object", in_object(&choice_zero_child)),
+            ("string in a struct", in_struct(&[empty_string, vec![0; 8]].concat())),
+            ("short array in an object", in_object(&short_array)),
+        ] {
+            assert_eq!(decode_bytes(&pod), None, "{name}");
+        }
+        let mut deep = header(0, spa::SPA_TYPE_Struct);
+        let mut deep_object = [header(8, spa::SPA_TYPE_Object), vec![0; 8]].concat();
+        for _ in 0..16 {
+            deep = in_struct(&deep);
+            deep_object = in_object(&deep_object);
+        }
+        assert_eq!(decode_bytes(&deep), None, "17 nested structs");
+        assert_eq!(decode_bytes(&deep_object), None, "17 nested objects");
+        let wide_int_array = [header(16, spa::SPA_TYPE_Array), header(8, spa::SPA_TYPE_Int), vec![0; 8]].concat();
+        assert!(!super::super::pod::readable(&wide_int_array), "array whose child size is not its type's");
+
+        let ints = [header(32, spa::SPA_TYPE_Choice), vec![0; 8], header(4, spa::SPA_TYPE_Int), vec![0; 16]].concat();
+        let pointer_8 = [header(16, spa::SPA_TYPE_Pointer), vec![0; 16]].concat();
+        let none_long_double = in_struct(
+            &[
+                header(0, spa::SPA_TYPE_None),
+                header(8, spa::SPA_TYPE_Long),
+                vec![0; 8],
+                header(8, spa::SPA_TYPE_Double),
+                vec![0; 8],
+            ]
+            .concat(),
+        );
+        for (name, pod) in [
+            ("choice of four ints", ints),
+            ("8-byte pointer", pointer_8),
+            ("struct of None, Long, Double", none_long_double),
+            ("empty array of None", [header(8, spa::SPA_TYPE_Array), header(0, spa::SPA_TYPE_None)].concat()),
+        ] {
+            assert!(decode_bytes(&pod).is_some(), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_well_formed_props_pod_still_decodes() {
+        let props = super::super::super::master::props_object(Some(vec![0.5, 0.25]), Some(true));
+        let bytes = super::super::super::master::serialize_props(&props).expect("a Props object must serialize");
+        assert_eq!(decode_bytes(&bytes), Some(props));
     }
 }
