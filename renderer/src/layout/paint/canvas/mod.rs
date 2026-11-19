@@ -237,7 +237,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                     walk.split.boxes += t0.elapsed();
                 }
             }
-            Draw::Text { content, runs, face, color, align, centered, caret, caret_on, caret_style, wrap } => {
+            Draw::Text { content, runs, face, color, align, centered, caret, caret_on, caret_style, wrap, .. } => {
                 let t0 = timing.then(Instant::now);
                 let mut rect = rect;
                 if *centered {

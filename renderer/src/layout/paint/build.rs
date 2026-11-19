@@ -474,6 +474,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
                 caret_on: false,
                 caret_style: CaretStyle::plain(face.font_size, fade(*color, opacity)),
                 wrap: None,
+                scale,
             })
         }
 
@@ -625,6 +626,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
                 wrap: multiline.map(|_| {
                     (crate::layout::field_rows::wrap_width(node.content_box(rect).width, bar.width), node.scrolled)
                 }),
+                scale,
             })
         }
 
@@ -1425,23 +1427,30 @@ mod tests {
         assert!(std::rc::Rc::ptr_eq(&drawn.expect("a path draw").commands, &node.commands));
     }
 
-    /// A filtered path the same buffer size at another scale, 120 px at 1 then 80 at 1.5, still
-    /// has to differ, or its kept layer would show the raster drawn at the old scale.
+    /// A filtered path or text the same buffer size at another scale, 120 px at 1 then 80 at 1.5,
+    /// still has to differ, or its kept layer would show the raster drawn at the old scale (#165).
     #[test]
-    fn a_path_layer_at_another_scale_differs_though_its_buffer_size_does_not() {
-        let layer = |side: f32, scale: f32| {
+    fn a_logical_layer_at_another_scale_differs_though_its_buffer_size_does_not() {
+        let layer = |child: &str, side: f32, scale: f32| {
             let src = format!(
-                r##"return panel {{ id = "bar", width = {side}, height = {side}, child = path {{ width = "fill",
-                    height = "fill", fill = "#ff0000", effect = {{ saturate = 0 }}, commands = {{
-                    {{ op = "M", points = {{ 0, 0 }} }}, {{ op = "L", points = {{ 40, 0 }} }}, {{ op = "L", points = {{ 0, 40 }} }} }} }} }}"##
+                r##"return panel {{ id = "bar", width = {side}, height = {side}, child = {child} {{ width = "fill",
+                    height = "fill", effect = {{ saturate = 0 }}, {} }} }}"##,
+                match child {
+                    "path" =>
+                        r##"fill = "#ff0000", commands = { { op = "M", points = { 0, 0 } },
+                        { op = "L", points = { 40, 0 } }, { op = "L", points = { 0, 40 } } }"##,
+                    _ => r#"content = "Hi""#,
+                }
             );
             let tree = resolved_surface(&Lua::new(), &src, LogicalSize { width: side, height: side });
             let list = build(&tree, scale, None);
             list.commands.into_iter().find(|cmd| matches!(cmd.draw, Draw::Layer { .. })).expect("a filter layer")
         };
-        let (before, after) = (layer(120.0, 1.0), layer(80.0, 1.5));
-        assert_eq!((before.rect, before.clip), (after.rect, after.clip), "the same buffer box");
-        assert_ne!(before, after);
+        for child in ["path", "text"] {
+            let (before, after) = (layer(child, 120.0, 1.0), layer(child, 80.0, 1.5));
+            assert_eq!((before.rect, before.clip), (after.rect, after.clip), "{child}: the same buffer box");
+            assert_ne!(before, after, "{child}");
+        }
     }
 
     /// A box scrolled just out of its parent still draws the ring that reaches back in.

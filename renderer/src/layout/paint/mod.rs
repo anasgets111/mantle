@@ -64,6 +64,9 @@ pub enum Draw {
         caret_style: CaretStyle,
         /// A `multiline` field's wrap width and how far its rows scroll up, logical px.
         wrap: Option<(f32, f32)>,
+        /// The build's scale, which the logical metrics are drawn at: like a `Path`'s, it makes a
+        /// kept layer at another scale with the same buffer size compare unequal (#165).
+        scale: f32,
     },
     /// Theme name, resolved in [`execute`]. Icons carry alpha separately because `Paint::image`
     /// takes it as an argument.
