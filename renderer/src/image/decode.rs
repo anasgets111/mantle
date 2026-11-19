@@ -327,9 +327,15 @@ pub(super) fn downscale_kept(
     let (left, top) =
         (source((size.0 - width) / 2, size.0, image.width()), source((size.1 - height) / 2, size.1, image.height()));
     let (wide, high) = (source(width, size.0, image.width()), source(height, size.1, image.height()));
+    // An opaque source premultiplies to itself, so skip the source-sized copy fast_image_resize
+    // premultiplies into: 59 MB for a 5120x2880 RGBA wallpaper. A transparent pixel ends the scan;
+    // one only at the end costs 5 ms.
+    let opaque = image.as_rgba8().is_some_and(|rgba| rgba.as_raw().as_chunks::<4>().0.iter().all(|px| px[3] == 255));
     let mut scaled = ::image::DynamicImage::new(width, height, image.color());
-    let options =
-        ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Bilinear)).crop(left, top, wide, high);
+    let options = ResizeOptions::new()
+        .resize_alg(ResizeAlg::Convolution(FilterType::Bilinear))
+        .crop(left, top, wide, high)
+        .use_alpha(!opaque);
     Resizer::new().resize(image, &mut scaled, &options).map_err(|err| err.to_string())?;
     Ok(scaled.into_rgba8())
 }
@@ -642,19 +648,22 @@ mod tests {
         assert_eq!(fit_inside(10_000, 10, 128), (128, 1));
     }
 
-    /// ADR-0317. A one-pixel checker of opaque white and transparent black averages to white at
-    /// half alpha. Straight-alpha averaging would give grey: the transparent pixels' black would
-    /// bleed into every edge a scaled icon has.
+    /// ADR-0317. A one-pixel checker of white and transparent black averages to white at half
+    /// alpha. Straight-alpha averaging would give grey: the transparent pixels' black would bleed
+    /// into every edge a scaled icon has. The white is opaque, then a level short of it, which no
+    /// pixel of the source is: only an all-opaque source may skip premultiplying.
     #[test]
     fn a_downscale_averages_its_area_with_alpha_premultiplied() {
-        let checker = ::image::RgbaImage::from_fn(16, 16, |x, y| {
-            ::image::Rgba(if (x + y) % 2 == 0 { [255, 255, 255, 255] } else { [0, 0, 0, 0] })
-        });
-        let scaled = downscale(&::image::DynamicImage::ImageRgba8(checker), (4, 4)).unwrap();
-        assert_eq!(scaled.dimensions(), (4, 4));
-        for pixel in scaled.pixels() {
-            assert!(pixel.0[..3].iter().all(|&c| c >= 253), "colour stays white: {pixel:?}");
-            assert!(pixel.0[3].abs_diff(128) <= 2, "alpha is the area's mean: {pixel:?}");
+        for white in [255, 254] {
+            let checker = ::image::RgbaImage::from_fn(16, 16, |x, y| {
+                ::image::Rgba(if (x + y) % 2 == 0 { [255, 255, 255, white] } else { [0, 0, 0, 0] })
+            });
+            let scaled = downscale(&::image::DynamicImage::ImageRgba8(checker), (4, 4)).unwrap();
+            assert_eq!(scaled.dimensions(), (4, 4));
+            for pixel in scaled.pixels() {
+                assert!(pixel.0[..3].iter().all(|&c| c >= 253), "colour stays white: {pixel:?}");
+                assert!(pixel.0[3].abs_diff(128) <= 2, "alpha is the area's mean: {pixel:?}");
+            }
         }
     }
 
@@ -665,6 +674,18 @@ mod tests {
         let rgba = downscale(&::image::DynamicImage::ImageRgb8(rgb), (4, 2)).unwrap();
         assert_eq!(rgba.dimensions(), (4, 2));
         assert!(rgba.pixels().all(|pixel| pixel.0 == [10, 20, 30, 255]));
+    }
+
+    /// An opaque RGBA source scales to the pixels its RGB twin does, uneven sizes included.
+    #[test]
+    fn an_opaque_rgba_downscale_matches_its_rgb_twin() {
+        let noise = |x: u32, y: u32| ((x * 7919) ^ (y * 104_729)) as u8;
+        let rgb = ::image::RgbImage::from_fn(301, 97, |x, y| ::image::Rgb([noise(x, y), noise(y, x), x as u8]));
+        let rgba = ::image::DynamicImage::ImageRgb8(rgb.clone()).into_rgba8();
+        for size in [(97, 31), (150, 48), (7, 3)] {
+            let from_rgb = downscale(&::image::DynamicImage::ImageRgb8(rgb.clone()), size).unwrap();
+            assert!(downscale(&::image::DynamicImage::ImageRgba8(rgba.clone()), size).unwrap() == from_rgb, "{size:?}");
+        }
     }
 
     /// One byte per pixel, so a crop reads back as the pixels it kept.
