@@ -67,6 +67,7 @@ restart. Files load as PNG, JPEG, WebP, GIF, ICO, BMP, SVG or SVGZ; an SVG has t
 | Trap | Fix |
 | :--- | :--- |
 | An icon draws nothing | The theme and its fallbacks lack the name; `mantle log` warns once with the theme. Check `/usr/share/icons/<theme>`, or pass an absolute path or `~/` under `$HOME` |
+| An icon file added to a theme draws nothing | A theme with an `icon-theme.cache` is looked up through it, as GTK apps do, and a file dropped into an existing subdirectory leaves the cache current. Run `gtk-update-icon-cache -f <theme dir>`, then restart the shell, which remembers a missing name. An `.svgz`, `.ico` or `.bmp` icon is found in such a theme only in a scalable directory, since the cache never lists those formats |
 | `foreground` does not change a colour icon | Only SVGs that use `currentColor` (symbolic icons) take it |
 | The wrong theme's icons appear | Set the theme with `gsettings set org.gnome.desktop.interface icon-theme <theme>` (needs `xdg-desktop-portal` with a GTK or GNOME backend). Without the portal, set `gtk-icon-theme-name` in `settings.ini` and restart the shell |
 | An icon is smaller than its box | It draws at the shorter side of `width`/`height`. Keep them equal, or use `size` alone |

@@ -267,8 +267,16 @@ fn scan_theme_dir(
     name: &str,
     px: u32,
 ) -> Option<(u32, PathBuf)> {
+    let cached = super::icon_cache::dirs_with(theme_dir, name);
     let mut closest: Option<(u32, PathBuf)> = None;
-    for dir in &index.dirs {
+    // A current cache only narrows which directories are tried; size and order still choose. GTK's
+    // updater lists no `.svgz`, `.ico` or `.bmp`, so a scalable directory is always tried.
+    // ponytail: one of those in a fixed or threshold directory of a cached copy stays hidden (none in
+    // the installed themes); upgrade: probe those extensions in every unlisted directory.
+    let listed = |dir: &&super::icon_index::IconDir| {
+        cached.as_ref().is_none_or(|cached| cached.contains(&dir.subdir)) || dir.scalable()
+    };
+    for dir in index.dirs.iter().filter(listed) {
         // One `stat` for a listed directory this copy lacks, not one per extension: a
         // per-user theme copy holds few of the directories its index lists.
         let subdir = theme_dir.join(&dir.subdir);
@@ -286,7 +294,8 @@ fn scan_theme_dir(
 
 /// png, svg, svgz, then ico and bmp (off-spec, but some apps ship only `pixmaps/<name>.ico`): the
 /// extensions this renderer decodes. `.xpm` is not among them, so a pixmap that exists only in that
-/// format stays unresolved rather than returning a path nothing can draw.
+/// format stays unresolved rather than returning a path nothing can draw. A cached theme copy finds
+/// the last three only in scalable directories ([`scan_theme_dir`]).
 fn existing_icon(dir: &Path, name: &str) -> Option<PathBuf> {
     ["png", "svg", "svgz", "ico", "bmp"]
         .into_iter()
@@ -595,6 +604,42 @@ mod tests {
         assert_eq!(find("both", 24, "Overlay", &roots), Some(system.path().join("icons/Overlay/24x24/apps/both.png")));
         assert_eq!(find("both", 48, "Overlay", &roots), Some(home_theme.join("48x48/apps/both.png")));
         assert_eq!(find("absent", 16, "Overlay", &roots), None);
+    }
+
+    /// GTK's `icon-theme.cache` names the directories that hold a name, so a miss costs no `stat`
+    /// per directory; size and order still choose among them, and an out-of-date cache is ignored.
+    #[test]
+    fn a_current_cache_narrows_the_directories_tried_and_a_stale_one_is_walked() {
+        let root = tempfile::tempdir().unwrap();
+        let dirs = ["16x16/apps", "24x24/apps", "32x32/apps"];
+        let sections: String = dirs.iter().map(|dir| format!("\n[{dir}]\nSize={}\nType=Fixed\n", &dir[..2])).collect();
+        let scalable = "\n[scalable/apps]\nSize=16\nMinSize=8\nMaxSize=16\nType=Scalable\n";
+        let index = format!("[Icon Theme]\nDirectories={},scalable/apps\n{sections}{scalable}", dirs.join(","));
+        write_index(root.path(), "Fx", &index);
+        for (subdir, name) in dirs.map(|dir| (dir, "app-icon")).into_iter().chain([("24x24/apps", "unlisted")]) {
+            write_icon(root.path(), "Fx", subdir, name);
+        }
+        let theme = root.path().join("icons/Fx");
+        // GTK's updater skips `.svgz`, so its cache never lists one.
+        for name in ["app-icon", "only-svgz"] {
+            std::fs::create_dir_all(theme.join("scalable/apps")).unwrap();
+            std::fs::write(theme.join(format!("scalable/apps/{name}.svgz")), b"x").unwrap();
+        }
+        let cache = theme.join("icon-theme.cache");
+        std::fs::write(&cache, super::super::icon_cache::tests::CACHE).unwrap();
+        let roots = [root.path()];
+        // The cache lists `app-icon` in 16 and 32 only: 24 px takes the first of the equally far.
+        assert_eq!(find("app-icon", 24, "Fx", &roots), Some(theme.join("16x16/apps/app-icon.png")));
+        assert_eq!(find("app-icon", 32, "Fx", &roots), Some(theme.join("32x32/apps/app-icon.png")));
+        assert_eq!(find("unlisted", 24, "Fx", &roots), None, "a fixed-size file the cache does not list");
+        // A scalable directory is always tried.
+        assert_eq!(find("app-icon", 12, "Fx", &roots), Some(theme.join("scalable/apps/app-icon.svgz")));
+        assert_eq!(find("only-svgz", 12, "Fx", &roots), Some(theme.join("scalable/apps/only-svgz.svgz")));
+
+        let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::options().write(true).open(&cache).unwrap().set_modified(hour_ago).unwrap();
+        assert_eq!(find("app-icon", 24, "Fx", &roots), Some(theme.join("24x24/apps/app-icon.png")));
+        assert_eq!(find("unlisted", 24, "Fx", &roots), Some(theme.join("24x24/apps/unlisted.png")));
     }
 
     #[test]

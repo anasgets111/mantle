@@ -29,6 +29,7 @@ mod decode;
 mod evict;
 mod file;
 mod fit;
+mod icon_cache;
 mod icon_index;
 pub mod icons;
 pub mod quantize;

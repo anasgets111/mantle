@@ -30,6 +30,10 @@ impl IconDir {
         u32::from(value).saturating_mul(u32::from(self.scale))
     }
 
+    pub(crate) fn scalable(&self) -> bool {
+        matches!(self.kind, DirKind::Scalable)
+    }
+
     /// Spec directory distance: `Size * Scale` against the requested device pixels. In range is 0, an exact
     /// match in device pixels: integer `px / Scale` would match 33 as well as 32 in a `Scale=2` size-16 directory.
     /// Outside a threshold window the distance is to that window's edge, not to `MinSize`.
