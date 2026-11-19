@@ -413,14 +413,12 @@ fn spawn_player_forwarder(
     collections_refresh: UnboundedSender<()>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut seeked = match player.receive_seeked().await {
-            Ok(stream) => Some(stream),
-            Err(err) => {
-                debug!("Seeked subscription failed for {bus_name}; retrying while forwarding properties: {err}");
-                None
-            }
-        };
-        let mut retry_seeked_at = seeked.is_none().then(tokio::time::Instant::now);
+        // ponytail: a failed or ended Seeked subscription is not retried; upgrade: resubscribe on a timer.
+        let mut seeked = player
+            .receive_seeked()
+            .await
+            .inspect_err(|err| debug!("Seeked subscription failed for {bus_name}: {err}"))
+            .ok();
         // `true` for `PlaybackStatus`, which arms the position recheck.
         let mut properties = futures_util::stream::select_all([
             player.receive_playback_status_changed().await.map(|_| true).boxed(),
@@ -446,35 +444,15 @@ fn spawn_player_forwarder(
 
         loop {
             let deadline = recheck_at;
-            let retry_deadline = retry_seeked_at;
             let fired = tokio::select! {
                 Some(status) = properties.next() => Some(Wake::Property { status }),
-                signal = next_optional(&mut seeked) => {
-                    Some(seeked_wake(signal, &mut seeked, &mut retry_seeked_at))
-                },
+                signal = next_optional(&mut seeked) => Some(seeked_wake(signal, &mut seeked)),
                 () = sleep_until_opt(deadline) => Some(Wake::Recheck),
-                () = sleep_until_opt(retry_deadline) => Some(Wake::RetrySeeked),
                 else => None,
             };
             let Some(fired) = fired else {
                 break;
             };
-            if matches!(fired, Wake::RetrySeeked) {
-                match player.receive_seeked().await {
-                    Ok(stream) => {
-                        seeked = Some(stream);
-                        retry_seeked_at = None;
-                    }
-                    Err(err) => {
-                        debug!(
-                            "Seeked subscription failed for {bus_name}; retrying while forwarding properties: {err}"
-                        );
-                        // For its retry scheduling only: `seeked` is already `None` here.
-                        seeked_wake(None, &mut seeked, &mut retry_seeked_at);
-                    }
-                }
-                continue;
-            }
             let mut status_changed = matches!(fired, Wake::Property { status: true });
             let mut seeked_position = match fired {
                 Wake::Seeked(position) => Some(position),
@@ -485,7 +463,7 @@ fn spawn_player_forwarder(
                 status_changed |= status;
             }
             while let Some(signal) = seeked.as_mut().and_then(|stream| stream.next().now_or_never()) {
-                if let Wake::Seeked(position) = seeked_wake(signal, &mut seeked, &mut retry_seeked_at) {
+                if let Wake::Seeked(position) = seeked_wake(signal, &mut seeked) {
                     seeked_position = Some(position);
                 }
             }
@@ -551,15 +529,10 @@ enum Wake {
     },
     Seeked(i64),
     Recheck,
-    RetrySeeked,
 }
 
-/// A `Seeked` stream's item as a [`Wake`]. The stream ending drops it and schedules a resubscribe.
-fn seeked_wake(
-    signal: Option<super::proxies::Seeked>,
-    seeked: &mut Option<super::proxies::SeekedStream>,
-    retry_seeked_at: &mut Option<tokio::time::Instant>,
-) -> Wake {
+/// A `Seeked` stream's item as a [`Wake`]. The stream ending drops it, so it is not polled again.
+fn seeked_wake(signal: Option<super::proxies::Seeked>, seeked: &mut Option<super::proxies::SeekedStream>) -> Wake {
     match signal {
         Some(message) => match message.args() {
             Ok(args) => Wake::Seeked(args.position_us),
@@ -567,7 +540,6 @@ fn seeked_wake(
         },
         None => {
             *seeked = None;
-            *retry_seeked_at = Some(tokio::time::Instant::now() + std::time::Duration::from_secs(1));
             Wake::Property { status: false }
         }
     }
@@ -955,14 +927,5 @@ pub(super) mod ordering_tests {
         }
         let ids: Vec<String> = ordered_players(&registry).into_iter().map(|player| player.id).collect();
         assert_eq!(ids, ["first", "second", "third"], "an alphabetical sort would answer the other way");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn an_ended_seeked_stream_resubscribes_a_second_later() {
-        let mut seeked = None;
-        let mut retry_seeked_at = None;
-        seeked_wake(None, &mut seeked, &mut retry_seeked_at);
-        let retry = retry_seeked_at.expect("an ended stream schedules a resubscribe");
-        assert_eq!(retry - tokio::time::Instant::now(), std::time::Duration::from_secs(1));
     }
 }
