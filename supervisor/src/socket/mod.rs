@@ -262,22 +262,13 @@ impl GenerationRegistry {
     }
 }
 
-/// Removes a stale socket from crash/`SIGKILL` shutdown before binding; otherwise
-/// `UnixListener::bind` returns `AddrInUse`. `main.rs` unlinks cleanly; this covers the rest.
-fn bind(path: &Path) -> Result<UnixListener, io::Error> {
-    if path.exists() {
-        std::fs::remove_file(path)?;
-    }
-    UnixListener::bind(path)
-}
-
 /// Binds and starts the accept loop. Returns the registry, tagged inbound frames, and a channel
 /// reporting registration completion so `main.rs` replays known `StateSnapshot`s immediately
 /// instead of dropping a push during hydration.
 pub fn spawn_listener(
     path: &Path,
 ) -> Result<(GenerationRegistry, CallRoutes, mpsc::Receiver<InboundFrame>, mpsc::UnboundedReceiver<u32>), io::Error> {
-    let listener = bind(path)?;
+    let listener = UnixListener::bind(path)?;
     let registry = GenerationRegistry::default();
     let routes = CallRoutes::default();
     let (inbound_tx, inbound_rx) = mpsc::channel(MAX_INBOUND_FRAMES);
@@ -685,19 +676,6 @@ mod tests {
             }
             assert_eq!(within(kill_requests.recv()).await, Some(5), "refused: {refused}");
         }
-    }
-
-    #[tokio::test]
-    async fn bind_removes_a_stale_socket_file_left_by_a_prior_run() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("control.sock");
-
-        let first = UnixListener::bind(&path).unwrap();
-        drop(first); // Simulate an unclean shutdown: the socket file is left on disk.
-        assert!(path.exists());
-
-        let second = bind(&path);
-        assert!(second.is_ok(), "bind must clear a stale socket file, not fail with AddrInUse");
     }
 
     #[test]
