@@ -58,7 +58,7 @@ pub(super) fn ring_cmd(
             trim_axis: node::TrimAxis::Length,
             shift: (0.0, 0.0),
         };
-        (px, Draw::Path(path))
+        (px, Draw::Path(path, scale))
     } else {
         // CSS grows each corner by the offset; a square one stays square, and a scoop is left alone.
         let fitted = radius.fit(rect.width, rect.height);
@@ -79,7 +79,8 @@ pub(super) fn ring_cmd(
 /// `draw`'s own geometry in buffer pixels; a group's subtree was converted as it was built.
 /// Exhaustive, so a new draw has to say what it scales. Image and icon boxes are cache keys
 /// [`draw_for`] rounds itself, and text shapes at its logical size for `canvas::execute` to rasterize at
-/// the buffer scale.
+/// the buffer scale. A path stays logical too, carrying the scale `canvas::execute` converts its
+/// commands at, so a build shares the node's command list instead of copying it (#57).
 pub(super) fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
     if scale == 1.0 {
         return draw;
@@ -95,12 +96,6 @@ pub(super) fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
     match draw {
         Draw::Box { background, radius, border, widths } => {
             Draw::Box { background, radius: radius * scale, border, widths: widths.scaled(scale) }
-        }
-        Draw::Path(mut path) => {
-            std::rc::Rc::make_mut(&mut path.commands).for_each_pixel(|point| *point *= scale);
-            path.stroke_width *= scale;
-            path.shift = (path.shift.0 * scale, path.shift.1 * scale);
-            Draw::Path(path)
         }
         Draw::Clipped { radius, mask, commands } => Draw::Clipped { radius: radius * scale, mask, commands },
         Draw::NodeMask { invert, radius, split, commands } => {
@@ -134,6 +129,7 @@ pub(super) fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
         },
         // `build_node` makes a `Transformed` in buffer pixels already, through `affine_in_pixels`.
         draw @ (Draw::Text { .. }
+        | Draw::Path(..)
         | Draw::Transformed { .. }
         | Draw::Icon { .. }
         | Draw::Image { .. }

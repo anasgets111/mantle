@@ -11,18 +11,19 @@ pub(super) fn paint(
     canvas: &mut Canvas<OpenGl>,
     rect: LogicalRect,
     VectorPath { commands, fill, stroke, stroke_width, stroke_cap, stroke_join, trim, trim_axis, shift }: &VectorPath,
+    scale: f32,
 ) {
     if rect.is_empty() || commands.segments.is_empty() {
         return;
     }
     let holes = commands.segments.iter().filter(|segment| segment.begins).map(|segment| segment.hole);
-    let path = femtovg_path(&commands.bez((rect.x + shift.0, rect.y + shift.1)), holes);
+    let path = femtovg_path(&commands.bez((rect.x + shift.0 * scale, rect.y + shift.1 * scale), scale), holes);
     if let Some(fill) = fill {
         canvas.fill_path(&path, &fill_paint(fill, rect));
     }
     if let Some(stroke) = stroke.as_ref().filter(|_| *stroke_width > 0.0) {
         let mut paint = fill_paint(stroke, rect);
-        paint.set_line_width(*stroke_width);
+        paint.set_line_width(*stroke_width * scale);
         paint.set_line_cap(match stroke_cap {
             StrokeCap::Butt => LineCap::Butt,
             StrokeCap::Round => LineCap::Round,

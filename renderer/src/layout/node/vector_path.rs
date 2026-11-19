@@ -98,7 +98,7 @@ impl PathData {
         spans(&self.segments).map(|(segment, range, _)| (segment, &self.points[range]))
     }
 
-    /// Every pixel value, which display scaling multiplies and a tween clamps.
+    /// Every pixel value, which a shape's display scaling multiplies and a tween clamps.
     pub fn for_each_pixel(&mut self, mut f: impl FnMut(&mut f32)) {
         for (_, range, pixels) in spans(&self.segments) {
             self.points[range.start..range.start + pixels].iter_mut().for_each(&mut f);
@@ -135,10 +135,14 @@ impl PathData {
     }
 
     /// The commands as one path with its origin at `origin`. A `corner` rounds its point between
-    /// the line in from the pen and the line out to what follows.
-    pub fn bez(&self, origin: (f32, f32)) -> BezPath {
-        let at = |x: f32, y: f32| Point::new(f64::from(origin.0 + x), f64::from(origin.1 + y));
-        let arc_at = |p: &[f32], a: f32| at(p[0] + p[2] * a.cos(), p[1] + p[2] * a.sin());
+    /// the line in from the pen and the line out to what follows. Each pixel number is multiplied by
+    /// `scale` as it is read, before any other arithmetic, so the 0.001 px stub below is a buffer
+    /// pixel's and a scaled output copies no command list (#57).
+    pub fn bez(&self, origin: (f32, f32), scale: f32) -> BezPath {
+        let point = |x: f32, y: f32| Point::new(f64::from(origin.0 + x), f64::from(origin.1 + y));
+        let at = |x: f32, y: f32| point(x * scale, y * scale);
+        let arc_at =
+            |p: &[f32], a: f32| point(p[0] * scale + p[2] * scale * a.cos(), p[1] * scale + p[2] * scale * a.sin());
         let arc_start = |p: &[f32]| p[3].rem_euclid(360.0).to_radians();
         let commands: Vec<_> = self.iter().collect();
         let mut path = BezPath::new();
@@ -177,7 +181,7 @@ impl PathData {
                     // One cubic per quarter turn or less, handles 4/3·tan(step/4) radii long; none for no sweep.
                     let segments = (sweep.abs() / FRAC_PI_2).ceil();
                     let step = sweep / segments;
-                    let handle = f64::from(p[2] * 4.0 / 3.0 * (step / 4.0).tan());
+                    let handle = f64::from(p[2] * scale * 4.0 / 3.0 * (step / 4.0).tan());
                     for i in 1..=segments as usize {
                         let (a0, a1) = (start + step * (i - 1) as f32, start + step * i as f32);
                         let tangent = |a: f32| Vec2::new(f64::from(-a.sin()), f64::from(a.cos())) * handle;
@@ -198,7 +202,7 @@ impl PathData {
                         Some(next) => {
                             // A side shared with the next corner is half each's.
                             let shared = commands.get(i + 1).is_some_and(|(next, _)| next.op == PathOp::Corner);
-                            pen = corner(&mut path, (pen, vertex, next), p[2], p[3], shared);
+                            pen = corner(&mut path, (pen, vertex, next), p[2] * scale, p[3], shared);
                         }
                         None => {
                             line_to(&mut path, pen, vertex);
@@ -279,7 +283,7 @@ pub struct VectorPath {
     /// `trim_start` and `trim_end`: the stroked fraction of the path's length or of the node's width.
     pub trim: (f32, f32),
     pub trim_axis: TrimAxis,
-    /// Moves the geometry inside the node box before trimming; logical px, buffer px once built.
+    /// Moves the geometry inside the node box before trimming, in logical px.
     pub shift: (f32, f32),
 }
 
@@ -444,7 +448,7 @@ mod tests {
             .eval()
             .unwrap();
         let path = PathCommands::read(&fields::path::commands.row, Some(&value)).unwrap();
-        let bez = path.bez((0.0, 0.0));
+        let bez = path.bez((0.0, 0.0), 1.0);
         assert_eq!(bez.elements().last(), Some(&kurbo::PathEl::LineTo(Point::new(10.0, 10.0))));
         assert!(bez.elements().iter().all(|el| !matches!(el, kurbo::PathEl::CurveTo(..))), "{bez:?}");
     }

@@ -128,8 +128,10 @@ pub enum Draw {
         images: Vec<SamplerFile>,
         alpha: f32,
     },
-    /// A `path` node's commands, filled then stroked in node-local coordinates.
-    Path(node::VectorPath),
+    /// A `path` node's commands, filled then stroked in node-local coordinates. They stay logical,
+    /// and the scale `execute` multiplies them by is part of the draw, so a kept layer drawn at
+    /// another scale with the same buffer size compares unequal.
+    Path(node::VectorPath, f32),
     /// A subtree masked by the declaring node's rounded arc and, if it has one, its `mask` with
     /// the physical box an image mask is cached under (ADR-0255). Rectangular clips flatten into
     /// each command; rounded clips and masks stay grouped for [`execute`].

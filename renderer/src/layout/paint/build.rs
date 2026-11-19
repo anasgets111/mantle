@@ -431,17 +431,20 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
     let retained = node.displayed_source.as_deref();
     let dissolve = node.dissolve.as_deref();
     match node.paint.as_ref()? {
-        PaintStyle::Path(path) => Some(Draw::Path(node::VectorPath {
-            commands: path.commands.clone(),
-            fill: path.fill.as_ref().map(|fill| fade_fill(fill, opacity)),
-            stroke: path.stroke.as_ref().map(|fill| fade_fill(fill, opacity)),
-            stroke_width: path.stroke_width,
-            stroke_cap: path.stroke_cap,
-            stroke_join: path.stroke_join,
-            trim: path.trim,
-            trim_axis: path.trim_axis,
-            shift: path.shift,
-        })),
+        PaintStyle::Path(path) => Some(Draw::Path(
+            node::VectorPath {
+                commands: path.commands.clone(),
+                fill: path.fill.as_ref().map(|fill| fade_fill(fill, opacity)),
+                stroke: path.stroke.as_ref().map(|fill| fade_fill(fill, opacity)),
+                stroke_width: path.stroke_width,
+                stroke_cap: path.stroke_cap,
+                stroke_join: path.stroke_join,
+                trim: path.trim,
+                trim_axis: path.trim_axis,
+                shift: path.shift,
+            },
+            scale,
+        )),
         // The shared paint of `rect`/`row`/`column` and all four surface roles: background
         // fill, then borders. `clip` is not read here: it decides what this node's *children* are
         // cut to, `build_node`'s question, not this one's.
@@ -1349,7 +1352,7 @@ mod tests {
         let tree = resolved_surface(&lua, &src, LogicalSize { width: 200.0, height: 100.0 });
         let list = build_with_control(&tree, 1.0, &[], Some(tree.children[0].id));
         for cmd in &list.commands[list.commands.len() - 2..] {
-            assert!(matches!(&cmd.draw, Draw::Path(path) if !path.commands.points.is_empty()), "{:?}", cmd.draw);
+            assert!(matches!(&cmd.draw, Draw::Path(path, _) if !path.commands.points.is_empty()), "{:?}", cmd.draw);
         }
     }
 
@@ -1387,8 +1390,8 @@ mod tests {
         }
     }
 
-    /// On a `shape` the ring strokes the contour moved out by the offset plus half its width, in
-    /// buffer pixels, inward for a negative offset.
+    /// On a `shape` the ring strokes the contour moved out by the offset plus half its width,
+    /// inward for a negative offset; like any path it stays logical for the canvas to scale.
     #[test]
     fn a_ring_follows_a_shape() {
         for (scale, offset) in [(1.0_f32, 2.0_f32), (2.0, -4.0)] {
@@ -1399,12 +1402,46 @@ mod tests {
             );
             let tree = resolved_surface(&Lua::new(), &src, LogicalSize { width: 200.0, height: 100.0 });
             let list = build(&tree, scale, None);
-            let Draw::Path(path) = &list.commands.last().unwrap().draw else { panic!("a path") };
-            assert_eq!((path.stroke_width, path.stroke_join), (3.0 * scale, node::StrokeJoin::Round));
+            let Draw::Path(path, _) = &list.commands.last().unwrap().draw else { panic!("a path") };
+            assert_eq!((path.stroke_width, path.stroke_join), (3.0, node::StrokeJoin::Round));
             let left = path.commands.points.iter().step_by(2).copied().fold(f32::MAX, f32::min);
-            let want = -(offset + 1.5) * scale;
-            assert!((left - want).abs() < 0.1 * scale, "the left edge's centre line is at {want}, got {left}");
+            let want = -(offset + 1.5);
+            assert!((left - want).abs() < 0.1, "the left edge's centre line is at {want}, got {left}");
         }
+    }
+
+    /// A scaled build shares the node's command list: the canvas scales it, so no build copies it (#57).
+    #[test]
+    fn a_scaled_build_shares_a_paths_commands() {
+        let src = r##"return panel { id = "bar", width = 64, height = 64, child = path { width = 16, height = 16,
+            fill = "#ffffff", commands = { { op = "M", points = { 0, 0 } }, { op = "L", points = { 16, 16 } } } } }"##;
+        let tree = resolved_surface(&Lua::new(), src, LogicalSize { width: 64.0, height: 64.0 });
+        let Some(PaintStyle::Path(node)) = &tree.children[0].paint else { panic!("a path node") };
+        let list = build(&tree, 1.5, None);
+        let drawn = list.commands.iter().find_map(|cmd| match &cmd.draw {
+            Draw::Path(path, _) => Some(path),
+            _ => None,
+        });
+        assert!(std::rc::Rc::ptr_eq(&drawn.expect("a path draw").commands, &node.commands));
+    }
+
+    /// A filtered path the same buffer size at another scale, 120 px at 1 then 80 at 1.5, still
+    /// has to differ, or its kept layer would show the raster drawn at the old scale.
+    #[test]
+    fn a_path_layer_at_another_scale_differs_though_its_buffer_size_does_not() {
+        let layer = |side: f32, scale: f32| {
+            let src = format!(
+                r##"return panel {{ id = "bar", width = {side}, height = {side}, child = path {{ width = "fill",
+                    height = "fill", fill = "#ff0000", effect = {{ saturate = 0 }}, commands = {{
+                    {{ op = "M", points = {{ 0, 0 }} }}, {{ op = "L", points = {{ 40, 0 }} }}, {{ op = "L", points = {{ 0, 40 }} }} }} }} }}"##
+            );
+            let tree = resolved_surface(&Lua::new(), &src, LogicalSize { width: side, height: side });
+            let list = build(&tree, scale, None);
+            list.commands.into_iter().find(|cmd| matches!(cmd.draw, Draw::Layer { .. })).expect("a filter layer")
+        };
+        let (before, after) = (layer(120.0, 1.0), layer(80.0, 1.5));
+        assert_eq!((before.rect, before.clip), (after.rect, after.clip), "the same buffer box");
+        assert_ne!(before, after);
     }
 
     /// A box scrolled just out of its parent still draws the ring that reaches back in.

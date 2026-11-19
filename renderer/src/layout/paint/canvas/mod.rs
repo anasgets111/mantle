@@ -219,9 +219,9 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
         }
         let rect = command.rect;
         match &command.draw {
-            Draw::Path(path) => {
+            Draw::Path(path, scale) => {
                 let t0 = timing.then(Instant::now);
-                vector_path::paint(painter.canvas_mut(), rect, path);
+                vector_path::paint(painter.canvas_mut(), rect, path, *scale);
                 if let Some(t0) = t0 {
                     walk.split.paths += t0.elapsed();
                 }
@@ -902,7 +902,13 @@ pub(crate) mod tests {
                             { op = "L", points = { 16, 16 } }, { op = "L", points = { 0, 16 } },
                             { op = "Z", points = {} } } },
                     path { width = 16, height = 16, margin = { left = 44 }, fill = "#0000FFFF",
-                        commands = { { op = "A", points = { 8, 8, 8, 0, 180 } } } }
+                        commands = { { op = "A", points = { 8, 8, 8, 0, 180 } } } },
+                    path { width = 32, height = 16, margin = { top = 32 }, stroke = "#FFFFFFFF", stroke_width = 4,
+                        shift = { x = 8, y = 4 }, commands = { { op = "M", points = { 0, 4 } }, { op = "L", points = { 16, 4 } } } },
+                    path { width = 16, height = 16, margin = { left = 40, top = 40 }, fill = "#FFFFFFFF",
+                        commands = { { op = "M", points = { 0, 0 } }, { op = "L", points = { 16, 0 } },
+                            { op = "corner", points = { 16, 16 }, radius = 8 }, { op = "L", points = { 0, 16 } },
+                            { op = "Z", points = {} } } }
                 } } }"##,
                 LogicalSize { width: 64.0, height: 64.0 },
             );
@@ -920,6 +926,14 @@ pub(crate) mod tests {
             let mut at = |x: f32, y: f32| pixel_at(painter.canvas_mut(), (x * scale) as usize, (y * scale) as usize);
             assert_eq!(at(52.0, 12.0), (0, 0, 255, 255));
             assert_eq!(at(48.0, 4.0).3, 0);
+            // Its right edge and its rim at 45°: centre, radius and curve handles all scale.
+            assert!(at(59.0, 9.0).2 > 240 && at(57.0, 13.0).2 > 240, "{:?} {:?}", at(59.0, 9.0), at(57.0, 13.0));
+            // A corner rounded 8 px leaves the square's own corner bare.
+            assert_eq!(at(50.0, 50.0).3, 255);
+            assert_eq!(at(55.0, 55.0).3, 0);
+            // A 4 px stroke shifted to x 8..24 at y 40: at its edge only with both scaled.
+            assert!(at(22.0, 41.5).3 > 240, "{:?}", at(22.0, 41.5));
+            assert_eq!(at(4.0, 40.0).3, 0);
         }
     }
 

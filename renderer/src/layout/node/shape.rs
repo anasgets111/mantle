@@ -112,7 +112,7 @@ impl Shape {
                 for (n, share) in path.points.iter_mut().zip(shares) {
                     *n = place(*n, *share, (rect.width, rect.height));
                 }
-                path.bez((rect.x, rect.y))
+                path.bez((rect.x, rect.y), 1.0)
             }
             Self::Melt(melt) => melt.placed(rect) * melt.traced(rect).path.clone(),
         }
