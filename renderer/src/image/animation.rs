@@ -13,7 +13,7 @@ use super::{Decoded, Delta, MAX_DECODE_EDGE};
 
 type Rect = (u32, u32, u32, u32);
 
-/// The base frame and each later frame's own rect, composited here rather than by `image`'s
+/// The base frame and the part of each later frame's rect it changed, composited here rather than by `image`'s
 /// `AnimationDecoder`, which discards the rects [`ImageCache::showing`](super::ImageCache::showing) replays (ADR-0235).
 pub(super) fn decode_gif(
     path: &Path,
@@ -51,16 +51,21 @@ pub(super) fn decode_gif(
             // `Previous` disposal undoes this frame's draw once it has been shown; the pixels it
             // would overwrite have to be saved before that draw happens.
             let restore = (frame.dispose == gif::DisposalMethod::Previous).then(|| read_rect(canvas, source.0, rect));
-            blend_rect(canvas, source.0, rect, &frame.buffer);
+            let drawn = blend_rect(canvas, source.0, rect, &frame.buffer);
             pending = match frame.dispose {
                 gif::DisposalMethod::Background => Some((rect, None)),
-                gif::DisposalMethod::Previous => restore.map(|saved| (rect, Some(saved))),
+                // Restoring what a draw left unchanged changes nothing.
+                gif::DisposalMethod::Previous => restore.filter(|_| drawn.2 > 0).map(|saved| (rect, Some(saved))),
                 gif::DisposalMethod::Keep | gif::DisposalMethod::Any => None,
             };
-            let changed = disposed.map_or(rect, |(x, y, w, h)| {
-                let (x0, y0) = (left.min(x), top.min(y));
-                (x0, y0, (left + rect.2).max(x + w) - x0, (top + rect.3).max(y + h) - y0)
-            });
+            let changed = match disposed {
+                Some((x, y, w, h)) if drawn.2 > 0 => {
+                    let (x0, y0) = (drawn.0.min(x), drawn.1.min(y));
+                    (x0, y0, (drawn.0 + drawn.2).max(x + w) - x0, (drawn.1 + drawn.3).max(y + h) - y0)
+                }
+                Some(disposed) => disposed,
+                None => drawn,
+            };
             return Ok(Some((changed, Duration::from_millis(u64::from(frame.delay) * 10))));
         }
         Ok(None)
@@ -270,18 +275,32 @@ fn clear_rect(pixels: &mut [u8], width: u32, rect: (u32, u32, u32, u32)) {
 /// Draws `src` (a frame's own buffer, `rect`'s size) onto a rect, skipping a transparent source
 /// pixel so whatever the canvas already holds shows through. GIF transparency is a 1-bit mask,
 /// never partial, so "skip" is the whole rule.
-fn blend_rect(pixels: &mut [u8], width: u32, rect: (u32, u32, u32, u32), src: &[u8]) {
+///
+/// Returns the smallest rect holding every pixel it changed, empty if none: an encoder without
+/// frame optimisation writes every frame canvas-sized, and a delta of its rect would hold the
+/// whole canvas for a moving corner.
+fn blend_rect(pixels: &mut [u8], width: u32, rect: Rect, src: &[u8]) -> Rect {
     let (left, top, w, h) = rect;
     if w == 0 || h == 0 {
-        return;
+        return (0, 0, 0, 0);
     }
-    for (i, pixel) in src.as_chunks::<4>().0.iter().enumerate() {
-        if pixel[3] == 0 {
-            continue;
+    let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+    for (y, src_row) in (top..).zip(src.chunks_exact(w as usize * 4)) {
+        let start = offset(width, left, y);
+        let row = pixels[start..start + src_row.len()].as_chunks_mut::<4>().0;
+        let (mut first, mut last) = (u32::MAX, 0);
+        for (x, (pixel, drawn)) in (left..).zip(row.iter_mut().zip(src_row.as_chunks::<4>().0)) {
+            if drawn[3] == 0 || pixel == drawn {
+                continue;
+            }
+            *pixel = *drawn;
+            (first, last) = (first.min(x), x);
         }
-        let at = offset(width, left + i as u32 % w, top + i as u32 / w);
-        pixels[at..at + 4].copy_from_slice(pixel);
+        if first != u32::MAX {
+            (x0, y0, x1, y1) = (x0.min(first), y0.min(y), x1.max(last + 1), y + 1);
+        }
     }
+    if x1 == 0 { (0, 0, 0, 0) } else { (x0, y0, x1 - x0, y1 - y0) }
 }
 
 #[cfg(test)]
@@ -667,6 +686,33 @@ pub(in crate::image) mod tests {
         .unwrap();
         assert_eq!((seen.get(), *pool.in_flight.lock().unwrap()), (100 + 3 * 4 * 16, 0), "returned once done");
         assert_eq!(decoded.delays, [Duration::from_millis(20)], "a 0 ms frame is floored");
+    }
+
+    /// An encoder without frame optimisation writes every frame canvas-sized; each delta keeps
+    /// only the pixels its frame changed, joined to what the last frame's disposal changed.
+    #[test]
+    fn a_canvas_sized_gif_frame_keeps_only_the_pixels_it_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let red = ((0, 0, 4, 4), [255, 0, 0, 255], Keep);
+        let frames = [
+            red,
+            ((1, 2, 1, 1), [0, 0, 255, 255], Background),
+            // Draws red over red: only the disposal's cleared pixel changes.
+            ((3, 3, 1, 1), [255, 0, 0, 255], Keep),
+            red,
+            red,
+        ];
+        let path = gif_fixture(dir.path(), "full.gif", (4, 4), &frames);
+        let decoded = decode_gif(&path, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        let rects: Vec<_> = decoded.deltas.iter().map(|delta| delta.rect).collect();
+        let (pixel, none) = ((1, 2, 1, 1), (0, 0, 0, 0));
+        assert_eq!(rects, [pixel, pixel, pixel, none], "a redraw restores one pixel, then changes none");
+        assert_replays_like_a_full_recomposite(&path, &decoded, |frame| frame.as_raw().clone());
+
+        let previous = ((0, 0, 4, 4), [255, 0, 0, 255], Previous);
+        let path = gif_fixture(dir.path(), "previous.gif", (4, 4), &[red, previous, red]);
+        let decoded = decode_gif(&path, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        assert!(decoded.deltas.is_empty(), "red restored over red changes nothing: a still");
     }
 
     /// A GIF frame's delay is in centiseconds, and a frame the canvas cannot hold is skipped rather

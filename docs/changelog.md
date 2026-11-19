@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Changed: an animated GIF saved with every frame full size, as many tools write them, holds the part of each frame that changed while it plays, not a whole frame. A 50-frame 480x270 clip of a moving shape from ImageMagick held 26 MB and now holds 1.4 MB. A frame that clears or restores its area when it ends still holds all of that area.
 - Added: shell surfaces take drops from other apps. `on_drop(drop)` receives the dropped files as absolute paths (`drop.files`), every URI (`drop.uris`) or plain text (`drop.text`), and `drop_hover = drop_hover(name)` is `true` while a drag is over a node.
 - Fixed: nested `effect.shader` nodes with `opacity` below 1 fade their subtree by the product of their opacities when the GPU refuses their offscreen textures. The inner layer used to replace the outer fade, so two at 0.5 drew at 0.5 instead of 0.25.
 - Fixed: on Arch, two shells in one login, such as a test shell beside your own, no longer run `mantle.updates` checks at the same time. One could store the other's half-downloaded repo database, even after the shell that started the download exited. A check that starts while another shell's download runs fails with `check_error`; a scheduled one retries on the failed-check backoff, which starts at 5 minutes.
