@@ -1762,7 +1762,6 @@ pub(super) mod tests {
         // Held until the first pass is measured, so the face cannot land part way through it.
         let shaping = crate::text::shaping::tests::gated_shots_fixture(crate::text::fonts::covering_file);
         let Some((shaping, open)) = shaping else { return };
-        let before = shaping.font_generation();
         let mut scene = Scene::new();
         let (lua, surface) = surface_from(r#"return panel { id = "bar", child = text { content = "●●●●●●●●" } }"#);
         let width = |scene: &mut Scene| {
@@ -1770,8 +1769,7 @@ pub(super) mod tests {
             scene.surface("bar@TEST").unwrap().children[0].rect.width
         };
         let boxed = width(&mut scene);
-        drop(open);
-        crate::lua::calls::poll_until(|| (), || shaping.font_generation() > before);
+        crate::text::shaping::tests::land(&shaping, open);
         let fresh = width(&mut Scene::new());
         assert_ne!(fresh, boxed, "a fresh scene measures the landed face");
         assert_eq!(width(&mut scene), fresh, "and so does the kept one");

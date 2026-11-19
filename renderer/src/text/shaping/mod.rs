@@ -1275,24 +1275,6 @@ pub(crate) mod tests {
         );
     }
 
-    /// A wrapped line must carry only its own source slice, not the whole paragraph.
-    #[test]
-    fn each_wrapped_line_is_its_own_slice_and_not_the_whole_string_again() {
-        const TEXT: &str = "Mantle Engine Renderer";
-        let handle = ShapingHandle::spawn();
-        let unconstrained = handle.shape(req(TEXT, 14.0));
-        assert_eq!(&*unconstrained.lines, [TEXT], "an unwrapped string is one line holding all of it");
-
-        let wrapped = handle.shape(ShapeRequest { max_width: Some(unconstrained.width / 2.0), ..req(TEXT, 14.0) });
-        assert!(wrapped.lines.len() > 1, "expected a break, got {:?}", wrapped.lines);
-        assert_eq!(
-            wrapped.lines.join(" "),
-            TEXT,
-            "the lines have to rejoin to the source, not repeat it: {:?}",
-            wrapped.lines
-        );
-    }
-
     /// A hard newline is a break the shaper already honoured for measurement and paint ignored,
     /// drawing the `\n` as a glyph. It arrives as two lines like any other break.
     #[test]
@@ -1302,15 +1284,20 @@ pub(crate) mod tests {
         assert_eq!(&*result.lines, ["first", "second"]);
     }
 
+    /// A wrapped line carries only its own source slice, not the whole paragraph.
     #[test]
     fn a_max_width_narrower_than_the_unconstrained_text_wraps_to_more_lines() {
+        const TEXT: &str = "Mantle Engine Renderer";
         let handle = ShapingHandle::spawn();
-        let unconstrained = handle.shape(ShapeRequest { line_height: 18.0, ..req("Mantle Engine Renderer", 14.0) });
+        let unconstrained = handle.shape(ShapeRequest { line_height: 18.0, ..req(TEXT, 14.0) });
+        assert_eq!(&*unconstrained.lines, [TEXT], "an unwrapped string is one line holding all of it");
         let wrapped = handle.shape(ShapeRequest {
             line_height: 18.0,
             max_width: Some(unconstrained.width / 2.0),
-            ..req("Mantle Engine Renderer", 14.0)
+            ..req(TEXT, 14.0)
         });
+        let lines = &wrapped.lines;
+        assert!(lines.len() > 1 && lines.join(" ") == TEXT, "rejoining to the source, not repeating it: {lines:?}");
         assert!(wrapped.height > unconstrained.height, "wrapping onto more lines must grow the measured height");
         assert!(wrapped.width <= unconstrained.width, "a wrapped line can't be wider than the unconstrained text");
         // Height is the line count times the step: one walk, not two counts.

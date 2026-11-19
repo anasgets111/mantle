@@ -473,26 +473,20 @@ mod tests {
         assert_eq!(blur_regions(&root, 1.0), [PhysicalRect { x0: 70, y0: 0, x1: 100, y1: 40 }]);
     }
 
-    /// ADR-0253. A shader's alpha is unknown on the CPU, so its box claims no input; a morph drawn
-    /// inside its fully open box would otherwise swallow clicks meant for what is behind it.
+    /// A border alone draws, so its box takes input as a background's does; a zero-width one draws
+    /// nothing. ADR-0253: a shader's alpha is unknown on the CPU, so its box claims no input; a morph
+    /// drawn inside its fully open box would otherwise swallow clicks meant for what is behind it.
     #[test]
-    fn a_shader_node_claims_no_input() {
-        let paint = Some(PaintStyle::Shader {
-            source: "/s.frag".into(),
-            progress: 0.0,
-            params: Vec::new(),
-            images: Vec::new(),
-        });
-        assert!(!takes_input_as_a_box(&region_node(1, "shader", (0.0, 0.0, 10.0, 10.0), paint, Vec::new()), true));
-    }
-
-    /// A border alone draws, so its box takes input as a background's does; a zero-width one draws nothing.
-    #[test]
-    fn a_border_only_box_takes_input_and_a_zero_width_one_does_not() {
-        for (width, claims) in [(2, true), (0, false)] {
-            let paint = rect_paint("border_width", |_| Value::Integer(width));
-            let node = region_node(1, "rect", (0.0, 0.0, 10.0, 10.0), paint, Vec::new());
-            assert_eq!(takes_input_as_a_box(&node, true), claims, "border_width = {width}");
+    fn a_border_only_box_takes_input_and_a_zero_width_one_or_a_shader_does_not() {
+        let shader =
+            PaintStyle::Shader { source: "/s.frag".into(), progress: 0.0, params: Vec::new(), images: Vec::new() };
+        for (kind, paint, claims) in [
+            ("rect", rect_paint("border_width", |_| Value::Integer(2)), true),
+            ("rect", rect_paint("border_width", |_| Value::Integer(0)), false),
+            ("shader", Some(shader), false),
+        ] {
+            let node = region_node(1, kind, (0.0, 0.0, 10.0, 10.0), paint, Vec::new());
+            assert_eq!(takes_input_as_a_box(&node, true), claims, "{kind} claiming {claims}");
         }
     }
 
@@ -643,31 +637,24 @@ mod tests {
     }
 
     /// Opt-in and nothing else: translucency is not a request, and a faded-out subtree asks for
-    /// nothing because it paints nothing.
+    /// nothing because it paints nothing. A box at rest keeps its blur at any opacity above 0: only
+    /// a running fade is cut (#114).
     #[test]
     fn blur_is_opt_in_and_a_faded_subtree_asks_for_nothing() {
         let glass = region_node(1, "rect", (0.0, 0.0, 100.0, 40.0), solid_paint(), Vec::new());
         let root = region_node(2, "panel", (0.0, 0.0, 400.0, 100.0), None, vec![glass]);
         assert!(blur_regions(&root, 1.0).is_empty(), "a painted box that never asked does not blur");
 
-        let mut card = region_node(3, "rect", (0.0, 0.0, 100.0, 40.0), solid_paint(), Vec::new());
-        card.compositor_blur = true;
-        let mut faded = region_node(4, "column", (0.0, 0.0, 100.0, 40.0), None, vec![card]);
-        faded.opacity = 0.0;
-        let root = region_node(5, "panel", (0.0, 0.0, 400.0, 100.0), None, vec![faded]);
-        assert!(blur_regions(&root, 1.0).is_empty(), "nothing is painted at zero opacity, so nothing is blurred");
-    }
-
-    /// A box at rest keeps its blur at any opacity above 0: only a running fade is cut (#114).
-    #[test]
-    fn a_box_resting_at_low_opacity_still_asks_for_blur() {
-        let mut card = region_node(3, "rect", (0.0, 0.0, 100.0, 40.0), solid_paint(), Vec::new());
-        card.compositor_blur = true;
-        card.opacity = 0.8;
-        let mut dim = region_node(4, "column", (0.0, 0.0, 100.0, 40.0), None, vec![card]);
-        dim.opacity = 0.5;
-        let root = region_node(5, "panel", (0.0, 0.0, 400.0, 100.0), None, vec![dim]);
-        assert!(!blur_regions(&root, 1.0).is_empty(), "0.4 effective, not tweening");
+        // (the card's opacity, its parent's, whether it blurs)
+        for (own, parent, blurs) in [(1.0, 0.0, false), (0.8, 0.5, true)] {
+            let mut card = region_node(3, "rect", (0.0, 0.0, 100.0, 40.0), solid_paint(), Vec::new());
+            card.compositor_blur = true;
+            card.opacity = own;
+            let mut faded = region_node(4, "column", (0.0, 0.0, 100.0, 40.0), None, vec![card]);
+            faded.opacity = parent;
+            let root = region_node(5, "panel", (0.0, 0.0, 400.0, 100.0), None, vec![faded]);
+            assert_eq!(!blur_regions(&root, 1.0).is_empty(), blurs, "{own} under {parent}, not tweening");
+        }
     }
 
     /// `wl_region` carries no radius, so a rounded card is sent as strips. The cost matters: this
