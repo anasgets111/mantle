@@ -80,7 +80,8 @@ pub(super) fn ring_cmd(
 /// Exhaustive, so a new draw has to say what it scales. Image and icon boxes are cache keys
 /// [`draw_for`] rounds itself, and text shapes at its logical size for `canvas::execute` to rasterize at
 /// the buffer scale. A path stays logical too, carrying the scale `canvas::execute` converts its
-/// commands at, so a build shares the node's command list instead of copying it (#57).
+/// commands at, so a build shares the node's command list instead of copying it (#57). A shader
+/// carries the scale its logical size is measured at.
 pub(super) fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
     if scale == 1.0 {
         return draw;

@@ -130,6 +130,8 @@ pub enum Draw {
         params: Vec<node::ShaderParam>,
         images: Vec<SamplerFile>,
         alpha: f32,
+        /// The build's scale, which `u_size` is measured at, as a `Text`'s metrics are (#165).
+        scale: f32,
     },
     /// A `path` node's commands, filled then stroked in node-local coordinates. They stay logical,
     /// and the scale `execute` multiplies them by is part of the draw, so a kept layer drawn at
@@ -205,6 +207,8 @@ pub struct LayerShader {
     pub images: Vec<SamplerFile>,
     pub progress: f32,
     pub radius: Radii,
+    /// The build's scale, which its logical size and radii are measured at, as a `Draw::Shader`'s.
+    pub scale: f32,
 }
 
 /// One drawable node: what, where, and its precomputed ancestor clip. Intersections are axis

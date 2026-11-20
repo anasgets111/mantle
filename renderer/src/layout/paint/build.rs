@@ -225,7 +225,8 @@ fn build_node(
         && opacity > 0.0
         && (!clip.is_empty() || padded_read)
     {
-        let shader = effect.backdrop_shader.as_deref().map(|shader| layer_shader(shader.clone(), radius.clone()));
+        let shader =
+            effect.backdrop_shader.as_deref().map(|shader| layer_shader(shader.clone(), radius.clone(), scale));
         if effect.desktop {
             super::DESKTOP_READS.store(true, std::sync::atomic::Ordering::Relaxed);
         }
@@ -400,7 +401,7 @@ fn build_node(
             scale,
         );
         let mut layered = shadowless.unwrap_or_else(|| effect.clone());
-        let shader = layered.shader.take().map(|shader| layer_shader(*shader, radius));
+        let shader = layered.shader.take().map(|shader| layer_shader(*shader, radius, scale));
         let alpha = if shader.is_some() { opacity } else { 1.0 };
         let draw = Draw::Layer { effect: Box::new(layered), shader, silhouette: false, alpha, commands };
         out.push(cmd(parent_clip.intersect(bounds).intersect(target), draw));
@@ -650,6 +651,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
             params: params.clone(),
             images: sampler_files(images),
             alpha: opacity,
+            scale,
         }),
     }
 }
@@ -665,7 +667,7 @@ fn shader_padding(shader: Option<&node::EffectShader>) -> f32 {
 }
 
 /// `shader` as a draw carries it: the file's version, so an edit repaints, and the outline.
-fn layer_shader(shader: node::EffectShader, radius: Radii) -> LayerShader {
+fn layer_shader(shader: node::EffectShader, radius: Radii, scale: f32) -> LayerShader {
     LayerShader {
         version: crate::image::FileVersion::read(&shader.source),
         source: shader.source,
@@ -673,6 +675,7 @@ fn layer_shader(shader: node::EffectShader, radius: Radii) -> LayerShader {
         images: sampler_files(&shader.images),
         progress: shader.progress,
         radius,
+        scale,
     }
 }
 
@@ -1427,29 +1430,33 @@ mod tests {
         assert!(std::rc::Rc::ptr_eq(&drawn.expect("a path draw").commands, &node.commands));
     }
 
-    /// A filtered path or text the same buffer size at another scale, 120 px at 1 then 80 at 1.5,
-    /// still has to differ, or its kept layer would show the raster drawn at the old scale (#165).
+    /// A filtered path, text or shader the same buffer size at another scale, 120 px at 1 then 80
+    /// at 1.5, still has to differ, or its kept layer would show the raster drawn at the old scale
+    /// (#165). A shader reads its logical size.
     #[test]
     fn a_logical_layer_at_another_scale_differs_though_its_buffer_size_does_not() {
-        let layer = |child: &str, side: f32, scale: f32| {
+        let layer = |kind: &str, fields: &str, side: f32, scale: f32| {
             let src = format!(
-                r##"return panel {{ id = "bar", width = {side}, height = {side}, child = {child} {{ width = "fill",
-                    height = "fill", effect = {{ saturate = 0 }}, {} }} }}"##,
-                match child {
-                    "path" =>
-                        r##"fill = "#ff0000", commands = { { op = "M", points = { 0, 0 } },
-                        { op = "L", points = { 40, 0 } }, { op = "L", points = { 0, 40 } } }"##,
-                    _ => r#"content = "Hi""#,
-                }
+                r##"return panel {{ id = "bar", width = {side}, height = {side}, child = {kind} {{ width = "fill",
+                    height = "fill", {fields} }} }}"##
             );
             let tree = resolved_surface(&Lua::new(), &src, LogicalSize { width: side, height: side });
             let list = build(&tree, scale, None);
             list.commands.into_iter().find(|cmd| matches!(cmd.draw, Draw::Layer { .. })).expect("a filter layer")
         };
-        for child in ["path", "text"] {
-            let (before, after) = (layer(child, 120.0, 1.0), layer(child, 80.0, 1.5));
-            assert_eq!((before.rect, before.clip), (after.rect, after.clip), "{child}: the same buffer box");
-            assert_ne!(before, after, "{child}");
+        for (kind, fields) in [
+            (
+                "path",
+                r##"effect = { saturate = 0 }, fill = "#ff0000", commands = { { op = "M", points = { 0, 0 } },
+                { op = "L", points = { 40, 0 } }, { op = "L", points = { 0, 40 } } }"##,
+            ),
+            ("text", r#"effect = { saturate = 0 }, content = "Hi""#),
+            ("shader", r#"effect = { saturate = 0 }, source = "/size.frag""#),
+            ("rect", r#"effect = { shader = { source = "/size.frag" } }"#),
+        ] {
+            let (before, after) = (layer(kind, fields, 120.0, 1.0), layer(kind, fields, 80.0, 1.5));
+            assert_eq!((before.rect, before.clip), (after.rect, after.clip), "{kind}: the same buffer box");
+            assert_ne!(before, after, "{kind}");
         }
     }
 
