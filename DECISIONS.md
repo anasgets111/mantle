@@ -9451,3 +9451,18 @@ of 88 → 110 wakeups/s, 1–2 ms later delivery for lines written in pieces, an
 `\r` progress update. Whole-line writers are unchanged. Rejected: the 1 ms linger alone (the pipe
 stays registered, so parks rose 74 → 131 per line); a blocking reader thread (145 µs per line
 against 120 µs).
+
+## 0411. A path's literal `commands` is parsed once per declaration
+
+A bound write re-resolved a `path` whole: 100 paths of 250 points with `shift` bound walked every
+`commands` table for signals (501 tables each, past the 256-table scan budget, so never learned
+plain) and parsed every command again, 84–89 ms a pass on hardware. At a declaration's second
+resolve, the first a bound write causes, a literal `commands` that held no signal and whose parse
+runs no Lua (no metatable on the list, a command or its `points`, checked with raw reads, capped at
+4,096 commands) keeps paint's own parse; the resolve memo stores the declaration with that
+`Tweened<PathData>` in place of the table, so the walk skips it and every reader sees one value.
+Measured: 84 → 0.48 ms a pass and 99.5 % → 12 % of one core on hardware; fresh declarations and the
+list benches unchanged. An in-place edit of such a literal is not reliably drawn. Rejected: a parse
+cached by table address (a re-`:set` table keeps its address, #159); a separate probe parse (froze
+getters, hid failing parses); caching at the first resolve (9 % slower for paths rebuilt each
+pass); learning `tables_plain` from the first walk (changed every other literal on the node).
