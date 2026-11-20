@@ -114,7 +114,7 @@ pub struct Scene {
     surfaces: HashMap<String, ResolvedNode>,
     /// One per instance, kept across passes and ticks: a node whose solver inputs did not change
     /// keeps taffy's layout cache, so a pass that changed only paint lays nothing out. Dropped with
-    /// a failed pass or tick, whose writes it may hold.
+    /// a failed pass or tick, whose writes it may hold, and by a pass that shrank it (#156).
     solver_trees: HashMap<String, taffy::TaffyTree<solver::Measure>>,
     /// The font generation sampled at the last pass or tick: what `solver_trees` measured against,
     /// and the stamp a field anchor set between passes takes. A face loaded since can fill what a
@@ -438,6 +438,7 @@ impl Scene {
         // A failed walk drops the tree it was writing; the rollback's copy of `existing` names nodes
         // of it, so the next pass starts a new one.
         let mut tree = Self::take_solver_tree(&mut self.solver_trees, &key, existing.iter_mut());
+        let held = tree.total_node_count();
         let prepared =
             prepare(self, &mut tree, existing, fresh.kind, resolved, (None, 0.0), (false, false, true), lua, now, 0)?;
         close(&mut at, &mut self.resolve_split.resolve);
@@ -448,7 +449,13 @@ impl Scene {
         if !geometry_undo.is_empty() {
             crate::lua::signal::set_computed_undo_active(lua, true);
         }
-        self.solver_trees.insert(key.clone(), tree);
+        // ponytail: taffy never frees a removed node's slot, so a tree this pass left at under a
+        // quarter of the nodes it found is dropped, and the next pass builds one at the live size.
+        // Blind to a shrink spread over several passes or ticks; upgrade: keep each tree's
+        // high-water mark.
+        if tree.total_node_count() * 4 >= held {
+            self.solver_trees.insert(key.clone(), tree);
+        }
         self.surfaces.insert(key, solved);
         close(&mut at, &mut self.resolve_split.solve);
         Ok(())
@@ -1355,6 +1362,27 @@ pub(super) mod tests {
         let mut target = params_at(&scene, 5);
         target.sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(target, [("x".to_string(), vec![10.0]), ("y".to_string(), vec![20.0])]);
+    }
+
+    /// #156: a pass that leaves its solver tree at under a quarter of its nodes drops it, and the
+    /// next lays the rest out in a new one; a smaller shrink keeps it.
+    #[test]
+    fn a_tree_shrunk_to_under_a_quarter_is_built_again_at_its_live_size() {
+        let (mut scene, lua, shaping, surface) =
+            applied(r#"kids = state("kids", {}) return panel { id = "bar", child = column { children = kids } }"#);
+        for (rows, kept) in [(400, true), (200, true), (1, false)] {
+            lua.load(format!(
+                "local t = {{}} for i = 1, {rows} do t[i] = rect {{ width = 10, height = 2 }} end kids:set(t)"
+            ))
+            .exec()
+            .unwrap();
+            apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            assert_eq!(scene.solver_trees.contains_key("bar@TEST"), kept, "{rows}");
+        }
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(scene.solver_trees["bar@TEST"].total_node_count(), 3);
+        let rect = scene.surface("bar@TEST").unwrap().children[0].children[0].rect;
+        assert_eq!((rect.width, rect.height), (10.0, 2.0));
     }
 
     #[test]
