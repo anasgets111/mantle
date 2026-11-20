@@ -9438,3 +9438,16 @@ identically. The file is user-writable: positional bounds-checked reads, `refuse
 capped, any short read or out-of-range index falls back to the walk. Rejected: mmap (a truncated
 mapping raises `SIGBUS`). Accepted: a file dropped into an existing subdirectory stays hidden until
 `gtk-update-icon-cache -f`, as in GTK.
+
+## 0410. A `process.run` pipe leaves epoll while a line arrives in pieces
+
+Linux wakes an epoll waiter on every write to a registered pipe, so a child writing each field of a
+line separately woke the Supervisor's I/O driver once per piece: a visualizer's 30 lines/s of about
+517 writes each cost 1.85 % of a core in about 82 reads per line. `process/pipe.rs` reads
+`process.run`'s stdout and stderr through tokio's `pipe::Receiver`. After a read that ends mid-line
+it unregisters, waits 1 ms for the pieces to pile up, then reads them in one go; reads stay charged
+to tokio's cooperative budget. Measured live: 1.85 % → 0.45 % CPU and 3 reads per line, at the cost
+of 88 → 110 wakeups/s, 1–2 ms later delivery for lines written in pieces, and one register cycle per
+`\r` progress update. Whole-line writers are unchanged. Rejected: the 1 ms linger alone (the pipe
+stays registered, so parks rose 74 → 131 per line); a blocking reader thread (145 µs per line
+against 120 µs).
