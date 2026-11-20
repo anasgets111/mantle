@@ -5685,6 +5685,12 @@ Amended (#74): a delta is the part of the frame's declared rect whose pixels cha
 disposal, so a full-size frame from an encoder without frame optimisation keeps only what changed
 (an ImageMagick clip held 25.9 -> 1.4 MB). A `Previous` restore that drew nothing is dropped.
 
+Amended (#164): a native delta (nothing scaled, nothing cut, whatever the fit) is kept as one byte
+a pixel into its own palette when it has at most 256 colours and that is smaller, and expanded one
+delta at a time in `replay`; upload premultiplies the palette. A 100-frame 480x270 clip: deltas
+51.3 -> 12.9 MB, renderer RSS 154 -> 117 MB, for 20 ms more decode per 100 frames and 0.13 % of a
+core during playback.
+
 ## 0236. A plain `textfield` gets a caret and a selection; the masked one gets neither
 
 ADR-0064 and ADR-0092 both closed with "no caret in this pass", and the pass they deferred left an
@@ -9418,3 +9424,15 @@ Rejected: a per-node cache of scaled commands (a second copy of every path); a c
 Amended 2026-11-20 (#165): `Draw::Text` carries the build scale for the same reason; its metrics
 are logical, so a filter layer of equal buffer box at another scale compared equal and kept a
 stale raster.
+
+## 0409. Icon lookup narrows by GTK's `icon-theme.cache`, but always tries Scalable directories
+
+A theme copy whose `icon-theme.cache` is version 1.0 and no older than the theme directory (whole
+seconds, as GTK compares) only narrows which of its directories are tried; distance and base order
+still choose. Directories of type `Scalable` are always tried, since GTK's updater never lists
+`.svgz`, `.ico` or `.bmp` and hicolor ships `.svgz`-only icons. A missing name on a theme with
+three parents costs 2.4 instead of 6.5 ms; 191,067 lookups over 10 installed themes resolve
+identically. The file is user-writable: positional bounds-checked reads, `refuse_irregular`, loops
+capped, any short read or out-of-range index falls back to the walk. Rejected: mmap (a truncated
+mapping raises `SIGBUS`). Accepted: a file dropped into an existing subdirectory stays hidden until
+`gtk-update-icon-cache -f`, as in GTK.
