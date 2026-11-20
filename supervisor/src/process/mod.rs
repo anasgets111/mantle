@@ -13,6 +13,7 @@ use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 use tokio::process::{Child, Command};
 
+pub(crate) mod pipe;
 pub mod registry;
 
 /// Path this process re-execs to reach a worker branch of `main`: the PAM worker or the NVML query.

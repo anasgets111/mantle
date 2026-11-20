@@ -11,6 +11,7 @@ use shared::{ProcessExited, ProcessOutputLine, ProcessStream, SupervisorFrame, d
 use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 use tokio::process::{Child, ChildStderr, ChildStdout};
 
+use super::pipe::Pipe;
 use crate::send_frame_logged;
 use crate::socket;
 
@@ -225,6 +226,13 @@ pub(crate) async fn stream_process_output(
     stdout: ChildStdout,
     stderr: ChildStderr,
 ) {
+    let pipe = |fd: io::Result<std::os::fd::OwnedFd>| fd.and_then(Pipe::new);
+    let (stdout, stderr) = match (pipe(stdout.into_owned_fd()), pipe(stderr.into_owned_fd())) {
+        (Ok(stdout), Ok(stderr)) => (stdout, stderr),
+        (Err(err), _) | (_, Err(err)) => {
+            return warn!("process {id} (generation {generation_id}): failed to take its output pipes: {err}");
+        }
+    };
     let mut stdout_lines = BoundedLines::new(stdout, format!("process {id} (generation {generation_id}) stdout"));
     let mut stderr_lines = BoundedLines::new(stderr, format!("process {id} (generation {generation_id}) stderr"));
     let mut stdout_done = false;
