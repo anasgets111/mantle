@@ -9424,6 +9424,8 @@ Rejected: a per-node cache of scaled commands (a second copy of every path); a c
 Amended 2026-11-20 (#165): `Draw::Text` carries the build scale for the same reason; its metrics
 are logical, so a filter layer of equal buffer box at another scale compared equal and kept a
 stale raster.
+Amended 2026-11-20: `Draw::Shader` and `LayerShader` carry it too; a shader's `u_size`, outline
+and radii are bound at logical size, so the same equal-box case kept a stale picture.
 
 ## 0409. Icon lookup narrows by GTK's `icon-theme.cache`, but always tries Scalable directories
 
