@@ -30,7 +30,7 @@ pub(super) fn upload_or_log(canvas: &mut Canvas<OpenGl>, path: &Path, decoded: R
         // Host delta bytes counted beside the texture's, or nothing reclaims them: `trim` is the
         // only thing that drops an entry, a shown source is pinned against it either way, and an
         // animation nobody draws held its whole ceiling for the life of the process (ADR-0235).
-        let bytes = decoded.base.len() + decoded.deltas.iter().map(|delta| delta.pixels.len()).sum::<usize>();
+        let bytes = decoded.base.len() + decoded.deltas.iter().map(Delta::bytes).sum::<usize>();
         let natural = decoded.natural;
         upload(canvas, decoded).map(|(image, anim)| Slot::Ready {
             image,
@@ -122,9 +122,7 @@ fn upload(canvas: &mut Canvas<OpenGl>, decoded: Decoded) -> Result<(Option<Image
     let Decoded { mut base, delays, mut deltas, width, height, premultiplied, .. } = decoded;
     if !premultiplied {
         premultiply(&mut base);
-        for delta in &mut deltas {
-            premultiply(&mut delta.pixels);
-        }
+        deltas.iter_mut().for_each(Delta::premultiply);
     }
     if !deltas.is_empty() {
         return Ok((None, Some(Animation { base, width, height, delays, deltas, current: 0 })));
@@ -182,8 +180,8 @@ fn replay(canvas: &mut Canvas<OpenGl>, id: ImageId, anim: &Animation, current: &
     // A change the crop cut away entirely extracts to nothing and uploads nothing.
     for delta in anim.deltas[catch_up].iter().filter(|delta| !delta.pixels.is_empty()) {
         let (left, top, width, height) = delta.rect;
-        let source =
-            ImageSource::from(femtovg::imgref::Img::new(delta.pixels.as_rgba(), width as usize, height as usize));
+        let pixels = delta.rgba();
+        let source = ImageSource::from(femtovg::imgref::Img::new(pixels.as_rgba(), width as usize, height as usize));
         let _ = canvas.update_image(id, source, left as usize, top as usize);
     }
     *current = target;
@@ -389,7 +387,7 @@ pub(in crate::image) mod tests {
             width: 2,
             height: 2,
             delays: vec![Duration::from_millis(20); 2],
-            deltas: vec![Delta { rect: (0, 0, 1, 1), pixels: vec![0; 4] }],
+            deltas: vec![Delta { rect: (0, 0, 1, 1), pixels: vec![0; 4], palette: Vec::new() }],
             current: 0,
         }
     }
@@ -449,7 +447,7 @@ pub(in crate::image) mod tests {
             gif_fixture(dir.path(), "b.gif", (2, 2), &red_then_blue),
         );
         let mut cache = ImageCache::inline();
-        // Room for three 16-byte node textures, though the slot's frames alone take 32 bytes.
+        // Room for three 16-byte node textures; the slot's frames take 24: the base and one indexed delta.
         cache.set_texture_budget(48);
         let request = |path, node, playing, edge| ImageRequest {
             path,
@@ -472,7 +470,7 @@ pub(in crate::image) mod tests {
         assert!(!owed, "paused: no frame owed");
         let (playing, owed) = draw(&mut cache, &a, 2, true, 2);
         assert!(owed && playing != paused, "the other node plays on its own texture");
-        assert!(cache.resident_bytes > 48, "admitted on GPU bytes, not the frames kept on the CPU");
+        assert_eq!(cache.resident_bytes, 24 + 2 * 16, "admitted on GPU bytes, not the frames kept on the CPU");
         // Held 60 ms in, the second frame, so no timing under load moves it.
         own(&mut cache, 2).clock = Clock { since: None, held: Duration::from_millis(60) };
         assert_eq!(draw(&mut cache, &a, 2, false, 2).0, playing);

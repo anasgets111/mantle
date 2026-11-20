@@ -138,8 +138,8 @@ fn assemble(
     let (stored_width, stored_height) = stored_size(source_width, source_height, box_px);
     let (width, height) =
         if cropped { (stored_width.min(box_px.0), stored_height.min(box_px.1)) } else { (stored_width, stored_height) };
-    // Unscaled and uncropped only; see the doc comment above for the smaller-box fallback.
-    let native = !cropped && (stored_width, stored_height) == (source_width, source_height);
+    // Unscaled and uncut only, as a cover box the source fits is; see the doc comment above for the smaller-box fallback.
+    let native = (width, height) == (stored_width, stored_height) && (width, height) == (source_width, source_height);
 
     // The kept deltas' byte ceiling plus the canvases compositing runs on, which stay the source
     // size whatever the box asks for.
@@ -198,17 +198,19 @@ fn assemble(
         // A frame that changes nothing keeps its delay and costs no pixels; scaling the canvas for it would be work for nothing.
         let (pixels, rect) =
             if changed.2 == 0 || changed.3 == 0 { (Vec::new(), (0, 0, 0, 0)) } else { extract(&canvas, changed)? };
+        // Resampling leaves the palette, so only a native delta can be indexed.
+        let delta = if native { Delta::indexed(rect, pixels) } else { Delta { rect, pixels, palette: Vec::new() } };
         // At least a 64th of the canvas, because a frame costs a compare, and a scale off the native
         // path, over all of it however little changed; and at least what its delay and delta take to
         // hold, which is all a 1x1 canvas has to charge. Without a floor a crafted file of identical
         // frames never reaches the ceiling and holds a worker, and its memory, indefinitely.
-        let cost = pixels.len().max(canvas.len() / 64).max(size_of::<Delta>() + size_of::<Duration>());
+        let cost = delta.bytes().max(canvas.len() / 64).max(size_of::<Delta>() + size_of::<Duration>());
         if delta_bytes + cost > budget {
             break;
         }
         delta_bytes += cost;
         delays.push(delay);
-        deltas.push(Delta { rect, pixels });
+        deltas.push(delta);
     }
     // Frames that change nothing leave a still, whatever their delays.
     if deltas.iter().all(|delta| delta.pixels.is_empty()) {
@@ -218,6 +220,59 @@ fn assemble(
     let Some(base) = base else { return Err("no frames".to_string()) };
     let natural = Some((source_width, source_height));
     Ok(Decoded { base, delays, deltas, width, height, natural, premultiplied: false, text: false })
+}
+
+impl Delta {
+    /// `pixels` as an index into their own colours, when there are at most 256 and that is smaller,
+    /// as in most native GIF deltas; one cut from the canvas can hold several frames' palettes.
+    fn indexed(rect: Rect, pixels: Vec<u8>) -> Self {
+        let (mut palette, mut indices) = (Vec::new(), Vec::with_capacity(pixels.len() / 4));
+        // Open addressing over four times the most colours kept, so a probe rarely passes one slot.
+        let mut slots = [None::<(u32, u8)>; 1024];
+        for pixel in pixels.as_chunks::<4>().0 {
+            let colour = u32::from_ne_bytes(*pixel);
+            let mut at = (colour.wrapping_mul(0x9e37_79b9) >> 22) as usize;
+            while slots[at].is_some_and(|(held, _)| held != colour) {
+                at = (at + 1) % slots.len();
+            }
+            if slots[at].is_none() {
+                let Ok(index) = u8::try_from(palette.len()) else { break };
+                slots[at] = Some((colour, index));
+                palette.push(*pixel);
+            }
+            indices.extend(slots[at].map(|(_, index)| index));
+        }
+        if 4 * indices.len() == pixels.len() {
+            palette.shrink_to_fit();
+            let delta = Self { rect, pixels: indices, palette };
+            if delta.bytes() < pixels.len() {
+                return delta;
+            }
+        }
+        Self { rect, pixels, palette: Vec::new() }
+    }
+
+    /// Host bytes held, as the decode and texture budgets charge them.
+    pub(super) fn bytes(&self) -> usize {
+        self.pixels.len() + 4 * self.palette.len()
+    }
+
+    /// Premultiplies the colours: the palette's, when there is one, expands to the premultiplied pixels.
+    pub(super) fn premultiply(&mut self) {
+        super::decode::premultiply(if self.palette.is_empty() {
+            &mut self.pixels
+        } else {
+            self.palette.as_flattened_mut()
+        });
+    }
+
+    /// The RGBA8 pixels, expanded from the palette if there is one.
+    pub(super) fn rgba(&self) -> std::borrow::Cow<'_, [u8]> {
+        if self.palette.is_empty() {
+            return std::borrow::Cow::Borrowed(&self.pixels);
+        }
+        self.pixels.iter().flat_map(|&index| self.palette[usize::from(index)]).collect()
+    }
 }
 
 /// The smallest rect holding every pixel where two same-size RGBA8 canvases differ; empty if none.
@@ -377,8 +432,16 @@ pub(in crate::image) mod tests {
         let decoded = decode_gif(&path, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
         assert_eq!(decoded.deltas.len(), 4, "5 frames, the first is the base");
         assert!(decoded.deltas.iter().all(|delta| delta.rect == (0, 0, 2, 2)), "the native rect, not the full canvas");
+        assert!(decoded.deltas.iter().all(|delta| delta.pixels.len() == 4), "a native delta holds one byte a pixel");
 
         assert_replays_like_a_full_recomposite(&path, &decoded, |frame| frame.as_raw().clone());
+        let covered = decode_gif(&path, (4, 4), true, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        assert!(covered.deltas.iter().all(|delta| delta.pixels.len() == 4), "a cover box the source fits is native");
+        assert_replays_like_a_full_recomposite(&path, &covered, |frame| frame.as_raw().clone());
+        let cut = decode_gif(&path, (4, 2), true, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        assert_replays_like_a_full_recomposite(&path, &cut, |frame| {
+            crop_to_box(frame.as_raw(), 4, 4, (4, 2)).unwrap().0
+        });
 
         // A disposal outside the next frame's rect is still a change that frame's delta must carry.
         let moving = gif_fixture(
@@ -411,7 +474,7 @@ pub(in crate::image) mod tests {
         for (index, frame) in ground_truth.iter().enumerate() {
             let mut replayed = decoded.base.clone();
             for delta in &decoded.deltas[..index] {
-                write_rect(&mut replayed, width, delta.rect, &delta.pixels);
+                write_rect(&mut replayed, width, delta.rect, &delta.rgba());
             }
             assert_eq!(replayed, stored(frame.buffer()), "frame {index} diverged from the full recomposite");
         }
@@ -425,10 +488,49 @@ pub(in crate::image) mod tests {
         let mut frames = vec![((0, 0, 4, 4), [255, 0, 0, 255], Keep)];
         frames.extend((0..4u8).map(|n| ((0, 0, 2, 2), [0, n * 50, 0, 255], Keep)));
         let path = gif_fixture(dir.path(), "many.gif", (4, 4), &frames);
-        // Each 2x2 delta is 16 bytes, charged the 56 a frame takes to hold; 112 keeps exactly two.
-        let decoded = decode_gif(&path, (4, 4), false, Charge::Free, 112).unwrap();
-        assert_eq!(decoded.deltas.len(), 2, "a third would total 168 bytes, past the 112-byte budget");
+        // Each 2x2 delta is 16 bytes, charged the 80 a frame takes to hold; 160 keeps exactly two.
+        let decoded = decode_gif(&path, (4, 4), false, Charge::Free, 160).unwrap();
+        assert_eq!(decoded.deltas.len(), 2, "a third would total 240 bytes, past the 160-byte budget");
         assert_eq!(decoded.delays.len(), 3, "the base plus the two kept deltas");
+        // A native delta is charged indexed: 256 indices and one colour for a 16x16 frame of one colour.
+        let frames = [((0, 0, 16, 16), [255, 0, 0, 255], Keep), ((0, 0, 16, 16), [0, 255, 0, 255], Keep)];
+        let path = gif_fixture(dir.path(), "indexed.gif", (16, 16), &frames);
+        assert_eq!(decode_gif(&path, (16, 16), false, Charge::Free, 260).unwrap().deltas.len(), 1);
+    }
+
+    /// Indexing must not lose a colour: past 256, or where the palette costs more than it saves, a
+    /// delta stays RGBA.
+    #[test]
+    fn a_delta_with_more_than_256_colours_stays_rgba() {
+        // Scrambled, so that some colours share a slot and the probe runs.
+        let colour = |n: u32| (n.wrapping_mul(0x0100_0193) ^ 0x811c_9dc5).to_le_bytes();
+        let colours =
+            |count: u32| (0..count).flat_map(|n| [&colour(n)[..3], &[255]].concat()).collect::<Vec<u8>>().repeat(2);
+        let fits = Delta::indexed((0, 0, 512, 1), colours(256));
+        assert_eq!((fits.pixels.len(), fits.palette.len()), (512, 256));
+        assert_eq!(fits.rgba(), colours(256));
+        let over = Delta::indexed((0, 0, 514, 1), colours(257));
+        assert!(over.palette.is_empty());
+        assert_eq!(over.pixels, colours(257));
+        let even = [&colours(3)[..12], &colours(3)[..4]].concat();
+        assert!(Delta::indexed((0, 0, 4, 1), even).palette.is_empty(), "4 indices and 3 colours save nothing");
+        let one = Delta::indexed((0, 0, 2, 1), colours(1));
+        assert_eq!(one.palette.capacity(), 1, "charged what it holds");
+    }
+
+    /// Premultiplying a palette has to give what premultiplying its expansion gives: alpha 0,
+    /// translucent, and two colours that premultiply alike.
+    #[test]
+    fn a_premultiplied_delta_expands_to_the_premultiplied_pixels() {
+        let pixels = [[200, 100, 50, 128], [10, 20, 30, 0], [101, 0, 0, 1], [100, 0, 0, 1], [9, 9, 9, 255]].repeat(2);
+        let indexed = Delta::indexed((0, 0, 10, 1), pixels.concat());
+        assert!(!indexed.palette.is_empty());
+        for mut delta in [indexed, Delta { rect: (0, 0, 10, 1), pixels: pixels.concat(), palette: Vec::new() }] {
+            let mut expected = delta.rgba().into_owned();
+            super::super::decode::premultiply(&mut expected);
+            delta.premultiply();
+            assert_eq!(delta.rgba(), expected);
+        }
     }
 
     /// A wallpaper is scaled, cropped, or both, so it never takes the native path; keeping a whole
@@ -574,7 +676,7 @@ pub(in crate::image) mod tests {
         let mut pixels = decoded.base.clone();
         decoded.deltas[..index]
             .iter()
-            .for_each(|delta| write_rect(&mut pixels, decoded.width, delta.rect, &delta.pixels));
+            .for_each(|delta| write_rect(&mut pixels, decoded.width, delta.rect, &delta.rgba()));
         pixels
     }
 
@@ -666,8 +768,8 @@ pub(in crate::image) mod tests {
             let frame = ::image::DynamicImage::ImageRgba8(::image::RgbaImage::from_raw(4, 4, frame).unwrap());
             assert_eq!(replayed(&halved, index), downscale(&frame, (2, 2)).unwrap().into_raw(), "frame {index}");
         }
-        // Each delta is charged the 56 bytes a frame takes to hold: that keeps the first and drops the second.
-        let kept = decode_frames(&path, (4, 4), false, Charge::Free, 56).unwrap();
+        // Each delta is charged the 80 bytes a frame takes to hold: that keeps the first and drops the second.
+        let kept = decode_frames(&path, (4, 4), false, Charge::Free, 80).unwrap();
         assert_eq!((kept.deltas.len(), kept.delays.len()), (1, 2));
     }
 

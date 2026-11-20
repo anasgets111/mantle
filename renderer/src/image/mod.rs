@@ -225,10 +225,11 @@ struct Decoded {
 }
 
 /// One animation frame's changed rectangle after disposal (ADR-0235): physical-pixel left/top/width/
-/// height and its RGBA8 pixels, ready for `Canvas::update_image`.
+/// height and its pixels: RGBA8, or one byte a pixel indexing `palette` when that is not empty.
 struct Delta {
     rect: (u32, u32, u32, u32),
     pixels: Vec<u8>,
+    palette: Vec<[u8; 4]>,
 }
 
 /// Slot state. `Pending` draws and enqueues nothing after its first job until it lands.
