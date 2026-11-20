@@ -115,7 +115,7 @@ pages. On the LuaLS library path, `mantle.audio:get().` completes fields and
 | [`lock`](lock.md) | Lock held, authentication progress, last failure | No `unlock`: only a correct password unlocks |
 | [`mpris`](mpris.md) | Media players, metadata, position | |
 | [`network`](network.md) | Connectivity, Wi-Fi scan, join progress | Secured joins take the key through `secure_submit` |
-| [`notifications`](notifications.md) | The newest 20 notifications, do-not-disturb | Mantle is the notification daemon |
+| [`notifications`](notifications.md) | The newest 200 notifications, do-not-disturb | Mantle is the notification daemon |
 | [`polkit`](polkit.md) | The pending authentication request | Mantle is the polkit agent; the password goes through `secure_submit` |
 | [`power`](power.md) | Power profiles, on battery, power draw | |
 | [`privacy`](privacy.md) | Apps using the camera, microphone or screen capture | |

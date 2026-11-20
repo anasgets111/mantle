@@ -101,8 +101,8 @@ pub struct Notification {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct NotificationsState {
-    /// The newest 20 of up to 100 queued notifications, newest first, expired ones included
-    /// (ADR-0100); a replacement keeps its place. An entry past 20 stays dismissable by id.
+    /// The newest 200 of up to 1000 queued notifications, newest first, expired ones included
+    /// (ADR-0100); a replacement keeps its place. An entry past 200 stays dismissable by id.
     pub feed: Vec<Notification>,
     /// Do-not-disturb: mutes non-critical sounds only. Hiding popups is the config's call.
     pub dnd: bool,

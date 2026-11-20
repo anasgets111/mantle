@@ -2,7 +2,7 @@
 
 # notifications
 
-The notification server: the newest 20 notifications and do-not-disturb.
+The notification server: the newest 200 notifications and do-not-disturb.
 
 ```lua
 rect {
@@ -31,7 +31,7 @@ rect {
 | Field | Type | Description |
 | --- | --- | --- |
 | `dnd` | `boolean` | Do-not-disturb: mutes non-critical sounds only. Hiding popups is the config's call. |
-| `feed` | `Notification[]` | The newest 20 of up to 100 queued notifications, newest first, expired ones included; a replacement keeps its place. An entry past 20 stays dismissable by id. |
+| `feed` | `Notification[]` | The newest 200 of up to 1000 queued notifications, newest first, expired ones included; a replacement keeps its place. An entry past 200 stays dismissable by id. |
 
 ### `Notification`
 
@@ -107,7 +107,7 @@ Mantle is the `org.freedesktop.Notifications` server on the session bus.
 | Contract | Behavior |
 | :--- | :--- |
 | Name | Requested with `DoNotQueue`. If `mako`, `dunst` or another daemon owns it, the server stays off for the run and `feed` stays empty |
-| Retention | 100-entry FIFO; `feed` shows the newest 20 |
+| Retention | 1000-entry FIFO; `feed` shows the newest 200 |
 | Expiry | A negative `expire_timeout` means 5 s. Critical and `0` never expire |
 | Close reasons | `NotificationClosed` sends 1 expired, 2 `dismiss` or `reply`, 3 `CloseNotification` or `invoke_action`, 4 evicted from the FIFO. `reply` also emits `NotificationReplied(id, text)` |
 | Body markup | Keeps `<b>`, `<i>`, `<u>`, `<a href>`, `<img src>`. Other tags lose their markup and keep their text; `script` and `style` lose both |

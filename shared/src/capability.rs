@@ -77,7 +77,7 @@ roster! {
     Secrets => "secrets", secrets::SecretsState, "Named Secret Service writes and their pending, stored or error status. Names are public metadata.",
     Bluetooth => "bluetooth", bluetooth::BluetoothState, BluetoothAction, "BlueZ: adapter power, discovery, connected, paired and discovered devices, and pairing prompts.",
     Tray => "tray", tray::TrayState, TrayAction, "StatusNotifierItem: registered tray items with artwork, status and menus.",
-    Notifications => "notifications", notifications::NotificationsState, NotificationsAction, "The notification server: the newest 20 notifications and do-not-disturb.",
+    Notifications => "notifications", notifications::NotificationsState, NotificationsAction, "The notification server: the newest 200 notifications and do-not-disturb.",
     Mpris => "mpris", mpris::MprisState, MprisAction, "MPRIS: media players with metadata, controls, TrackList and Playlists.",
     Sysinfo => "sysinfo", sysinfo::SysinfoState, SysinfoAction, "CPU, memory, swap, disks, GPU, network and temperatures. `nil` until `configure` sets intervals.",
     Keyboard => "keyboard", keyboard::KeyboardState, KeyboardAction, "Lock keys, the active layout and the keyboard backlight.",

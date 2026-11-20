@@ -656,7 +656,7 @@
 ---@class NotificationsState
 ---`mantle.notifications`'s payload (ADR-0033).
 ---@field dnd boolean Do-not-disturb: mutes non-critical sounds only. Hiding popups is the config's call.
----@field feed Notification[] The newest 20 of up to 100 queued notifications, newest first, expired ones included (ADR-0100); a replacement keeps its place. An entry past 20 stays dismissable by id.
+---@field feed Notification[] The newest 200 of up to 1000 queued notifications, newest first, expired ones included (ADR-0100); a replacement keeps its place. An entry past 200 stays dismissable by id.
 
 ---@class MprisState
 ---@field players PlayerState[] Controllable MPRIS players except `playerctld`, longest-running first, so `players[1]` stays put; empty when none runs. At most 8: one arriving past that is listed once another leaves.
@@ -1072,7 +1072,7 @@ local AudioLevelsCapability = {}
 ---@field secrets SecretsCapability Named Secret Service writes and their pending, stored or error status. Names are public metadata.
 ---@field bluetooth BluetoothCapability BlueZ: adapter power, discovery, connected, paired and discovered devices, and pairing prompts.
 ---@field tray TrayCapability StatusNotifierItem: registered tray items with artwork, status and menus.
----@field notifications NotificationsCapability The notification server: the newest 20 notifications and do-not-disturb.
+---@field notifications NotificationsCapability The notification server: the newest 200 notifications and do-not-disturb.
 ---@field mpris MprisCapability MPRIS: media players with metadata, controls, TrackList and Playlists.
 ---@field sysinfo SysinfoCapability CPU, memory, swap, disks, GPU, network and temperatures. `nil` until `configure` sets intervals.
 ---@field keyboard KeyboardCapability Lock keys, the active layout and the keyboard backlight.

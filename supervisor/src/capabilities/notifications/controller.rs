@@ -588,7 +588,7 @@ impl NotificationsController {
     /// `reason` is [`CloseReason`] as its raw wire `u32` (the signal's D-Bus signature is fixed by
     /// the base spec): 1 = expired, 2 = dismissed via `dismiss()`, 3 = `CloseNotification`,
     /// 4 = FIFO eviction, a base-spec "undefined/reserved" value repurposed for Mantle's hard
-    /// 100-cap (ADR-0033).
+    /// 1000-cap (ADR-0033).
     #[zbus(signal, name = "NotificationClosed")]
     async fn notification_closed(
         signal_emitter: &zbus::object_server::SignalEmitter<'_>,

@@ -1987,6 +1987,8 @@ behavior was left for discussion.
 3. Transient entries are removed on expiry.
 4. Repeated or stale-incarnation expiry is a no-op.
 5. Keep the 100-entry queue and 20-entry feed cap.
+   Amended 2026-11-20: raised to a 1000-entry queue and a 200-entry feed for longer history; the feed is still
+   resent whole on each change.
 6. Replacements reset expired and receive a new timer.
 
 Popup config filters expired entries; history appearance and X-button retirement remain config work.

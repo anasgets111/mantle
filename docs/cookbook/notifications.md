@@ -168,7 +168,7 @@ return {
 
 ## How it works
 
-- `feed` is the newest 20, expired ones included; the map keeps the live ones and caps them ([notifications](../capabilities/notifications.md)).
+- `feed` is the newest 200, expired ones included; the map keeps the live ones and caps them ([notifications](../capabilities/notifications.md)).
 - `dnd` only mutes sounds, so hiding popups during it is the config's filter; critical ones still show.
 - `key` by `id` keeps each card's node when a newer one arrives above it, so only the new one animates in while `animate.move` slides the older ones down; a dismissed card fades out through `animate.exit`, except the last one, which leaves with its hidden panel ([identity](../nodes/index.md#identity-and-reconciliation), [move](../guide/animation.md#move), [exit](../guide/animation.md#exit)).
 - A body's text spans pass to `text` as runs unchanged; `on_link` hands a clicked `href` to `open_url` ([text runs](../nodes/text.md#runs), [applications](../capabilities/applications.md)).

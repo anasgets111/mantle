@@ -1,5 +1,5 @@
 //! Notifications capability (`mantle.notifications`, ADR-0033). Hosts
-//! `org.freedesktop.Notifications` with a 100-item FIFO, a 20-item newest-first feed view, global
+//! `org.freedesktop.Notifications` with a 1000-item FIFO, a 200-item newest-first feed view, global
 //! DND, and a Lua-configured per-urgency PipeWire sound registry. `sound-file` overrides a tier
 //! default for one notification; `suppress-sound` or a `set_app_muted` app wins; `sound-name`
 //! picks a freedesktop theme sound in place of a registered tier default.
@@ -77,8 +77,8 @@ const MAX_DESKTOP_ENTRY_BYTES: usize = MAX_SUMMARY_BYTES;
 const MAX_REPLY_PLACEHOLDER_BYTES: usize = MAX_ACTION_LABEL_BYTES;
 
 /// Backing FIFO cap and `notifications.feed` view size (ADR-0033).
-const NOTIFICATION_QUEUE_CAP: usize = 100;
-const NOTIFICATION_FEED_VIEW: usize = 20;
+const NOTIFICATION_QUEUE_CAP: usize = 1000;
+const NOTIFICATION_FEED_VIEW: usize = 200;
 
 /// Raw image-data dimension cap, shared with `tray`.
 const MAX_IMAGE_DIMENSION: i32 = 128;
