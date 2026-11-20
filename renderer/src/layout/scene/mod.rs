@@ -1053,8 +1053,12 @@ pub(super) mod tests {
         let after = crate::layout::paint::build(root, 1.0, None);
         assert_ne!(before, after);
         assert!(!after.damage_since(&before, true).is_empty());
-        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         assert_eq!(after, crate::layout::paint::build(scene.surface("bar@TEST").unwrap(), 1.0, None));
+        lua.load("local c = state('commands', {}) local t = c:get() t[2].points = {30, 30} c:set(t)").exec().unwrap();
+        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+        let edited = crate::layout::paint::build(scene.surface("bar@TEST").unwrap(), 1.0, None);
+        assert_ne!(after, edited, "a table edited in place and set again is a write");
         let (lua, surface) = surface_from("panel { id='bar', child=path {} }");
         apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
         let path = &scene.surface("bar@TEST").unwrap().children[0];
@@ -1760,6 +1764,37 @@ pub(super) mod tests {
             per_pass(split.solve),
             per_pass(split.clone),
         );
+    }
+
+    /// What a bound `shift` written each pass costs on 100 `path`s of 250 literal commands, through
+    /// the production `apply_locked`: `cargo test -p renderer --release path_shift_pass_cost -- --ignored
+    /// --nocapture`. Ignored like [`list_pass_cost`]. On this machine pinned to one core, p50 0.36 to 0.75 ms;
+    /// 84 ms walking every command table for signals and parsing them again each pass (#157).
+    #[test]
+    #[ignore]
+    fn path_shift_pass_cost() {
+        let (lua, surface) = surface_from(
+            r##"shift = state("shift", { x = 0, y = 0 })
+            local paths = {}
+            for n = 1, 100 do
+                local commands = {}
+                for i = 1, 250 do commands[i] = { op = i == 1 and "M" or "L", points = { i, 40 + 30 * math.sin(i + n) } } end
+                paths[n] = path { width = 300, height = 80, commands = commands, stroke = "#89b4fa", shift = shift }
+            end
+            return panel { id = "bar", child = row { width = 1000, wrap = true, children = paths } }"##,
+        );
+        let (shaping, instance, mut scene) = (ShapingHandle::spawn(), [instance_at(&surface, full())], Scene::new());
+        let mut samples: Vec<f64> = (0..220)
+            .map(|tick| {
+                lua.load(format!("shift:set({{ x = {} - 10, y = 0 }})", tick % 20)).exec().unwrap();
+                let started = std::time::Instant::now();
+                scene.apply_locked(std::slice::from_ref(&surface), &instance, &shaping, &lua, false, false).unwrap();
+                started.elapsed().as_secs_f64() * 1000.0
+            })
+            .skip(20)
+            .collect();
+        samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        println!("PATH shift: p50 {:.3} ms  p95 {:.3} ms", samples[100], samples[190]);
     }
 
     /// What one production read of a retained tree costs:

@@ -152,10 +152,10 @@ impl LayoutStyle {
 /// `Clone` exists for `Scene::apply`'s rollback snapshot. Readers take `&` from `Scene::surface`;
 /// nothing outside this module builds one.
 ///
-/// `resolve_declared` ran over this node's raw map exactly once, so this snapshot lets later
-/// readers take values without resolving anything. `properties` holds resolved values, never a
-/// `Signal` handle. Structural keys are copied raw by `node::is_structural_property`, whose parsers
-/// reject signals.
+/// `resolve_declared` ran over this node's declared map (the memo's `read`) exactly once, so this
+/// snapshot lets later readers take values without resolving anything. `properties` holds resolved
+/// values, never a `Signal` handle. Structural keys are copied raw by `node::is_structural_property`,
+/// whose parsers reject signals.
 ///
 /// ponytail: absent and nil are one state here (`node::resolve_declared` omits a key whose
 /// signal resolved to `Value::Nil`, ADR-0044 decision 1's amendment), so a paint-only property

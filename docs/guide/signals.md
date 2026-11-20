@@ -319,8 +319,10 @@ from a per-second clock push updates once a minute. Within one pass, several pro
 the same derived signal calculate it once.
 
 A node reads its `children` or `child` table once and keeps what it read while it holds that same
-table. A node table or `children` array changed in place is not seen; a signal answering a new table
-is.
+table, and a `path` may keep what it read of a literal `commands` with no signal or metatable in it
+while its declaration stays the same. A node table or `children` array changed in place is not seen,
+and such a `commands` is not reliably seen; a signal answering a new table is. A bound `commands` is
+read on every write, so `:set` the same table again after changing it in place.
 
 ### What a node reads again
 

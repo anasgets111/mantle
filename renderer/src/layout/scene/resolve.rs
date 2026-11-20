@@ -32,6 +32,12 @@ pub struct ResolveMemo {
     tables_plain: bool,
     /// `[width, height]` a signal in `raw` resolved to nothing: [`drop_injected_sizes`] treats them as undeclared.
     omitted: [bool; 2],
+    /// What each resolve of `raw` reads: `raw`, or a `path`'s with its literal `commands` replaced
+    /// by their parse ([`node::tweened`]) at its second resolve. ponytail: `path` `commands` only;
+    /// `shape` and long `text` parse every literal on each resolve. Upgrade: a parse per row.
+    read: Rc<PropMap>,
+    /// `raw` was resolved again, which decided `read`: a declaration resolved once never pays for it.
+    decided: bool,
 }
 
 /// One node's properties for this pass, displayed values and parse included, and the memo they
@@ -67,10 +73,12 @@ pub(super) fn resolve(
         .as_deref()
         .and_then(|r| r.resolve_memo.as_deref())
         .filter(|memo| memo.lua == lua.weak() && (Rc::ptr_eq(&memo.raw, &raw) || same_declaration(&memo.raw, &raw)));
-    let tables_plain = same.map_or_else(|| node::tables_plain(&raw), |memo| memo.tables_plain);
+    let (tables_plain, mut read) = same
+        .map_or_else(|| (node::tables_plain(&raw), Rc::clone(&raw)), |memo| (memo.tables_plain, Rc::clone(&memo.read)));
+    let (decide, decided) = (same.is_some_and(|memo| !memo.decided), same.is_some());
     let keep = if let Some(memo) = same.filter(|memo| !memo.dropped) {
         if signal::written_since(memo.stamp, &memo.cells) {
-            node::settle_property_signals(&raw, kind, tables_plain, lua)?;
+            node::settle_property_signals(&read, kind, tables_plain, lua)?;
         }
         !signal::written_since(memo.stamp, &memo.cells)
     } else {
@@ -100,19 +108,35 @@ pub(super) fn resolve(
     }
     let stamp = signal::write_clock(lua);
     let frame = ComputedFrame::enter(lua);
-    let mut properties = build(node::resolve_declared(&raw, kind, tables_plain, lua)?)?;
+    let mut properties = build(node::resolve_declared(&read, kind, tables_plain, lua)?)?;
+    // A literal `commands` whose parse runs no Lua is checked before anything parses it (#157).
+    let literal = raw.get("commands").filter(|literal| {
+        decide && kind == "path" && matches!(literal, Value::Table(table) if node::plain_commands(table))
+    });
     let (dropped, params) =
         drop_refused_values(kind, &mut properties, retained.as_deref().map(|r| &*r.properties), lua)?;
     let shown = retained.as_deref().map(|r| (r.tweens.as_slice(), &*r.properties));
     let (tweens, movement) = node::retarget(kind, shown, &mut properties, now, lua, reentry && shown.is_none())?;
-    // A declaration that resolved to itself shares the map the memo keeps rather than a copy.
-    let properties = if same_declaration(&raw, &properties) { Rc::clone(&raw) } else { Rc::new(properties) };
     let omitted = ["width", "height"].map(|key| raw.contains_key(key) && !properties.contains_key(key));
-    let memo =
-        Rc::new(ResolveMemo { raw, lua: lua.weak(), stamp, cells: frame.finish(), dropped, tables_plain, omitted });
+    let cells = frame.finish();
     // A tween or sequence on `params` replaces the value the check parsed with its frame.
     let params = params.filter(|(read, _)| properties.get("params") == Some(read)).map(|(_, parsed)| parsed);
     let paint = node::paint_style_with(kind, &properties, params)?;
+    // Paint's parse of that literal, still in the map (no signal, refusal or tween replaced it),
+    // stands in for it for every reader, this declaration's later resolves included.
+    if let (Some(literal), Some(PaintStyle::Path(path))) = (literal, &paint)
+        && properties.get("commands") == Some(literal)
+        && let Ok(parsed) = node::tweened(lua, &path.commands)
+    {
+        properties.insert("commands", parsed.clone());
+        let mut copy = (*raw).clone();
+        copy.insert("commands", parsed);
+        read = Rc::new(copy);
+    }
+    // A declaration that resolved to itself shares the map the memo keeps rather than a copy.
+    let properties = if same_declaration(&read, &properties) { Rc::clone(&read) } else { Rc::new(properties) };
+    let memo =
+        Rc::new(ResolveMemo { raw, read, lua: lua.weak(), stamp, cells, dropped, tables_plain, omitted, decided });
     let style = Rc::new(LayoutStyle::parse(&properties)?);
     Ok(Resolved { properties, style, paint, tweens, movement: movement.map(Box::new), memo })
 }
@@ -400,6 +424,83 @@ mod tests {
         assert_eq!(bar.child(0).margin.left, 7.0);
         bar.run(r##"accent:set("#303030")"##);
         assert_eq!(bar.child(0).margin.left, 7.0, "a new declaration with a signal resolves it");
+    }
+
+    /// #157: past the first, a bound write on a `path` of 200 literal commands neither walks them for
+    /// signals nor parses them again: the first such resolve's parse is the literal.
+    /// A signal inside a literal `commands`, or a getter behind a metatable, is still read.
+    #[test]
+    fn a_bound_write_keeps_a_paths_literal_commands_parse() {
+        let mut bar = Fixture::new(
+            r##"shift, y = state("shift", 0), state("y", 2)
+            local moved = shift:map(function(x) return { x = x, y = 0 } end)
+            commands = {}
+            for i = 1, 200 do commands[i] = { op = i == 1 and "M" or "L", points = { i, 2 } } end
+            local getter = { __index = function(_, k) if k == "points" then return { 1, y:get() } end end }
+            return panel { id = "bar", child = column { children = {
+                path { width = 300, height = 8, commands = commands, shift = moved },
+                path { width = 300, height = 8, commands = { { op = "M", points = { 1, y } } } },
+                path { width = 300, height = 8, commands = { setmetatable({ op = "M" }, getter) }, shift = moved } } } }"##,
+        );
+        let path = |bar: &Fixture, i| match &bar.child(i).paint {
+            Some(node::PaintStyle::Path(path)) => (std::rc::Rc::clone(&path.commands), path.shift),
+            other => panic!("a path paints, got {other:?}"),
+        };
+        bar.run("shift:set(1)");
+        let (before, _) = path(&bar, 0);
+        bar.run("commands[2].points[2] = 5; shift:set(3); y:set(4)");
+        let (after, shift) = path(&bar, 0);
+        assert_eq!(shift, (3.0, 0.0));
+        assert!(std::rc::Rc::ptr_eq(&before, &after), "parsed once; the in-place edit is not seen");
+        assert_eq!(path(&bar, 1).0.points, [1.0, 4.0], "a signal in a literal `commands` is read again");
+        assert_eq!(path(&bar, 2).0.points, [1.0, 4.0], "so is a getter's");
+    }
+
+    /// #157: a literal `commands` whose getter fails fails the pass, as a malformed one does, even
+    /// when a second read of the getter would pass; so do one holding itself, and one another getter
+    /// breaks before paint reads it. 4096 commands sharing one bad command are checked in linear time.
+    #[test]
+    fn a_paths_failing_commands_fails_the_pass() {
+        let (lua, surface) = surface_from(
+            "local p, c, l = {}, {}, {} for i = 1, 4096 do p[i], c[i], l[i] = i, p, c end
+            return panel { id = 'bar', child = path { width = 9, height = 9, commands = l } }",
+        );
+        let (mut scene, instance, shaping) = (Scene::new(), [instance_at(&surface, full())], ShapingHandle::spawn());
+        for pass in 0..2 {
+            let dropped = scene.apply_locked(std::slice::from_ref(&surface), &instance, &shaping, &lua, false, false);
+            assert!(dropped.unwrap().unwrap().to_string().contains("commands[1]"), "pass {pass} drops it");
+        }
+        let getter = "{ __index = function(_, k) if k == 'points' then calls = calls + 1 assert(calls % 2 == 0) return { 1, 2 } end end }";
+        for commands in [
+            format!("{{ setmetatable({{ op = 'M' }}, {getter}) }}"),
+            "{ { op = 'M', points = { 1 } } }".into(),
+            "(function() local p = { 1, 2 } p[3] = p return { { op = 'M', points = p } } end)()".into(),
+            "(function() local c = { op = 'M', points = { 1, 2 } } animate = { opacity = setmetatable({}, \
+                { __index = function(_, k) c.points = { 9 } return k == 'duration' and 100 or nil end }) } return { c } end)()"
+                .into(),
+        ] {
+            let (lua, surface) = surface_from(&format!(
+                "calls = 0 return panel {{ id = 'bar', child = path {{ width = 9, height = 9, commands = {commands}, animate = animate }} }}"
+            ));
+            let err = apply_at(&mut Scene::new(), &[surface], full(), &ShapingHandle::spawn(), &lua).unwrap_err();
+            assert!(err.to_string().contains("commands[1]"), "{commands}: {err}");
+        }
+    }
+
+    /// #157: a node other than a `path` walks a literal past the scan's 256 tables on every resolve, as
+    /// before, so a signal put into it in place is read when another bound value is written.
+    #[test]
+    fn a_large_literal_off_a_path_is_walked_again() {
+        let mut bar = Fixture::new(
+            r##"opacity, x = state("opacity", 1), state("x", 3)
+            shape = { commands = {} }
+            for i = 1, 140 do shape.commands[i] = { op = i == 1 and "M" or "L", points = { i % 40, i % 7 } } end
+            shape.commands[141] = { op = "Z", points = {} }
+            return panel { id = "bar", child = column { children = {
+                rect { width = 40, height = 10, background = "#ffffff", shape = shape, opacity = opacity } } } }"##,
+        );
+        bar.run("shape.commands[2].points[1] = x; opacity:set(0.5)");
+        assert_eq!(bar.child(0).properties["opacity"], mlua::Value::Number(0.5));
     }
 
     /// A kept node keeps its parse too: the edge table's `__index` runs on the first pass only.

@@ -141,11 +141,17 @@ return path {
 }
 ```
 
-Bind `commands` to a signal to replace a path. `animate` tweens `commands` point by point when the
-old and new lists have the same ops and `hole` flags in the same order; any other change snaps.
-Arc angles tween too, so a ring can grow its sweep. To morph between shapes, give each one the
-same command layout. This loader samples three outlines at the same 60 angles and loops through
-them as keyframes, with no Lua running per frame:
+Bind `commands` to a signal to replace a path: `:set` the new or edited table. A path may keep what
+it read of a literal `commands` table with no signal or metatable in it while the node's declaration
+stays the same, so an edit made to that table in place is not reliably drawn, even when a bound
+property such as `shift` changes. Declaring the node again with any value changed reads it again,
+and a signal inside a literal updates as usual.
+
+`animate` tweens `commands` point by point when the old and new lists have the same ops and `hole`
+flags in the same order; any other change snaps. Arc angles tween too, so a ring can grow its sweep.
+To morph between shapes, give each one the same command layout.
+This loader samples three outlines at the same 60 angles and loops through them as keyframes, with
+no Lua running per frame:
 
 <!-- shot-alt: An orange star morphs into a square, then a circle, then back into the star, on a loop. -->
 <!-- shot: frames=0..1740/60@60 -->

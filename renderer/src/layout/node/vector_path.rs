@@ -293,6 +293,21 @@ spelled!(PathCommands => "PathCommand[]");
 // ponytail: 4096 commands and six coordinates each; larger drawings need a measured tessellation budget.
 const MAX_COMMANDS: usize = 4096;
 
+/// Whether parsing `commands` runs no Lua: the parser reads each command with non-raw access, and
+/// this checks the list, each command and its `points` for a metatable, a safe superset. Anything
+/// else is the parser's to refuse.
+pub(crate) fn plain_commands(commands: &Table) -> bool {
+    let plain = |value: &Value| !matches!(value, Value::Table(table) if table.metatable().is_some());
+    commands.metatable().is_none()
+        && commands.raw_len() <= MAX_COMMANDS
+        && (1..=commands.raw_len()).all(|i| match commands.raw_get::<Value>(i) {
+            Ok(Value::Table(command)) => {
+                command.metatable().is_none() && command.raw_get("points").is_ok_and(|p| plain(&p))
+            }
+            other => other.is_ok(),
+        })
+}
+
 impl Prop for PathCommands {
     type Out = Rc<PathData>;
     fn read(row: &Property, value: Option<&Value>) -> Result<Self::Out, LayoutError> {

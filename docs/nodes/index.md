@@ -357,7 +357,7 @@ return body
 | `duplicate id` error | Sibling ids, and `list` keys, must be unique |
 | `on_click = cond and fn` raises `expected a function` | A false `cond` yields `false`: write `cond and fn or nil` |
 | `children = { a, cond and b, c }` raises `children[2]: expected a node table` | A false or nil entry is a hole. Build the array with `table.insert`, or a signal of the whole array |
-| A node table, or a `children` array, changed in place after the config ran does not update | A node reads each `children` or `child` table once and keeps it while it holds that table. Bind the property to a signal, or `:set` a new table |
+| A node table, a `children` array, or a `path`'s literal `commands`, changed in place after the config ran does not update | A node reads each `children` or `child` table once and keeps it while it holds that table; a `path` may keep what it read of a literal `commands` with no signal or metatable in it while its declaration stays the same. Bind the property to a signal, or `:set` a new table |
 | `opacity = 0` hides a node but it still takes clicks | Use `visible = false` |
 
 See also: [surfaces](../surfaces/index.md) (where a tree lives), [signals](../guide/signals.md)
