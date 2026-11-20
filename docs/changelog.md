@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: `balance` on `mantle.audio` sinks and sources reads as set, such as `0.1`, not as `0.10000000149011612`.
 - Changed: `mantle.notifications.feed` holds the newest 200 notifications, up from 20, and the server keeps up to 1,000, up from 100, before dropping the oldest.
 - Changed: scrolling a narrow list of long wrapped text, such as notification bodies in a slim panel, uses less CPU: 2.4% instead of 3.9% on a 350 px wide list of 500 rows of 2,000 characters. Its peak memory is 3 to 4 MiB higher.
 - Changed: an animated GIF, WebP or APNG shown at its own size, or in a box larger than it, holds its frames in less memory while it plays, so a long clip keeps more of its frames within the memory budget. For example, a 100-frame 480x270 GIF where every pixel changes held 51 MB of frames and now holds 13 MB, and the shell drawing it uses 117 MB instead of 154. That clip takes about 20 ms longer to load, on the thread that draws the shell unless the `image` sets `async = true`, and 0.13% more of a CPU core while it plays; a longer clip, keeping more frames, can take longer still to load.

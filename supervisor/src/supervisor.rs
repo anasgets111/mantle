@@ -23,7 +23,7 @@ use crate::memory;
 use crate::pam_worker;
 use crate::polkit::AgentRequest;
 use crate::process::registry::{LiveProcesses, reap_processes, take_generation};
-use crate::snapshot::{Published, push_snapshot, send_owned};
+use crate::snapshot::{Published, push_snapshot};
 use crate::socket;
 use crate::{process, send_frame_logged};
 
@@ -279,10 +279,7 @@ impl Supervisor {
         let mut sizes: Vec<memory::SnapshotStat> = self
             .last_snapshots
             .iter()
-            .map(|(capability, last)| {
-                let bytes = last.snapshot.payload.to_string().len();
-                (capability.as_str(), bytes, last.snapshot.revision, last.deduped)
-            })
+            .map(|(capability, last)| (capability.as_str(), last.payload.len(), last.revision, last.deduped))
             .collect();
         sizes.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
         sizes
@@ -295,9 +292,8 @@ impl Supervisor {
             return;
         }
         debug!("hydrating generation {generation_id} with {} snapshots", self.last_snapshots.len());
-        for (capability, last) in std::mem::take(&mut self.last_snapshots) {
-            let snapshot = send_owned(&self.registry, generation_id, last.snapshot);
-            self.last_snapshots.insert(capability, Published { snapshot, deduped: last.deduped });
+        for (capability, published) in &self.last_snapshots {
+            crate::snapshot::send(&self.registry, generation_id, *capability, published);
         }
         if self.icon_theme.is_some() {
             send_frame_logged(&self.registry, generation_id, &SupervisorFrame::IconTheme(self.icon_theme.clone()));
@@ -668,7 +664,10 @@ pub(crate) mod tests {
 
         let (tx, mut frames) = mpsc::channel(8);
         supervisor.registry.register(0, tx, Default::default());
-        let expected_polkit = supervisor.last_snapshots[&Capability::Polkit].snapshot.payload.clone();
+        let polkit = &supervisor.last_snapshots[&Capability::Polkit];
+        let stat = ("polkit", polkit.payload.len(), polkit.revision, polkit.deduped);
+        assert!(supervisor.snapshot_sizes().contains(&stat), "--profile reports the stored bytes");
+        let expected_polkit: serde_json::Value = serde_json::from_slice(&polkit.payload).unwrap();
         for _reconnect in 0..2 {
             supervisor.hydrate(0);
             let mut saw_theme = None;
