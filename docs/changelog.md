@@ -8,6 +8,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 ## Unreleased
 
 - Changed: `mantle.notifications.feed` holds the newest 200 notifications, up from 20, and the server keeps up to 1,000, up from 100, before dropping the oldest.
+- Changed: scrolling a narrow list of long wrapped text, such as notification bodies in a slim panel, uses less CPU: 2.4% instead of 3.9% on a 350 px wide list of 500 rows of 2,000 characters. Its peak memory is 3 to 4 MiB higher.
 - Changed: an animated GIF saved with every frame full size, as many tools write them, holds the part of each frame that changed while it plays, not a whole frame. A 50-frame 480x270 clip of a moving shape from ImageMagick held 26 MB and now holds 1.4 MB. A frame that clears or restores its area when it ends still holds all of that area.
 - Added: shell surfaces take drops from other apps. `on_drop(drop)` receives the dropped files as absolute paths (`drop.files`), every URI (`drop.uris`) or plain text (`drop.text`), and `drop_hover = drop_hover(name)` is `true` while a drag is over a node.
 - Fixed: nested `effect.shader` nodes with `opacity` below 1 fade their subtree by the product of their opacities when the GPU refuses their offscreen textures. The inner layer used to replace the outer fade, so two at 0.5 drew at 0.5 instead of 0.25.

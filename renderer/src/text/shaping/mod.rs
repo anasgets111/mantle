@@ -201,10 +201,11 @@ enum Request {
 /// padding, which float rounding can leave a hair under the width it was measured at.
 pub const FIT_SLACK: f32 = 0.01;
 
-/// How many measured strings [`ShapingHandle`] remembers before it drops the lot. A bar resolves
-/// about twenty text nodes and a long list a few hundred; a clock shapes strings nobody asks for
-/// again, so an unbounded map would grow for the session. Idle churn measured 2026-09-06: 3-4 new
-/// entries a minute, so about 16 h to reach the cap. `HashMap::clear` keeps its table, so the
+/// How many measured strings [`ShapingHandle`] remembers before it drops its glyphs, or the lot
+/// when they are too few (#161). A bar resolves about twenty text nodes and a long list a few
+/// hundred; a clock shapes strings nobody asks for again, so an unbounded map would grow for the
+/// session. Idle churn measured 2026-09-06: 3-4 new entries a minute, so about 16 h to reach the
+/// cap. `HashMap::clear` keeps its table, so the
 /// buckets are a floor after the first fill.
 const SHAPE_CACHE_CAPACITY: usize = 4096;
 
@@ -575,16 +576,25 @@ impl ShapingHandle {
         // Cleared wholesale rather than evicted one at a time: an LRU needs a recency order
         // maintained on every hit, work on the path this exists to make cheap. Clearing every
         // measurement where only glyphs go stalled a 500-row list's pass 210 ms, against 9 ms.
+        // At the count cap glyphs go first too, since paint adds one per wrapped line (#161).
         //
         // ponytail: a working set larger than a bound is shaped again every pass. The largest
-        // list measured is 500 rows; the fix if that changes is an LRU.
-        if memo.entries.len() >= SHAPE_CACHE_CAPACITY || memo.bytes + size > SHAPE_CACHE_BYTES {
+        // list measured is 500 rows; the fix if that changes is an LRU. Stale measurements also
+        // count against the cap, so past 3,584 of them a working set of more than 512 glyph
+        // entries misses every pass until they pass the eighth and the memo clears whole.
+        let full = memo.entries.len() >= SHAPE_CACHE_CAPACITY;
+        if memo.bytes + size > SHAPE_CACHE_BYTES {
             memo.entries.clear();
             (memo.bytes, memo.glyph_bytes) = (0, 0);
-        } else if memo.glyph_bytes + glyphs > SHAPE_GLYPH_BYTES {
+        } else if full || memo.glyph_bytes + glyphs > SHAPE_GLYPH_BYTES {
             memo.entries.retain(|key, _| !key.glyphs);
             memo.bytes -= memo.glyph_bytes;
             memo.glyph_bytes = 0;
+            // Freeing under an eighth of the cap would walk the whole map again a few misses on.
+            if full && memo.entries.len() > SHAPE_CACHE_CAPACITY * 7 / 8 {
+                memo.entries.clear();
+                memo.bytes = 0;
+            }
         }
         (memo.bytes, memo.glyph_bytes) = (memo.bytes + size, memo.glyph_bytes + glyphs);
         memo.entries.insert(key, (result.clone(), boxed, at));
@@ -1223,6 +1233,25 @@ pub(crate) mod tests {
         assert_eq!(handle.cached_len(), SHAPE_CACHE_CAPACITY, "the cap is where it clears, not before");
         handle.shape(req("one too many", 13.0));
         assert_eq!(handle.cached_len(), 1, "the map is dropped whole, keeping only the request that overflowed it");
+        totals_match_a_walk(&handle);
+
+        // Painted lines filling it go, and the measurements stay while they free an eighth (#161).
+        let handle = ShapingHandle::spawn();
+        for i in 0..SHAPE_CACHE_CAPACITY {
+            let request = req(&format!("{i}"), 13.0);
+            if i < SHAPE_CACHE_CAPACITY * 7 / 8 {
+                handle.shape(request)
+            } else {
+                handle.shape_glyphs(request)
+            };
+        }
+        handle.shape_glyphs(req("one too many", 13.0));
+        assert_eq!(
+            handle.cached_len(),
+            SHAPE_CACHE_CAPACITY * 7 / 8 + 1,
+            "the glyphs went, the measurements and the new line stayed"
+        );
+        totals_match_a_walk(&handle);
     }
 
     /// The running totals against a walk of the map, all bytes and those keeping glyphs.
