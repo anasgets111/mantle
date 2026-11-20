@@ -9400,6 +9400,10 @@ so it dropped the visible glyphs 122 times in 70 s and cleared everything 3 time
 With two totals that list never clears, and resolve falls from about 500 to 43 ms per 30 s
 (CPU 3.5 -> 2.2 %). Rejected: an LRU, which costs work on every hit. Narrow rows still reach the
 entry cap first (#161).
+Amended 2026-11-20 (#161): at the 4,096-entry cap glyph entries go first too; the memo clears
+whole only if that frees under an eighth of the cap, so one walk of the map buys at least 512
+misses. A 350 px list of 500 rows of 2,000 characters: resolve 552 -> 51 ms per 30 s, CPU 3.9 ->
+2.4 %, peak RSS 3-4 MiB higher.
 
 ## 0408. Vector paths stay logical in the display list and scale at draw
 
@@ -9411,3 +9415,6 @@ path at scale != 1 each pass, which also defeated `damage_since`'s pointer-equal
 the draw's equality, or a layer of equal buffer size reused a raster from the old scale.
 Rejected: a per-node cache of scaled commands (a second copy of every path); a canvas transform
 (moves those thresholds into logical units).
+Amended 2026-11-20 (#165): `Draw::Text` carries the build scale for the same reason; its metrics
+are logical, so a filter layer of equal buffer box at another scale compared equal and kept a
+stale raster.
