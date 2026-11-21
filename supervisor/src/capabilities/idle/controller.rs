@@ -6,12 +6,14 @@ use std::time::Duration;
 use shared::{debug, error, info, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use wayland_client::Proxy;
+use zbus::object_server::SignalEmitter;
 
 use super::gate::{IdleGate, blocks};
 use super::inhibit::{
-    INHIBIT_MODE, INHIBIT_WHAT, INHIBIT_WHO, InhibitState, LiveInhibit, Login1ManagerProxy, SCREENSAVER_BUS_NAME,
-    SCREENSAVER_HOLDER, SCREENSAVER_OBJECT_PATHS, ScreenSaver, apply_inhibit, apply_release_inhibit,
-    apply_screensaver_inhibit, apply_screensaver_release, cleanup_generation_inhibit, drop_screensaver_peer,
+    BUS_HOLDER, INHIBIT_MODE, INHIBIT_WHAT, INHIBIT_WHO, InhibitState, LiveInhibit, Login1ManagerProxy,
+    POWER_MANAGEMENT_BUS_NAME, POWER_MANAGEMENT_OBJECT_PATH, PowerManagementInhibit, SCREENSAVER_BUS_NAME,
+    SCREENSAVER_OBJECT_PATHS, SLEEP_INHIBIT_WHAT, ScreenSaver, apply_bus_inhibit, apply_bus_release, apply_inhibit,
+    apply_release_inhibit, cleanup_generation_inhibit, drop_bus_peer,
 };
 use super::notify::{
     ListenerId, NotifyState, cancel_threshold_entry, cleanup_generation_thresholds, connect_wayland_idle,
@@ -39,6 +41,7 @@ pub struct PublishedIdle {
     wayland_inhibited: bool,
     wayland_observed: bool,
     screensaver: Vec<super::state::IdleInhibitor>,
+    power_management: Vec<super::state::IdleInhibitor>,
     last_sent: IdleState,
 }
 
@@ -50,8 +53,8 @@ impl PublishedIdle {
     /// observation made before input resumed is kept in `inhibited`, but omitted from the roster.
     fn merged(&self) -> IdleState {
         let mut inhibitors = self.logind_inhibitors.clone();
-        // Ours by the time logind hears of them, and `foreign_idle_inhibitors` drops this shell's
-        // own row, so the names can only come from here (ADR-0231).
+        // Ours by the time logind hears of them, and `foreign_blockers` drops this shell's own
+        // row, so the names can only come from here (ADR-0231).
         inhibitors.extend(self.screensaver.iter().cloned());
         if self.wayland_inhibited && self.wayland_observed {
             inhibitors.push(super::state::IdleInhibitor {
@@ -59,12 +62,14 @@ impl PublishedIdle {
                 why: "the compositor is holding off idle notifications".to_string(),
             });
         }
+        let mut sleep_inhibitors = self.sleep_inhibitors.clone();
+        sleep_inhibitors.extend(self.power_management.iter().cloned());
         IdleState {
             inhibited: self.logind_blocked || self.wayland_inhibited || !self.screensaver.is_empty(),
             compositor_hold_stale: self.wayland_inhibited && !self.wayland_observed,
             inhibitors,
-            sleep_inhibited: self.sleep_blocked,
-            sleep_inhibitors: self.sleep_inhibitors.clone(),
+            sleep_inhibited: self.sleep_blocked || !self.power_management.is_empty(),
+            sleep_inhibitors,
         }
     }
 
@@ -86,10 +91,13 @@ impl PublishedIdle {
         self.settle()
     }
 
-    /// The `org.freedesktop.ScreenSaver` roster (ADR-0231). Reported before logind answers, so a
-    /// config sees the holder in the same push that stops its countdown.
-    fn set_screensaver(&mut self, holds: Vec<super::state::IdleInhibitor>) -> Option<IdleState> {
-        self.screensaver = holds;
+    /// Session-bus roster (`ScreenSaver` into `inhibitors`, `PowerManagement` into `sleep_inhibitors`).
+    /// Reported before logind answers, so a config sees the holder in the same push that stops its countdown.
+    fn set_bus_holds(&mut self, kind: BusInhibit, holds: Vec<super::state::IdleInhibitor>) -> Option<IdleState> {
+        match kind {
+            BusInhibit::ScreenSaver => self.screensaver = holds,
+            BusInhibit::PowerManagement => self.power_management = holds,
+        }
         self.settle()
     }
 
@@ -108,15 +116,23 @@ impl PublishedIdle {
     }
 }
 
+/// Which inbound session-bus inhibit service is acting.
+#[derive(Clone, Copy)]
+pub(crate) enum BusInhibit {
+    ScreenSaver,
+    PowerManagement,
+}
+
 /// Owns the session-bus connection and departure-watcher task while `org.freedesktop.ScreenSaver`
-/// is claimed. Dropping the last owner aborts the watcher (whose `NameOwnerChangedStream` holds a
-/// strong connection handle) and drops the connection, releasing the bus name cleanly.
-struct ScreenSaverLease {
+/// or `org.freedesktop.PowerManagement` is claimed. Dropping the last owner aborts the watcher
+/// (whose `NameOwnerChangedStream` holds a strong connection handle) and drops the connection,
+/// releasing the bus name(s) cleanly.
+struct BusLease {
     _connection: zbus::Connection,
     watcher: Option<tokio::task::AbortHandle>,
 }
 
-impl Drop for ScreenSaverLease {
+impl Drop for BusLease {
     fn drop(&mut self) {
         if let Some(watcher) = &self.watcher {
             watcher.abort();
@@ -136,6 +152,7 @@ pub struct IdleController {
     /// registrations behind it in the order the socket delivered them (ADR-0158).
     notify: Arc<RwLock<NotifyState>>,
     inhibit: Arc<LiveInhibit>,
+    pub(crate) sleep_inhibit: Arc<LiveInhibit>,
     /// The last state [`watch_idle_inhibitors`] published, so `Capabilities::start` returns the
     /// current answer instead of `nil` until the next inhibitor (ADR-0141).
     published: Arc<std::sync::Mutex<PublishedIdle>>,
@@ -143,18 +160,18 @@ pub struct IdleController {
     /// Also held here, not just handed to the forwarder: reaping the last listener has to answer
     /// for the compositor itself, and no raw event will arrive to let the forwarder do it.
     state_tx: UnboundedSender<IdleState>,
-    /// Live session-bus lease while this process owns `org.freedesktop.ScreenSaver`. Kept here
-    /// rather than relying on `watch_screensaver_peers` holding the last connection handle, so a
-    /// failed or ended departure watch cannot drop the bus name, and dropping the controller
-    /// aborts the watcher. Left `None` in clones handed to the object server and peer watcher to
-    /// avoid an `Arc` cycle.
-    screensaver: Option<Arc<ScreenSaverLease>>,
+    /// Live session-bus lease while this process owns `ScreenSaver` or `PowerManagement`. Kept
+    /// here so a failed or ended departure watch cannot drop the bus names, and dropping the
+    /// controller aborts the watcher. Left `None` in clones handed to the object server and peer
+    /// watcher to avoid an `Arc` cycle.
+    bus_lease: Option<Arc<BusLease>>,
 }
 
 impl IdleController {
     /// Constructs both halves and returns immediately. `system_bus` is the Supervisor's system bus;
-    /// inhibit uses it directly (ADR-0032). `session_bus` carries the inbound half,
-    /// `org.freedesktop.ScreenSaver` (ADR-0231); `None` leaves it unserved.
+    /// inhibit uses it directly (ADR-0032). `session_bus` carries the inbound halves,
+    /// `org.freedesktop.ScreenSaver` (ADR-0231) and `org.freedesktop.PowerManagement`; `None`
+    /// leaves both unserved.
     ///
     /// Notify starts [`NotifyState::Inert`] and upgrades to `Live` in a bounded `spawn_blocking`
     /// task running [`connect_wayland_idle`]. Its `roundtrip()` hung once against niri; awaiting
@@ -184,13 +201,14 @@ impl IdleController {
             gate: gate.clone(),
             state_tx: state_tx.clone(),
             pending: Arc::new(std::sync::Mutex::new(Vec::new())),
-            inhibit: Arc::new(LiveInhibit { system_bus, state: tokio::sync::Mutex::default() }),
-            screensaver: None,
+            inhibit: Arc::new(LiveInhibit::new(system_bus.clone(), INHIBIT_WHAT)),
+            sleep_inhibit: Arc::new(LiveInhibit::new(system_bus, SLEEP_INHIBIT_WHAT)),
+            bus_lease: None,
         };
 
         let controller_for_task = controller.clone();
         if let Some(session_bus) = session_bus {
-            controller.export_screensaver(session_bus).await;
+            controller.export_session_services(session_bus).await;
         }
 
         tokio::spawn(async move {
@@ -320,89 +338,103 @@ impl IdleController {
     pub async fn inhibit(&self, generation_id: u32, reason: &str) {
         let mut state = self.inhibit.state.lock().await;
         apply_inhibit(&mut state.counts, generation_id);
-        self.open_shared_fd(&mut state, generation_id, reason).await;
+        open_shared_fd(&self.inhibit, &mut state, generation_id, reason).await;
     }
 
-    /// The one logind fd every holder shares, taken while none is held. The caller holds `state`
-    /// for the reasons [`IdleController::inhibit`] gives.
-    ///
-    /// A login1 proxy-build failure is a silent no-op (built fresh, not cached; see
-    /// [`LiveInhibit::system_bus`]). A failed `Inhibit` call keeps its count, so a later release
-    /// still matches its hold, and the next hold retries.
-    async fn open_shared_fd(&self, state: &mut InhibitState, holder: u32, reason: &str) {
-        if state.fd.is_some() {
-            return;
-        }
-        let proxy = match Login1ManagerProxy::new(&self.inhibit.system_bus).await {
-            Ok(proxy) => proxy,
-            Err(err) => {
-                warn!("inhibit(holder {holder}, {reason:?}) failed to build the login1 Manager proxy: {err}");
-                return;
-            }
-        };
-
-        match proxy.inhibit(INHIBIT_WHAT, INHIBIT_WHO, reason, INHIBIT_MODE).await {
-            Ok(fd) => {
-                state.fd = Some(fd);
-            }
-            Err(err) => {
-                warn!("Inhibit({INHIBIT_WHAT:?}, {INHIBIT_WHO:?}, {reason:?}, {INHIBIT_MODE:?}) failed: {err}");
-            }
+    fn bus_target(&self, kind: BusInhibit) -> (&LiveInhibit, &'static str) {
+        match kind {
+            BusInhibit::ScreenSaver => (&self.inhibit, "ScreenSaver"),
+            BusInhibit::PowerManagement => (&self.sleep_inhibit, "PowerManagement"),
         }
     }
 
-    /// `org.freedesktop.ScreenSaver.Inhibit` (ADR-0231): takes the same logind fd a config's
-    /// `idle:inhibit` takes, so one refcount answers for both and the gate keeps one source.
-    /// `None` past the hold limits; see [`apply_screensaver_inhibit`].
-    pub async fn screensaver_inhibit(&self, peer: String, who: String, why: String) -> Option<u32> {
-        let (cookie, holds) = {
-            let mut state = self.inhibit.state.lock().await;
-            let cookie = apply_screensaver_inhibit(&mut state, peer, super::state::IdleInhibitor { who, why })?;
+    /// Session-bus `Inhibit`: `ScreenSaver` takes the shared `idle` fd (ADR-0231);
+    /// `PowerManagement` takes a shared `sleep` fd, which never closes the idle gate (ADR-0412).
+    pub(crate) async fn bus_inhibit(
+        &self,
+        kind: BusInhibit,
+        peer: String,
+        who: String,
+        why: String,
+        connection: Option<&zbus::Connection>,
+        emitter: Option<&SignalEmitter<'_>>,
+    ) -> zbus::fdo::Result<u32> {
+        let (target, name) = self.bus_target(kind);
+        let (cookie, live) = {
+            let mut state = target.state.lock().await;
+            // Verify the sender still owns its unique name under the lock shared with
+            // `watch_bus_peers`, so a client that exits before this handler runs cannot leak an fd.
+            if let Some(connection) = connection
+                && !peer_alive(connection, &peer).await
+            {
+                return Err(zbus::fdo::Error::Failed("sender already left the bus".into()));
+            }
+            let was_empty = state.holds.is_empty();
+            let cookie = apply_bus_inhibit(&mut state, name, peer.clone(), super::state::IdleInhibitor { who, why })
+                .ok_or_else(|| zbus::fdo::Error::LimitsExceeded(format!("too many {name} holds")))?;
             // As recorded, so logind gets the capped reason too.
-            let reason = state.screensaver[&cookie].1.why.clone();
-            self.open_shared_fd(&mut state, SCREENSAVER_HOLDER, &reason).await;
-            (cookie, screensaver_holds(&state))
+            let reason = state.holds[&cookie].1.why.clone();
+            open_shared_fd(target, &mut state, BUS_HOLDER, &reason).await;
+            if matches!(kind, BusInhibit::PowerManagement) && state.fd.is_none() {
+                apply_bus_release(&mut state, cookie, &peer);
+                return Err(zbus::fdo::Error::Failed("logind refused sleep inhibit".into()));
+            }
+            if was_empty && let Some(emitter) = emitter {
+                let _ = PowerManagementInhibit::has_inhibit_changed(emitter, true).await;
+            }
+            // Publish under `state` so concurrent inhibit/release/departure pushes stay ordered.
+            let holds = bus_holds(&state);
+            let live = holds.len();
+            self.publish_bus_holds(kind, holds);
+            (cookie, live)
         };
         // Debug, not info: a browser retakes its hold on every play, and the gate already says
         // once, at info, that something holds the session awake.
-        debug!("ScreenSaver.Inhibit -> cookie {cookie}; {} hold(s) now live", holds.len());
-        self.publish_screensaver(holds);
-        Some(cookie)
+        debug!("{name}.Inhibit -> cookie {cookie}; {live} hold(s) now live");
+        Ok(cookie)
     }
 
-    /// `org.freedesktop.ScreenSaver.UnInhibit`; false for a cookie nothing holds, which the
-    /// interface answers as an error; so is a cookie another `peer` holds.
-    pub async fn screensaver_release(&self, cookie: u32, peer: &str) -> bool {
-        let holds = {
-            let mut state = self.inhibit.state.lock().await;
-            let Some(close_fd) = apply_screensaver_release(&mut state, cookie, peer) else { return false };
-            if close_fd {
-                state.fd = None;
-            }
-            screensaver_holds(&state)
-        };
-        debug!("ScreenSaver.UnInhibit(cookie {cookie}); {} hold(s) still live", holds.len());
-        self.publish_screensaver(holds);
-        true
+    /// Session-bus `UnInhibit`; false for a cookie nothing holds or held by another `peer`.
+    pub(crate) async fn bus_release(
+        &self,
+        kind: BusInhibit,
+        cookie: u32,
+        peer: &str,
+        emitter: Option<&SignalEmitter<'_>>,
+    ) -> bool {
+        let live = self.drop_bus_holds(kind, emitter, |s| apply_bus_release(s, cookie, peer)).await;
+        if let Some(live) = live {
+            debug!("{}.UnInhibit(cookie {cookie}); {live} hold(s) still live", self.bus_target(kind).1);
+        }
+        live.is_some()
     }
 
-    async fn screensaver_peer_left(&self, departed: &str) {
-        let holds = {
-            let mut state = self.inhibit.state.lock().await;
-            let Some(close_fd) = drop_screensaver_peer(&mut state, departed) else { return };
-            if close_fd {
-                state.fd = None;
-            }
-            screensaver_holds(&state)
-        };
-        debug!("{departed} left the bus still holding an idle inhibitor; released it");
-        self.publish_screensaver(holds);
+    async fn drop_bus_holds(
+        &self,
+        kind: BusInhibit,
+        emitter: Option<&SignalEmitter<'_>>,
+        drop_fn: impl FnOnce(&mut InhibitState) -> Option<bool>,
+    ) -> Option<usize> {
+        let (target, _) = self.bus_target(kind);
+        let mut state = target.state.lock().await;
+        if drop_fn(&mut state)? {
+            state.fd = None;
+        }
+        if state.holds.is_empty()
+            && let Some(emitter) = emitter
+        {
+            let _ = PowerManagementInhibit::has_inhibit_changed(emitter, false).await;
+        }
+        let holds = bus_holds(&state);
+        let live = holds.len();
+        self.publish_bus_holds(kind, holds);
+        Some(live)
     }
 
     /// Held across the send; see the matching comment in `spawn_idle_event_forwarder`.
-    fn publish_screensaver(&self, holds: Vec<super::state::IdleInhibitor>) {
+    fn publish_bus_holds(&self, kind: BusInhibit, holds: Vec<super::state::IdleInhibitor>) {
         let mut published = self.published.lock().expect("mutex poisoned");
-        if let Some(next) = published.set_screensaver(holds) {
+        if let Some(next) = published.set_bus_holds(kind, holds) {
             let _ = self.state_tx.send(next);
         }
     }
@@ -470,79 +502,160 @@ impl IdleController {
             state.fd = None;
         }
     }
-    /// Clone without the ScreenSaver lease, for objects and tasks owned by the lease itself so
+    /// Clone without the session-bus lease, for objects and tasks owned by the lease itself so
     /// neither can form an `Arc` cycle back to the bus connection.
     fn without_lease(&self) -> Self {
-        Self { screensaver: None, ..self.clone() }
+        Self { bus_lease: None, ..self.clone() }
     }
 
-    /// Claims `org.freedesktop.ScreenSaver` and answers on both object paths (ADR-0231), retaining
-    /// the connection and departure-watcher handle on `self` while owned.
-    ///
-    /// Exports before claiming the name, like the tray watcher: a call routed to the new owner has
-    /// to find the object. `DoNotQueue` because a session already running a screensaver daemon
-    /// keeps it; queueing would take the name later, mid-session, and answer for holds this shell
-    /// never saw.
-    ///
-    /// Subscribes to departures first: a client reaches the object only after this, so none can
-    /// take a hold and leave unseen while `add_match` is still in flight.
-    async fn export_screensaver(&mut self, session_bus: zbus::Connection) {
+    /// Claims `org.freedesktop.ScreenSaver` (ADR-0231) and `org.freedesktop.PowerManagement` on
+    /// `session_bus`, retaining the connection and one departure-watcher handle while either name
+    /// is owned. Subscribes to departures first so no client can take a hold and leave unseen
+    /// while `add_match` is still in flight.
+    async fn export_session_services(&mut self, session_bus: zbus::Connection) {
         // Filtered by the bus on `new_owner == ""`, not here: every application start and exit on
         // the session bus changes some name, and none of those need to wake this shell.
-        let lost = "a crashed screensaver client's hold would outlive it";
+        let lost = "a crashed inhibit client's hold would outlive it";
         let departures = match zbus::fdo::DBusProxy::new(&session_bus).await {
             Ok(proxy) => crate::capabilities::name_departures(&proxy, lost).await,
             Err(err) => {
-                warn!("cannot watch for departing screensaver clients: {err}; {lost}");
+                warn!("cannot watch for departing inhibit clients: {err}; {lost}");
                 None
             }
         };
-        self.export_screensaver_with(session_bus, departures).await;
+        self.export_session_services_with(session_bus, departures).await;
     }
 
-    async fn export_screensaver_with(
+    async fn export_session_services_with(
         &mut self,
         session_bus: zbus::Connection,
         departures: Option<zbus::fdo::NameOwnerChangedStream>,
     ) {
-        for path in SCREENSAVER_OBJECT_PATHS {
-            let export = session_bus.object_server().at(path, ScreenSaver { controller: self.without_lease() });
-            if let Err(err) = export.await {
-                warn!("failed to export {SCREENSAVER_BUS_NAME} at {path}: {err}");
-            }
-        }
-        match session_bus
-            .request_name_with_flags(SCREENSAVER_BUS_NAME, zbus::fdo::RequestNameFlags::DoNotQueue.into())
-            .await
-        {
-            // A fresh connection with `DoNotQueue` gets only `PrimaryOwner`; zbus turns `Exists` into `NameTaken`.
-            Ok(_) => {
-                debug!("holding {SCREENSAVER_BUS_NAME}; idle inhibits from browsers and players reach the gate");
-                let peer_controller = self.without_lease();
-                let watcher = departures
-                    .map(|names| tokio::spawn(watch_screensaver_peers(names, peer_controller)).abort_handle());
-                self.screensaver = Some(Arc::new(ScreenSaverLease { _connection: session_bus, watcher }));
-            }
-            Err(zbus::Error::NameTaken) => warn!("{SCREENSAVER_BUS_NAME} is taken; another daemon answers its clients"),
-            Err(err) => {
-                warn!("RequestName({SCREENSAVER_BUS_NAME}) failed: {err}; no client's inhibit reaches this shell")
-            }
+        let controller = self.without_lease();
+        // Start draining `departures` before claiming names so a burst of bus exits cannot fill
+        // zbus's 64-message socket-reader queue while `claim_service` awaits `RequestName`.
+        let watcher = departures
+            .map(|names| tokio::spawn(watch_bus_peers(names, controller.clone(), session_bus.clone())).abort_handle());
+        let lease = BusLease { _connection: session_bus.clone(), watcher };
+        let has_screensaver = claim_service(&session_bus, SCREENSAVER_BUS_NAME, &SCREENSAVER_OBJECT_PATHS, || {
+            ScreenSaver { controller: controller.clone() }
+        })
+        .await;
+        let has_power_management =
+            claim_service(&session_bus, POWER_MANAGEMENT_BUS_NAME, &[POWER_MANAGEMENT_OBJECT_PATH], || {
+                PowerManagementInhibit { controller: controller.clone() }
+            })
+            .await;
+        if has_screensaver || has_power_management {
+            self.bus_lease = Some(Arc::new(lease));
         }
     }
 }
 
-/// Every live `ScreenSaver` hold, oldest cookie first.
-fn screensaver_holds(state: &InhibitState) -> Vec<super::state::IdleInhibitor> {
-    state.screensaver.values().map(|(_, hold)| hold.clone()).collect()
+/// Checks whether `peer` still owns its unique name on `connection`.
+async fn peer_alive(connection: &zbus::Connection, peer: &str) -> bool {
+    let Ok(name) = zbus::names::BusName::try_from(peer) else { return false };
+    let Ok(dbus) = zbus::fdo::DBusProxy::new(connection).await else { return false };
+    dbus.name_has_owner(name).await.unwrap_or(false)
 }
 
-/// Releases a departed client's holds (ADR-0231). A player that crashes mid-video sends no
-/// `UnInhibit`, and nothing else would ever drop what it held.
-async fn watch_screensaver_peers(mut names: zbus::fdo::NameOwnerChangedStream, controller: IdleController) {
-    while let Some(signal) = futures_util::StreamExt::next(&mut names).await {
-        let Ok(args) = signal.args() else { continue };
-        controller.screensaver_peer_left(&args.name.to_string()).await;
+/// The one logind fd every holder for `target.what` shares, taken while none is held. The caller
+/// holds `state` for the reasons [`IdleController::inhibit`] gives. A login1 proxy-build failure is
+/// a silent no-op (built fresh, not cached; see [`LiveInhibit::system_bus`]). For `idle`, a failed
+/// `Inhibit` call keeps its count so a later release still matches and the next hold retries;
+/// `PowerManagement` rolls back on failure.
+async fn open_shared_fd(target: &LiveInhibit, state: &mut InhibitState, holder: u32, reason: &str) {
+    if state.fd.is_some() {
+        return;
     }
+    let proxy = match Login1ManagerProxy::new(&target.system_bus).await {
+        Ok(proxy) => proxy,
+        Err(err) => {
+            warn!("inhibit(holder {holder}, {reason:?}) failed to build the login1 Manager proxy: {err}");
+            return;
+        }
+    };
+    match proxy.inhibit(target.what, INHIBIT_WHO, reason, INHIBIT_MODE).await {
+        Ok(fd) => state.fd = Some(fd),
+        Err(err) => warn!("Inhibit({:?}, {INHIBIT_WHO:?}, {reason:?}, {INHIBIT_MODE:?}) failed: {err}", target.what),
+    }
+}
+
+/// Exports `paths` before claiming `name` so any call routed to the new owner finds the object.
+/// `DoNotQueue` lets an existing daemon keep the name rather than taking it mid-session for holds
+/// this shell never saw; removes exports on failure so a shared connection serves no unowned object.
+async fn claim_service<I: zbus::object_server::Interface>(
+    session_bus: &zbus::Connection,
+    name: &str,
+    paths: &[&str],
+    make: impl Fn() -> I,
+) -> bool {
+    for &path in paths {
+        if let Err(err) = session_bus.object_server().at(path, make()).await {
+            warn!("failed to export {name} at {path}: {err}");
+        }
+    }
+    match session_bus.request_name_with_flags(name, zbus::fdo::RequestNameFlags::DoNotQueue.into()).await {
+        // A fresh connection with `DoNotQueue` gets only `PrimaryOwner`; zbus turns `Exists` into `NameTaken`.
+        Ok(_) => {
+            debug!("holding {name}");
+            true
+        }
+        Err(err) => {
+            for &path in paths {
+                let _ = session_bus.object_server().remove::<I, _>(path).await;
+            }
+            match err {
+                zbus::Error::NameTaken => warn!("{name} is taken; another daemon answers its clients"),
+                err => warn!("RequestName({name}) failed: {err}; no client's inhibit reaches this shell"),
+            }
+            false
+        }
+    }
+}
+
+fn bus_holds(state: &InhibitState) -> Vec<super::state::IdleInhibitor> {
+    state.holds.values().map(|(_, hold)| hold.clone()).collect()
+}
+
+/// Releases a departed client's holds across both services (ADR-0231). Drains the D-Bus stream
+/// continuously into an unbounded queue so waiting on a hold mutex never backpressures zbus's
+/// 64-message socket reader and stalls `NameHasOwner` replies on the same connection.
+///
+/// ponytail: the queue is unbounded; it only grows by the departures that arrive while one hold
+/// call holds the mutex, at most zbus's 25 s call timeout. Upgrade: bound it and, on overflow,
+/// reconcile every holder with `NameHasOwner`.
+async fn watch_bus_peers(
+    mut names: zbus::fdo::NameOwnerChangedStream,
+    controller: IdleController,
+    connection: zbus::Connection,
+) {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let drain = async {
+        while let Some(signal) = futures_util::StreamExt::next(&mut names).await {
+            if let Ok(args) = signal.args()
+                && tx.send(args.name.to_string()).is_err()
+            {
+                break;
+            }
+        }
+        drop(tx);
+    };
+    let apply = async {
+        let pm_emitter = SignalEmitter::new(&connection, POWER_MANAGEMENT_OBJECT_PATH).ok();
+        while let Some(departed) = rx.recv().await {
+            for (kind, emitter) in [(BusInhibit::ScreenSaver, None), (BusInhibit::PowerManagement, pm_emitter.as_ref())]
+            {
+                if controller.drop_bus_holds(kind, emitter, |s| drop_bus_peer(s, &departed)).await.is_some() {
+                    debug!(
+                        "{departed} left the bus holding a {} inhibitor; released it",
+                        controller.bus_target(kind).1
+                    );
+                }
+            }
+        }
+    };
+    tokio::join!(drain, apply);
 }
 
 /// Follows `Manager.BlockInhibited` and keeps [`IdleGate`] in step (ADR-0139).
@@ -638,6 +751,7 @@ mod tests {
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
     use super::super::inhibit::tests::{HeldLogind, REFUSED, StubLogin1Manager};
+    use super::BusInhibit::*;
     use super::*;
     use crate::capabilities::test_support::{envelope, p2p_pair_serving, poll_until, private_bus, within};
     use serde_json::json;
@@ -672,11 +786,12 @@ mod tests {
         let controller = IdleController {
             pending: Arc::default(),
             notify: Arc::new(RwLock::new(NotifyState::Inert)),
-            inhibit: Arc::new(LiveInhibit { system_bus, state: tokio::sync::Mutex::default() }),
+            inhibit: Arc::new(LiveInhibit::new(system_bus.clone(), INHIBIT_WHAT)),
+            sleep_inhibit: Arc::new(LiveInhibit::new(system_bus, SLEEP_INHIBIT_WHAT)),
             published: Arc::default(),
             gate: Arc::default(),
             state_tx: unbounded_channel().0,
-            screensaver: None,
+            bus_lease: None,
         };
         (controller, taken, logind)
     }
@@ -697,9 +812,20 @@ mod tests {
             .expect("bind the exported ScreenSaver")
     }
 
-    async fn wait_screensaver_released(observer: &zbus::Connection) {
+    async fn pm_proxy(client: &zbus::Connection, dest: &str) -> zbus::Proxy<'static> {
+        let dest = zbus::names::OwnedBusName::try_from(dest).unwrap();
+        zbus::Proxy::new(client, dest, POWER_MANAGEMENT_OBJECT_PATH, "org.freedesktop.PowerManagement.Inhibit")
+            .await
+            .unwrap()
+    }
+
+    async fn next_bool(sig: &mut zbus::proxy::SignalStream<'_>) -> bool {
+        within(futures_util::StreamExt::next(sig)).await.unwrap().body().deserialize().unwrap()
+    }
+
+    async fn wait_name_released(observer: &zbus::Connection, bus_name: &'static str) {
         let dbus = zbus::fdo::DBusProxy::new(observer).await.expect("bind org.freedesktop.DBus");
-        let name = zbus::names::BusName::from_static_str(SCREENSAVER_BUS_NAME).expect("valid bus name");
+        let name = zbus::names::BusName::from_static_str(bus_name).expect("valid bus name");
         within(async {
             while dbus.name_has_owner(name.clone()).await.expect("NameHasOwner") {
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -730,8 +856,8 @@ mod tests {
     async fn a_screensaver_client_releasing_or_leaving_closes_the_logind_lock() {
         let (mut controller, mut locks, _logind) = controller().await;
         let bus = private_bus().await;
-        controller.export_screensaver(bus.connection().await).await;
-        assert!(controller.screensaver.is_some(), "the bus name was free");
+        controller.export_session_services(bus.connection().await).await;
+        assert!(controller.bus_lease.is_some(), "the bus name was free");
         let observer = bus.connection().await;
         let client = screensaver(&observer).await;
 
@@ -748,7 +874,7 @@ mod tests {
         released(lock).await;
 
         drop(controller);
-        wait_screensaver_released(&observer).await;
+        wait_name_released(&observer, SCREENSAVER_BUS_NAME).await;
     }
 
     /// Regression for #166: `org.freedesktop.ScreenSaver` must stay owned on the controller even
@@ -758,8 +884,9 @@ mod tests {
     async fn screensaver_stays_owned_without_a_departure_watch() {
         let (mut controller, mut locks, _logind) = controller().await;
         let bus = private_bus().await;
-        controller.export_screensaver_with(bus.connection().await, None).await;
-        assert!(controller.screensaver.is_some(), "must keep the owned connection");
+        controller.export_session_services_with(bus.connection().await, None).await;
+        assert!(controller.bus_lease.is_some(), "must keep the owned connection");
+        assert!(controller.without_lease().bus_lease.is_none(), "without_lease must drop the lease");
 
         let observer = bus.connection().await;
         let client = screensaver(&observer).await;
@@ -769,7 +896,7 @@ mod tests {
         released(lock).await;
 
         drop(controller);
-        wait_screensaver_released(&observer).await;
+        wait_name_released(&observer, SCREENSAVER_BUS_NAME).await;
     }
 
     /// A hold logind refused must neither leave the next holder without a lock nor, released
@@ -778,12 +905,13 @@ mod tests {
     async fn a_hold_logind_refused_never_costs_the_next_holder_its_lock() {
         let (controller, mut locks, _logind) = controller().await;
         let refused =
-            controller.screensaver_inhibit(":1.1".into(), String::new(), REFUSED.into()).await.expect("a cookie");
-
-        controller.screensaver_inhibit(":1.2".into(), String::new(), "Playing video".into()).await.expect("a cookie");
+            controller.bus_inhibit(ScreenSaver, ":1.1".into(), "".into(), REFUSED.into(), None, None).await.unwrap();
+        controller
+            .bus_inhibit(ScreenSaver, ":1.2".into(), "".into(), "Playing video".into(), None, None)
+            .await
+            .unwrap();
         let _lock = taken(&mut locks).await;
-        assert!(controller.screensaver_release(refused, ":1.1").await);
-
+        assert!(controller.bus_release(ScreenSaver, refused, ":1.1", None).await);
         assert!(controller.inhibit.state.lock().await.fd.is_some(), "the refused hold closed the video's lock");
     }
 
@@ -836,15 +964,136 @@ mod tests {
         let controller = IdleController { state_tx, ..controller };
         let video = super::super::state::IdleInhibitor { who: "firefox".into(), why: "Playing video".into() };
 
-        let cookie = controller.screensaver_inhibit(":1.1".into(), video.who.clone(), video.why.clone()).await;
+        let cookie =
+            controller.bus_inhibit(ScreenSaver, ":1.1".into(), video.who.clone(), video.why.clone(), None, None).await;
         let _lock = taken(&mut locks).await;
         let held = IdleState { inhibited: true, inhibitors: vec![video], ..IdleState::default() };
         assert_eq!(within(pushed.recv()).await, Some(held.clone()));
         assert_eq!(controller.snapshot(), held);
 
-        assert!(controller.screensaver_release(cookie.expect("a cookie"), ":1.1").await);
+        assert!(controller.bus_release(ScreenSaver, cookie.expect("a cookie"), ":1.1", None).await);
         assert_eq!(within(pushed.recv()).await, Some(IdleState::default()));
         assert_eq!(controller.snapshot(), IdleState::default());
+    }
+
+    /// PowerManagement.Inhibit: logind denial rolls back without signalling, sleep fd open/close,
+    /// `HasInhibit`/`HasInhibitChanged` edges, peer departure (and late handler after exit),
+    /// per-peer `LimitsExceeded`, and bus-name release on drop.
+    #[tokio::test]
+    async fn power_management_inhibit_holds_sleep_signals_changes_and_enforces_limits() {
+        let (mut controller, mut locks, _logind) = controller().await;
+        let bus = private_bus().await;
+        controller.export_session_services(bus.connection().await).await;
+        let observer = bus.connection().await;
+        let client = pm_proxy(&observer, POWER_MANAGEMENT_BUS_NAME).await;
+        let mut sig = client.receive_signal("HasInhibitChanged").await.unwrap();
+        assert!(!client.call::<_, _, bool>("HasInhibit", &()).await.unwrap());
+        client.call::<_, _, u32>("Inhibit", &("zen", REFUSED)).await.expect_err("logind denied");
+        assert!(
+            !client.call::<_, _, bool>("HasInhibit", &()).await.unwrap()
+                && controller.snapshot() == IdleState::default()
+        );
+
+        let c1: u32 = client.call("Inhibit", &("zen", "Playing audio")).await.unwrap();
+        let ((what, who, why, mode), lock) = within(locks.recv()).await.unwrap();
+        assert_eq!((&*what, &*who, &*why, &*mode), ("sleep", "mantle", "Playing audio", "block"));
+        assert!(next_bool(&mut sig).await && client.call::<_, _, bool>("HasInhibit", &()).await.unwrap());
+
+        let c2: u32 = client.call("Inhibit", &("zen", "Video")).await.unwrap();
+        client.call::<_, _, ()>("UnInhibit", &c1).await.unwrap();
+        assert!(client.call::<_, _, bool>("HasInhibit", &()).await.unwrap());
+        client.call::<_, _, ()>("UnInhibit", &c2).await.unwrap();
+        released(lock).await;
+        assert!(!next_bool(&mut sig).await && !client.call::<_, _, bool>("HasInhibit", &()).await.unwrap());
+        client.call::<_, _, ()>("UnInhibit", &c2).await.expect_err("already released");
+
+        let leaver = bus.connection().await;
+        let departed = leaver.unique_name().unwrap().to_string();
+        let _: u32 =
+            pm_proxy(&leaver, POWER_MANAGEMENT_BUS_NAME).await.call("Inhibit", &("zen", "Audio")).await.unwrap();
+        let lock = taken(&mut locks).await;
+        assert!(next_bool(&mut sig).await);
+        leaver.close().await.unwrap();
+        released(lock).await;
+        assert!(!next_bool(&mut sig).await);
+        // A handler running after its sender already left must not leak an fd or hold.
+        controller
+            .bus_inhibit(PowerManagement, departed, "zen".into(), "Late".into(), Some(&observer), None)
+            .await
+            .expect_err("departed sender refused");
+        assert!(locks.try_recv().is_err() && controller.snapshot() == IdleState::default());
+
+        for _ in 0..super::super::inhibit::MAX_BUS_HOLDS_PER_PEER {
+            let _: u32 = client.call("Inhibit", &("zen", "hold")).await.unwrap();
+        }
+        let err = client.call::<_, _, u32>("Inhibit", &("zen", "over")).await.unwrap_err();
+        assert!(matches!(err, zbus::Error::MethodError(n, _, _) if n == "org.freedesktop.DBus.Error.LimitsExceeded"));
+
+        // Over 64 departures while `sleep_inhibit` is locked must not stall `ScreenSaver.Inhibit`
+        // (and its `NameHasOwner` call) on the shared connection.
+        let hold_lock = controller.sleep_inhibit.state.lock().await;
+        for _ in 0..70 {
+            bus.connection().await.close().await.unwrap();
+        }
+        let ss_cookie: u32 = within(screensaver(&observer).await.call("Inhibit", &("", "Burst"))).await.unwrap();
+        drop(hold_lock);
+        screensaver(&observer).await.call::<_, _, ()>("UnInhibit", &ss_cookie).await.unwrap();
+        drop(controller);
+        wait_name_released(&observer, POWER_MANAGEMENT_BUS_NAME).await;
+    }
+
+    /// PowerManagement publishes into `sleep_inhibitors`/`sleep_inhibited`, merges cleanly with
+    /// logind's `sleep` edge, and leaves `inhibited` untouched.
+    #[tokio::test]
+    async fn power_management_hold_publishes_sleep_without_closing_the_idle_gate() {
+        let (controller, mut locks, _logind) = controller().await;
+        let (state_tx, mut pushed) = unbounded_channel();
+        let controller = IdleController { state_tx, ..controller };
+        let audio = super::super::state::IdleInhibitor { who: "zen".into(), why: "Playing audio".into() };
+        let cookie = controller
+            .bus_inhibit(PowerManagement, ":1.1".into(), "zen".into(), "Playing audio".into(), None, None)
+            .await
+            .unwrap();
+        let _lock = taken(&mut locks).await;
+        let held = IdleState { sleep_inhibited: true, sleep_inhibitors: vec![audio], ..IdleState::default() };
+        assert_eq!((within(pushed.recv()).await, controller.snapshot()), (Some(held.clone()), held));
+        assert_eq!(controller.published.lock().unwrap().set_logind(false, vec![], true, vec![]), None);
+        assert!(controller.bus_release(PowerManagement, cookie, ":1.1", None).await);
+        assert_eq!(within(pushed.recv()).await, Some(IdleState { sleep_inhibited: true, ..IdleState::default() }));
+        assert_eq!(
+            controller.published.lock().unwrap().set_logind(false, vec![], false, vec![]),
+            Some(IdleState::default())
+        );
+    }
+
+    /// Taken `org.freedesktop.PowerManagement` stays with its owner and removes its export even
+    /// while `ScreenSaver` succeeds; `PowerManagement` alone keeps a lease when `ScreenSaver` is
+    /// taken; when both are taken, no lease is kept.
+    #[tokio::test]
+    async fn power_management_name_taken_does_not_export() {
+        let (mut first, _locks, _logind) = controller().await;
+        let bus = private_bus().await;
+        let rival = bus.builder().name(POWER_MANAGEMENT_BUS_NAME).unwrap().build().await.unwrap();
+        let conn = bus.connection().await;
+        let unique = conn.unique_name().unwrap().to_string();
+        first.export_session_services(conn).await;
+        assert!(first.bus_lease.is_some());
+        let observer = bus.connection().await;
+        let dbus = zbus::fdo::DBusProxy::new(&observer).await.unwrap();
+        let owner = dbus.get_name_owner(POWER_MANAGEMENT_BUS_NAME.try_into().unwrap()).await.unwrap();
+        assert_eq!(owner.as_str(), rival.unique_name().unwrap().as_str());
+        let err = pm_proxy(&observer, &unique).await.call::<_, _, bool>("HasInhibit", &()).await.unwrap_err();
+        assert!(matches!(err, zbus::Error::MethodError(n, _, _) if n == "org.freedesktop.DBus.Error.UnknownObject"));
+        let (mut second, _, _logind2) = controller().await;
+        second.export_session_services(bus.connection().await).await;
+        assert!(second.bus_lease.is_none());
+        drop(rival);
+        wait_name_released(&observer, POWER_MANAGEMENT_BUS_NAME).await;
+        second.export_session_services(bus.connection().await).await;
+        assert!(second.bus_lease.is_some());
+        assert!(
+            !pm_proxy(&observer, POWER_MANAGEMENT_BUS_NAME).await.call::<_, _, bool>("HasInhibit", &()).await.unwrap()
+        );
     }
 
     /// Idle and sleep inhibitors held at startup and released in turn reach the gate and published

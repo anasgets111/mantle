@@ -790,8 +790,8 @@
 ---@field compositor_hold_stale boolean The compositor last withheld idle notifications, but input resumed before it could answer again. Its hold may have ended; a fresh idle period clears this uncertainty.
 ---@field inhibited boolean True when logind blocks idle, a `ScreenSaver` client holds it (ADR-0231), or the compositor was last observed withholding idle notifications (ADR-0160). The compositor answer can remain true after a release while the seat is active; the next idle threshold refreshes it.
 ---@field inhibitors IdleInhibitor[] Holders other than this shell, `ScreenSaver` clients included. The compositor's hold has an empty `who`; draw `why` then. An unconfirmed compositor hold is omitted. Lists at most 64 logind holders; a `ScreenSaver` client past 16 holds, or 64 in all, gets `LimitsExceeded`.
----@field sleep_inhibited boolean True when logind holds a `block` inhibitor on `sleep` (such as `systemd-inhibit --what=sleep`). Idle thresholds still fire while it is.
----@field sleep_inhibitors IdleInhibitor[] Holders other than this shell blocking `sleep` (`block` mode only; `delay` inhibitors such as lock-before-sleep are excluded). Lists at most 64 holders; empty if listing fails.
+---@field sleep_inhibited boolean True when logind holds a `block` inhibitor on `sleep` (such as `systemd-inhibit --what=sleep`) or an `org.freedesktop.PowerManagement` client holds one. Idle thresholds still fire while it is.
+---@field sleep_inhibitors IdleInhibitor[] Holders other than this shell blocking `sleep`, `PowerManagement` clients included (`block` mode only; `delay` inhibitors such as lock-before-sleep are excluded). Lists at most 64 logind holders (empty if listing fails); a `PowerManagement` client past 16 holds, or 64 in all, gets `LimitsExceeded`.
 
 ---@class ProcessesState
 ---`mantle.processes` payload.

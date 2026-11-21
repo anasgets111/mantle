@@ -1,13 +1,17 @@
 //! Inhibit half of `mantle.idle` (ADR-0032): login1 `Inhibit` on the existing system bus, with
 //! per-holder refcounts, a hand-written proxy, and shared fd state.
 //!
-//! Holds arrive from two sides. A config calls `idle:inhibit(reason)`; a session client calls
-//! `org.freedesktop.ScreenSaver.Inhibit`, which is where a browser's video hold lands (ADR-0231).
-//! Both take the one logind fd through the same refcount, so the gate has a single source.
+//! Holds arrive from config (`idle:inhibit(reason)`), `org.freedesktop.ScreenSaver.Inhibit`
+//! (ADR-0231), and `org.freedesktop.PowerManagement.Inhibit`. Config and ScreenSaver share one
+//! `idle` logind fd; PowerManagement shares a `sleep` logind fd, which never closes the idle gate
+//! (ADR-0412).
 
 use std::collections::{BTreeMap, HashMap};
 
-use super::controller::IdleController;
+use zbus::message::Header;
+use zbus::object_server::SignalEmitter;
+
+use super::controller::{BusInhibit, IdleController};
 use super::state::IdleInhibitor;
 
 fn total(counts: &HashMap<u32, u32>) -> u32 {
@@ -30,61 +34,65 @@ pub fn apply_release_inhibit(counts: &mut HashMap<u32, u32>, generation_id: u32)
     total_before > 0 && total_after == 0
 }
 
-/// Every `ScreenSaver` client at once, as one entry in [`InhibitState::counts`]. Generation ids
+/// Every D-Bus inhibit client at once, as one entry in [`InhibitState::counts`]. Generation ids
 /// are handed out from 1 upwards, so the top of the range can never be one, and
 /// [`cleanup_generation_inhibit`] can never drop a browser's hold on a config reload.
-pub(crate) const SCREENSAVER_HOLDER: u32 = u32::MAX;
+pub(crate) const BUS_HOLDER: u32 = u32::MAX;
 
 /// ponytail: holds past these are refused with a D-Bus error. Per peer, so a client leaking a hold
 /// per play reaches its own limit first. Every sandboxed app shares the portal's peer, so one leaky
 /// app's 16 holds make the others' `Inhibit` fail. Upgrade: count per app through the portal's
 /// `app_id`.
-const MAX_SCREENSAVER_HOLDS_PER_PEER: usize = 16;
-pub(crate) const MAX_SCREENSAVER_HOLDS: usize = 64;
+pub(crate) const MAX_BUS_HOLDS_PER_PEER: usize = 16;
+pub(crate) const MAX_BUS_HOLDS: usize = 64;
 
-/// `ScreenSaver.Inhibit`: records and counts the hold, its text capped. The cookie is the client's
-/// handle for releasing it. `None`, recording nothing, past either hold limit.
-pub(crate) fn apply_screensaver_inhibit(state: &mut InhibitState, peer: String, hold: IdleInhibitor) -> Option<u32> {
+/// Session-bus `Inhibit`: records and counts the hold, its text capped. `None` past either limit.
+pub(crate) fn apply_bus_inhibit(
+    state: &mut InhibitState,
+    service: &str,
+    peer: String,
+    hold: IdleInhibitor,
+) -> Option<u32> {
     let hold = super::state::inhibitor(&hold.who, &hold.why);
-    let held = state.screensaver.values().filter(|(holder, _)| *holder == peer).count();
-    if held >= MAX_SCREENSAVER_HOLDS_PER_PEER || state.screensaver.len() >= MAX_SCREENSAVER_HOLDS {
+    let held = state.holds.values().filter(|(holder, _)| *holder == peer).count();
+    if held >= MAX_BUS_HOLDS_PER_PEER || state.holds.len() >= MAX_BUS_HOLDS {
         // Warned once per peer: a refused video that then blanks the screen should leave a trace,
         // and a client retrying in a loop should not flood.
         shared::warn_first!(
-            format!("screensaver limit {peer}"),
-            "refused a ScreenSaver hold from {peer} ({:?}): it holds {held}, {} in all",
+            format!("{service} limit {peer}"),
+            "refused a {service} hold from {peer} ({:?}): it holds {held}, {} in all",
             hold.who,
-            state.screensaver.len()
+            state.holds.len()
         );
         return None;
     }
     let cookie = state.next_cookie;
     // Never hand out 0: it is a legal cookie that clients routinely read as failure.
     state.next_cookie = cookie.wrapping_add(1).max(1);
-    state.screensaver.insert(cookie, (peer, hold));
-    apply_inhibit(&mut state.counts, SCREENSAVER_HOLDER);
+    state.holds.insert(cookie, (peer, hold));
+    apply_inhibit(&mut state.counts, BUS_HOLDER);
     Some(cookie)
 }
 
-/// `ScreenSaver.UnInhibit`. `None` for a cookie nothing holds, which must not move the refcount:
+/// Session-bus `UnInhibit`. `None` for a cookie nothing holds, which must not move the refcount:
 /// a client releasing twice would otherwise drop someone else's hold. Only `owner` releases its
 /// own cookie: cookies are small integers any session client could guess.
-pub(crate) fn apply_screensaver_release(state: &mut InhibitState, cookie: u32, owner: &str) -> Option<bool> {
-    if state.screensaver.get(&cookie)?.0 != owner {
+pub(crate) fn apply_bus_release(state: &mut InhibitState, cookie: u32, owner: &str) -> Option<bool> {
+    if state.holds.get(&cookie)?.0 != owner {
         return None;
     }
-    state.screensaver.remove(&cookie);
-    Some(apply_release_inhibit(&mut state.counts, SCREENSAVER_HOLDER))
+    state.holds.remove(&cookie);
+    Some(apply_release_inhibit(&mut state.counts, BUS_HOLDER))
 }
 
 /// Every cookie a departed peer held (ADR-0231). A client that crashes mid-video sends no
-/// `UnInhibit`, so without this the session never idles again.
-pub(crate) fn drop_screensaver_peer(state: &mut InhibitState, departed: &str) -> Option<bool> {
+/// `UnInhibit`, so without this the session never idles or suspends again.
+pub(crate) fn drop_bus_peer(state: &mut InhibitState, departed: &str) -> Option<bool> {
     let cookies: Vec<u32> =
-        state.screensaver.iter().filter(|(_, (peer, _))| peer == departed).map(|(cookie, _)| *cookie).collect();
+        state.holds.iter().filter(|(_, (peer, _))| peer == departed).map(|(cookie, _)| *cookie).collect();
     // Fold rather than return each: only the last release can reach zero, and the caller closes
     // the fd once.
-    cookies.into_iter().filter_map(|cookie| apply_screensaver_release(state, cookie, departed)).last()
+    cookies.into_iter().filter_map(|cookie| apply_bus_release(state, cookie, departed)).last()
 }
 
 /// Inhibit half of `reset_registrations` (ADR-0006/ADR-0032): zero `generation_id`'s count;
@@ -128,6 +136,7 @@ pub(crate) trait Login1Manager {
 /// ADR-0032 fixes `what`/`who`/`mode`; only `mode = "block"` stops systemd's auto-suspend-on-idle,
 /// while `delay` merely postpones it.
 pub(crate) const INHIBIT_WHAT: &str = "idle";
+pub(crate) const SLEEP_INHIBIT_WHAT: &str = "sleep";
 pub(crate) const INHIBIT_WHO: &str = "mantle";
 pub(crate) const INHIBIT_MODE: &str = "block";
 
@@ -135,28 +144,32 @@ pub(crate) const INHIBIT_MODE: &str = "block";
 /// ever since; niri and noctalia both answer on both (ADR-0231).
 pub(crate) const SCREENSAVER_BUS_NAME: &str = "org.freedesktop.ScreenSaver";
 pub(crate) const SCREENSAVER_OBJECT_PATHS: [&str; 2] = ["/org/freedesktop/ScreenSaver", "/ScreenSaver"];
+pub(crate) const POWER_MANAGEMENT_BUS_NAME: &str = "org.freedesktop.PowerManagement";
+pub(crate) const POWER_MANAGEMENT_OBJECT_PATH: &str = "/org/freedesktop/PowerManagement/Inhibit";
 
 pub(crate) struct InhibitState {
-    /// Refcount per holder: one per config generation, plus [`SCREENSAVER_HOLDER`] for every
-    /// `org.freedesktop.ScreenSaver` client together. Only the global total decides the fd.
+    /// Refcount per holder: config generations (for `idle`), plus [`BUS_HOLDER`] for every session
+    /// D-Bus client together. Only the global total decides the fd.
     pub(crate) counts: HashMap<u32, u32>,
-    /// Live `ScreenSaver` holds by cookie: the peer that asked, and what it said. Beside `counts`
+    /// Live session-bus holds by cookie: the peer that asked, and what it said. Beside `counts`
     /// under one lock, so the roster and the refcount cannot drift. Ordered, so a drawn roster
     /// keeps its order between pushes.
-    pub(crate) screensaver: BTreeMap<u32, (String, IdleInhibitor)>,
+    pub(crate) holds: BTreeMap<u32, (String, IdleInhibitor)>,
     pub(crate) next_cookie: u32,
     pub(crate) fd: Option<zbus::zvariant::OwnedFd>,
 }
 
 impl Default for InhibitState {
     fn default() -> Self {
-        Self { counts: HashMap::new(), screensaver: BTreeMap::new(), next_cookie: 1, fd: None }
+        Self { counts: HashMap::new(), holds: BTreeMap::new(), next_cookie: 1, fd: None }
     }
 }
 
-/// The exported `org.freedesktop.ScreenSaver` object (ADR-0231), registered on both object paths
-/// KDE established and every client since expects.
-#[derive(Clone)]
+fn sender_peer(header: &Header<'_>, method: &str) -> zbus::fdo::Result<String> {
+    header.sender().map(ToString::to_string).ok_or_else(|| zbus::fdo::Error::Failed(format!("{method} without sender")))
+}
+
+/// Exported `org.freedesktop.ScreenSaver` (ADR-0231), registered on both KDE object paths.
 pub(crate) struct ScreenSaver {
     pub(crate) controller: IdleController,
 }
@@ -169,39 +182,80 @@ impl ScreenSaver {
         &self,
         application_name: String,
         reason: String,
-        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
     ) -> zbus::fdo::Result<u32> {
-        let Some(peer) = header.sender().map(|sender| sender.to_string()) else {
-            return Err(zbus::fdo::Error::Failed("Inhibit arrived without a sender".to_string()));
-        };
+        let peer = sender_peer(&header, "Inhibit")?;
         self.controller
-            .screensaver_inhibit(peer, application_name, reason)
+            .bus_inhibit(BusInhibit::ScreenSaver, peer, application_name, reason, Some(connection), None)
             .await
-            .ok_or_else(|| zbus::fdo::Error::LimitsExceeded("too many idle holds".to_string()))
     }
 
-    async fn un_inhibit(
-        &self,
-        cookie: u32,
-        #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> zbus::fdo::Result<()> {
-        let Some(peer) = header.sender().map(|sender| sender.to_string()) else {
-            return Err(zbus::fdo::Error::Failed("UnInhibit arrived without a sender".to_string()));
-        };
-        if !self.controller.screensaver_release(cookie, &peer).await {
+    async fn un_inhibit(&self, cookie: u32, #[zbus(header)] header: Header<'_>) -> zbus::fdo::Result<()> {
+        let peer = sender_peer(&header, "UnInhibit")?;
+        if !self.controller.bus_release(BusInhibit::ScreenSaver, cookie, &peer, None).await {
             return Err(zbus::fdo::Error::Failed(format!("no inhibitor holds cookie {cookie}")));
         }
         Ok(())
     }
 }
 
+/// Exported `org.freedesktop.PowerManagement.Inhibit` for sleep holds.
+pub(crate) struct PowerManagementInhibit {
+    pub(crate) controller: IdleController,
+}
+
+#[zbus::interface(name = "org.freedesktop.PowerManagement.Inhibit")]
+impl PowerManagementInhibit {
+    async fn inhibit(
+        &self,
+        application: String,
+        reason: String,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<u32> {
+        let peer = sender_peer(&header, "Inhibit")?;
+        let connection = emitter.connection();
+        self.controller
+            .bus_inhibit(BusInhibit::PowerManagement, peer, application, reason, Some(connection), Some(&emitter))
+            .await
+    }
+
+    async fn un_inhibit(
+        &self,
+        cookie: u32,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<()> {
+        let peer = sender_peer(&header, "UnInhibit")?;
+        if !self.controller.bus_release(BusInhibit::PowerManagement, cookie, &peer, Some(&emitter)).await {
+            return Err(zbus::fdo::Error::Failed(format!("no inhibitor holds cookie {cookie}")));
+        }
+        Ok(())
+    }
+
+    async fn has_inhibit(&self) -> bool {
+        !self.controller.sleep_inhibit.state.lock().await.holds.is_empty()
+    }
+
+    #[zbus(signal)]
+    pub(crate) async fn has_inhibit_changed(emitter: &SignalEmitter<'_>, has_inhibit: bool) -> zbus::Result<()>;
+}
+
 pub(crate) struct LiveInhibit {
     /// Existing Supervisor system-bus connection. `Login1ManagerProxy` is built fresh per
-    /// [`IdleController::inhibit`] call; caching would make one startup failure permanent.
+    /// `open_shared_fd` call; caching would make one startup failure permanent.
     pub(crate) system_bus: zbus::Connection,
+    pub(crate) what: &'static str,
     /// `tokio::sync::Mutex`: refcount decision, D-Bus call, and `fd` write are one critical section
     /// held across `.await`, which `std::sync::Mutex` cannot do.
     pub(crate) state: tokio::sync::Mutex<InhibitState>,
+}
+
+impl LiveInhibit {
+    pub(crate) fn new(system_bus: zbus::Connection, what: &'static str) -> Self {
+        Self { system_bus, what, state: tokio::sync::Mutex::default() }
+    }
 }
 
 #[cfg(test)]
@@ -232,63 +286,67 @@ pub(in crate::capabilities) mod tests {
 
     /// Refused past either limit; a refusal moves no refcount, and a release makes room again.
     #[test]
-    fn a_screensaver_hold_past_the_per_peer_or_total_limit_is_refused() {
+    fn a_bus_hold_past_the_per_peer_or_total_limit_is_refused() {
         let mut state = InhibitState::default();
-        for _ in 0..MAX_SCREENSAVER_HOLDS_PER_PEER {
-            apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video")).unwrap();
+        for _ in 0..MAX_BUS_HOLDS_PER_PEER {
+            apply_bus_inhibit(&mut state, "ScreenSaver", ":1.42".into(), hold("Playing video")).unwrap();
         }
-        assert_eq!(apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video")), None);
-        assert_eq!(state.counts[&SCREENSAVER_HOLDER] as usize, MAX_SCREENSAVER_HOLDS_PER_PEER);
+        assert_eq!(apply_bus_inhibit(&mut state, "ScreenSaver", ":1.42".into(), hold("Playing video")), None);
+        assert_eq!(state.counts[&BUS_HOLDER] as usize, MAX_BUS_HOLDS_PER_PEER);
 
         for peer in 0.. {
-            if apply_screensaver_inhibit(&mut state, format!(":2.{peer}"), hold("Playing")).is_none() {
+            if apply_bus_inhibit(&mut state, "ScreenSaver", format!(":2.{peer}"), hold("Playing")).is_none() {
                 break;
             }
         }
-        assert_eq!(state.screensaver.len(), MAX_SCREENSAVER_HOLDS);
-        let oldest = *state.screensaver.keys().next().unwrap();
-        apply_screensaver_release(&mut state, oldest, ":1.42").unwrap();
-        assert!(apply_screensaver_inhibit(&mut state, ":3.0".into(), hold("Playing")).is_some());
+        assert_eq!(state.holds.len(), MAX_BUS_HOLDS);
+        let oldest = *state.holds.keys().next().unwrap();
+        apply_bus_release(&mut state, oldest, ":1.42").unwrap();
+        assert!(apply_bus_inhibit(&mut state, "ScreenSaver", ":3.0".into(), hold("Playing")).is_some());
     }
 
     /// Any session-bus application can call `Inhibit`, and every hold rides in the `mantle.idle` push.
     #[test]
-    fn a_screensaver_holds_name_and_reason_are_capped_on_a_char_boundary() {
+    fn a_bus_holds_name_and_reason_are_capped_on_a_char_boundary() {
         let mut state = InhibitState::default();
         let long = format!("{}é{}", "a".repeat(255), "b".repeat(1024));
 
-        let cookie =
-            apply_screensaver_inhibit(&mut state, ":1.42".into(), IdleInhibitor { who: long.clone(), why: long })
-                .unwrap();
+        let cookie = apply_bus_inhibit(
+            &mut state,
+            "ScreenSaver",
+            ":1.42".into(),
+            IdleInhibitor { who: long.clone(), why: long },
+        )
+        .unwrap();
 
-        let (_, hold) = &state.screensaver[&cookie];
+        let (_, hold) = &state.holds[&cookie];
         assert_eq!(hold.who, "a".repeat(255), "the two-byte é straddles byte 256, so it goes whole");
         assert_eq!(hold.why, "a".repeat(255));
     }
 
     #[test]
-    fn screensaver_holds_are_counted_and_cookies_start_at_one() {
+    fn bus_holds_are_counted_and_cookies_start_at_one() {
         let mut state = InhibitState::default();
 
-        let first = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video")).unwrap();
+        let first = apply_bus_inhibit(&mut state, "ScreenSaver", ":1.42".into(), hold("Playing video")).unwrap();
 
         assert_eq!(first, 1, "0 is a cookie some clients reject");
-        let second = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing audio")).unwrap();
+        let second = apply_bus_inhibit(&mut state, "ScreenSaver", ":1.42".into(), hold("Playing audio")).unwrap();
         assert_eq!(second, 2);
-        assert_eq!(state.screensaver.len(), 2);
-        assert_eq!(state.counts[&SCREENSAVER_HOLDER], 2);
+        assert_eq!(state.holds.len(), 2);
+        assert_eq!(state.counts[&BUS_HOLDER], 2);
     }
 
     /// The whole point of one refcount: a browser's hold and a config's `idle:inhibit` are the
     /// same fd, so neither can drop it while the other wants it.
     #[test]
-    fn a_screensaver_hold_never_closes_the_fd_a_config_generation_holds() {
+    fn a_bus_hold_never_closes_the_fd_a_config_generation_holds() {
         let mut state = InhibitState::default();
         apply_inhibit(&mut state.counts, 1);
 
-        let cookie = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video")).unwrap();
+        let cookie = apply_bus_inhibit(&mut state, "ScreenSaver", ":1.42".into(), hold("Playing video")).unwrap();
 
-        let transition = apply_screensaver_release(&mut state, cookie, ":1.42").expect("a live cookie");
+        let transition = apply_bus_release(&mut state, cookie, ":1.42").expect("a live cookie");
         assert!(!transition, "generation 1 still holds it");
         assert!(apply_release_inhibit(&mut state.counts, 1), "and now the last holder is gone");
     }
@@ -296,43 +354,43 @@ pub(in crate::capabilities) mod tests {
     #[test]
     fn releasing_an_unknown_or_foreign_cookie_moves_no_refcount() {
         let mut state = InhibitState::default();
-        let cookie = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video")).unwrap();
-        assert_eq!(apply_screensaver_release(&mut state, cookie, ":1.99"), None, "another peer's cookie");
-        apply_screensaver_release(&mut state, cookie, ":1.42").expect("a live cookie");
+        let cookie = apply_bus_inhibit(&mut state, "ScreenSaver", ":1.42".into(), hold("Playing video")).unwrap();
+        assert_eq!(apply_bus_release(&mut state, cookie, ":1.99"), None, "another peer's cookie");
+        apply_bus_release(&mut state, cookie, ":1.42").expect("a live cookie");
 
-        assert_eq!(apply_screensaver_release(&mut state, cookie, ":1.42"), None, "a second release");
-        assert_eq!(apply_screensaver_release(&mut state, 9999, ":1.42"), None);
+        assert_eq!(apply_bus_release(&mut state, cookie, ":1.42"), None, "a second release");
+        assert_eq!(apply_bus_release(&mut state, 9999, ":1.42"), None);
         assert_eq!(total(&state.counts), 0);
     }
 
     #[test]
     fn a_departed_peer_loses_its_own_holds_and_no_one_elses() {
         let mut state = InhibitState::default();
-        apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video")).unwrap();
-        apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing audio")).unwrap();
-        let survivor = apply_screensaver_inhibit(&mut state, ":1.99".into(), hold("Presenting")).unwrap();
+        apply_bus_inhibit(&mut state, "ScreenSaver", ":1.42".into(), hold("Playing video")).unwrap();
+        apply_bus_inhibit(&mut state, "ScreenSaver", ":1.42".into(), hold("Playing audio")).unwrap();
+        let survivor = apply_bus_inhibit(&mut state, "ScreenSaver", ":1.99".into(), hold("Presenting")).unwrap();
 
-        let transition = drop_screensaver_peer(&mut state, ":1.42").expect("that peer held two");
+        let transition = drop_bus_peer(&mut state, ":1.42").expect("that peer held two");
 
         assert!(!transition, ":1.99 still holds one");
-        assert_eq!(state.screensaver.keys().copied().collect::<Vec<u32>>(), vec![survivor]);
-        assert!(drop_screensaver_peer(&mut state, ":1.99").expect("the last holder"));
-        assert_eq!(drop_screensaver_peer(&mut state, ":1.42"), None, "a peer holding nothing releases nothing");
+        assert_eq!(state.holds.keys().copied().collect::<Vec<u32>>(), vec![survivor]);
+        assert!(drop_bus_peer(&mut state, ":1.99").expect("the last holder"));
+        assert_eq!(drop_bus_peer(&mut state, ":1.42"), None, "a peer holding nothing releases nothing");
     }
 
-    /// The reason [`SCREENSAVER_HOLDER`] sits at the top of the range: a config reload reaps its
-    /// own generation, and a film playing through it must not lose its hold.
+    /// The reason [`BUS_HOLDER`] sits at the top of the range: a config reload reaps its own
+    /// generation, and a film playing through it must not lose its hold.
     #[test]
-    fn a_config_reload_reaps_its_generation_without_touching_a_screensaver_hold() {
+    fn a_config_reload_reaps_its_generation_without_touching_a_bus_hold() {
         let mut state = InhibitState::default();
         apply_inhibit(&mut state.counts, 1);
-        let cookie = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video")).unwrap();
+        let cookie = apply_bus_inhibit(&mut state, "ScreenSaver", ":1.42".into(), hold("Playing video")).unwrap();
 
         let transition = cleanup_generation_inhibit(&mut state.counts, 1);
 
         assert!(!transition, "the browser still holds the session awake");
-        assert_eq!(state.screensaver.len(), 1);
-        assert!(apply_screensaver_release(&mut state, cookie, ":1.42").expect("a live cookie"));
+        assert_eq!(state.holds.len(), 1);
+        assert!(apply_bus_release(&mut state, cookie, ":1.42").expect("a live cookie"));
     }
 
     #[test]

@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Added: apps that hold sleep via `org.freedesktop.PowerManagement` (such as Chromium-based browsers) now keep the machine from suspending and show in `mantle.idle.sleep_inhibitors`.
 - Added: `mantle.idle` exposes logind `sleep` block inhibitors as `sleep_inhibited` and `sleep_inhibitors` (excluding `delay` inhibitors). Idle thresholds still fire while one is held.
 - Fixed: `balance` on `mantle.audio` sinks and sources reads as set, such as `0.1`, not as `0.10000000149011612`.
 - Changed: a `path` may keep what it read of a literal `commands` table with no signal or metatable in it while the node's declaration stays the same. Editing that table in place is no longer reliably drawn when one of the path's bound properties, such as `shift`, changes; bind `commands` to a signal and `:set` the edited table. A signal inside a literal `commands` still updates it, and declaring the node again with any value changed reads it again.

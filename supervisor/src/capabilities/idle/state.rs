@@ -100,13 +100,14 @@ mod tests {
     #[test]
     fn the_largest_idle_snapshot_fits_in_one_frame() {
         let text = || crate::capabilities::test_support::worst_case_text(MAX_INHIBITOR_TEXT_BYTES);
-        let rows = MAX_LISTED_INHIBITORS + super::super::inhibit::MAX_SCREENSAVER_HOLDS + 1;
+        let rows = MAX_LISTED_INHIBITORS + super::super::inhibit::MAX_BUS_HOLDS + 1;
+        let sleep_rows = MAX_LISTED_INHIBITORS + super::super::inhibit::MAX_BUS_HOLDS;
         let state = IdleState {
             inhibited: true,
             compositor_hold_stale: true,
             inhibitors: vec![IdleInhibitor { who: text(), why: text() }; rows],
             sleep_inhibited: true,
-            sleep_inhibitors: vec![IdleInhibitor { who: text(), why: text() }; MAX_LISTED_INHIBITORS],
+            sleep_inhibitors: vec![IdleInhibitor { who: text(), why: text() }; sleep_rows],
         };
 
         let len = crate::capabilities::test_support::snapshot_frame_len(shared::Capability::Idle, &state);

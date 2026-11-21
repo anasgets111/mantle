@@ -27,10 +27,12 @@ pub struct IdleState {
     /// empty `who`; draw `why` then. An unconfirmed compositor hold is omitted. Lists at most 64
     /// logind holders; a `ScreenSaver` client past 16 holds, or 64 in all, gets `LimitsExceeded`.
     pub inhibitors: Vec<IdleInhibitor>,
-    /// True when logind holds a `block` inhibitor on `sleep` (such as `systemd-inhibit --what=sleep`).
-    /// Idle thresholds still fire while it is.
+    /// True when logind holds a `block` inhibitor on `sleep` (such as `systemd-inhibit --what=sleep`)
+    /// or an `org.freedesktop.PowerManagement` client holds one. Idle thresholds still fire while it is.
     pub sleep_inhibited: bool,
-    /// Holders other than this shell blocking `sleep` (`block` mode only; `delay` inhibitors such as
-    /// lock-before-sleep are excluded). Lists at most 64 holders; empty if listing fails.
+    /// Holders other than this shell blocking `sleep`, `PowerManagement` clients included (`block`
+    /// mode only; `delay` inhibitors such as lock-before-sleep are excluded). Lists at most 64
+    /// logind holders (empty if listing fails); a `PowerManagement` client past 16 holds, or 64 in
+    /// all, gets `LimitsExceeded`.
     pub sleep_inhibitors: Vec<IdleInhibitor>,
 }
