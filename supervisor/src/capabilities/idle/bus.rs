@@ -1,7 +1,9 @@
 //! Session-bus inhibit hosting for `mantle.idle`: `org.freedesktop.ScreenSaver` (ADR-0231) and
 //! `org.freedesktop.PowerManagement` (ADR-0414).
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use shared::{debug, warn};
 use zbus::object_server::SignalEmitter;
@@ -62,7 +64,7 @@ impl IdleController {
             // Verify the sender still owns its unique name under the lock shared with
             // `watch_bus_peers`, so a client that exits before this handler runs cannot leak an fd.
             if let Some(connection) = connection
-                && !peer_alive(connection, &peer).await
+                && !peer_alive(connection, &peer).await.unwrap_or(true)
             {
                 return Err(zbus::fdo::Error::Failed("sender already left the bus".into()));
             }
@@ -128,6 +130,12 @@ impl IdleController {
         Some(live)
     }
 
+    async fn release_departed_peer(&self, kind: BusInhibit, emitter: Option<&SignalEmitter<'_>>, departed: &str) {
+        if self.drop_bus_holds(kind, emitter, |s| drop_bus_peer(s, departed)).await.is_some() {
+            debug!("{departed} left the bus holding a {} inhibitor; released it", self.bus_target(kind).1);
+        }
+    }
+
     /// Held across the send; see the matching comment in `spawn_idle_event_forwarder`.
     fn publish_bus_holds(&self, kind: BusInhibit, holds: Vec<super::state::IdleInhibitor>) {
         let mut published = self.published.lock().expect("mutex poisoned");
@@ -170,8 +178,10 @@ impl IdleController {
         let controller = self.without_lease();
         // Start draining `departures` before claiming names so a burst of bus exits cannot fill
         // zbus's 64-message socket-reader queue while `claim_service` awaits `RequestName`.
-        let watcher = departures
-            .map(|names| tokio::spawn(watch_bus_peers(names, controller.clone(), session_bus.clone())).abort_handle());
+        let watcher = departures.map(|names| {
+            tokio::spawn(watch_bus_peers(names, controller.clone(), session_bus.clone(), DEPARTURE_QUEUE_CAP))
+                .abort_handle()
+        });
         let lease = BusLease { _connection: session_bus.clone(), watcher };
         let has_screensaver = claim_service(&session_bus, SCREENSAVER_BUS_NAME, &SCREENSAVER_OBJECT_PATHS, || {
             ScreenSaver { controller: controller.clone() }
@@ -188,13 +198,13 @@ impl IdleController {
     }
 }
 
-/// Checks whether `peer` still owns its unique name on `connection`. A failed check counts as
-/// alive: refusing would push Gecko off `ScreenSaver` to a sleep-only hold for the rest of its
-/// process (ADR-0414), and the departure watcher still frees the hold if the peer did leave.
-async fn peer_alive(connection: &zbus::Connection, peer: &str) -> bool {
-    let Ok(name) = zbus::names::BusName::try_from(peer) else { return false };
-    let Ok(dbus) = zbus::fdo::DBusProxy::new(connection).await else { return true };
-    dbus.name_has_owner(name).await.unwrap_or(true)
+/// Checks whether `peer` still owns its unique name on `connection`. `Err` means the lookup
+/// itself failed: `bus_inhibit` counts that as alive (refusing would push Gecko off `ScreenSaver`
+/// to a sleep-only hold for the rest of its process, ADR-0414), while overflow reconciliation
+/// keeps the hold and re-arms reconciliation so the next departure retries it.
+async fn peer_alive(connection: &zbus::Connection, peer: &str) -> zbus::fdo::Result<bool> {
+    let Ok(name) = zbus::names::BusName::try_from(peer) else { return Ok(false) };
+    zbus::fdo::DBusProxy::new(connection).await?.name_has_owner(name).await
 }
 
 /// Exports `paths` before claiming `name` so any call routed to the new owner finds the object.
@@ -234,39 +244,66 @@ fn bus_holds(state: &InhibitState) -> Vec<super::state::IdleInhibitor> {
     state.holds.values().map(|(_, hold)| hold.clone()).collect()
 }
 
-/// Releases a departed client's holds across both services (ADR-0231). Drains the D-Bus stream
-/// continuously into an unbounded queue so waiting on a hold mutex never backpressures zbus's
-/// 64-message socket reader and stalls `NameHasOwner` replies on the same connection.
-///
-/// ponytail: the queue is unbounded; it only grows by the departures that arrive while one hold
-/// call holds the mutex: its two bus calls, at most twice zbus's 25 s call timeout. Upgrade: bound
-/// it and, on overflow, reconcile every holder with `NameHasOwner`.
+/// Bound on queued peer departures while a hold mutex is busy; past it, live holders are
+/// reconciled with `NameHasOwner` instead of growing the queue.
+const DEPARTURE_QUEUE_CAP: usize = 256;
+
+/// Releases departed clients' holds across both services (ADR-0231). Drains the D-Bus stream
+/// continuously into a bounded queue so waiting on a hold mutex never backpressures zbus's
+/// 64-message socket reader and stalls `NameHasOwner` replies on the same connection; on
+/// overflow, reconciles every live holder with `NameHasOwner`.
 async fn watch_bus_peers(
     mut names: zbus::fdo::NameOwnerChangedStream,
     controller: IdleController,
     connection: zbus::Connection,
+    cap: usize,
 ) {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(cap);
+    let overflowed = AtomicBool::new(false);
     let drain = async {
         while let Some(signal) = futures_util::StreamExt::next(&mut names).await {
-            if let Ok(args) = signal.args()
-                && tx.send(args.name.to_string()).is_err()
-            {
-                break;
+            if let Ok(args) = signal.args() {
+                match tx.try_send(args.name.to_string()) {
+                    Ok(()) => {}
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => overflowed.store(true, Ordering::Release),
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                }
             }
         }
         drop(tx);
     };
     let apply = async {
         let pm_emitter = SignalEmitter::new(&connection, POWER_MANAGEMENT_OBJECT_PATH).ok();
+        let services = [(BusInhibit::ScreenSaver, None), (BusInhibit::PowerManagement, pm_emitter.as_ref())];
         while let Some(departed) = rx.recv().await {
-            for (kind, emitter) in [(BusInhibit::ScreenSaver, None), (BusInhibit::PowerManagement, pm_emitter.as_ref())]
-            {
-                if controller.drop_bus_holds(kind, emitter, |s| drop_bus_peer(s, &departed)).await.is_some() {
-                    debug!(
-                        "{departed} left the bus holding a {} inhibitor; released it",
-                        controller.bus_target(kind).1
-                    );
+            if overflowed.swap(false, Ordering::AcqRel) {
+                while rx.try_recv().is_ok() {}
+                warn!("departure queue overflowed ({cap}); reconciling live inhibit holders");
+                for (kind, emitter) in services {
+                    let peers: BTreeSet<String> = controller
+                        .bus_target(kind)
+                        .0
+                        .state
+                        .lock()
+                        .await
+                        .holds
+                        .values()
+                        .map(|(peer, _)| peer.clone())
+                        .collect();
+                    for peer in peers {
+                        match peer_alive(&connection, &peer).await {
+                            Ok(false) => controller.release_departed_peer(kind, emitter, &peer).await,
+                            Ok(true) => {}
+                            Err(err) => {
+                                warn!("NameHasOwner({peer}) failed during reconcile: {err}; will retry");
+                                overflowed.store(true, Ordering::Release);
+                            }
+                        }
+                    }
+                }
+            } else {
+                for (kind, emitter) in services {
+                    controller.release_departed_peer(kind, emitter, &departed).await;
                 }
             }
         }
@@ -285,7 +322,7 @@ mod tests {
     use super::super::state::IdleState;
     use super::BusInhibit::*;
     use super::*;
-    use crate::capabilities::test_support::{private_bus, within};
+    use crate::capabilities::test_support::{p2p_pair_serving, poll_until, private_bus, within};
 
     async fn screensaver(client: &zbus::Connection) -> zbus::Proxy<'static> {
         zbus::Proxy::new(client, SCREENSAVER_BUS_NAME, SCREENSAVER_OBJECT_PATHS[0], SCREENSAVER_BUS_NAME)
@@ -518,5 +555,175 @@ mod tests {
         assert!(
             !pm_proxy(&observer, POWER_MANAGEMENT_BUS_NAME).await.call::<_, _, bool>("HasInhibit", &()).await.unwrap()
         );
+    }
+
+    async fn wait_peer_departed(connection: &zbus::Connection, peer: &str) {
+        within(async {
+            while peer_alive(connection, peer).await != Ok(false) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+    }
+
+    /// Overflowing the bounded departure queue reconciles every live holder with `NameHasOwner`,
+    /// releasing departed peers' holds across both services while keeping live peers' holds intact.
+    #[tokio::test]
+    async fn departure_queue_overflow_reconciles_dead_holders_and_keeps_live_ones() {
+        let (controller, mut locks, _logind) = controller().await;
+        let bus = private_bus().await;
+        let server_conn = bus.connection().await;
+        let dbus = zbus::fdo::DBusProxy::new(&server_conn).await.unwrap();
+        let departures = crate::capabilities::name_departures(&dbus, "test").await.unwrap();
+        let watcher = tokio::spawn(watch_bus_peers(departures, controller.without_lease(), server_conn.clone(), 1));
+
+        let live = bus.connection().await;
+        let live_name = live.unique_name().unwrap().to_string();
+        let leaver = bus.connection().await;
+        let leaver_name = leaver.unique_name().unwrap().to_string();
+
+        for (peer, who) in [(&live_name, "live"), (&leaver_name, "dead")] {
+            for kind in [ScreenSaver, PowerManagement] {
+                controller
+                    .bus_inhibit(kind, peer.clone(), who.into(), "Playing".into(), Some(&server_conn), None)
+                    .await
+                    .unwrap();
+            }
+        }
+        let idle_lock = taken(&mut locks).await;
+        let sleep_lock = taken(&mut locks).await;
+
+        // Park `apply` on `ScreenSaver`'s hold mutex, wait for `blocker` and `filler1` in order so
+        // `leaver`'s departure overflows the 1-slot queue and must be cleaned up by reconciliation.
+        let hold_lock = controller.inhibit.state.lock().await;
+        let blocker = bus.connection().await;
+        let blocker_name = blocker.unique_name().unwrap().to_string();
+        let filler1 = bus.connection().await;
+        let filler1_name = filler1.unique_name().unwrap().to_string();
+        let filler2 = bus.connection().await;
+        let filler2_name = filler2.unique_name().unwrap().to_string();
+        blocker.close().await.unwrap();
+        wait_peer_departed(&server_conn, &blocker_name).await;
+        filler1.close().await.unwrap();
+        wait_peer_departed(&server_conn, &filler1_name).await;
+        leaver.close().await.unwrap();
+        filler2.close().await.unwrap();
+        wait_peer_departed(&server_conn, &filler2_name).await;
+        drop(hold_lock);
+
+        let expected = super::super::state::IdleInhibitor { who: "live".into(), why: "Playing".into() };
+        poll_until(|| {
+            let snap = controller.snapshot();
+            (snap.inhibitors == [expected.clone()] && snap.sleep_inhibitors == [expected.clone()]).then_some(())
+        })
+        .await;
+        assert!(controller.inhibit.state.lock().await.fd.is_some());
+        assert!(controller.sleep_inhibit.state.lock().await.fd.is_some());
+
+        // Normal departure handling still works after overflow, and closing the bus ends the task.
+        live.close().await.unwrap();
+        released(idle_lock).await;
+        released(sleep_lock).await;
+        poll_until(|| (controller.snapshot() == IdleState::default()).then_some(())).await;
+
+        drop(bus);
+        within(watcher).await.unwrap();
+    }
+
+    /// Stand-in `org.freedesktop.DBus` for `NameHasOwner` fault injection on a p2p connection.
+    struct StubDBus {
+        dead: String,
+        fail: Arc<AtomicBool>,
+        errored: tokio::sync::mpsc::UnboundedSender<()>,
+    }
+
+    #[zbus::interface(name = "org.freedesktop.DBus")]
+    impl StubDBus {
+        #[zbus(name = "NameHasOwner")]
+        fn name_has_owner(&self, name: String) -> zbus::fdo::Result<bool> {
+            if name == self.dead {
+                if self.fail.load(Ordering::Acquire) {
+                    let _ = self.errored.send(());
+                    return Err(zbus::fdo::Error::Failed("transient lookup failure".into()));
+                }
+                return Ok(false);
+            }
+            Ok(true)
+        }
+    }
+
+    /// A failed `NameHasOwner` during overflow reconciliation keeps the hold and re-arms
+    /// reconciliation so the next departure retries and frees the dead peer's holds.
+    #[tokio::test]
+    async fn overflow_reconcile_retries_after_name_has_owner_error() {
+        let (controller, mut locks, _logind) = controller().await;
+        let bus = private_bus().await;
+        let server_conn = bus.connection().await;
+        let dbus = zbus::fdo::DBusProxy::new(&server_conn).await.unwrap();
+        let departures = crate::capabilities::name_departures(&dbus, "test").await.unwrap();
+
+        let live = bus.connection().await;
+        let live_name = live.unique_name().unwrap().to_string();
+        let leaver = bus.connection().await;
+        let leaver_name = leaver.unique_name().unwrap().to_string();
+
+        let fail = Arc::new(AtomicBool::new(true));
+        let (errored_tx, mut errored_rx) = unbounded_channel();
+        let (fake_bus, _dbus_peer) = p2p_pair_serving(|peer| {
+            peer.serve_at(
+                "/org/freedesktop/DBus",
+                StubDBus { dead: leaver_name.clone(), fail: fail.clone(), errored: errored_tx },
+            )
+        })
+        .await;
+        let watcher = tokio::spawn(watch_bus_peers(departures, controller.without_lease(), fake_bus, 1));
+
+        for (peer, who) in [(&live_name, "live"), (&leaver_name, "dead")] {
+            for kind in [ScreenSaver, PowerManagement] {
+                controller
+                    .bus_inhibit(kind, peer.clone(), who.into(), "Playing".into(), Some(&server_conn), None)
+                    .await
+                    .unwrap();
+            }
+        }
+        let _idle_lock = taken(&mut locks).await;
+        let _sleep_lock = taken(&mut locks).await;
+
+        let hold_lock = controller.inhibit.state.lock().await;
+        let blocker = bus.connection().await;
+        let blocker_name = blocker.unique_name().unwrap().to_string();
+        let filler1 = bus.connection().await;
+        let filler1_name = filler1.unique_name().unwrap().to_string();
+        let filler2 = bus.connection().await;
+        let filler2_name = filler2.unique_name().unwrap().to_string();
+        blocker.close().await.unwrap();
+        wait_peer_departed(&server_conn, &blocker_name).await;
+        filler1.close().await.unwrap();
+        wait_peer_departed(&server_conn, &filler1_name).await;
+        leaver.close().await.unwrap();
+        filler2.close().await.unwrap();
+        wait_peer_departed(&server_conn, &filler2_name).await;
+        drop(hold_lock);
+
+        // Both services hit the injected lookup failure and must keep the holds until retry.
+        within(errored_rx.recv()).await.unwrap();
+        within(errored_rx.recv()).await.unwrap();
+        let snap = controller.snapshot();
+        assert_eq!((snap.inhibitors.len(), snap.sleep_inhibitors.len()), (2, 2));
+
+        // Clearing the fault and sending one unrelated departure retries reconciliation and frees
+        // `leaver` without needing another overflow, while keeping `live`.
+        fail.store(false, Ordering::Release);
+        bus.connection().await.close().await.unwrap();
+
+        let expected = super::super::state::IdleInhibitor { who: "live".into(), why: "Playing".into() };
+        poll_until(|| {
+            let snap = controller.snapshot();
+            (snap.inhibitors == [expected.clone()] && snap.sleep_inhibitors == [expected.clone()]).then_some(())
+        })
+        .await;
+
+        drop(bus);
+        within(watcher).await.unwrap();
     }
 }
