@@ -5691,6 +5691,12 @@ delta at a time in `replay`; upload premultiplies the palette. A 100-frame 480x2
 51.3 -> 12.9 MB, renderer RSS 154 -> 117 MB, for 20 ms more decode per 100 frames and 0.13 % of a
 core during playback.
 
+Amended (#164): a `Background` disposal is no longer joined to the next delta whole. The clear is
+folded into the next frame's blend over the last shown canvas, and the delta is the bounding box of
+the pixels that changed; a `Previous` restore is armed only when it changes a pixel. The `image`
+crate's moving-square clip: 12.8 -> 0.45 MB held, decode 62 -> 27 ms. Rejected: snapshot the union,
+clear, blend, then diff (~10 lines instead of ~70), 47-76 % slower decode on `Background` clips.
+
 ## 0236. A plain `textfield` gets a caret and a selection; the masked one gets neither
 
 ADR-0064 and ADR-0092 both closed with "no caret in this pass", and the pass they deferred left an
