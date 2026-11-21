@@ -9495,3 +9495,19 @@ movement, windowed lists, leavers, dropped values, hidden): any new per-node ste
 rollback and VM reloads drop every solver node, so nothing is kept on those passes. Rejected: a
 node-kind allowlist (the hazards are per state and property, not per kind); an undo log in place
 of the rollback clone (#154: 0.8 % of a frame on hardware, needs `prepare` restructured).
+
+## 0414. The Supervisor also hosts `org.freedesktop.PowerManagement`, forwarding holds to logind `sleep`
+
+Amends ADR-0231, whose note that browsers reach `org.freedesktop.PowerManagement.Inhibit` only when
+`ScreenSaver` is unowned is false: Zen asked it right after a successful `ScreenSaver.Inhibit`, then
+fell back to the portal, which `xdg-desktop-portal-gtk` rejects for anything but idle (#166), and
+Chromium's `kPreventAppSuspension` falls back to it whenever `org.gnome.SessionManager` is unowned.
+The same session connection now claims both names with `DoNotQueue` (a failed claim removes its
+export) and one departure watcher releases a leaving client's holds in both. A PowerManagement hold
+takes the shared logind `Inhibit("sleep", "block")` fd through the same machine and caps as
+ScreenSaver (16 a client, 64 in all) and publishes in `sleep_inhibitors`, never closing the idle
+gate (ADR-0412). Both services check `NameHasOwner` and publish under the hold mutex, so a hold from
+a client that already left is refused and pushes stay in order. The departure stream drains into an
+unbounded queue, so a burst cannot stall zbus's 64-message reader. Current Firefox skips this name
+for background audio and asks the portal directly; that path stays rejected outside Mantle. Rejected:
+a second connection or inhibit machine; gating idle on these holds.
