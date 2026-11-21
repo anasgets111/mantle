@@ -593,11 +593,11 @@ fn measure_leaf(
                     }
                     let (shaped, mut boxed) =
                         shaping.shape_boxed(face.request(content.to_string(), max_width, runs.clone()));
-                    let lines = max_lines.map_or(shaped.lines.len(), |cap| shaped.lines.len().min(cap));
+                    let lines = max_lines.map_or(shaped.line_ranges.len(), |cap| shaped.line_ranges.len().min(cap));
                     let mut width = shaped.shaped.iter().take(lines).fold(0.0, |width, line| line.width.max(width));
                     // Room for the ellipsis paint styles and appends in `fit::Fitted::push_ellipsis`.
                     if let Some(kept) = shaped.line_ranges.get(lines.wrapping_sub(1))
-                        && lines < shaped.lines.len()
+                        && lines < shaped.line_ranges.len()
                         && *elide != node::Elide::None
                     {
                         let ellipsized = runs.iter().filter_map(|run| {

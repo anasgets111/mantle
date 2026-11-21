@@ -199,7 +199,6 @@ pub(super) fn shape(
             ShapeResult {
                 width: 0.0,
                 height: 0.0,
-                lines: Vec::new().into(),
                 line_ranges: Vec::new().into(),
                 shaped: Vec::new().into(),
                 coords: Vec::new().into(),
@@ -250,7 +249,6 @@ pub(super) fn shape(
     layout.break_all_lines(request.max_width.map(|width| width + super::FIT_SLACK));
 
     let mut width = 0.0_f32;
-    let mut lines = Vec::new();
     let mut line_ranges = Vec::new();
     let mut shaped = Vec::new();
     let mut coords: Vec<Box<[i16]>> = Vec::new();
@@ -265,7 +263,6 @@ pub(super) fn shape(
         let source = &request.text[source_range.clone()];
         let trimmed = source.trim_end_matches(char::is_whitespace);
         let end = source_range.start + trimmed.len();
-        lines.push(trimmed.to_string());
         line_ranges.push(source_range.start..end);
         let metrics = line.metrics();
         // An empty line still reports the advance of a placeholder space that does not hang.
@@ -334,8 +331,7 @@ pub(super) fn shape(
     }
     let result = ShapeResult {
         width,
-        height: lines.len() as f32 * request.line_height,
-        lines: lines.into(),
+        height: line_ranges.len() as f32 * request.line_height,
         line_ranges: line_ranges.into(),
         shaped: shaped.into(),
         coords: coords.into(),
@@ -451,7 +447,7 @@ mod tests {
         fonts.chain_data.clear();
         let (measured, missing, _) = shape(&mut fonts, "", &req("Mantle", 14.0), true);
         assert_eq!((measured.width, measured.height), (0.0, 0.0));
-        assert!(measured.lines.is_empty() && measured.shaped.is_empty());
+        assert!(measured.line_ranges.is_empty() && measured.shaped.is_empty());
         assert!(missing.is_empty(), "a database with nothing in it has no codepoint to go looking for");
     }
 

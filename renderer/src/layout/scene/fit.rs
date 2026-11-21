@@ -698,7 +698,7 @@ mod tests {
                     runs: Vec::new(),
                     font: None,
                 })
-                .lines
+                .line_ranges
                 .len()
         };
         assert_eq!(fresh(None), 1, "the probe's answer, which the box must not keep");

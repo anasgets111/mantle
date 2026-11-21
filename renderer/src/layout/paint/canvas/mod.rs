@@ -232,7 +232,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 for fill in background.iter().rev() {
                     fill_rect(painter.canvas_mut(), rect, radius, fill);
                 }
-                paint_border(painter.canvas_mut(), rect, radius, border, *widths, 1.0);
+                paint_border(painter.canvas_mut(), rect, radius, border, *widths);
                 if let Some(t0) = t0 {
                     walk.split.boxes += t0.elapsed();
                 }

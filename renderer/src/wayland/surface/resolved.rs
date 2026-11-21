@@ -85,7 +85,7 @@ impl App {
             // Both regions are tree walks, and the pushes below discard them on exactly these two
             // conditions: no `wl_surface` to set them on, and for blur, no compositor support.
             let live = role.wl_surface().is_some();
-            let blur = if live && self.blur_supported { layout::blur_regions(tree, 1.0) } else { Vec::new() };
+            let blur = if live && self.blur_supported { layout::blur_regions(tree) } else { Vec::new() };
             // A second walk only while no glass shows and no effect object exists; see `apply_blur_region`.
             let asks = blur.is_empty() && live && self.blur_supported && self.surfaces[index].blur_effect.is_none();
             (
@@ -93,7 +93,7 @@ impl App {
                 matches!(role, TrackedRole::Window { .. }).then(|| node::window_spec(&tree.properties)),
                 matches!(role, TrackedRole::Popup { .. }).then(|| node::popup_spec(&tree.properties)),
                 tree.rect,
-                if live { layout::overlay_input_regions(tree, 1.0) } else { Vec::new() },
+                if live { layout::overlay_input_regions(tree) } else { Vec::new() },
                 tree.visible,
                 blur,
                 asks && layout::asks_for_blur(tree),
@@ -151,8 +151,9 @@ impl App {
 
     /// Set the per-surface input region from the resolved tree (ADR-0038 decision 5): no
     /// visible children means pass-through, a full child covers the surface, and intermediate
-    /// content gets its visible geometry. Scale is `1.0` because no buffer scale is set. An
-    /// unchanged region is not resent: a transform tween re-derives it every frame (ADR-0261).
+    /// content gets its visible geometry. Wayland input regions are surface-local logical
+    /// coordinates (ADR-0301). An unchanged region is not resent: a transform tween re-derives
+    /// it every frame (ADR-0261).
     /// Skip a hidden window with no `wl_surface`; its first post-show re-resolve sets the region.
     fn apply_input_region(&mut self, index: usize, regions: Vec<crate::text::snap::PhysicalRect>) {
         let Some(surface) = self.surfaces[index].role.wl_surface().cloned() else {

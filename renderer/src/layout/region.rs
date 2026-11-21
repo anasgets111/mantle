@@ -31,21 +31,19 @@ const EVERYTHING: LogicalRect = LogicalRect { x: -1e9, y: -1e9, width: 2e9, heig
 /// Applies to any surface whose visible content is smaller than the surface itself: empty space
 /// (clicks pass through) with nothing visible, a no-op for a tightly-sized bar whose child fills
 /// it.
-pub fn overlay_input_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<PhysicalRect> {
+pub fn overlay_input_regions(surface_root: &ResolvedNode) -> Vec<PhysicalRect> {
     // A role with no `layer` at all -- window, popup, lock -- keeps the paint proxy.
-    let paint_claims =
-        !matches!(node::fields::panel::layer.read(&surface_root.properties), Ok(node::LayerKind::Background));
+    let claims = !matches!(node::fields::panel::layer.read(&surface_root.properties), Ok(node::LayerKind::Background));
     let mut regions = Vec::new();
-    let scan = (scale, paint_claims);
     // A root's paint claims nothing, but its handler asks for the whole surface.
     if surface_root.takes_input() {
-        collect_input_regions(surface_root, 0.0, 0.0, scan, node::IDENTITY_AFFINE, EVERYTHING, true, &mut regions);
+        collect_input_regions(surface_root, 0.0, 0.0, claims, node::IDENTITY_AFFINE, EVERYTHING, true, &mut regions);
         return regions;
     }
     let root_matrix = surface_root.paint_matrix(surface_root.at(0.0, 0.0)).unwrap_or(node::IDENTITY_AFFINE);
     let hittable = surface_root.hittable(true);
     for child in surface_root.content_children() {
-        collect_input_regions(child, 0.0, 0.0, scan, root_matrix, EVERYTHING, hittable, &mut regions);
+        collect_input_regions(child, 0.0, 0.0, claims, root_matrix, EVERYTHING, hittable, &mut regions);
     }
     regions
 }
@@ -70,9 +68,9 @@ pub fn overlay_input_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<Phy
 ///
 /// A claiming node does not stop the walk: a marked child inside a marked parent unions into it,
 /// and a rounded parent that does not clip can have children painting outside its corners.
-pub fn blur_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<PhysicalRect> {
+pub fn blur_regions(surface_root: &ResolvedNode) -> Vec<PhysicalRect> {
     let mut regions = Vec::new();
-    collect_blur_regions(surface_root, 0.0, 0.0, scale, node::IDENTITY_AFFINE, EVERYTHING, &mut regions);
+    collect_blur_regions(surface_root, 0.0, 0.0, node::IDENTITY_AFFINE, EVERYTHING, &mut regions);
     regions
 }
 
@@ -105,7 +103,6 @@ fn collect_blur_regions(
     node: &ResolvedNode,
     origin_x: f32,
     origin_y: f32,
-    scale: f32,
     matrix: node::Affine,
     clip: LogicalRect,
     out: &mut Vec<PhysicalRect>,
@@ -127,10 +124,10 @@ fn collect_blur_regions(
         return;
     }
     if node.compositor_blur {
-        push_shape(rect, radius, (matrix, scale, clip), out);
+        push_shape(rect, radius, (matrix, clip), out);
     }
     for child in node.content_children() {
-        collect_blur_regions(child, rect.x, rect.y, scale, matrix, child_clip, out);
+        collect_blur_regions(child, rect.x, rect.y, matrix, child_clip, out);
     }
 }
 
@@ -214,49 +211,39 @@ fn push_rounded_rect(rect: PhysicalRect, radii: node::Radii, out: &mut Vec<Physi
     }
 }
 
-/// `rect` shaped as `radii` say, then cut to `clip`; both map through `matrix` to physical px.
-/// The shape first and the cut after: a card scrolled halfway out of a list is cut by a straight
-/// edge, and rounding the cut rectangle would round that edge too.
+/// `rect` shaped as `radii` say, then cut to `clip`; both map through `matrix` to surface-local
+/// integer px. The shape first and the cut after: a card scrolled halfway out of a list is cut by
+/// a straight edge, and rounding the cut rectangle would round that edge too.
 fn push_shape(
     rect: LogicalRect,
     radii: node::Radii,
-    (matrix, scale, clip): (node::Affine, f32, LogicalRect),
+    (matrix, clip): (node::Affine, LogicalRect),
     out: &mut Vec<PhysicalRect>,
 ) {
-    let visible = snap_to_physical(node::transformed_bounds(matrix, clip), scale);
+    let visible = snap_to_physical(node::transformed_bounds(matrix, clip), 1.0);
     let mut strips = Vec::new();
     if !tilted(matrix) {
         // Axis-aligned: the radius travels with the box, so scale it the way the box was scaled.
         let grow = matrix[0].abs().max(matrix[3].abs());
-        push_rounded_rect(
-            snap_to_physical(node::transformed_bounds(matrix, rect), scale),
-            radii * scale * grow,
-            &mut strips,
-        );
+        push_rounded_rect(snap_to_physical(node::transformed_bounds(matrix, rect), 1.0), radii * grow, &mut strips);
     } else {
         // A rotation or skew: map the contour, since a wl_region holds no tilted shape.
-        let to_physical = |p: kurbo::Point| {
+        let to_surface = |p: kurbo::Point| {
             let (x, y) = node::apply_affine(matrix, p.x as f32, p.y as f32);
-            kurbo::Point::new(f64::from(x * scale), f64::from(y * scale))
+            kurbo::Point::new(f64::from(x), f64::from(y))
         };
         let contour = match &radii.2 {
             Some(outline) => outline.polygon(rect, 0.5),
             // The upright strips' left edges down and right edges back up: corners come from `push_rounded_rect`.
             None => {
                 let mut upright = Vec::new();
-                push_rounded_rect(snap_to_physical(rect, scale), radii * scale, &mut upright);
+                push_rounded_rect(snap_to_physical(rect, 1.0), radii, &mut upright);
                 let left = upright.iter().flat_map(|r| [(r.x0, r.y0), (r.x0, r.y1)]);
                 let right = upright.iter().rev().flat_map(|r| [(r.x1, r.y1), (r.x1, r.y0)]);
-                vec![
-                    left.chain(right)
-                        .map(|(x, y)| {
-                            kurbo::Point::new(f64::from(x) / f64::from(scale), f64::from(y) / f64::from(scale))
-                        })
-                        .collect(),
-                ]
+                vec![left.chain(right).map(|(x, y)| kurbo::Point::new(f64::from(x), f64::from(y))).collect()]
             }
         };
-        let contour: Vec<Vec<_>> = contour.into_iter().map(|l| l.into_iter().map(to_physical).collect()).collect();
+        let contour: Vec<Vec<_>> = contour.into_iter().map(|l| l.into_iter().map(to_surface).collect()).collect();
         push_outline(&contour, (visible.y0, visible.y1), &mut strips);
     }
     // ponytail: the cut is the clip's bounding box; a rotated clip over-blurs its corners.
@@ -312,7 +299,7 @@ fn inset_at(r: i32, row: i32) -> i32 {
     (r - (r * r - dy * dy).max(0.0).sqrt()).round() as i32
 }
 
-/// `scan` is the per-surface `(scale, paint_claims)`, unchanged down the recursion. `clip` is the
+/// `paint_claims` is per-surface, unchanged down the recursion. `clip` is the
 /// ancestors' cut in this node's pre-matrix space, as in [`collect_blur_regions`]: hit testing
 /// refuses what a clipping ancestor hides, so a region must too.
 #[allow(clippy::too_many_arguments)]
@@ -320,7 +307,7 @@ fn collect_input_regions(
     node: &ResolvedNode,
     origin_x: f32,
     origin_y: f32,
-    scan: (f32, bool),
+    paint_claims: bool,
     matrix: node::Affine,
     clip: LogicalRect,
     inherited: bool,
@@ -329,7 +316,6 @@ fn collect_input_regions(
     if !node.in_flow() {
         return;
     }
-    let (scale, paint_claims) = scan;
     let rect = node.at(origin_x, origin_y);
     let (matrix, parent_clip, child_clip) = clip_frame(node, rect, matrix, clip);
     let no_radius = node::Radii::default();
@@ -345,11 +331,11 @@ fn collect_input_regions(
     let mut claimed = None;
     // An empty cut stays empty: mapping it would flip its inverted corners into a real rect.
     if hittable && !own_clip.is_empty() && takes_input_as_a_box(node, paint_claims) {
-        let bounds = snap_to_physical(node::transformed_bounds(matrix, own_clip), scale);
+        let bounds = snap_to_physical(node::transformed_bounds(matrix, own_clip), 1.0);
         // The contour's own strips: the ground beside a tail, or a tilted box's corners, take no input.
         if radius.2.is_some() || tilted(matrix) {
             let before = out.len();
-            push_shape(rect, radius.clone(), (matrix, scale, own_clip), out);
+            push_shape(rect, radius.clone(), (matrix, own_clip), out);
             // A bar thinner than a pixel rasterises to nothing but still takes input.
             if out.len() == before && !bounds.is_empty() {
                 out.push(bounds);
@@ -364,7 +350,7 @@ fn collect_input_regions(
     }
     let start = out.len();
     for child in node.content_children() {
-        collect_input_regions(child, rect.x, rect.y, scan, matrix, child_clip, hittable, out);
+        collect_input_regions(child, rect.x, rect.y, paint_claims, matrix, child_clip, hittable, out);
     }
     // Only an unclipped box's overflow adds to it; one rect per descendant inside it would bloat the region.
     // Only this node's descendants are looked at: a retain over all of `out` was quadratic in claims.
@@ -460,8 +446,8 @@ mod tests {
             };
             let mut root = region_node(3, "panel", (0.0, 0.0, 100.0, 50.0), None, children);
             root.children[0].movement = Some(Box::new(MoveTween::test((offset, 0.0))));
-            assert_eq!(overlay_input_regions(&root, 1.0), [moved]);
-            assert_eq!(blur_regions(&root, 1.0), [moved]);
+            assert_eq!(overlay_input_regions(&root), [moved]);
+            assert_eq!(blur_regions(&root), [moved]);
         }
 
         let mut glass = region_node(4, "rect", (110.0, 0.0, 40.0, 20.0), solid_paint(), Vec::new());
@@ -470,7 +456,7 @@ mod tests {
         glass.transform.origin = (0.0, 0.0);
         glass.movement = Some(Box::new(MoveTween::test((-40.0, 0.0))));
         let root = region_node(5, "panel", (0.0, 0.0, 100.0, 40.0), None, vec![glass]);
-        assert_eq!(blur_regions(&root, 1.0), [PhysicalRect { x0: 70, y0: 0, x1: 100, y1: 40 }]);
+        assert_eq!(blur_regions(&root), [PhysicalRect { x0: 70, y0: 0, x1: 100, y1: 40 }]);
     }
 
     /// A border alone draws, so its box takes input as a background's does; a zero-width one draws
@@ -519,12 +505,12 @@ mod tests {
         let root = region_node(3, "panel", (0.0, 0.0, 1920.0, 1161.0), None, vec![catcher, card]);
 
         assert_eq!(
-            blur_regions(&root, 1.0),
+            blur_regions(&root),
             [PhysicalRect { x0: 200, y0: 260, x1: 820, y1: 520 }],
             "the card only; the catcher takes the whole screen for input and none of it for blur"
         );
         assert_eq!(
-            overlay_input_regions(&root, 1.0),
+            overlay_input_regions(&root),
             [PhysicalRect { x0: 0, y0: 0, x1: 1920, y1: 1161 }, PhysicalRect { x0: 200, y0: 260, x1: 820, y1: 520 }],
             "and the input region still takes the whole screen, which is the point of the catcher"
         );
@@ -544,7 +530,7 @@ mod tests {
         let slider = build_slider(2, card.clone());
         let root = region_node(3, "panel", (0.0, 0.0, 500.0, 100.0), None, vec![slider]);
         assert_eq!(
-            blur_regions(&root, 1.0),
+            blur_regions(&root),
             [PhysicalRect { x0: 310, y0: 10, x1: 410, y1: 50 }],
             "the card blurs where its parent's translate paints it, not where the solver left it"
         );
@@ -553,7 +539,7 @@ mod tests {
         // root's clip along (`layout::paint::build_node`).
         let narrow = region_node(7, "panel", (0.0, 0.0, 400.0, 100.0), None, vec![build_slider(8, card)]);
         assert_eq!(
-            blur_regions(&narrow, 1.0),
+            blur_regions(&narrow),
             [PhysicalRect { x0: 310, y0: 10, x1: 400, y1: 50 }],
             "the root's box stays put while the slider's translate moves what it holds"
         );
@@ -565,7 +551,7 @@ mod tests {
         let list = region_node(5, "list", (0.0, 0.0, 100.0, 20.0), None, vec![card]).with_clip(node::ClipShape::Box);
         let root = region_node(6, "panel", (0.0, 0.0, 400.0, 100.0), None, vec![list]);
         assert_eq!(
-            blur_regions(&root, 1.0),
+            blur_regions(&root),
             [PhysicalRect { x0: 0, y0: 0, x1: 100, y1: 20 }],
             "clipped to the list, not the card's own height"
         );
@@ -587,7 +573,7 @@ mod tests {
         // The card is clipped to its parent's box untransformed (80..100), then the whole group
         // moves +50, so paint draws 130..150 and the blur must follow it there.
         assert_eq!(
-            blur_regions(&root, 1.0),
+            blur_regions(&root),
             [PhysicalRect { x0: 130, y0: 0, x1: 150, y1: 20 }],
             "the clip is applied before the transform, as paint applies it"
         );
@@ -603,7 +589,7 @@ mod tests {
         let cut = region_node(4, "column", (0.0, 0.0, 200.0, 20.0), None, vec![parent]).with_clip(node::ClipShape::Box);
         let root = region_node(3, "panel", (0.0, 0.0, 300.0, 100.0), None, vec![cut]);
 
-        assert_eq!(overlay_input_regions(&root, 1.0), [PhysicalRect { x0: 190, y0: 0, x1: 200, y1: 20 }]);
+        assert_eq!(overlay_input_regions(&root), [PhysicalRect { x0: 190, y0: 0, x1: 200, y1: 20 }]);
     }
 
     /// A card scrolled halfway out of a list is cut by a straight edge, so rounding must happen on
@@ -625,7 +611,7 @@ mod tests {
         // Only the top half is inside the list.
         let list = region_node(2, "list", (0.0, 0.0, 100.0, 50.0), None, vec![card]).with_clip(node::ClipShape::Box);
         let root = region_node(3, "panel", (0.0, 0.0, 300.0, 300.0), None, vec![list]);
-        let regions = blur_regions(&root, 1.0);
+        let regions = blur_regions(&root);
 
         assert!(!regions.is_empty(), "a half-visible card still blurs");
         let bottom = regions.iter().map(|r| r.y1).max().unwrap();
@@ -643,7 +629,7 @@ mod tests {
     fn blur_is_opt_in_and_a_faded_subtree_asks_for_nothing() {
         let glass = region_node(1, "rect", (0.0, 0.0, 100.0, 40.0), solid_paint(), Vec::new());
         let root = region_node(2, "panel", (0.0, 0.0, 400.0, 100.0), None, vec![glass]);
-        assert!(blur_regions(&root, 1.0).is_empty(), "a painted box that never asked does not blur");
+        assert!(blur_regions(&root).is_empty(), "a painted box that never asked does not blur");
 
         // (the card's opacity, its parent's, whether it blurs)
         for (own, parent, blurs) in [(1.0, 0.0, false), (0.8, 0.5, true)] {
@@ -653,7 +639,7 @@ mod tests {
             let mut faded = region_node(4, "column", (0.0, 0.0, 100.0, 40.0), None, vec![card]);
             faded.opacity = parent;
             let root = region_node(5, "panel", (0.0, 0.0, 400.0, 100.0), None, vec![faded]);
-            assert_eq!(!blur_regions(&root, 1.0).is_empty(), blurs, "{own} under {parent}, not tweening");
+            assert_eq!(!blur_regions(&root).is_empty(), blurs, "{own} under {parent}, not tweening");
         }
     }
 
@@ -771,7 +757,7 @@ mod tests {
                 *r = radius;
             }
             let root = region_node(2, "panel", (0.0, 0.0, 400.0, 400.0), None, vec![card]);
-            blur_regions(&root, 1.0)
+            blur_regions(&root)
         };
         let covers =
             |s: &[PhysicalRect], x: i32, y: i32| s.iter().any(|s| s.x0 <= x && x < s.x1 && s.y0 <= y && y < s.y1);
@@ -800,7 +786,7 @@ mod tests {
                 let mut card = region_node(1, kind, (100.0, 100.0, 32.0, 32.0), paint.clone(), Vec::new());
                 card.transform = transform;
                 let root = region_node(2, "panel", (0.0, 0.0, 400.0, 400.0), None, vec![card]);
-                let strips = overlay_input_regions(&root, 1.0);
+                let strips = overlay_input_regions(&root);
                 let covers = |(x, y): (i32, i32)| strips.iter().any(|s| s.x0 <= x && x < s.x1 && s.y0 <= y && y < s.y1);
                 assert!(covers((116, 116)) && covers(inside), "{kind}: the centre and a point inside the shape");
                 assert!(!outside.into_iter().any(covers), "{kind}: bounding box corners pass through");
@@ -817,7 +803,7 @@ mod tests {
             radius.2 = Some(crate::layout::node::shape::tail());
         }
         let root = region_node(2, "panel", (0.0, 0.0, 64.0, 96.0), None, vec![bubble]);
-        let strips = overlay_input_regions(&root, 1.0);
+        let strips = overlay_input_regions(&root);
         let covers = |x: i32, y: i32| strips.iter().any(|s| s.x0 <= x && x < s.x1 && s.y0 <= y && y < s.y1);
         assert!(covers(32, 52) && covers(32, 32), "the tail and the body");
         assert!(!covers(37, 54) && !covers(16, 16), "beside the tail and a cut corner");
@@ -844,12 +830,12 @@ mod tests {
             let viewport = region_node(3, "column", (0.0, 0.0, 100.0, 50.0), None, vec![card(1, 0.0), card(2, 200.0)])
                 .with_clip(clip);
             let root = region_node(4, "panel", (0.0, 0.0, 300.0, 300.0), None, vec![viewport]);
-            assert_eq!(overlay_input_regions(&root, 1.0), [PhysicalRect { x0: 0, y0: 0, x1: 100, y1: 40 }]);
+            assert_eq!(overlay_input_regions(&root), [PhysicalRect { x0: 0, y0: 0, x1: 100, y1: 40 }]);
         }
         let half = region_node(5, "column", (0.0, 0.0, 100.0, 50.0), None, vec![card(6, 30.0)])
             .with_clip(node::ClipShape::Box);
         let root = region_node(7, "panel", (0.0, 0.0, 300.0, 300.0), None, vec![half]);
-        assert_eq!(overlay_input_regions(&root, 1.0), [PhysicalRect { x0: 0, y0: 30, x1: 100, y1: 50 }]);
+        assert_eq!(overlay_input_regions(&root), [PhysicalRect { x0: 0, y0: 30, x1: 100, y1: 50 }]);
     }
 
     /// An unclipped solid box claims itself and what sticks out of it, not every descendant inside.
@@ -861,14 +847,14 @@ mod tests {
         let parent = region_node(4, "rect", (0.0, 0.0, 100.0, 50.0), solid_paint(), vec![inside, outside]);
         let root = region_node(5, "panel", (0.0, 0.0, 300.0, 300.0), None, vec![parent]);
         assert_eq!(
-            overlay_input_regions(&root, 1.0),
+            overlay_input_regions(&root),
             [PhysicalRect { x0: 0, y0: 0, x1: 100, y1: 50 }, PhysicalRect { x0: 80, y0: 0, x1: 120, y1: 20 }]
         );
 
         let r = |x0, y0, x1, y1| PhysicalRect { x0, y0, x1, y1 };
         let bx = |rect, kids| region_node(1, "rect", rect, solid_paint(), kids);
         let leaf = |x, y, w, h| bx((x, y, w, h), vec![]);
-        let scan = |kids| overlay_input_regions(&region_node(2, "panel", (0.0, 0.0, 300.0, 300.0), None, kids), 1.0);
+        let scan = |kids| overlay_input_regions(&region_node(2, "panel", (0.0, 0.0, 300.0, 300.0), None, kids));
         let moved = |x, y, w, h, tx| {
             let mut n = leaf(x, y, w, h);
             n.transform.translate = (tx, 0.0);
@@ -909,7 +895,7 @@ mod tests {
         let column = region_node(3, "column", (10.0, 10.0, 100.0, 500.0), None, vec![card_a, card_b]);
         let root = region_node(4, "panel", (0.0, 0.0, 120.0, 520.0), None, vec![column]);
         assert_eq!(
-            overlay_input_regions(&root, 1.0),
+            overlay_input_regions(&root),
             [PhysicalRect { x0: 10, y0: 10, x1: 110, y1: 50 }, PhysicalRect { x0: 10, y0: 60, x1: 110, y1: 100 }],
             "the cards, at their surface-local positions, and not the column"
         );
@@ -918,36 +904,36 @@ mod tests {
         std::rc::Rc::make_mut(&mut catcher.properties)
             .insert("on_click", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
         let root = region_node(6, "panel", (0.0, 0.0, 120.0, 520.0), None, vec![catcher]);
-        assert_eq!(overlay_input_regions(&root, 1.0), [PhysicalRect { x0: 0, y0: 0, x1: 120, y1: 520 }]);
+        assert_eq!(overlay_input_regions(&root), [PhysicalRect { x0: 0, y0: 0, x1: 120, y1: 520 }]);
 
         let mut zone = region_node(50, "rect", (0.0, 0.0, 120.0, 40.0), None, Vec::new());
         std::rc::Rc::make_mut(&mut zone.properties)
             .insert("on_drop", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
         let root = region_node(51, "panel", (0.0, 0.0, 120.0, 520.0), None, vec![zone]);
         let zone = [PhysicalRect { x0: 0, y0: 0, x1: 120, y1: 40 }];
-        assert_eq!(overlay_input_regions(&root, 1.0), zone, "an unpainted drop zone claims its box: drags need it");
+        assert_eq!(overlay_input_regions(&root), zone, "an unpainted drop zone claims its box: drags need it");
 
         let idle = region_node(7, "row", (0.0, 0.0, 120.0, 520.0), None, Vec::new());
         let root = region_node(8, "panel", (0.0, 0.0, 120.0, 520.0), None, vec![idle]);
-        assert!(overlay_input_regions(&root, 1.0).is_empty(), "a row with no handler is as transparent as a rect");
+        assert!(overlay_input_regions(&root).is_empty(), "a row with no handler is as transparent as a rect");
 
         let label = region_node(9, "rect", (10.0, 10.0, 50.0, 20.0), solid_paint(), Vec::new());
         let mut submit = region_node(10, "row", (0.0, 0.0, 120.0, 40.0), None, vec![label]);
         std::rc::Rc::make_mut(&mut submit.properties).insert("submits_secure", Value::Boolean(true));
         let root = region_node(11, "panel", (0.0, 0.0, 120.0, 40.0), None, vec![submit]);
         assert_eq!(
-            overlay_input_regions(&root, 1.0),
+            overlay_input_regions(&root),
             [PhysicalRect { x0: 0, y0: 0, x1: 120, y1: 40 }],
             "a submit row claims its box, not only its label"
         );
 
         let card = region_node(12, "rect", (10.0, 10.0, 50.0, 20.0), solid_paint(), Vec::new());
         let mut root = region_node(13, "panel", (0.0, 0.0, 120.0, 40.0), solid_paint(), vec![card]);
-        assert_eq!(overlay_input_regions(&root, 1.0), [PhysicalRect { x0: 10, y0: 10, x1: 60, y1: 30 }]);
+        assert_eq!(overlay_input_regions(&root), [PhysicalRect { x0: 10, y0: 10, x1: 60, y1: 30 }]);
         std::rc::Rc::make_mut(&mut root.properties)
             .insert("on_wheel", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
         assert_eq!(
-            overlay_input_regions(&root, 1.0),
+            overlay_input_regions(&root),
             [PhysicalRect { x0: 0, y0: 0, x1: 120, y1: 40 }],
             "a painted root claims nothing, a root with a handler the whole surface"
         );
@@ -959,12 +945,12 @@ mod tests {
         let mut card = region_node(1, "rect", (10.0, 10.0, 100.0, 40.0), solid_paint(), Vec::new());
         card.transform.scale = (0.5, 0.5);
         let root = region_node(2, "panel", (0.0, 0.0, 120.0, 60.0), None, vec![card]);
-        assert_eq!(overlay_input_regions(&root, 1.0), [PhysicalRect { x0: 35, y0: 20, x1: 85, y1: 40 }]);
+        assert_eq!(overlay_input_regions(&root), [PhysicalRect { x0: 35, y0: 20, x1: 85, y1: 40 }]);
 
         let mut gone = region_node(3, "rect", (10.0, 10.0, 100.0, 40.0), solid_paint(), Vec::new());
         gone.transform.scale = (0.0, 0.0);
         let root = region_node(4, "panel", (0.0, 0.0, 120.0, 60.0), None, vec![gone]);
-        assert!(overlay_input_regions(&root, 1.0).is_empty(), "nothing painted, nothing to press");
+        assert!(overlay_input_regions(&root).is_empty(), "nothing painted, nothing to press");
     }
 
     #[test]
@@ -974,7 +960,7 @@ mod tests {
         hidden_child.visible = false;
         let root = region_node(104, "panel", (0.0, 0.0, 100.0, 100.0), None, vec![visible_child, hidden_child]);
 
-        let regions = overlay_input_regions(&root, 1.0);
+        let regions = overlay_input_regions(&root);
         assert_eq!(regions, [PhysicalRect { x0: 0, y0: 0, x1: 10, y1: 10 }]);
     }
 
@@ -996,10 +982,10 @@ mod tests {
             let paint = node::paint_style("path", &properties).unwrap();
             let child = region_node(1, "path", (0.0, 0.0, 20.0, 20.0), paint, Vec::new());
             let mut root = region_node(2, "panel", (0.0, 0.0, 20.0, 20.0), None, vec![child]);
-            assert_eq!(!overlay_input_regions(&root, 1.0).is_empty(), painted, "{fields}");
+            assert_eq!(!overlay_input_regions(&root).is_empty(), painted, "{fields}");
             std::rc::Rc::make_mut(&mut root.children[0].properties)
                 .insert("on_click", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
-            assert_eq!(overlay_input_regions(&root, 1.0), [PhysicalRect { x0: 0, y0: 0, x1: 20, y1: 20 }]);
+            assert_eq!(overlay_input_regions(&root), [PhysicalRect { x0: 0, y0: 0, x1: 20, y1: 20 }]);
         }
     }
 
@@ -1013,15 +999,15 @@ mod tests {
         let mut layer = region_node(3, "column", (0.0, 0.0, 50.0, 20.0), solid_paint(), vec![back]);
         set(&mut layer, false);
         let root = region_node(4, "panel", (0.0, 0.0, 50.0, 20.0), None, vec![layer.clone()]);
-        assert!(overlay_input_regions(&root, 1.0).is_empty());
+        assert!(overlay_input_regions(&root).is_empty());
         set(&mut front, true);
         layer.children.push(front);
         let root = region_node(4, "panel", (0.0, 0.0, 50.0, 20.0), None, vec![layer]);
-        assert_eq!(overlay_input_regions(&root, 1.0), [PhysicalRect { x0: 30, y0: 0, x1: 50, y1: 20 }]);
+        assert_eq!(overlay_input_regions(&root), [PhysicalRect { x0: 30, y0: 0, x1: 50, y1: 20 }]);
         let card = region_node(5, "rect", (0.0, 0.0, 20.0, 20.0), solid_paint(), Vec::new());
         let mut root = region_node(6, "panel", (0.0, 0.0, 50.0, 20.0), None, vec![card]);
         set(&mut root, false);
-        assert!(overlay_input_regions(&root, 1.0).is_empty());
+        assert!(overlay_input_regions(&root).is_empty());
     }
 
     /// The whole `compositor_blur` path from Lua to the rects the compositor is handed (ADR-0195), on the
@@ -1052,12 +1038,12 @@ mod tests {
         let tree = client.scene().surface("host@TEST").expect("the panel resolved");
 
         assert_eq!(
-            layout::blur_regions(tree, 1.0),
+            layout::blur_regions(tree),
             [crate::text::snap::PhysicalRect { x0: 200, y0: 260, x1: 820, y1: 520 }],
             "the card that asked, at its surface-local position"
         );
         assert_eq!(
-            layout::overlay_input_regions(tree, 1.0),
+            layout::overlay_input_regions(tree),
             [
                 crate::text::snap::PhysicalRect { x0: 0, y0: 0, x1: 1920, y1: 1080 },
                 crate::text::snap::PhysicalRect { x0: 200, y0: 260, x1: 820, y1: 520 }
@@ -1103,7 +1089,7 @@ mod tests {
             assert!(run_startup(&mut client), "{layer}: the config must resolve into a scene");
             let tree = client.scene().surface("host@TEST").expect("the panel resolved");
 
-            assert_eq!(layout::overlay_input_regions(tree, 1.0), [expected], "{layer}: {case}");
+            assert_eq!(layout::overlay_input_regions(tree), [expected], "{layer}: {case}");
         }
     }
 }

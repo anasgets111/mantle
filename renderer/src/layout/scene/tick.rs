@@ -1947,7 +1947,7 @@ mod tests {
         assert_eq!(node.rect, rect, "a paint-only tick moves no rect");
         assert_eq!((node.transform.translate, node.transform.scale), ((100.0, 0.0), (1.5, 1.5)));
         assert_eq!(
-            crate::layout::overlay_input_regions(root, 1.0),
+            crate::layout::overlay_input_regions(root),
             [crate::text::snap::PhysicalRect { x0: 95, y0: -5, x1: 125, y1: 25 }]
         );
     }
@@ -1996,8 +1996,8 @@ mod tests {
             for _ in 0..ticks {
                 std::hint::black_box((
                     node::panel_spec(&tree.properties).unwrap(),
-                    crate::layout::overlay_input_regions(tree, 1.0),
-                    crate::layout::blur_regions(tree, 1.0),
+                    crate::layout::overlay_input_regions(tree),
+                    crate::layout::blur_regions(tree),
                 ));
             }
             println!(

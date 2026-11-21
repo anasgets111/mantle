@@ -177,7 +177,6 @@ pub(super) fn paint_border(
     radius: &Radii,
     border: &BorderPaint,
     widths: EdgeInsets,
-    scale: f32,
 ) {
     let uniform_width = widths.top == widths.right && widths.right == widths.bottom && widths.bottom == widths.left;
     let uniform_paint = match border {
@@ -213,9 +212,9 @@ pub(super) fn paint_border(
         // The span and the thickness snap as bands (thickness: a band-of-one at `rect.x`), so the
         // centreline lands on an integer for an even width and a half-integer for an odd one, the
         // parity femtovg rasterizes.
-        let (box_x, box_width) = snap_border_band(rect.x, rect.width, scale);
-        let (box_y, box_height) = snap_border_band(rect.y, rect.height, scale);
-        let (_, width) = snap_border_band(rect.x, widths.top, scale);
+        let (box_x, box_width) = snap_border_band(rect.x, rect.width);
+        let (box_y, box_height) = snap_border_band(rect.y, rect.height);
+        let (_, width) = snap_border_band(rect.x, widths.top);
         let inset = width / 2.0;
         // The centre line is half a band in, so its radius is the outer one less half a band: concentric with the fill.
         let centre = Radii(radius.0.map(|r| (r - inset).max(0.0)), radius.1, None);
@@ -234,7 +233,7 @@ pub(super) fn paint_border(
     }
 
     if !radius.is_zero() {
-        shaped_border(canvas, rect, radius, border, widths, scale);
+        shaped_border(canvas, rect, radius, border, widths);
         return;
     }
 
@@ -265,7 +264,7 @@ pub(super) fn paint_border(
             EdgeAxis::Vertical,
         ),
     ] {
-        paint_border_edge(canvas, edge_paint(color), thickness, edge_rect, axis, scale);
+        paint_border_edge(canvas, edge_paint(color), thickness, edge_rect, axis);
     }
 }
 
@@ -420,14 +419,13 @@ fn shaped_border(
     radius: &Radii,
     border: &BorderPaint,
     widths: EdgeInsets,
-    scale: f32,
 ) {
-    let (x, w) = snap_border_band(rect.x, rect.width, scale);
-    let (y, h) = snap_border_band(rect.y, rect.height, scale);
+    let (x, w) = snap_border_band(rect.x, rect.width);
+    let (y, h) = snap_border_band(rect.y, rect.height);
     if w <= 0.0 || h <= 0.0 {
         return;
     }
-    let thick = |width: f32| snap_border_band(rect.x, width, scale).1;
+    let thick = |width: f32| snap_border_band(rect.x, width).1;
     // Clockwise from the top, the order the walk below takes; corner `i` opens edge `i`.
     let edges = [widths.top, widths.right, widths.bottom, widths.left].map(thick);
     // A gradient is one paint on every edge, so a placeholder colour makes them all alike.
@@ -524,7 +522,6 @@ fn paint_border_edge(
     width: f32,
     edge_rect: LogicalRect,
     axis: EdgeAxis,
-    scale: f32,
 ) {
     let Some(paint) = paint else { return };
     if width <= 0.0 {
@@ -532,11 +529,11 @@ fn paint_border_edge(
     }
     let edge_rect = match axis {
         EdgeAxis::Horizontal => {
-            let (y, height) = snap_border_band(edge_rect.y, edge_rect.height, scale);
+            let (y, height) = snap_border_band(edge_rect.y, edge_rect.height);
             LogicalRect { y, height, ..edge_rect }
         }
         EdgeAxis::Vertical => {
-            let (x, width) = snap_border_band(edge_rect.x, edge_rect.width, scale);
+            let (x, width) = snap_border_band(edge_rect.x, edge_rect.width);
             LogicalRect { x, width, ..edge_rect }
         }
     };

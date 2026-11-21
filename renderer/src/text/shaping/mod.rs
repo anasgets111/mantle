@@ -77,16 +77,13 @@ pub struct ShapingStyle<'a> {
 pub struct ShapeResult {
     pub width: f32,
     pub height: f32,
-    /// One entry per laid-out line, in order, each trimmed of the whitespace a word wrap leaves
-    /// behind at the break. Never empty for non-empty text, except on a machine with no fonts: a
-    /// string that needs no break is one entry holding the whole string.
-    pub lines: Arc<[String]>,
-    /// Where each of `lines` came from: the byte range of the request's text it is a slice of,
-    /// parallel to `lines` (`text[line_ranges[i]] == lines[i]`). What lets `layout` carry a
-    /// styled run through a wrap: the runs are ranges over the source, and a line that knows its
-    /// own range can say which runs it holds (ADR-0104).
+    /// One byte range of the request's text per laid-out line, in order, each trimmed of the
+    /// whitespace a word wrap leaves behind at the break. Never empty for non-empty text, except
+    /// on a machine with no fonts. What lets `layout` carry a styled run through a wrap: the runs
+    /// are ranges over the source, and a line that knows its own range can say which runs it holds
+    /// (ADR-0104).
     pub line_ranges: Arc<[Range<usize>]>,
-    /// How each of `lines` is laid out, parallel to it (ADR-0211). Paint and link hit-testing
+    /// How each line is laid out, parallel to `line_ranges` (ADR-0211). Paint and link hit-testing
     /// read these glyphs rather than shaping the line a second time.
     pub shaped: Arc<[ShapedLine]>,
     /// The normalized axis coordinates Parley shaped each run at, in `fvar` order, indexed by
@@ -725,23 +722,17 @@ fn paragraph_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
     ranges
 }
 
-/// The heap one memo entry owns: the key's text and font runs, the result's lines, ranges and
-/// glyphs. A floor, labelled `approx` in the memory report: it leaves out the `HashMap`'s table,
-/// each line's `String` header and the coordinates. `Arc` contents count once per entry even when
-/// two entries share one, which cannot happen here: `shape` builds a fresh `ShapeResult` per miss.
+/// The heap one memo entry owns: the key's text and font runs, and the result's ranges and glyphs.
+/// A floor, labelled `approx` in the memory report: it leaves out the `HashMap`'s table and the
+/// coordinates. `Arc` contents count once per entry even when two entries share one, which cannot
+/// happen here: `shape` builds a fresh `ShapeResult` per miss.
 fn held(key: &ShapeKey, result: &ShapeResult) -> usize {
     let key_bytes =
         key.text.len() + key.runs.len() * std::mem::size_of::<FontRun>() + key.font.as_deref().map_or(0, str::len);
-    let line_bytes: usize = result.lines.iter().map(String::len).sum();
     let range_bytes = result.line_ranges.len() * std::mem::size_of::<Range<usize>>();
     let glyph_bytes: usize =
         result.shaped.iter().map(|line| std::mem::size_of::<ShapedLine>() + std::mem::size_of_val(&*line.glyphs)).sum();
-    std::mem::size_of::<ShapeKey>()
-        + std::mem::size_of::<ShapeResult>()
-        + key_bytes
-        + line_bytes
-        + range_bytes
-        + glyph_bytes
+    std::mem::size_of::<ShapeKey>() + std::mem::size_of::<ShapeResult>() + key_bytes + range_bytes + glyph_bytes
 }
 
 #[cfg(test)]
@@ -1033,8 +1024,8 @@ pub(crate) mod tests {
         assert!(spaced.width > plain.width + 5.0);
         assert!(spaced.shaped[0].glyphs[1].x > plain.shaped[0].glyphs[1].x + 3.0);
         let boundary = (plain.width + spaced.width) / 2.0;
-        assert_eq!(handle.shape(ShapeRequest { max_width: Some(boundary), ..req("AB CD", 20.0) }).lines.len(), 1);
-        assert!(handle.shape(ShapeRequest { max_width: Some(boundary), ..spaced_request }).lines.len() > 1);
+        assert_eq!(handle.shape(ShapeRequest { max_width: Some(boundary), ..req("AB CD", 20.0) }).line_ranges.len(), 1);
+        assert!(handle.shape(ShapeRequest { max_width: Some(boundary), ..spaced_request }).line_ranges.len() > 1);
     }
 
     fn coords_at(result: &ShapeResult, start: usize) -> Vec<i16> {
@@ -1119,7 +1110,7 @@ pub(crate) mod tests {
     fn paint_draws_the_lines_measurement_counts() {
         let handle = ShapingHandle::spawn();
         for text in ["a\nb", "a\r\nb", "a\n\rb", "a\r\rb", "a\n\r\nb", "a\r\n\r\nb"] {
-            assert_eq!(paragraph_ranges(text).len(), handle.shape(req(text, 20.0)).lines.len(), "{text:?}");
+            assert_eq!(paragraph_ranges(text).len(), handle.shape(req(text, 20.0)).line_ranges.len(), "{text:?}");
         }
     }
 
@@ -1160,12 +1151,11 @@ pub(crate) mod tests {
         let handle = ShapingHandle::spawn();
         let text = "first paragraph that wraps\nsecond";
         let result = handle.shape(ShapeRequest { max_width: Some(90.0), ..req(text, 14.0) });
-        assert_eq!(result.lines.len(), result.line_ranges.len());
-        assert!(result.lines.len() >= 3, "the first paragraph wraps and the second is its own line");
-        for (line, range) in result.lines.iter().zip(result.line_ranges.iter()) {
-            assert_eq!(&text[range.clone()], line.as_str(), "range {range:?} must slice to its line");
-        }
-        assert_eq!(result.lines.last().map(String::as_str), Some("second"));
+        assert_eq!(result.line_ranges.len(), result.shaped.len());
+        assert!(result.line_ranges.len() >= 3, "the first paragraph wraps and the second is its own line");
+        let slices: Vec<&str> = result.line_ranges.iter().map(|range| &text[range.clone()]).collect();
+        assert_eq!(slices[..slices.len() - 1].join(" "), "first paragraph that wraps");
+        assert_eq!(slices.last().copied(), Some("second"));
         assert_eq!(result.line_ranges.last().cloned(), Some(27..33));
     }
 
@@ -1327,7 +1317,7 @@ pub(crate) mod tests {
         let handle = ShapingHandle::spawn();
         let huge = "wide ".repeat(SHAPE_GLYPH_BYTES / std::mem::size_of::<Glyph>() / 5 + 1);
         handle.shape(req(&huge, 13.0));
-        assert!(handle.census().1 > 2 * huge.len(), "its key and its line both count");
+        assert!(handle.census().1 > huge.len(), "its key counts");
         assert!(!handle.shape_glyphs(req(&huge, 13.0)).shaped[0].glyphs.is_empty());
         assert_eq!(handle.cached_len(), 1, "only the measurement is kept");
         totals_match_a_walk(&handle);
@@ -1419,8 +1409,10 @@ pub(crate) mod tests {
     #[test]
     fn an_explicit_newline_is_two_lines() {
         let handle = ShapingHandle::spawn();
-        let result = handle.shape(req("first\nsecond", 14.0));
-        assert_eq!(&*result.lines, ["first", "second"]);
+        let text = "first\nsecond";
+        let result = handle.shape(req(text, 14.0));
+        let lines: Vec<&str> = result.line_ranges.iter().map(|range| &text[range.clone()]).collect();
+        assert_eq!(lines, ["first", "second"]);
     }
 
     /// A wrapped line carries only its own source slice, not the whole paragraph.
@@ -1428,19 +1420,20 @@ pub(crate) mod tests {
     fn a_max_width_narrower_than_the_unconstrained_text_wraps_to_more_lines() {
         const TEXT: &str = "Mantle Engine Renderer";
         let handle = ShapingHandle::spawn();
+        let slice = |r: &ShapeResult| r.line_ranges.iter().map(|range| &TEXT[range.clone()]).collect::<Vec<_>>();
         let unconstrained = handle.shape(ShapeRequest { line_height: 18.0, ..req(TEXT, 14.0) });
-        assert_eq!(&*unconstrained.lines, [TEXT], "an unwrapped string is one line holding all of it");
+        assert_eq!(slice(&unconstrained), [TEXT], "an unwrapped string is one line holding all of it");
         let wrapped = handle.shape(ShapeRequest {
             line_height: 18.0,
             max_width: Some(unconstrained.width / 2.0),
             ..req(TEXT, 14.0)
         });
-        let lines = &wrapped.lines;
+        let lines = slice(&wrapped);
         assert!(lines.len() > 1 && lines.join(" ") == TEXT, "rejoining to the source, not repeating it: {lines:?}");
         assert!(wrapped.height > unconstrained.height, "wrapping onto more lines must grow the measured height");
         assert!(wrapped.width <= unconstrained.width, "a wrapped line can't be wider than the unconstrained text");
         // Height is the line count times the step: one walk, not two counts.
-        assert_eq!(wrapped.height, wrapped.lines.len() as f32 * 18.0);
+        assert_eq!(wrapped.height, wrapped.line_ranges.len() as f32 * 18.0);
     }
 
     /// The docs shots' fonts under the chain `Noto Sans`: `●` and `✓` are in their Symbols 2 face.
@@ -1605,7 +1598,7 @@ pub(crate) mod tests {
         let plain = handle.shape(req("abc", 20.0));
         land("─");
         assert!(
-            Arc::ptr_eq(&plain.lines, &handle.shape(req("abc", 20.0)).lines),
+            Arc::ptr_eq(&plain.line_ranges, &handle.shape(req("abc", 20.0)).line_ranges),
             "a new family changes no cached text"
         );
         assert_eq!(faces_of(&handle, &handle.shape_glyphs(bold())), ["NotoSansMono-Regular"]);

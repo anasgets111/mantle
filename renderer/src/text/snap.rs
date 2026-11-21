@@ -110,27 +110,23 @@ pub fn snap_to_physical(rect: LogicalRect, scale: f32) -> PhysicalRect {
     }
 }
 
-/// Snaps a border band's two edges to whole physical pixels, and returns the snapped
-/// `(start, thickness)`, still in logical units.
+/// Snaps a border band's two edges to whole buffer pixels, returning `(start, thickness)`.
 ///
-/// `start` is the band's smaller coordinate along its thin axis, `thickness` its extent. Both
-/// edges round to the nearest integer independently, then divide back by `scale`. Rounding the
-/// edges rather than a centerline is what makes stroke parity fall out for free: measured
-/// against femtovg 0.26.0 on this machine's Mesa/Iris, a 1px stroke centered on a half-integer
-/// is one fully-lit row, a 4px stroke centered the same way blurs across five rows at partial
-/// alpha, while centered on an integer it is exactly four fully-lit rows.
-///
-/// Returns logical units, not physical: `layout::paint` builds every path in logical
-/// coordinates and `TextPainter::resize` hardcodes a device pixel ratio of 1.0, so logical and
-/// physical coincide today; `scale` is threaded through for when that stops being true.
+/// `start` is the band's smaller coordinate along its thin axis, `thickness` its extent, already
+/// in buffer pixels (`layout::paint::build` pre-scales `Draw::Box`, ADR-0301). Both edges round
+/// to the nearest integer independently. Rounding the edges rather than a centerline is what makes
+/// stroke parity fall out for free: measured against femtovg 0.26.0 on this machine's Mesa/Iris,
+/// a 1px stroke centered on a half-integer is one fully-lit row, a 4px stroke centered the same
+/// way blurs across five rows at partial alpha, while centered on an integer it is exactly four
+/// fully-lit rows.
 ///
 /// If `thickness` is positive but both edges round to the same integer, the band is forced to
-/// one physical pixel instead of vanishing.
-pub fn snap_border_band(start: f32, thickness: f32, scale: f32) -> (f32, f32) {
-    let near_edge = (start * scale).round();
-    let far_edge = ((start + thickness) * scale).round();
+/// one pixel instead of vanishing.
+pub fn snap_border_band(start: f32, thickness: f32) -> (f32, f32) {
+    let near_edge = start.round();
+    let far_edge = (start + thickness).round();
     let far_edge = if thickness > 0.0 && far_edge == near_edge { near_edge + 1.0 } else { far_edge };
-    (near_edge / scale, (far_edge - near_edge) / scale)
+    (near_edge, far_edge - near_edge)
 }
 
 #[cfg(test)]
@@ -174,15 +170,15 @@ mod tests {
     #[test]
     fn border_band_snaps_each_edge() {
         // Rounding both edges catches a near-edge-plus-unrounded-thickness shortcut.
-        for ((start, thickness, scale), expected, case) in [
-            ((4.0, 1.0, 1.0), (4.0, 1.0), "aligned"),
-            ((10.3, 3.4, 1.0), (10.0, 4.0), "each edge to nearest"),
-            ((10.1, 0.2, 1.0), (10.0, 1.0), "thinner than a pixel forced to one"),
-            ((5.1, 1.0, 2.0), (5.0, 1.0), "fractional scale"),
+        for ((start, thickness), expected, case) in [
+            ((4.0, 0.0), (4.0, 0.0), "zero stays zero"),
+            ((4.0, 1.0), (4.0, 1.0), "aligned"),
+            ((10.3, 3.4), (10.0, 4.0), "each edge to nearest"),
+            ((10.1, 0.2), (10.0, 1.0), "thinner than a pixel forced to one"),
             // Containment snapping would give 5..7 (2px, wrong for a border).
-            ((5.6, 1.0, 1.0), (6.0, 1.0), "1px band at .6 stays 1px"),
+            ((5.6, 1.0), (6.0, 1.0), "1px band at .6 stays 1px"),
         ] {
-            assert_eq!(snap_border_band(start, thickness, scale), expected, "{case}");
+            assert_eq!(snap_border_band(start, thickness), expected, "{case}");
         }
         let containment = snap_to_physical(LogicalRect { x: 5.6, y: 0.0, width: 1.0, height: 0.0 }, 1.0);
         assert_eq!((containment.x0, containment.x1), (5, 7));
