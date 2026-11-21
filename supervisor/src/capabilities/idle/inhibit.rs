@@ -11,7 +11,8 @@ use std::collections::{BTreeMap, HashMap};
 use zbus::message::Header;
 use zbus::object_server::SignalEmitter;
 
-use super::controller::{BusInhibit, IdleController};
+use super::bus::BusInhibit;
+use super::controller::IdleController;
 use super::state::IdleInhibitor;
 
 fn total(counts: &HashMap<u32, u32>) -> u32 {

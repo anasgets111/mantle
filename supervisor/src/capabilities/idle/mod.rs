@@ -16,6 +16,7 @@
 //! [`inhibit::apply_release_inhibit`] and [`inhibit::cleanup_generation_inhibit`] for refcounts.
 //! [`IdleController`] wraps them with async/Wayland operations.
 
+mod bus;
 pub mod controller;
 pub mod gate;
 pub mod inhibit;
