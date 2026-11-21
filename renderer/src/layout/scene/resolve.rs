@@ -25,9 +25,9 @@ pub struct ResolveMemo {
     /// tests.
     lua: WeakLua,
     stamp: u64,
-    cells: Vec<CellId>,
+    pub(super) cells: Rc<[CellId]>,
     /// A value was dropped: never kept, so every pass reports it until it is fixed.
-    dropped: bool,
+    pub(super) dropped: bool,
     /// No table property held a signal when `raw` was declared ([`node::tables_plain`]).
     tables_plain: bool,
     /// `[width, height]` a signal in `raw` resolved to nothing: [`drop_injected_sizes`] treats them as undeclared.
@@ -69,10 +69,7 @@ pub(super) fn resolve(
     if let Some(slot) = node::signal_at(&raw, "scroll").and_then(|signal| signal.cell_id()) {
         signal::note_reads(lua, &[slot]);
     }
-    let same = retained
-        .as_deref()
-        .and_then(|r| r.resolve_memo.as_deref())
-        .filter(|memo| memo.lua == lua.weak() && (Rc::ptr_eq(&memo.raw, &raw) || same_declaration(&memo.raw, &raw)));
+    let same = retained.as_deref().and_then(|r| r.resolve_memo.as_deref()).filter(|memo| memo.same_raw(&raw, lua));
     let (tables_plain, mut read) = same
         .map_or_else(|| (node::tables_plain(&raw), Rc::clone(&raw)), |memo| (memo.tables_plain, Rc::clone(&memo.read)));
     let (decide, decided) = (same.is_some_and(|memo| !memo.decided), same.is_some());
@@ -118,7 +115,7 @@ pub(super) fn resolve(
     let shown = retained.as_deref().map(|r| (r.tweens.as_slice(), &*r.properties));
     let (tweens, movement) = node::retarget(kind, shown, &mut properties, now, lua, reentry && shown.is_none())?;
     let omitted = ["width", "height"].map(|key| raw.contains_key(key) && !properties.contains_key(key));
-    let cells = frame.finish();
+    let cells = Rc::from(frame.finish());
     // A tween or sequence on `params` replaces the value the check parsed with its frame.
     let params = params.filter(|(read, _)| properties.get("params") == Some(read)).map(|(_, parsed)| parsed);
     let paint = node::paint_style_with(kind, &properties, params)?;
@@ -259,6 +256,10 @@ impl ResolveMemo {
     pub(super) fn read(&self, cell: CellId) -> bool {
         self.cells.contains(&cell)
     }
+
+    pub(super) fn same_raw(&self, raw: &Rc<PropMap>, lua: &Lua) -> bool {
+        self.lua == lua.weak() && (Rc::ptr_eq(&self.raw, raw) || same_declaration(&self.raw, raw))
+    }
 }
 
 /// By hand: `WeakLua` has no `Debug`.
@@ -301,6 +302,22 @@ mod tests {
             let mut fixture = Self { lua, surface, scene: Scene::new(), shaping: ShapingHandle::spawn() };
             fixture.apply().unwrap();
             fixture
+        }
+
+        fn with_dirty(source: &str) -> (Self, crate::lua::signal::DirtyFlag, mlua::Table) {
+            let dirty = crate::lua::signal::DirtyFlag::new();
+            let lua = crate::layout::node::scene_lua();
+            crate::lua::signal::register(&lua, dirty.clone()).unwrap();
+            let table: mlua::Table = lua.load(source).eval().unwrap();
+            let mut fixture = Self {
+                lua,
+                surface: crate::lua::nodes::deserialize_lua_table(&table).unwrap(),
+                scene: Scene::new(),
+                shaping: ShapingHandle::spawn(),
+            };
+            fixture.apply().unwrap();
+            let _ = dirty.take_scope(&fixture.lua);
+            (fixture, dirty, table)
         }
 
         fn apply(&mut self) -> Result<(), LayoutError> {
@@ -799,5 +816,125 @@ mod tests {
         assert!(measured.properties.contains_key("width"));
         assert!(!measured_memo.raw().contains_key("width"), "Rc::make_mut must not mutate ResolveMemo.raw");
         assert!(!std::rc::Rc::ptr_eq(&measured.properties, measured_memo.raw()));
+    }
+
+    /// #155: after unrelated writes skip a deep subtree, read-tracking, isolated paint writes, and
+    /// computed layout writes deep inside still fire, and parent resizes still update descendants.
+    #[test]
+    fn a_written_cell_deep_in_a_skipped_subtree_still_reaches_layout_and_paint() {
+        let (mut bar, dirty, table) = Fixture::with_dirty(
+            r##"runs = 0
+            tick, box_w, deep_w, deep_bg = state("tick", "0"), state("box_w", 200), state("deep_w", 10), state("deep_bg", "#101010")
+            local doubled = deep_w:map(function(w) runs = runs + 1 return w * 2 end)
+            return panel { id = "bar", child = column { width = box_w, children = {
+                text { content = tick },
+                row { width = "fill", children = { column { width = "fill", children = {
+                    rect { width = doubled, height = 10, background = deep_bg },
+                    rect { width = "fill", height = 10, background = "#202020" },
+                } } } },
+            } } }"##,
+        );
+        fn deep(bar: &Fixture) -> &ResolvedNode {
+            &bar.child(1).children[0].children[0]
+        }
+        let fill_w = |bar: &Fixture| bar.child(1).children[0].children[1].rect.width;
+        let (stamp0, cells0, _) = bar.child(1).subtree.clone().expect("deep subtree is skippable");
+        // Unrelated write skips the deep subtree (`Rc::ptr_eq` fails if `build_subtree` re-ran).
+        bar.run(r#"tick:set("1")"#);
+        let _ = dirty.take_scope(&bar.lua);
+        let sub1 = bar.child(1).subtree.as_ref().unwrap();
+        assert!(std::rc::Rc::ptr_eq(&cells0, &sub1.1) && sub1.0 > stamp0);
+        assert_eq!((deep(&bar).rect.width, fill_w(&bar), bar.runs()), (20.0, 200.0, 1));
+        // Parent resize still updates descendants while keeping the subtree skipped.
+        bar.run("box_w:set(120)");
+        let _ = dirty.take_scope(&bar.lua);
+        assert!(std::rc::Rc::ptr_eq(&cells0, &bar.child(1).subtree.as_ref().unwrap().1));
+        assert_eq!((fill_w(&bar), bar.runs()), (120.0, 1));
+        // Isolated paint-only write deep inside dirties the instance and updates target color.
+        let paint_before = crate::layout::paint::build(bar.scene.surface("bar@TEST").unwrap(), 1.0, None);
+        let target_paint_before = deep(&bar).paint.clone();
+        bar.lua.load(r##"deep_bg:set("#ff0000")"##).exec().unwrap();
+        assert_eq!(dirty.take_scope(&bar.lua), crate::lua::signal::DirtyScope::Instances(vec!["bar@TEST".into()]));
+        bar.apply().unwrap();
+        assert_eq!(string(deep(&bar), "background"), "#ff0000");
+        assert_ne!(deep(&bar).paint, target_paint_before);
+        let paint_after = crate::layout::paint::build(bar.scene.surface("bar@TEST").unwrap(), 1.0, None);
+        assert_ne!(paint_before, paint_after);
+        assert!(!paint_after.damage_since(&paint_before, true).is_empty());
+        // A second skip with a freshly deserialized equal declaration proves `same_raw`,
+        // `ReadTracker`, and `stamp` stayed live.
+        let root_memo = bar.scene.surface("bar@TEST").unwrap().resolve_memo.as_ref().unwrap().clone();
+        let cells2 = bar.child(1).subtree.as_ref().unwrap().1.clone();
+        bar.surface = crate::lua::nodes::deserialize_lua_table(&table).unwrap();
+        bar.run(r#"tick:set("2")"#);
+        let _ = dirty.take_scope(&bar.lua);
+        assert!(std::rc::Rc::ptr_eq(&root_memo, bar.scene.surface("bar@TEST").unwrap().resolve_memo.as_ref().unwrap()));
+        assert!(std::rc::Rc::ptr_eq(&cells2, &bar.child(1).subtree.as_ref().unwrap().1));
+        assert_eq!(bar.runs(), 2);
+        bar.lua.load("deep_w:set(45)").exec().unwrap();
+        assert_eq!(dirty.take_scope(&bar.lua), crate::lua::signal::DirtyScope::Instances(vec!["bar@TEST".into()]));
+        bar.apply().unwrap();
+        assert_eq!((deep(&bar).rect.width, bar.runs()), (90.0, 4));
+    }
+
+    /// #155: a skipped wrapping container whose outer size holds still reads back moved descendants.
+    #[test]
+    fn a_skipped_wrapping_subtree_reads_back_moved_descendants_when_its_size_holds() {
+        let mut bar = Fixture::new(
+            r#"w = state("w", nil)
+            return panel { id = "bar", child = column { children = {
+                rect { width = w, children = {
+                    row { max_width = 100, height = 40, wrap = true, children = {
+                        rect { width = "50%", height = 10 },
+                        rect { width = "50%", height = 10 },
+                        rect { width = 50, height = 10 },
+                    } },
+                } },
+            } } }"#,
+        );
+        fn row(bar: &Fixture) -> &ResolvedNode {
+            &bar.child(0).children[0]
+        }
+        let cells0 = row(&bar).subtree.as_ref().unwrap().1.clone();
+        assert_eq!((row(&bar).rect.width, row(&bar).rect.height, row(&bar).children[2].rect.y), (50.0, 40.0, 0.0));
+        bar.run("w:set(40)");
+        assert!(std::rc::Rc::ptr_eq(&cells0, &row(&bar).subtree.as_ref().unwrap().1));
+        assert_eq!((row(&bar).rect.width, row(&bar).rect.height, row(&bar).children[2].rect.y), (50.0, 40.0, 10.0));
+    }
+
+    /// #155: `keep_item` and `prepare` list-item skips reuse subtrees while keeping reads live.
+    #[test]
+    fn a_kept_list_item_reuses_its_subtree_and_still_updates_when_written() {
+        let (mut bar, dirty, _) = Fixture::with_dirty(
+            r#"a, b, c, items = state("a", "a1"), state("b", "b1"), state("c", "c1"), state("items", { 1 })
+            return panel { id = "bar", child = column { children = {
+                list { items = { 1, 2 }, each = function(i)
+                    return row { children = { text { content = i == 1 and a or b } } }
+                end },
+                list { items = items, each = function() return text { content = c } end },
+            } } }"#,
+        );
+        fn item(bar: &Fixture, list: usize, i: usize) -> &ResolvedNode {
+            &bar.child(list).children[i]
+        }
+        let cells1 = item(&bar, 0, 1).subtree.as_ref().unwrap().1.clone();
+        bar.run(r#"a:set("a2")"#);
+        let _ = dirty.take_scope(&bar.lua);
+        assert!(std::rc::Rc::ptr_eq(&cells1, &item(&bar, 0, 1).subtree.as_ref().unwrap().1));
+        assert_eq!(string(&item(&bar, 0, 0).children[0], "content"), "a2");
+        bar.lua.load(r#"b:set("b2")"#).exec().unwrap();
+        assert_eq!(dirty.take_scope(&bar.lua), crate::lua::signal::DirtyScope::Instances(vec!["bar@TEST".into()]));
+        bar.apply().unwrap();
+        assert_eq!(string(&item(&bar, 0, 1).children[0], "content"), "b2");
+        // List rebuild whose fresh leaf item matches the retained one hits `prepare`'s Kept path
+        // and must still record its reads in `list_memo` (`memo.item_read`).
+        let leaf_cells = item(&bar, 1, 0).subtree.as_ref().unwrap().1.clone();
+        bar.run("items:set({ 1 })");
+        let _ = dirty.take_scope(&bar.lua);
+        assert!(std::rc::Rc::ptr_eq(&leaf_cells, &item(&bar, 1, 0).subtree.as_ref().unwrap().1));
+        bar.lua.load(r#"c:set("c2")"#).exec().unwrap();
+        assert_eq!(dirty.take_scope(&bar.lua), crate::lua::signal::DirtyScope::Instances(vec!["bar@TEST".into()]));
+        bar.apply().unwrap();
+        assert_eq!(string(item(&bar, 1, 0), "content"), "c2");
     }
 }

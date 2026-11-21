@@ -39,6 +39,7 @@ impl ResolvedNode {
             list_memo: None,
             child_table: None,
             resolve_memo: None,
+            subtree: None,
             site: None,
         }
     }
@@ -144,6 +145,9 @@ impl LayoutStyle {
     }
 }
 
+/// Bottom-up summary of a skippable subtree (#155): `(verified_stamp, cells, boxed)`.
+pub(crate) type SubtreeMemo = (u64, std::rc::Rc<[crate::lua::signal::CellId]>, bool);
+
 /// The one node type: what a pass produces, what [`Scene`] retains for the next reconcile, and
 /// what every reader borrows. Geometry, parsed paint, and the resolved property map retained for
 /// `hover`, callbacks, and surface specs (`wayland::surface::apply_resolved_state` re-derives
@@ -243,6 +247,8 @@ pub struct ResolvedNode {
     /// What `properties` were resolved from, so a pass that finds it unchanged keeps them. Shared,
     /// so the rollback copy of the tree does not copy the raw values it holds.
     pub resolve_memo: Option<std::rc::Rc<ResolveMemo>>,
+    /// `Some` when this subtree can be skipped whole while none of its cells is written (#155).
+    pub(crate) subtree: Option<SubtreeMemo>,
     /// The line that built it, so a pass can tell a re-render from a different node taking its place.
     pub(crate) site: Option<Site>,
 }

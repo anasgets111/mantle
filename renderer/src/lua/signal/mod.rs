@@ -53,7 +53,7 @@ pub(crate) use tracking::{
 use tracking::{Evaluation, Output};
 
 /// Globally unique identifier for a reactive cell, avoiding pointer recycling issues (ADR-0170).
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub(crate) struct CellId(u64);
 
 fn next_cell_id() -> CellId {

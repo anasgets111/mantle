@@ -23,8 +23,8 @@ mod tick;
 pub use census::ResolveSplit;
 pub(crate) use census::timing_on;
 use census::{census_walk, close, open_span};
-pub(crate) use resolved::LayoutStyle;
 pub use resolved::ResolvedNode;
+pub(crate) use resolved::{LayoutStyle, SubtreeMemo};
 pub use scroll::WheelScroll;
 pub use tick::TickSplit;
 
@@ -443,7 +443,8 @@ impl Scene {
             prepare(self, &mut tree, existing, fresh.kind, resolved, (None, 0.0), (false, false, true), lua, now, 0)?;
         close(&mut at, &mut self.resolve_split.resolve);
         let fonts = (shaping, &self.field_drafts, (self.font_generation, self.restyles));
-        let solved = solve_instance(&mut tree, prepared, available, fonts, now)?;
+        let solved =
+            solve_instance(&mut tree, prepared, available, fonts, now, Some(crate::lua::signal::write_clock(lua)))?;
         publish_geometry(&solved, 0.0, 0.0, lua, false, Some(geometry_undo))
             .map_err(|e| node::invalid("geometry", e.to_string()))?;
         if !geometry_undo.is_empty() {
@@ -596,6 +597,12 @@ fn ensure_node_admissible(kind: &str, depth: u32) -> Result<(), LayoutError> {
     Ok(())
 }
 
+/// A child prepared by [`prepare`] (`Built`) or skipped whole with its retained tree (`Kept`, #155).
+enum PreparedChild {
+    Built(PreparedNode),
+    Kept(ResolvedNode),
+}
+
 /// One node after identity, resolution and parsing, and before geometry: everything a
 /// [`ResolvedNode`] needs except the rect, plus the taffy node that rect will come out of.
 ///
@@ -613,7 +620,7 @@ struct PreparedNode {
     /// Advanced to the pass's instant before it is carried; see [`ResolvedNode::dissolve`].
     dissolve: Option<Box<Dissolve>>,
     taffy: taffy::NodeId,
-    children: Vec<PreparedNode>,
+    children: Vec<PreparedChild>,
     /// The retained children of a node that is not `visible` this pass, carried through untouched
     /// (ADR-0124): not rebuilt, not laid out, not dropped. `children` is empty whenever this is
     /// not.

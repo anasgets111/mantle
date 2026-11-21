@@ -14,11 +14,12 @@ use super::solver::{
 };
 use super::tick::{advance_leaving, advanced_dissolve, prepare_retained};
 use super::{
-    LayoutStyle, LogicalSize, NodeId, PreparedNode, ResolvedNode, Scene, close, ensure_node_admissible, open_span,
+    LayoutStyle, LogicalSize, NodeId, PreparedChild, PreparedNode, ResolvedNode, Scene, close, ensure_node_admissible,
+    open_span,
 };
 use crate::layout::node::{self, LayoutError, PropMap, SizeMode, fields};
 use crate::lua::nodes::VirtualNode;
-use crate::lua::signal::{ComputedFrame, ScrollRequest};
+use crate::lua::signal::{self, ComputedFrame, ScrollRequest};
 use crate::text::shaping::ShapingHandle;
 
 /// Resolves only a surface root's `Fill`/`Percent` against available room. `Content` stays `auto`
@@ -42,6 +43,7 @@ pub(super) fn solve_instance(
     available: LogicalSize,
     (shaping, drafts, fonts): (&ShapingHandle, &FieldDrafts, (u64, u64)),
     now: Instant,
+    subtree_stamp: Option<u64>,
 ) -> Result<ResolvedNode, LayoutError> {
     let style = &prepared.style;
     let forced = forced_root_size(prepared.allocated_axes, style, available);
@@ -66,7 +68,7 @@ pub(super) fn solve_instance(
     if measure_content_sizes(tree, &mut prepared, now)?.0 {
         solve(tree, prepared.taffy, available, (shaping, drafts))?;
     }
-    finish(tree, prepared, (shaping, drafts, fonts), now).map(|(node, _)| node)
+    finish(tree, prepared, (shaping, drafts, fonts), now, subtree_stamp).map(|(node, _)| node)
 }
 
 /// A content-sized `width` or `height` with an `animate` entry has no target until it is solved.
@@ -92,6 +94,7 @@ fn measure_content_sizes(
     }
     let (mut pinned, mut inner) = (false, false);
     for child in &mut node.children {
+        let PreparedChild::Built(child) = child else { continue };
         let (child_pinned, child_moving) = measure_content_sizes(tree, child, now)?;
         (pinned, inner) = (pinned | child_pinned, inner | child_moving);
     }
@@ -269,7 +272,15 @@ pub(super) fn prepare(
     // of the 744-byte candidate in this frame, one per tree level.
     for index in 0..fresh_children.len() {
         let Some(VirtualNode { kind: child_kind, properties: child_raw, site }) = fresh_children[index].take() else {
-            keep_item(tree, &mut node, &mut matched_candidates[index], (own_axis, old_scroll), lua, now, thawing)?;
+            keep_item(
+                tree,
+                &mut node,
+                &mut matched_candidates[index],
+                (own_axis, old_scroll),
+                lua,
+                now,
+                (thawing, same_child_flow),
+            )?;
             continue;
         };
         // Every failure below names this child, so the message that reaches a human is the path
@@ -291,6 +302,26 @@ pub(super) fn prepare(
             shared::warn!("{}", swap_message(pair));
         }
         let mut reusable = reusable_for(&mut matched_candidates[index], child_kind, &mut unclaimed);
+        // #155: skip a retained subtree no written cell reaches.
+        if same_child_flow
+            && !thawing
+            && !reentry
+            && let Some(mut kept) = reusable.take_if(|r| {
+                r.site == site
+                    && r.taffy.is_some()
+                    && r.resolve_memo.as_deref().is_some_and(|m| m.same_raw(&child_raw, lua))
+                    && r.subtree.as_ref().is_some_and(|(s, c, _)| !signal::written_since(*s, c))
+            })
+        {
+            let (stamp, cells, _) = kept.subtree.as_mut().expect("checked above");
+            signal::note_reads(lua, cells);
+            *stamp = signal::write_clock(lua);
+            if let Some(memo) = node.list_memo.as_mut() {
+                memo.item_read(index, cells, false);
+            }
+            node.children.push(PreparedChild::Kept(kept));
+            continue;
+        }
         // A row built before comes back into a windowed list without its entrance (ADR-0374).
         let id = || fields::common::id.read(&child_raw).ok().flatten();
         let seen = |memo: &node::ListMemo| id().and_then(|id| memo.at(&id)).is_some_and(|at| !memo.added[at]);
@@ -316,7 +347,7 @@ pub(super) fn prepare(
         match child {
             Ok(mut child) => {
                 child.site = site;
-                node.children.push(child);
+                node.children.push(PreparedChild::Built(child));
             }
             Err(err @ LayoutError::TreeTooDeep { .. }) => return Err(err),
             Err(err) => failed.extend(err.into_each().into_iter().map(here)),
@@ -334,14 +365,24 @@ pub(super) fn prepare(
     if let Some(memo) = node.list_memo.as_deref_mut() {
         (memo.placed, memo.resized) = (true, false);
         let (lead, trail) = memo.room();
-        let first = node.children.iter().position(|child| child.style.visible);
-        let last = node.children.iter().rposition(|child| child.style.visible);
+        let visible = |c: &PreparedChild| match c {
+            PreparedChild::Built(c) => c.style.visible,
+            PreparedChild::Kept(c) => c.visible,
+        };
+        let first = node.children.iter().position(visible);
+        let last = node.children.iter().rposition(visible);
         for (index, child) in node.children.iter_mut().enumerate() {
             let room = (if first == Some(index) { lead } else { 0.0 }, if last == Some(index) { trail } else { 0.0 });
-            if child.style.window != room {
-                std::rc::Rc::make_mut(&mut child.style).window = room;
-                let measure = measure_for(child.id, child.kind, child.paint.as_ref(), &child.properties, &child.style)?;
-                update_solver_node(tree, child.taffy, child.kind, &child.properties, &child.style, own_axis, measure)?;
+            let (id, kind, taffy, style, paint, props) = match child {
+                PreparedChild::Built(c) => (c.id, c.kind, c.taffy, &mut c.style, c.paint.as_ref(), &c.properties),
+                PreparedChild::Kept(c) => {
+                    (c.id, c.kind, c.taffy.expect("kept"), &mut c.layout_style, c.paint.as_ref(), &c.properties)
+                }
+            };
+            if style.window != room {
+                std::rc::Rc::make_mut(style).window = room;
+                let measure = measure_for(id, kind, paint, props, style)?;
+                update_solver_node(tree, taffy, kind, props, style, own_axis, measure)?;
             }
         }
     }
@@ -406,15 +447,24 @@ fn keep_item(
     parent_flow: (Option<MainAxis>, f32),
     lua: &Lua,
     now: Instant,
-    thawing: bool,
+    (thawing, same_flow): (bool, bool),
 ) -> Result<(), LayoutError> {
-    let kept = kept.take().expect("a kept item is paired with itself");
+    let mut kept = kept.take().expect("a kept item is paired with itself");
+    if same_flow
+        && !thawing
+        && kept.taffy.is_some()
+        && let Some((stamp, _, _)) = kept.subtree.as_mut()
+    {
+        *stamp = signal::write_clock(lua);
+        node.children.push(PreparedChild::Kept(kept));
+        return Ok(());
+    }
     let item = prepare_retained(tree, kept, parent_flow, lua, now, true, thawing)?;
     // The list's direction can flip with no change of the item's own. Below it, a parent's axis
     // changes only with that parent's properties, which already refresh it.
     let measure = measure_for(item.id, item.kind, item.paint.as_ref(), &item.properties, &item.style)?;
     update_solver_node(tree, item.taffy, item.kind, &item.properties, &item.style, parent_flow.0, measure)?;
-    node.children.push(item);
+    node.children.push(PreparedChild::Built(item));
     Ok(())
 }
 

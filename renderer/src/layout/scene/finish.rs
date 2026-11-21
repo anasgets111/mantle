@@ -1,3 +1,4 @@
+use std::rc::Rc;
 use std::time::Instant;
 
 use mlua::Value;
@@ -6,10 +7,63 @@ use super::field::FieldDrafts;
 use super::fit::fit_text_to_box;
 use super::scroll::{ease_request, outruns_window, scroll_children, viewport};
 use super::solver::{MainAxis, Measure, main_axis_of, taffy_failed};
-use super::{LogicalSize, PreparedNode, ResolvedNode};
+use super::{LogicalSize, PreparedChild, PreparedNode, ResolvedNode, SubtreeMemo};
 use crate::layout::node::{self, LayoutError};
+use crate::lua::signal::CellId;
 use crate::text::shaping::ShapingHandle;
 use crate::text::snap::LogicalRect;
+
+/// Read-back for a skipped subtree (#155): pulls every solved rect back from taffy.
+fn finish_kept(tree: &taffy::TaffyTree<Measure>, node: &mut ResolvedNode) -> Result<bool, LayoutError> {
+    let layout = tree.layout(node.taffy.expect("kept subtree holds solver node")).map_err(taffy_failed)?;
+    let (loc, sz) = (layout.location, layout.size);
+    node.rect = LogicalRect { x: loc.x, y: loc.y, width: sz.width, height: sz.height };
+    for child in &mut node.children {
+        finish_kept(tree, child)?;
+    }
+    Ok(node.subtree.as_ref().is_some_and(|sub| sub.2))
+}
+
+/// Denylist for subtree skip eligibility (#155): any new per-node work in `prepare`, `resolve`, or
+/// `finish` that depends on anything outside this node's cells must be excluded here.
+///
+/// ponytail: a layout-tween tick (`relayout_retained`) drops memos across its instance, and each
+/// rebuilt interior level sorts and allocates the union of its children's cells. Upgrade: preserve
+/// memos across ticks and share or flatten cell sets if interior rebuilds show up in profiles.
+fn build_subtree(node: &ResolvedNode, stamp: Option<u64>, boxed: bool, no_leavers: bool) -> Option<SubtreeMemo> {
+    let stamp = stamp.filter(|_| {
+        node.visible
+            && no_leavers
+            && node.kind != "textfield"
+            && !node.properties.contains_key("scroll")
+            && !node.properties.contains_key("animate")
+            && node.dissolve.is_none()
+            && node.tweens.is_empty()
+            && node.movement.is_none()
+            && !matches!(
+                &node.paint,
+                Some(node::PaintStyle::Text { wrap, elide, .. })
+                    if *wrap == node::Wrap::Word || *elide != node::Elide::None
+            )
+            && !matches!(&node.paint, Some(node::PaintStyle::Image { retain: true, transition: Some(_), .. }))
+            && node.list_memo.as_deref().is_none_or(|l| l.window.is_none())
+            && node.children.iter().all(|c| c.subtree.is_some())
+    })?;
+    let memo = node.resolve_memo.as_deref().filter(|m| !m.dropped)?;
+    let list = node.list_memo.as_deref();
+    if node.children.is_empty() && list.is_none() {
+        return Some((stamp, Rc::clone(&memo.cells), boxed));
+    }
+    let mut all: Vec<CellId> = memo.cells.iter().copied().collect();
+    if let Some(l) = list {
+        all.extend_from_slice(&l.cells);
+        l.items.iter().for_each(|i| all.extend_from_slice(&i.built));
+    }
+    node.children.iter().for_each(|c| all.extend_from_slice(&c.subtree.as_ref().expect("checked").1));
+    all.sort_unstable();
+    all.dedup();
+    Some((stamp, Rc::from(all), boxed))
+}
 
 /// The second walk: solved geometry back out of the tree and into retained nodes.
 ///
@@ -23,6 +77,7 @@ pub(super) fn finish(
     prepared: PreparedNode,
     (shaping, drafts, fonts): (&ShapingHandle, &FieldDrafts, (u64, u64)),
     now: Instant,
+    subtree_stamp: Option<u64>,
 ) -> Result<(ResolvedNode, bool), LayoutError> {
     let PreparedNode {
         id,
@@ -55,6 +110,7 @@ pub(super) fn finish(
         Some(Measure::Text { memo: Some((width, size, boxed)), .. }) => (width.is_none().then_some(size.width), *boxed),
         _ => (None, false),
     };
+    let no_leavers = leaving.is_empty();
 
     // Frozen children come back as they were (see `prepare`): no scroll offset applied again to
     // rects that already carry one, no text refitted to a box that was not laid out.
@@ -64,7 +120,13 @@ pub(super) fn finish(
         let windowed = list_memo.as_deref().is_some_and(node::ListMemo::windowed);
         let mut bits = Vec::with_capacity(if windowed { children.len() } else { 0 });
         for child in children {
-            let (child, bit) = finish(tree, child, (shaping, drafts, fonts), now)?;
+            let (child, bit) = match child {
+                PreparedChild::Built(child) => finish(tree, child, (shaping, drafts, fonts), now, subtree_stamp)?,
+                PreparedChild::Kept(mut child) => {
+                    let bit = finish_kept(tree, &mut child)?;
+                    (child, bit)
+                }
+            };
             boxed |= bit;
             bits.extend(windowed.then_some(bit));
             built.push(child);
@@ -145,11 +207,13 @@ pub(super) fn finish(
         list_memo,
         child_table,
         resolve_memo,
+        subtree: None,
         site,
         field_top,
     };
     super::field::refit(&mut node, drafts, shaping, fonts.0);
     retarget_move(&mut node, prior_position, now);
+    node.subtree = build_subtree(&node, subtree_stamp, boxed, no_leavers);
     // A window the pass came up short of builds again this turn (`Scene::read_by_lua`): the
     // viewport outgrew the one it was planned for, or its new items were shorter than estimated.
     if node.visible

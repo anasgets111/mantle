@@ -118,7 +118,7 @@ pub struct ListMemo {
     lua: WeakLua,
     limit: Option<usize>,
     stamp: u64,
-    cells: Vec<CellId>,
+    pub(crate) cells: Vec<CellId>,
     /// One per item built, in the order the list holds them.
     pub items: Vec<ItemMemo>,
     /// A keyed scrolling list's every element and key; `None` for any other list.
@@ -176,7 +176,7 @@ pub struct ItemMemo {
     site: Option<Site>,
     stamp: u64,
     /// What the `each` call read: a write to one builds the item again.
-    built: Vec<CellId>,
+    pub(crate) built: Vec<CellId>,
     /// What resolving its subtree read: a write to one resolves the kept declaration again.
     resolved: Vec<CellId>,
     /// Its subtree dropped a value, so it resolves again each pass to report it.

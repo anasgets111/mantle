@@ -386,9 +386,14 @@ pub(super) fn update_solver_node(
 pub(super) fn set_solver_children(
     tree: &mut taffy::TaffyTree<Measure>,
     parent: taffy::NodeId,
-    children: &[super::PreparedNode],
+    children: &[super::PreparedChild],
 ) -> Result<(), LayoutError> {
-    let ids = || children.iter().map(|child| child.taffy);
+    let ids = || {
+        children.iter().map(|child| match child {
+            super::PreparedChild::Built(node) => node.taffy,
+            super::PreparedChild::Kept(node) => node.taffy.expect("kept subtree holds solver node"),
+        })
+    };
     if !tree.child_ids(parent).eq(ids()) {
         tree.set_children(parent, &ids().collect::<Vec<_>>()).map_err(taffy_failed)?;
     }

@@ -167,7 +167,7 @@ fn relayout_retained(
 ) -> Result<ResolvedNode, LayoutError> {
     let prepared = prepare_retained(tree, root, (None, 0.0), lua, now, false, false)?;
     close(at, &mut split.prepare);
-    let solved = solve_instance(tree, prepared, available, fonts, now);
+    let solved = solve_instance(tree, prepared, available, fonts, now, None);
     close(at, &mut split.solve);
     solved
 }
@@ -312,7 +312,7 @@ fn prepare_retained_children(
                 node.leaving.push(child);
             }
         } else {
-            node.children.push(prepare_retained(
+            node.children.push(super::PreparedChild::Built(prepare_retained(
                 tree,
                 child,
                 (own_axis, old_scroll),
@@ -320,7 +320,7 @@ fn prepare_retained_children(
                 now,
                 move_on_solve,
                 thawing,
-            )?);
+            )?));
         }
     }
     if had_leavers {
