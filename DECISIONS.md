@@ -9479,3 +9479,19 @@ show them or skip its own lock and blank. A newer `BlockInhibited` edge cancels 
 `ListInhibitors` call, so a slow roster read never holds up a gate change. Rejected: gating on
 `sleep` (the unlocked-screen case above); polling `ListInhibitors` (ADR-0139). Video stops
 inhibiting when Zen leaves the foreground: Gecko's choice, outside Mantle.
+
+## 0413. A retained subtree no written cell reaches is kept whole, behind a denylist
+
+One written signal re-resolved, re-prepared and re-finished its whole surface instance. Each
+eligible `ResolvedNode` now carries a bottom-up memo of the cells read under it, its pass stamp and
+whether its text shaped glyph 0; in `prepare` and `keep_item` a retained child whose declaration,
+site, flow axis and solver node match and whose cells were not written since is kept whole, and
+`finish_kept` reads its solved rects back so a moved subtree still publishes geometry and hover.
+Measured on the laptop, headless: a 50-chip bar 0.161 → 0.067 ms a pass, a 500-row list with a
+clock 1.56 → 0.60 ms; on hardware `heavy-shell` busy −8.4 % a pass. Eligibility is a denylist of
+states and properties (`animate`, `scroll`, `textfield`, wrapped or elided text, dissolve, tweens,
+movement, windowed lists, leavers, dropped values, hidden): any new per-node step in `prepare`,
+`resolve` or `finish` that reads more than the node's own cells must join it. Font landings,
+rollback and VM reloads drop every solver node, so nothing is kept on those passes. Rejected: a
+node-kind allowlist (the hazards are per state and property, not per kind); an undo log in place
+of the rollback clone (#154: 0.8 % of a frame on hardware, needs `prepare` restructured).
