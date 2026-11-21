@@ -306,6 +306,7 @@ pub(super) fn prepare(
         if same_child_flow
             && !thawing
             && !reentry
+            && keep_allowed()
             && let Some(mut kept) = reusable.take_if(|r| {
                 r.site == site
                     && r.taffy.is_some()
@@ -319,6 +320,8 @@ pub(super) fn prepare(
             if let Some(memo) = node.list_memo.as_mut() {
                 memo.item_read(index, cells, false);
             }
+            #[cfg(test)]
+            tests::KEPT_SUBTREES.set(tests::KEPT_SUBTREES.get() + 1);
             node.children.push(PreparedChild::Kept(kept));
             continue;
         }
@@ -452,10 +455,13 @@ fn keep_item(
     let mut kept = kept.take().expect("a kept item is paired with itself");
     if same_flow
         && !thawing
+        && keep_allowed()
         && kept.taffy.is_some()
         && let Some((stamp, _, _)) = kept.subtree.as_mut()
     {
         *stamp = signal::write_clock(lua);
+        #[cfg(test)]
+        tests::KEPT_SUBTREES.set(tests::KEPT_SUBTREES.get() + 1);
         node.children.push(PreparedChild::Kept(kept));
         return Ok(());
     }
@@ -613,7 +619,17 @@ pub(super) fn prior_position(
 }
 
 #[cfg(test)]
-mod tests {
+fn keep_allowed() -> bool {
+    !tests::FORCE_BUILT.get()
+}
+
+#[cfg(not(test))]
+const fn keep_allowed() -> bool {
+    true
+}
+
+#[cfg(test)]
+pub(super) mod tests {
     use super::*;
     use crate::layout::node::scene_lua;
     use crate::layout::scene::tests::{applied, apply_at, apply_on_two_outputs, full, surface_from};
@@ -622,6 +638,19 @@ mod tests {
     use crate::text::fonts::covering_file;
     use crate::text::shaping::tests::land;
     use std::sync::mpsc::Sender;
+
+    thread_local! {
+        /// Forces every child down `PreparedChild::Built` on this thread (#167).
+        pub(in crate::layout::scene) static FORCE_BUILT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        /// Subtrees kept whole as `PreparedChild::Kept` on this thread (#167).
+        pub(in crate::layout::scene) static KEPT_SUBTREES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    pub(in crate::layout::scene) fn with_forced_built<T>(f: impl FnOnce() -> T) -> T {
+        let prev = FORCE_BUILT.replace(true);
+        let _reset = std::mem::DropGuard::new(prev, |prev| FORCE_BUILT.set(prev));
+        f()
+    }
 
     #[test]
     fn a_hidden_subtree_is_frozen_rather_than_rebuilt_and_thaws_with_its_ids() {

@@ -34,6 +34,7 @@ fn build_subtree(node: &ResolvedNode, stamp: Option<u64>, boxed: bool, no_leaver
     let stamp = stamp.filter(|_| {
         node.visible
             && no_leavers
+            && !matches!(node.kind, "panel" | "window" | "popup" | "lock")
             && node.kind != "textfield"
             && !node.properties.contains_key("scroll")
             && !node.properties.contains_key("animate")

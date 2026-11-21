@@ -715,22 +715,22 @@ mod tests {
         assert_eq!(bar.runs(), 2);
     }
 
+    const TEXT_FIT_AND_ANIMATE: &str = r##"tick = state("tick", "0")
+        box_w = state("box_w", 300)
+        fg = state("fg", "#000000")
+        return panel { id = "bar", child = column { width = box_w, children = {
+            text { content = tick },
+            text { content = "plain label" },
+            text { content = "fit-then-elide", width = "fill", elide = "end" },
+            text { content = "alpha omega", width = "fill", wrap = "word" },
+            text { content = { { text = "hi ", bold = true }, { text = "long tail here" } },
+                width = "fill", wrap = "word", max_lines = 1, elide = "end" },
+            text { content = "glow", foreground = fg, animate = { foreground = 100 } },
+        } } }"##;
+
     #[test]
     fn kept_plain_text_reuses_paint_while_wrapped_elided_and_animated_text_refits() {
-        let mut bar = Fixture::new(
-            r##"tick = state("tick", "0")
-            box_w = state("box_w", 300)
-            fg = state("fg", "#000000")
-            return panel { id = "bar", child = column { width = box_w, children = {
-                text { content = tick },
-                text { content = "plain label" },
-                text { content = "fit-then-elide", width = "fill", elide = "end" },
-                text { content = "alpha omega", width = "fill", wrap = "word" },
-                text { content = { { text = "hi ", bold = true }, { text = "long tail here" } },
-                    width = "fill", wrap = "word", max_lines = 1, elide = "end" },
-                text { content = "glow", foreground = fg, animate = { foreground = 100 } },
-            } } }"##,
-        );
+        let mut bar = Fixture::new(TEXT_FIT_AND_ANIMATE);
         let text_paint = |bar: &Fixture, i: usize| match &bar.child(i).paint {
             Some(PaintStyle::Text { content, runs, color, elided, .. }) => {
                 (content.clone(), runs.clone(), *color, *elided)
@@ -818,22 +818,22 @@ mod tests {
         assert!(!std::rc::Rc::ptr_eq(&measured.properties, measured_memo.raw()));
     }
 
+    const DEEP_SKIPPED_SUBTREE: &str = r##"runs = 0
+        tick, box_w, deep_w, deep_bg = state("tick", "0"), state("box_w", 200), state("deep_w", 10), state("deep_bg", "#101010")
+        local doubled = deep_w:map(function(w) runs = runs + 1 return w * 2 end)
+        return panel { id = "bar", child = column { width = box_w, children = {
+            text { content = tick },
+            row { width = "fill", children = { column { width = "fill", children = {
+                rect { width = doubled, height = 10, background = deep_bg },
+                rect { width = "fill", height = 10, background = "#202020", geometry = geometry("fill") },
+            } } } },
+        } } }"##;
+
     /// #155: after unrelated writes skip a deep subtree, read-tracking, isolated paint writes, and
     /// computed layout writes deep inside still fire, and parent resizes still update descendants.
     #[test]
     fn a_written_cell_deep_in_a_skipped_subtree_still_reaches_layout_and_paint() {
-        let (mut bar, dirty, table) = Fixture::with_dirty(
-            r##"runs = 0
-            tick, box_w, deep_w, deep_bg = state("tick", "0"), state("box_w", 200), state("deep_w", 10), state("deep_bg", "#101010")
-            local doubled = deep_w:map(function(w) runs = runs + 1 return w * 2 end)
-            return panel { id = "bar", child = column { width = box_w, children = {
-                text { content = tick },
-                row { width = "fill", children = { column { width = "fill", children = {
-                    rect { width = doubled, height = 10, background = deep_bg },
-                    rect { width = "fill", height = 10, background = "#202020" },
-                } } } },
-            } } }"##,
-        );
+        let (mut bar, dirty, table) = Fixture::with_dirty(DEEP_SKIPPED_SUBTREE);
         fn deep(bar: &Fixture) -> &ResolvedNode {
             &bar.child(1).children[0].children[0]
         }
@@ -877,21 +877,21 @@ mod tests {
         assert_eq!((deep(&bar).rect.width, bar.runs()), (90.0, 4));
     }
 
+    const WRAPPING_SKIPPED_SUBTREE: &str = r#"w = state("w", nil)
+        return panel { id = "bar", child = column { children = {
+            rect { width = w, children = {
+                row { max_width = 100, height = 40, wrap = true, children = {
+                    rect { width = "50%", height = 10 },
+                    rect { width = "50%", height = 10 },
+                    rect { width = 50, height = 10, geometry = geometry("wrap") },
+                } },
+            } },
+        } } }"#;
+
     /// #155: a skipped wrapping container whose outer size holds still reads back moved descendants.
     #[test]
     fn a_skipped_wrapping_subtree_reads_back_moved_descendants_when_its_size_holds() {
-        let mut bar = Fixture::new(
-            r#"w = state("w", nil)
-            return panel { id = "bar", child = column { children = {
-                rect { width = w, children = {
-                    row { max_width = 100, height = 40, wrap = true, children = {
-                        rect { width = "50%", height = 10 },
-                        rect { width = "50%", height = 10 },
-                        rect { width = 50, height = 10 },
-                    } },
-                } },
-            } } }"#,
-        );
+        let mut bar = Fixture::new(WRAPPING_SKIPPED_SUBTREE);
         fn row(bar: &Fixture) -> &ResolvedNode {
             &bar.child(0).children[0]
         }
@@ -902,18 +902,18 @@ mod tests {
         assert_eq!((row(&bar).rect.width, row(&bar).rect.height, row(&bar).children[2].rect.y), (50.0, 40.0, 10.0));
     }
 
+    const KEPT_LIST_ITEMS: &str = r#"a, b, c, items = state("a", "a1"), state("b", "b1"), state("c", "c1"), state("items", { 1 })
+        return panel { id = "bar", child = column { children = {
+            list { items = { 1, 2 }, each = function(i)
+                return row { children = { text { content = i == 1 and a or b } } }
+            end },
+            list { items = items, each = function() return text { content = c } end },
+        } } }"#;
+
     /// #155: `keep_item` and `prepare` list-item skips reuse subtrees while keeping reads live.
     #[test]
     fn a_kept_list_item_reuses_its_subtree_and_still_updates_when_written() {
-        let (mut bar, dirty, _) = Fixture::with_dirty(
-            r#"a, b, c, items = state("a", "a1"), state("b", "b1"), state("c", "c1"), state("items", { 1 })
-            return panel { id = "bar", child = column { children = {
-                list { items = { 1, 2 }, each = function(i)
-                    return row { children = { text { content = i == 1 and a or b } } }
-                end },
-                list { items = items, each = function() return text { content = c } end },
-            } } }"#,
-        );
+        let (mut bar, dirty, _) = Fixture::with_dirty(KEPT_LIST_ITEMS);
         fn item(bar: &Fixture, list: usize, i: usize) -> &ResolvedNode {
             &bar.child(list).children[i]
         }
@@ -936,5 +936,126 @@ mod tests {
         assert_eq!(dirty.take_scope(&bar.lua), crate::lua::signal::DirtyScope::Instances(vec!["bar@TEST".into()]));
         bar.apply().unwrap();
         assert_eq!(string(item(&bar, 1, 0), "content"), "c2");
+    }
+
+    /// #167: every Kept pass matches a forced-Built pass in rects, published geometry, and display
+    /// list, and passes after a rollback or font landing take the Built path.
+    #[test]
+    fn kept_subtrees_match_forced_built_across_writes_rollback_and_fonts() {
+        use super::super::pass::tests::{KEPT_SUBTREES, with_forced_built};
+
+        fn walk(node: &ResolvedNode, rects: &mut Vec<(&'static str, LogicalRect, bool)>, geoms: &mut Vec<[f32; 4]>) {
+            rects.push((node.kind, node.rect, node.visible));
+            if let Some((_, cell)) = node::signal_at(&node.properties, "geometry").and_then(|s| s.geometry_cell())
+                && let Value::Table(t) = &*cell.borrow()
+            {
+                geoms.push(["x", "y", "width", "height"].map(|k| t.get::<f32>(k).unwrap()));
+            }
+            node.children.iter().for_each(|c| walk(c, rects, geoms));
+        }
+        fn assert_same(label: &str, kept: &Scene, built: &Scene) {
+            let (k, b) = (kept.surface("bar@TEST").unwrap(), built.surface("bar@TEST").unwrap());
+            assert!(k.subtree.is_none(), "{label}: surface root never builds a subtree memo");
+            let ((mut kr, mut kg), (mut br, mut bg)) = ((Vec::new(), Vec::new()), (Vec::new(), Vec::new()));
+            walk(k, &mut kr, &mut kg);
+            walk(b, &mut br, &mut bg);
+            assert_eq!(kr, br, "{label}: rects");
+            assert_eq!(kg, bg, "{label}: published geometry");
+            assert_eq!(
+                crate::layout::paint::build(k, 1.0, None),
+                crate::layout::paint::build(b, 1.0, None),
+                "{label}: display list"
+            );
+        }
+        let kept_in = |f: &mut dyn FnMut()| {
+            KEPT_SUBTREES.set(0);
+            f();
+            KEPT_SUBTREES.get()
+        };
+
+        const NESTED_LIST: &str = r#"a, inner = state("a", "a1"), state("inner", "i1")
+            return panel { id = "bar", child = list { items = { 1, 2 }, each = function(i)
+                return i == 1 and text { content = a } or list { items = { "x" }, each = function(k)
+                    return text { content = k .. inner:get() }
+                end }
+            end } }"#;
+
+        let (t0, shaping) = (Instant::now(), ShapingHandle::spawn());
+        let make = |src: &str, sh: &ShapingHandle, force: bool| {
+            let (lua, surface) = surface_from(src);
+            lua.set_app_data(crate::lua::timer::SimClock(t0));
+            let mut f = Fixture { lua, surface, scene: Scene::new(), shaping: sh.clone() };
+            if force {
+                with_forced_built(|| f.apply().unwrap())
+            } else {
+                f.apply().unwrap()
+            }
+            f
+        };
+        let cases: &[(&str, &str, &[&str])] = &[
+            (
+                "clock_chip",
+                CLOCK_BESIDE_A_CHIP,
+                &[r#"clock:set("1")"#, "offset:scroll_to(30)", r##"accent:set("#202020")"##],
+            ),
+            (
+                "text_fit_animate",
+                TEXT_FIT_AND_ANIMATE,
+                &[r#"tick:set("1")"#, "box_w:set(36)", "box_w:set(400)", r##"fg:set("#ffffff")"##, r#"tick:set("2")"#],
+            ),
+            (
+                "deep_skipped",
+                DEEP_SKIPPED_SUBTREE,
+                &[r#"tick:set("1")"#, "box_w:set(120)", r##"deep_bg:set("#ff0000")"##, "deep_w:set(45)"],
+            ),
+            ("wrapping_skipped", WRAPPING_SKIPPED_SUBTREE, &["w:set(40)"]),
+            (
+                "kept_list_items",
+                KEPT_LIST_ITEMS,
+                &[r#"a:set("a2")"#, r#"b:set("b2")"#, "items:set({ 1 })", r#"c:set("c2")"#],
+            ),
+            ("nested_unwindowed_list", NESTED_LIST, &[r#"a:set("a2")"#, r#"inner:set("i2")"#]),
+        ];
+        for &(name, src, steps) in cases {
+            let (mut kept, mut built) = (make(src, &shaping, false), make(src, &shaping, true));
+            assert_same(name, &kept.scene, &built.scene);
+            let mut kept_total = 0;
+            for (i, &script) in steps.iter().enumerate() {
+                let at = t0 + Duration::from_millis((i as u64 + 1) * 50);
+                kept.lua.set_app_data(crate::lua::timer::SimClock(at));
+                built.lua.set_app_data(crate::lua::timer::SimClock(at));
+                kept_total += kept_in(&mut || kept.run(script));
+                assert_eq!(
+                    kept_in(&mut || with_forced_built(|| built.run(script))),
+                    0,
+                    "{name}:{script}: forced Built"
+                );
+                assert_same(&format!("{name}:{script}"), &kept.scene, &built.scene);
+            }
+            assert!(kept_total > 0, "{name}: never hit the Kept path");
+        }
+
+        // Rollback drops solver trees, so the next pass takes the Built path; the one after keeps again.
+        let (mut kept, built) =
+            (make(DEEP_SKIPPED_SUBTREE, &shaping, false), make(DEEP_SKIPPED_SUBTREE, &shaping, true));
+        let inst = [instance_at(&kept.surface, full())];
+        kept.scene
+            .inspect_then_roll_back(std::slice::from_ref(&kept.surface), &inst, &kept.shaping, &kept.lua, |_| {})
+            .unwrap();
+        assert_eq!(kept_in(&mut || kept.apply().unwrap()), 0, "pass after rollback must take Built path");
+        assert_same("after_rollback", &kept.scene, &built.scene);
+        assert!(kept_in(&mut || kept.apply().unwrap()) > 0, "pass after rebuilt solver tree keeps subtrees again");
+
+        // A font landing drops solver trees, so the next pass takes the Built path.
+        if let Some((font_shaping, open)) =
+            crate::text::shaping::tests::gated_shots_fixture(crate::text::fonts::covering_file)
+        {
+            const GLYPH: &str = r#"return panel { id = "bar", child = row { children = { text { content = "a" }, text { content = "●" } } } }"#;
+            let mut k = make(GLYPH, &font_shaping, false);
+            assert!(kept_in(&mut || k.apply().unwrap()) > 0, "before font landing, subtree is kept");
+            crate::text::shaping::tests::land(&font_shaping, open);
+            assert_eq!(kept_in(&mut || k.apply().unwrap()), 0, "pass after font landing must take Built path");
+            assert_same("after_font_landing", &k.scene, &make(GLYPH, &font_shaping, true).scene);
+        }
     }
 }
