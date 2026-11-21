@@ -492,10 +492,22 @@ mod tests {
 
         // Over 64 departures while `sleep_inhibit` is locked must not stall `ScreenSaver.Inhibit`
         // (and its `NameHasOwner` call) on the shared connection.
-        let hold_lock = controller.sleep_inhibit.state.lock().await;
+        let dbus = zbus::fdo::DBusProxy::new(&observer).await.unwrap();
+        let mut observed = crate::capabilities::name_departures(&dbus, "burst").await.unwrap();
+        let mut peers = Vec::with_capacity(70);
         for _ in 0..70 {
-            bus.connection().await.close().await.unwrap();
+            peers.push(bus.connection().await);
         }
+        let mut pending: BTreeSet<String> = peers.iter().map(|p| p.unique_name().unwrap().to_string()).collect();
+        let hold_lock = controller.sleep_inhibit.state.lock().await;
+        futures_util::future::join_all(peers.into_iter().map(|p| async { p.close().await.unwrap() })).await;
+        within(async {
+            while !pending.is_empty() {
+                let sig = futures_util::StreamExt::next(&mut observed).await.unwrap();
+                pending.remove(sig.args().unwrap().name.as_str());
+            }
+        })
+        .await;
         let ss_cookie: u32 = within(screensaver(&observer).await.call("Inhibit", &("", "Burst"))).await.unwrap();
         drop(hold_lock);
         screensaver(&observer).await.call::<_, _, ()>("UnInhibit", &ss_cookie).await.unwrap();
