@@ -29,10 +29,12 @@ end)
 | `compositor_hold_stale` | `boolean` | The compositor last withheld idle notifications, but input resumed before it could answer again. Its hold may have ended; a fresh idle period clears this uncertainty. |
 | `inhibited` | `boolean` | True when logind blocks idle, a `ScreenSaver` client holds it, or the compositor was last observed withholding idle notifications. The compositor answer can remain true after a release while the seat is active; the next idle threshold refreshes it. |
 | `inhibitors` | `IdleInhibitor[]` | Holders other than this shell, `ScreenSaver` clients included. The compositor's hold has an empty `who`; draw `why` then. An unconfirmed compositor hold is omitted. Lists at most 64 logind holders; a `ScreenSaver` client past 16 holds, or 64 in all, gets `LimitsExceeded`. |
+| `sleep_inhibited` | `boolean` | True when logind holds a `block` inhibitor on `sleep` (such as `systemd-inhibit --what=sleep`). Idle thresholds still fire while it is. |
+| `sleep_inhibitors` | `IdleInhibitor[]` | Holders other than this shell blocking `sleep` (`block` mode only; `delay` inhibitors such as lock-before-sleep are excluded). Lists at most 64 holders; empty if listing fails. |
 
 ### `IdleInhibitor`
 
-One holder blocking idle.
+One holder blocking idle or sleep.
 
 | Field | Type | Description |
 | --- | --- | --- |
@@ -71,6 +73,7 @@ protocol v1 compositor there is no input-only listener; its regular resume is re
 | Inhibit | Every hold, from any generation, shares one logind `Inhibit("idle", "block")` fd, closed when the last hold goes |
 | ScreenSaver | Hosts `org.freedesktop.ScreenSaver` when the name is free. A browser's video hold arrives here, directly or through xdg-desktop-portal, and takes the same fd. A client that leaves the bus loses its holds |
 | Gate | Mantle, not logind, acts on idle, so it honours inhibitors itself. While logind's `BlockInhibited` names `idle`, idled thresholds get `on_resume("inhibitor")` and none fire; input during the hold sends `on_resume("input")`. On release, ones still idle get `on_idle` again |
+| Sleep | Logind `sleep` block inhibitors (such as `systemd-inhibit --what=sleep`) are published as `sleep_inhibited` and `sleep_inhibitors` on the same `BlockInhibited` watch, excluding `delay` inhibitors. They do not stop idle thresholds |
 | Compositor holds | A Wayland idle inhibitor shows when the shortest threshold's input-only twin fires and the normal notification does not, or when the normal one resumes alone because a hold began on an idle seat, so it needs a registered threshold and an idle seat. It sets `inhibited` and adds one holder with an empty `who`. After a detected hold, input resuming sets `compositor_hold_stale`, removes the unconfirmed holder from `inhibitors`, and keeps `inhibited` at its last value until the next idle threshold |
 
 ## How do I…

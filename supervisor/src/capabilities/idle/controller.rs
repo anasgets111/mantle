@@ -7,7 +7,7 @@ use shared::{debug, error, info, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use wayland_client::Proxy;
 
-use super::gate::{IdleGate, blocks_idle};
+use super::gate::{IdleGate, blocks};
 use super::inhibit::{
     INHIBIT_MODE, INHIBIT_WHAT, INHIBIT_WHO, InhibitState, LiveInhibit, Login1ManagerProxy, SCREENSAVER_BUS_NAME,
     SCREENSAVER_HOLDER, SCREENSAVER_OBJECT_PATHS, ScreenSaver, apply_inhibit, apply_release_inhibit,
@@ -17,7 +17,7 @@ use super::notify::{
     ListenerId, NotifyState, cancel_threshold_entry, cleanup_generation_thresholds, connect_wayland_idle,
     register_threshold_entry, spawn_idle_event_forwarder, take_unused_listeners,
 };
-use super::state::{IdleState, foreign_idle_inhibitors};
+use super::state::{IdleState, foreign_blockers};
 
 /// Bound for [`connect_wayland_idle`]'s `spawn_blocking` task (see [`IdleController::new`]). A
 /// local niri roundtrip is well under one second; 5s leaves headroom while bounding the genuine
@@ -34,6 +34,8 @@ const IDLE_NOTIFY_SETUP_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct PublishedIdle {
     logind_blocked: bool,
     logind_inhibitors: Vec<super::state::IdleInhibitor>,
+    sleep_blocked: bool,
+    sleep_inhibitors: Vec<super::state::IdleInhibitor>,
     wayland_inhibited: bool,
     wayland_observed: bool,
     screensaver: Vec<super::state::IdleInhibitor>,
@@ -61,6 +63,8 @@ impl PublishedIdle {
             inhibited: self.logind_blocked || self.wayland_inhibited || !self.screensaver.is_empty(),
             compositor_hold_stale: self.wayland_inhibited && !self.wayland_observed,
             inhibitors,
+            sleep_inhibited: self.sleep_blocked,
+            sleep_inhibitors: self.sleep_inhibitors.clone(),
         }
     }
 
@@ -89,10 +93,34 @@ impl PublishedIdle {
         self.settle()
     }
 
-    fn set_logind(&mut self, blocked: bool, inhibitors: Vec<super::state::IdleInhibitor>) -> Option<IdleState> {
+    fn set_logind(
+        &mut self,
+        blocked: bool,
+        inhibitors: Vec<super::state::IdleInhibitor>,
+        sleep_blocked: bool,
+        sleep_inhibitors: Vec<super::state::IdleInhibitor>,
+    ) -> Option<IdleState> {
         self.logind_blocked = blocked;
         self.logind_inhibitors = inhibitors;
+        self.sleep_blocked = sleep_blocked;
+        self.sleep_inhibitors = sleep_inhibitors;
         self.settle()
+    }
+}
+
+/// Owns the session-bus connection and departure-watcher task while `org.freedesktop.ScreenSaver`
+/// is claimed. Dropping the last owner aborts the watcher (whose `NameOwnerChangedStream` holds a
+/// strong connection handle) and drops the connection, releasing the bus name cleanly.
+struct ScreenSaverLease {
+    _connection: zbus::Connection,
+    watcher: Option<tokio::task::AbortHandle>,
+}
+
+impl Drop for ScreenSaverLease {
+    fn drop(&mut self) {
+        if let Some(watcher) = &self.watcher {
+            watcher.abort();
+        }
     }
 }
 
@@ -115,6 +143,12 @@ pub struct IdleController {
     /// Also held here, not just handed to the forwarder: reaping the last listener has to answer
     /// for the compositor itself, and no raw event will arrive to let the forwarder do it.
     state_tx: UnboundedSender<IdleState>,
+    /// Live session-bus lease while this process owns `org.freedesktop.ScreenSaver`. Kept here
+    /// rather than relying on `watch_screensaver_peers` holding the last connection handle, so a
+    /// failed or ended departure watch cannot drop the bus name, and dropping the controller
+    /// aborts the watcher. Left `None` in clones handed to the object server and peer watcher to
+    /// avoid an `Arc` cycle.
+    screensaver: Option<Arc<ScreenSaverLease>>,
 }
 
 impl IdleController {
@@ -144,20 +178,21 @@ impl IdleController {
             published.clone(),
         ));
 
-        let controller = Self {
+        let mut controller = Self {
             notify: notify.clone(),
             published: published.clone(),
             gate: gate.clone(),
             state_tx: state_tx.clone(),
             pending: Arc::new(std::sync::Mutex::new(Vec::new())),
             inhibit: Arc::new(LiveInhibit { system_bus, state: tokio::sync::Mutex::default() }),
+            screensaver: None,
         };
 
+        let controller_for_task = controller.clone();
         if let Some(session_bus) = session_bus {
-            export_screensaver(&session_bus, controller.clone()).await;
+            controller.export_screensaver(session_bus).await;
         }
 
-        let controller_for_task = controller.clone();
         tokio::spawn(async move {
             let outcome =
                 tokio::time::timeout(IDLE_NOTIFY_SETUP_TIMEOUT, tokio::task::spawn_blocking(connect_wayland_idle))
@@ -435,52 +470,70 @@ impl IdleController {
             state.fd = None;
         }
     }
+    /// Clone without the ScreenSaver lease, for objects and tasks owned by the lease itself so
+    /// neither can form an `Arc` cycle back to the bus connection.
+    fn without_lease(&self) -> Self {
+        Self { screensaver: None, ..self.clone() }
+    }
+
+    /// Claims `org.freedesktop.ScreenSaver` and answers on both object paths (ADR-0231), retaining
+    /// the connection and departure-watcher handle on `self` while owned.
+    ///
+    /// Exports before claiming the name, like the tray watcher: a call routed to the new owner has
+    /// to find the object. `DoNotQueue` because a session already running a screensaver daemon
+    /// keeps it; queueing would take the name later, mid-session, and answer for holds this shell
+    /// never saw.
+    ///
+    /// Subscribes to departures first: a client reaches the object only after this, so none can
+    /// take a hold and leave unseen while `add_match` is still in flight.
+    async fn export_screensaver(&mut self, session_bus: zbus::Connection) {
+        // Filtered by the bus on `new_owner == ""`, not here: every application start and exit on
+        // the session bus changes some name, and none of those need to wake this shell.
+        let lost = "a crashed screensaver client's hold would outlive it";
+        let departures = match zbus::fdo::DBusProxy::new(&session_bus).await {
+            Ok(proxy) => crate::capabilities::name_departures(&proxy, lost).await,
+            Err(err) => {
+                warn!("cannot watch for departing screensaver clients: {err}; {lost}");
+                None
+            }
+        };
+        self.export_screensaver_with(session_bus, departures).await;
+    }
+
+    async fn export_screensaver_with(
+        &mut self,
+        session_bus: zbus::Connection,
+        departures: Option<zbus::fdo::NameOwnerChangedStream>,
+    ) {
+        for path in SCREENSAVER_OBJECT_PATHS {
+            let export = session_bus.object_server().at(path, ScreenSaver { controller: self.without_lease() });
+            if let Err(err) = export.await {
+                warn!("failed to export {SCREENSAVER_BUS_NAME} at {path}: {err}");
+            }
+        }
+        match session_bus
+            .request_name_with_flags(SCREENSAVER_BUS_NAME, zbus::fdo::RequestNameFlags::DoNotQueue.into())
+            .await
+        {
+            // A fresh connection with `DoNotQueue` gets only `PrimaryOwner`; zbus turns `Exists` into `NameTaken`.
+            Ok(_) => {
+                debug!("holding {SCREENSAVER_BUS_NAME}; idle inhibits from browsers and players reach the gate");
+                let peer_controller = self.without_lease();
+                let watcher = departures
+                    .map(|names| tokio::spawn(watch_screensaver_peers(names, peer_controller)).abort_handle());
+                self.screensaver = Some(Arc::new(ScreenSaverLease { _connection: session_bus, watcher }));
+            }
+            Err(zbus::Error::NameTaken) => warn!("{SCREENSAVER_BUS_NAME} is taken; another daemon answers its clients"),
+            Err(err) => {
+                warn!("RequestName({SCREENSAVER_BUS_NAME}) failed: {err}; no client's inhibit reaches this shell")
+            }
+        }
+    }
 }
 
 /// Every live `ScreenSaver` hold, oldest cookie first.
 fn screensaver_holds(state: &InhibitState) -> Vec<super::state::IdleInhibitor> {
     state.screensaver.values().map(|(_, hold)| hold.clone()).collect()
-}
-
-/// Claims `org.freedesktop.ScreenSaver` and answers on both object paths (ADR-0231).
-///
-/// Exports before claiming the name, like the tray watcher: a call routed to the new owner has to
-/// find the object. `DoNotQueue` because a session already running a screensaver daemon keeps it;
-/// queueing would take the name later, mid-session, and answer for holds this shell never saw.
-///
-/// Subscribes to departures first: a client reaches the object only after this, so none can take a
-/// hold and leave unseen while `add_match` is still in flight.
-async fn export_screensaver(session_bus: &zbus::Connection, controller: IdleController) {
-    // Filtered by the bus on `new_owner == ""`, not here: every application start and exit on the
-    // session bus changes some name, and none of those need to wake this shell.
-    let lost = "a crashed screensaver client's hold would outlive it";
-    let departures = match zbus::fdo::DBusProxy::new(session_bus).await {
-        Ok(proxy) => crate::capabilities::name_departures(&proxy, lost).await,
-        Err(err) => {
-            warn!("cannot watch for departing screensaver clients: {err}; {lost}");
-            None
-        }
-    };
-    for path in SCREENSAVER_OBJECT_PATHS {
-        let export = session_bus.object_server().at(path, ScreenSaver { controller: controller.clone() });
-        if let Err(err) = export.await {
-            warn!("failed to export {SCREENSAVER_BUS_NAME} at {path}: {err}");
-        }
-    }
-    match session_bus
-        .request_name_with_flags(SCREENSAVER_BUS_NAME, zbus::fdo::RequestNameFlags::DoNotQueue.into())
-        .await
-    {
-        // A fresh connection with `DoNotQueue` gets only `PrimaryOwner`; zbus turns `Exists` into `NameTaken`.
-        Ok(_) => {
-            debug!("holding {SCREENSAVER_BUS_NAME}; idle inhibits from browsers and players reach the gate");
-            if let Some(names) = departures {
-                tokio::spawn(watch_screensaver_peers(names, controller));
-            }
-        }
-        Err(zbus::Error::NameTaken) => warn!("{SCREENSAVER_BUS_NAME} is taken; another daemon answers its clients"),
-        Err(err) => warn!("RequestName({SCREENSAVER_BUS_NAME}) failed: {err}; no client's inhibit reaches this shell"),
-    }
 }
 
 /// Releases a departed client's holds (ADR-0231). A player that crashes mid-video sends no
@@ -496,6 +549,8 @@ async fn watch_screensaver_peers(mut names: zbus::fdo::NameOwnerChangedStream, c
 ///
 /// Watches the property rather than polling `ListInhibitors`: logind emits `PropertiesChanged`,
 /// so any `systemd-inhibit --what=idle` reaches the gate in one round trip and costs nothing idle.
+/// `sleep` blocks ride the same watch and publish as `sleep_inhibited`/`sleep_inhibitors` without
+/// closing the idle gate.
 ///
 /// Subscribing first avoids missing changes; the first loop iteration reads the initial state so
 /// startup inhibitors are not missed. Failure degrades to a permanently open gate, logged once.
@@ -514,13 +569,14 @@ async fn watch_idle_inhibitors(
         }
     };
     let mut changes = proxy.receive_block_inhibited_changed().await;
-    let mut initial = true;
-    while initial || futures_util::StreamExt::next(&mut changes).await.is_some() {
-        initial = false;
+    let mut run_now = true;
+    while run_now || futures_util::StreamExt::next(&mut changes).await.is_some() {
+        run_now = false;
         // Read through the proxy: zbus caches the property and avoids naming the stream item's
         // borrowed type.
         let Ok(what) = proxy.block_inhibited().await else { continue };
-        let blocked = blocks_idle(&what);
+        let blocked = blocks(&what, "idle");
+        let sleep_blocked = blocks(&what, "sleep");
         // `None` means the same idle answer as before. `BlockInhibited` changes for every kind of
         // inhibitor, while the list can change without the answer moving (mpv releases while
         // Firefox still holds one), so publish state on every change but gate on transitions.
@@ -542,15 +598,34 @@ async fn watch_idle_inhibitors(
         }
 
         // One `ListInhibitors` per change, never a timer: ADR-0139 rejected polling, and the
-        // property edge provides one call to hang it off. Skip it when nothing blocks idle.
-        let inhibitors = if blocked {
-            proxy.list_inhibitors().await.map(foreign_idle_inhibitors).unwrap_or_default()
+        // property edge provides one call to hang it off. Skip it when neither idle nor sleep is
+        // blocked. A newer property edge cancels an in-flight list call so a slow reply (such as
+        // on a sleep-only change) never stalls an idle gate transition behind it.
+        let (inhibitors, sleep_inhibitors) = if blocked || sleep_blocked {
+            let fetch = proxy.list_inhibitors();
+            tokio::pin!(fetch);
+            let rows = tokio::select! {
+                biased;
+                change = futures_util::StreamExt::next(&mut changes) => {
+                    if change.is_none() {
+                        return;
+                    }
+                    run_now = true;
+                    continue;
+                }
+                res = &mut fetch => res.unwrap_or_default(),
+            };
+            let idle = if blocked { foreign_blockers(&rows, "idle") } else { Vec::new() };
+            let sleep = if sleep_blocked { foreign_blockers(&rows, "sleep") } else { Vec::new() };
+            (idle, sleep)
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         // Held across the send; see the matching comment in `spawn_idle_event_forwarder`.
         let mut published = published.lock().expect("mutex poisoned");
-        let Some(next_state) = published.set_logind(blocked, inhibitors) else { continue };
+        let Some(next_state) = published.set_logind(blocked, inhibitors, sleep_blocked, sleep_inhibitors) else {
+            continue;
+        };
         if state_tx.send(next_state).is_err() {
             return;
         }
@@ -601,6 +676,7 @@ mod tests {
             published: Arc::default(),
             gate: Arc::default(),
             state_tx: unbounded_channel().0,
+            screensaver: None,
         };
         (controller, taken, logind)
     }
@@ -621,6 +697,17 @@ mod tests {
             .expect("bind the exported ScreenSaver")
     }
 
+    async fn wait_screensaver_released(observer: &zbus::Connection) {
+        let dbus = zbus::fdo::DBusProxy::new(observer).await.expect("bind org.freedesktop.DBus");
+        let name = zbus::names::BusName::from_static_str(SCREENSAVER_BUS_NAME).expect("valid bus name");
+        within(async {
+            while dbus.name_has_owner(name.clone()).await.expect("NameHasOwner") {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+    }
+
     #[tokio::test]
     async fn a_config_releasing_or_leaving_with_the_last_hold_closes_the_logind_lock() {
         let (controller, mut locks, _logind) = controller().await;
@@ -637,14 +724,16 @@ mod tests {
         released(lock).await;
     }
 
-    /// The whole inbound path on a bus: a client's `UnInhibit`, and a client that leaves holding one.
+    /// The whole inbound path on a bus: a client's `UnInhibit`, a client that leaves holding one,
+    /// and dropping the controller releases the bus name by aborting the live departure watcher.
     #[tokio::test]
     async fn a_screensaver_client_releasing_or_leaving_closes_the_logind_lock() {
-        let (controller, mut locks, _logind) = controller().await;
+        let (mut controller, mut locks, _logind) = controller().await;
         let bus = private_bus().await;
-        let session = bus.connection().await;
-        export_screensaver(&session, controller.clone()).await;
-        let client = screensaver(&bus.connection().await).await;
+        controller.export_screensaver(bus.connection().await).await;
+        assert!(controller.screensaver.is_some(), "the bus name was free");
+        let observer = bus.connection().await;
+        let client = screensaver(&observer).await;
 
         let cookie: u32 = client.call("Inhibit", &("", "Playing video")).await.expect("Inhibit");
         let lock = taken(&mut locks).await;
@@ -657,6 +746,30 @@ mod tests {
         let lock = taken(&mut locks).await;
         leaver.close().await.expect("leave the bus");
         released(lock).await;
+
+        drop(controller);
+        wait_screensaver_released(&observer).await;
+    }
+
+    /// Regression for #166: `org.freedesktop.ScreenSaver` must stay owned on the controller even
+    /// when `name_departures` failed (`None`), and no clone handed to the object server keeps it
+    /// past the controller (no `Arc` cycle).
+    #[tokio::test]
+    async fn screensaver_stays_owned_without_a_departure_watch() {
+        let (mut controller, mut locks, _logind) = controller().await;
+        let bus = private_bus().await;
+        controller.export_screensaver_with(bus.connection().await, None).await;
+        assert!(controller.screensaver.is_some(), "must keep the owned connection");
+
+        let observer = bus.connection().await;
+        let client = screensaver(&observer).await;
+        let cookie: u32 = client.call("Inhibit", &("", "Playing video")).await.expect("ScreenSaver still owned");
+        let lock = taken(&mut locks).await;
+        client.call::<_, _, ()>("UnInhibit", &cookie).await.expect("UnInhibit");
+        released(lock).await;
+
+        drop(controller);
+        wait_screensaver_released(&observer).await;
     }
 
     /// A hold logind refused must neither leave the next holder without a lock nor, released
@@ -725,7 +838,7 @@ mod tests {
 
         let cookie = controller.screensaver_inhibit(":1.1".into(), video.who.clone(), video.why.clone()).await;
         let _lock = taken(&mut locks).await;
-        let held = IdleState { inhibited: true, compositor_hold_stale: false, inhibitors: vec![video] };
+        let held = IdleState { inhibited: true, inhibitors: vec![video], ..IdleState::default() };
         assert_eq!(within(pushed.recv()).await, Some(held.clone()));
         assert_eq!(controller.snapshot(), held);
 
@@ -734,12 +847,14 @@ mod tests {
         assert_eq!(controller.snapshot(), IdleState::default());
     }
 
-    /// An inhibitor held before the watch starts takes back an announced idle and is published;
-    /// its release, a later change, announces the idle again and clears the roster.
+    /// Idle and sleep inhibitors held at startup and released in turn reach the gate and published
+    /// state: releasing idle re-announces the threshold while keeping sleep published, an idle-only
+    /// state clears sleep even if the list still has a sleep row, a `ListInhibitors` error still
+    /// publishes `sleep_inhibited`, and clearing both returns default without touching the gate.
     #[tokio::test]
     async fn logind_inhibitors_held_at_startup_and_released_later_reach_the_gate_and_the_published_state() {
         let (system_bus, logind) =
-            p2p_pair_serving(|peer| peer.serve_at("/org/freedesktop/login1", HeldLogind("sleep:idle"))).await;
+            p2p_pair_serving(|peer| peer.serve_at("/org/freedesktop/login1", HeldLogind::new("sleep:idle"))).await;
         let event = |state| shared::IdleEvent { generation_id: 1, threshold_sec: 30, state };
         let gate = Arc::new(std::sync::Mutex::new(IdleGate::default()));
         gate.lock().expect("mutex poisoned").observe(event(shared::IdleState::Idled));
@@ -750,14 +865,81 @@ mod tests {
         let inhibitor = shared::IdleState::Resumed { cause: shared::ResumeCause::Inhibitor };
         assert_eq!(within(events.recv()).await, Some(event(inhibitor)));
         let mpv = super::super::state::IdleInhibitor { who: "mpv".into(), why: "Playing video".into() };
-        let held = IdleState { inhibited: true, compositor_hold_stale: false, inhibitors: vec![mpv] };
-        assert_eq!(within(pushed.recv()).await, Some(held));
+        let backup = super::super::state::IdleInhibitor { who: "backup".into(), why: "Backing up".into() };
+        let both = IdleState {
+            inhibited: true,
+            compositor_hold_stale: false,
+            inhibitors: vec![mpv.clone()],
+            sleep_inhibited: true,
+            sleep_inhibitors: vec![backup.clone()],
+        };
+        assert_eq!(within(pushed.recv()).await, Some(both));
 
         let manager =
             logind.object_server().interface::<_, HeldLogind>("/org/freedesktop/login1").await.expect("served");
-        manager.get_mut().await.0 = "sleep";
-        manager.get().await.block_inhibited_changed(manager.signal_emitter()).await.expect("emit the change");
+        let emit = |next: &'static str, fail_list: bool| {
+            let manager = manager.clone();
+            async move {
+                let guard = manager.get().await;
+                *guard.blocked.lock().expect("mutex poisoned") = next;
+                guard.fail_list.store(fail_list, std::sync::atomic::Ordering::Relaxed);
+                guard.block_inhibited_changed(manager.signal_emitter()).await.expect("emit the change");
+            }
+        };
+
+        emit("sleep", false).await;
         assert_eq!(within(events.recv()).await, Some(event(shared::IdleState::Idled)));
+        let sleep_only = IdleState { sleep_inhibited: true, sleep_inhibitors: vec![backup], ..IdleState::default() };
+        assert_eq!(within(pushed.recv()).await, Some(sleep_only));
+
+        emit("idle", false).await;
+        assert_eq!(within(events.recv()).await, Some(event(inhibitor)));
+        let idle_only = IdleState { inhibited: true, inhibitors: vec![mpv], ..IdleState::default() };
+        assert_eq!(within(pushed.recv()).await, Some(idle_only));
+
+        emit("sleep", true).await;
+        assert_eq!(within(events.recv()).await, Some(event(shared::IdleState::Idled)));
+        assert_eq!(within(pushed.recv()).await, Some(IdleState { sleep_inhibited: true, ..IdleState::default() }));
+
+        emit("", false).await;
         assert_eq!(within(pushed.recv()).await, Some(IdleState::default()));
+        assert!(events.try_recv().is_err(), "releasing a sleep inhibitor must not emit threshold events");
+    }
+
+    /// A newer `BlockInhibited` change cancels a slow `ListInhibitors` call so an idle inhibitor
+    /// arriving while a sleep-only roster fetch is in flight still closes the gate at once.
+    #[tokio::test]
+    async fn an_idle_inhibitor_closes_the_gate_while_a_sleep_list_call_is_in_flight() {
+        let (list_called_tx, mut list_called) = unbounded_channel();
+        let (open_list, list_gate) = tokio::sync::watch::channel(false);
+        let mut logind_stub = HeldLogind::new("sleep");
+        logind_stub.list_called = Some(list_called_tx);
+        logind_stub.list_gate = Some(list_gate);
+        let (system_bus, logind) = p2p_pair_serving(|peer| peer.serve_at("/org/freedesktop/login1", logind_stub)).await;
+
+        let event = |state| shared::IdleEvent { generation_id: 1, threshold_sec: 30, state };
+        let gate = Arc::new(std::sync::Mutex::new(IdleGate::default()));
+        gate.lock().expect("mutex poisoned").observe(event(shared::IdleState::Idled));
+        let (events_tx, mut events) = unbounded_channel();
+        let (state_tx, mut pushed) = unbounded_channel();
+        tokio::spawn(watch_idle_inhibitors(system_bus, gate, events_tx, state_tx, Arc::default()));
+
+        within(list_called.recv()).await.expect("sleep edge started ListInhibitors");
+
+        let manager =
+            logind.object_server().interface::<_, HeldLogind>("/org/freedesktop/login1").await.expect("served");
+        {
+            let guard = manager.get().await;
+            *guard.blocked.lock().expect("mutex poisoned") = "sleep:idle";
+            guard.block_inhibited_changed(manager.signal_emitter()).await.expect("emit sleep:idle");
+        }
+
+        // The idle gate closes before `open_list` releases the stalled `ListInhibitors` call.
+        let inhibitor = shared::IdleState::Resumed { cause: shared::ResumeCause::Inhibitor };
+        assert_eq!(within(events.recv()).await, Some(event(inhibitor)));
+
+        open_list.send_replace(true);
+        let state = within(pushed.recv()).await.expect("published once the superseded list finishes");
+        assert!(state.inhibited && state.sleep_inhibited);
     }
 }

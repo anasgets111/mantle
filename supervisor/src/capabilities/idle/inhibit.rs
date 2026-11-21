@@ -380,20 +380,55 @@ pub(in crate::capabilities) mod tests {
         }
     }
 
-    /// logind's `BlockInhibited`, its holders a foreign one and this shell's own.
-    pub(in crate::capabilities::idle) struct HeldLogind(pub(in crate::capabilities::idle) &'static str);
+    /// logind's `BlockInhibited`, its holders a foreign idle hold, this shell's own idle hold, a
+    /// sleep block hold, and a sleep delay hold. Interior mutability on `blocked` lets a test emit
+    /// a `BlockInhibited` change even while a previous `ListInhibitors` call is parked on `list_gate`.
+    pub(in crate::capabilities::idle) struct HeldLogind {
+        pub(in crate::capabilities::idle) blocked: std::sync::Mutex<&'static str>,
+        pub(in crate::capabilities::idle) fail_list: std::sync::atomic::AtomicBool,
+        pub(in crate::capabilities::idle) list_called: Option<tokio::sync::mpsc::UnboundedSender<()>>,
+        pub(in crate::capabilities::idle) list_gate: Option<tokio::sync::watch::Receiver<bool>>,
+    }
+
+    impl HeldLogind {
+        pub(in crate::capabilities::idle) fn new(blocked: &'static str) -> Self {
+            Self {
+                blocked: std::sync::Mutex::new(blocked),
+                fail_list: std::sync::atomic::AtomicBool::new(false),
+                list_called: None,
+                list_gate: None,
+            }
+        }
+    }
 
     #[zbus::interface(name = "org.freedesktop.login1.Manager")]
     impl HeldLogind {
         #[zbus(property, name = "BlockInhibited")]
         fn block_inhibited(&self) -> String {
-            self.0.into()
+            (*self.blocked.lock().expect("mutex poisoned")).into()
         }
 
         #[zbus(name = "ListInhibitors")]
-        fn list_inhibitors(&self) -> Vec<super::super::state::InhibitorRow> {
-            let row = |who: &str| ("idle".into(), who.into(), "Playing video".into(), "block".into(), 1000, 42);
-            vec![row("mpv"), row(INHIBIT_WHO)]
+        async fn list_inhibitors(&self) -> zbus::fdo::Result<Vec<super::super::state::InhibitorRow>> {
+            if let Some(tx) = &self.list_called {
+                let _ = tx.send(());
+            }
+            if let Some(gate) = &self.list_gate {
+                let mut rx = gate.clone();
+                let _ = rx.wait_for(|&open| open).await;
+            }
+            if self.fail_list.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(zbus::fdo::Error::Failed("list unavailable".into()));
+            }
+            let row = |what: &str, who: &str, why: &str, mode: &str| {
+                (what.into(), who.into(), why.into(), mode.into(), 1000, 42)
+            };
+            Ok(vec![
+                row("idle", "mpv", "Playing video", "block"),
+                row("idle", INHIBIT_WHO, "Playing video", "block"),
+                row("sleep", "backup", "Backing up", "block"),
+                row("sleep", INHIBIT_WHO, "Lock the screen before sleep", "delay"),
+            ])
         }
     }
 

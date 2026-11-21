@@ -9,7 +9,7 @@
 //! `Manager.BlockInhibited`, a Wayland surface inhibitor detected from the compositor's silence
 //! (ADR-0160), or an `org.freedesktop.ScreenSaver` client this shell answers for (ADR-0231).
 //! [`IdleState::inhibitors`] names holders. The shell's own hold is excluded (see
-//! [`foreign_idle_inhibitors`]), which config can explain better than the `why` it passed down.
+//! [`foreign_blockers`]), which config can explain better than the `why` it passed down.
 //! Thus `inhibited` true with an empty list means only this shell holds the session awake.
 
 pub use shared::state::idle::{IdleInhibitor, IdleState};
@@ -33,20 +33,21 @@ pub(crate) fn inhibitor(who: &str, why: &str) -> IdleInhibitor {
     }
 }
 
-/// Rows that block idling, excluding this shell.
+/// Rows that block `target` (`"idle"` or `"sleep"`), excluding this shell.
 ///
-/// `delay` only requests grace before sleep; it does not stop seat idling, so only `block` counts.
-/// `what` uses [`super::gate::blocks_idle`], keeping the drawn list and gate's decision identical.
+/// `delay` only requests grace before sleep; it does not block idling or suspend, so only `block`
+/// counts. `what` uses [`super::gate::blocks`], keeping the drawn list and gate's decision
+/// identical.
 ///
 /// Compare `who` with [`super::inhibit::INHIBIT_WHO`], not pid: the Supervisor holds the fd and
 /// logind records this process's pid either way.
-pub(crate) fn foreign_idle_inhibitors(rows: Vec<InhibitorRow>) -> Vec<IdleInhibitor> {
-    rows.into_iter()
+pub(crate) fn foreign_blockers(rows: &[InhibitorRow], target: &str) -> Vec<IdleInhibitor> {
+    rows.iter()
         .filter(|(what, who, _, mode, _, _)| {
-            mode == "block" && super::gate::blocks_idle(what) && who != super::inhibit::INHIBIT_WHO
+            mode == "block" && super::gate::blocks(what, target) && who != super::inhibit::INHIBIT_WHO
         })
         .take(MAX_LISTED_INHIBITORS)
-        .map(|(_, who, why, _, _, _)| inhibitor(&who, &why))
+        .map(|(_, who, why, _, _, _)| inhibitor(who, why))
         .collect()
 }
 
@@ -59,19 +60,25 @@ mod tests {
     }
 
     #[test]
-    fn only_a_foreign_block_mode_idle_inhibitor_is_listed() {
+    fn only_a_foreign_block_mode_inhibitor_for_the_target_is_listed() {
         let own = super::super::inhibit::INHIBIT_WHO;
-        // (case, what, who, why, mode, listed): this shell's own hold is excluded, an empty why is kept.
-        for (case, what, who, why, mode, listed) in [
-            ("block idle", "idle", "mpv", "Playing video", "block", true),
-            ("delay mode does not stop idling", "idle", "mpv", "Playing video", "delay", false),
-            ("blocks something other than idle", "handle-power-key:handle-lid-switch", "gdm", "", "block", false),
-            ("idle inside a colon-separated what", "sleep:idle", "steam", "Game running", "block", true),
-            ("own hold", "idle", own, "manual + video", "block", false),
-            ("empty why", "idle", "systemd-inhibit", "", "block", true),
+        // (case, target, what, who, why, mode, listed): this shell's own hold is excluded, an empty why is kept.
+        for (case, target, what, who, why, mode, listed) in [
+            ("block idle", "idle", "idle", "mpv", "Playing video", "block", true),
+            ("delay idle", "idle", "idle", "mpv", "Playing video", "delay", false),
+            ("other token for idle", "idle", "handle-power-key:handle-lid-switch", "gdm", "", "block", false),
+            ("colon-separated idle", "idle", "sleep:idle", "steam", "Game running", "block", true),
+            ("own idle hold", "idle", "idle", own, "manual + video", "block", false),
+            ("empty why", "idle", "idle", "systemd-inhibit", "", "block", true),
+            ("block sleep", "sleep", "sleep", "backup", "Backing up", "block", true),
+            ("colon-separated sleep", "sleep", "idle:sleep", "steam", "Downloading", "block", true),
+            ("delay sleep", "sleep", "sleep", own, "Lock the screen before sleep", "delay", false),
+            ("own sleep block", "sleep", "sleep", own, "manual", "block", false),
+            ("idle only for sleep", "sleep", "idle", "mpv", "Playing video", "block", false),
+            ("unrelated token for sleep", "sleep", "handle-lid-switch", "upower", "", "block", false),
         ] {
             let expected = if listed { vec![IdleInhibitor { who: who.into(), why: why.into() }] } else { vec![] };
-            assert_eq!(foreign_idle_inhibitors(vec![row(what, who, why, mode)]), expected, "{case}");
+            assert_eq!(foreign_blockers(&[row(what, who, why, mode)], target), expected, "{case}");
         }
     }
 
@@ -79,12 +86,13 @@ mod tests {
     #[test]
     fn the_listed_logind_inhibitors_are_capped_in_count_and_text() {
         let long = format!("{}é{}", "a".repeat(255), "b".repeat(1024));
-        let rows = vec![row("idle", &long, &long, "block"); MAX_LISTED_INHIBITORS + 1];
+        let rows = vec![row("idle:sleep", &long, &long, "block"); MAX_LISTED_INHIBITORS + 1];
 
-        let listed = foreign_idle_inhibitors(rows);
-
-        assert_eq!(listed.len(), MAX_LISTED_INHIBITORS);
-        assert_eq!(listed[0], IdleInhibitor { who: "a".repeat(255), why: "a".repeat(255) }, "é straddles byte 256");
+        for target in ["idle", "sleep"] {
+            let listed = foreign_blockers(&rows, target);
+            assert_eq!(listed.len(), MAX_LISTED_INHIBITORS, "{target}");
+            assert_eq!(listed[0], IdleInhibitor { who: "a".repeat(255), why: "a".repeat(255) }, "é straddles byte 256");
+        }
     }
 
     /// The proof that no set of holders can push `mantle.idle` past the frame cap: every list at its
@@ -97,6 +105,8 @@ mod tests {
             inhibited: true,
             compositor_hold_stale: true,
             inhibitors: vec![IdleInhibitor { who: text(), why: text() }; rows],
+            sleep_inhibited: true,
+            sleep_inhibitors: vec![IdleInhibitor { who: text(), why: text() }; MAX_LISTED_INHIBITORS],
         };
 
         let len = crate::capabilities::test_support::snapshot_frame_len(shared::Capability::Idle, &state);

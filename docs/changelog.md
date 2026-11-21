@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Added: `mantle.idle` exposes logind `sleep` block inhibitors as `sleep_inhibited` and `sleep_inhibitors` (excluding `delay` inhibitors). Idle thresholds still fire while one is held.
 - Fixed: `balance` on `mantle.audio` sinks and sources reads as set, such as `0.1`, not as `0.10000000149011612`.
 - Changed: a `path` may keep what it read of a literal `commands` table with no signal or metatable in it while the node's declaration stays the same. Editing that table in place is no longer reliably drawn when one of the path's bound properties, such as `shift`, changes; bind `commands` to a signal and `:set` the edited table. A signal inside a literal `commands` still updates it, and declaring the node again with any value changed reads it again.
 - Fixed: a `path` with a long literal `commands` list no longer reads the whole list again each time one of its bound properties, such as `shift`, changes. 100 paths of 250 points with `shift` bound to a signal written every 16 ms used all of one core and updated 12 times a second; they now update 62 times a second at 12% of one core.

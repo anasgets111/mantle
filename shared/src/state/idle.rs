@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-/// One holder blocking idle.
+/// One holder blocking idle or sleep.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IdleInhibitor {
@@ -27,4 +27,10 @@ pub struct IdleState {
     /// empty `who`; draw `why` then. An unconfirmed compositor hold is omitted. Lists at most 64
     /// logind holders; a `ScreenSaver` client past 16 holds, or 64 in all, gets `LimitsExceeded`.
     pub inhibitors: Vec<IdleInhibitor>,
+    /// True when logind holds a `block` inhibitor on `sleep` (such as `systemd-inhibit --what=sleep`).
+    /// Idle thresholds still fire while it is.
+    pub sleep_inhibited: bool,
+    /// Holders other than this shell blocking `sleep` (`block` mode only; `delay` inhibitors such as
+    /// lock-before-sleep are excluded). Lists at most 64 holders; empty if listing fails.
+    pub sleep_inhibitors: Vec<IdleInhibitor>,
 }

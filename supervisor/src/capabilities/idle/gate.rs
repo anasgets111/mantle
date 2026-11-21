@@ -18,10 +18,9 @@
 use std::collections::HashSet;
 
 /// `Manager.BlockInhibited`'s colon-separated `what` entries, e.g. `"handle-power-key"` or
-/// `"idle:sleep"`. Match `"idle"` as a whole entry; substring matching would misread
-/// `"handle-lid-switch"`.
-pub(crate) fn blocks_idle(block_inhibited: &str) -> bool {
-    block_inhibited.split(':').any(|what| what == "idle")
+/// `"idle:sleep"`. Match whole entries; substring matching would misread `"handle-lid-switch"`.
+pub(crate) fn blocks(block_inhibited: &str, target: &str) -> bool {
+    block_inhibited.split(':').any(|what| what == target)
 }
 
 /// Tracks which thresholds were told the session went idle, so a newly-held inhibitor can take
@@ -118,13 +117,20 @@ mod tests {
     }
 
     #[test]
-    fn block_inhibited_names_idle_only_as_a_whole_entry() {
-        assert!(blocks_idle("idle"));
-        assert!(blocks_idle("idle:sleep"));
-        assert!(blocks_idle("shutdown:idle:handle-power-key"));
-        assert!(!blocks_idle(""));
-        assert!(!blocks_idle("handle-power-key"));
-        assert!(!blocks_idle("shutdown:sleep"));
+    fn block_inhibited_names_idle_and_sleep_only_as_whole_entries() {
+        assert!(blocks("idle", "idle"));
+        assert!(blocks("idle:sleep", "idle"));
+        assert!(blocks("shutdown:idle:handle-power-key", "idle"));
+        assert!(!blocks("", "idle"));
+        assert!(!blocks("handle-power-key", "idle"));
+        assert!(!blocks("shutdown:sleep", "idle"));
+
+        assert!(blocks("sleep", "sleep"));
+        assert!(blocks("idle:sleep", "sleep"));
+        assert!(blocks("shutdown:sleep:handle-power-key", "sleep"));
+        assert!(!blocks("", "sleep"));
+        assert!(!blocks("idle", "sleep"));
+        assert!(!blocks("handle-lid-switch:sleep-mode", "sleep"));
     }
 
     /// Startup with no inhibitor: the gate already agrees, so do not announce a nonexistent
