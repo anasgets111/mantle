@@ -37,6 +37,7 @@ pub struct FontRun {
 pub type Variations = Arc<[([u8; 4], u32)]>;
 
 /// A shaping request: the text to measure and the metrics to shape it at.
+#[derive(Clone)]
 pub struct ShapeRequest {
     pub text: String,
     pub font_size: f32,
@@ -222,25 +223,50 @@ const SHAPE_GLYPH_BYTES: usize = 8 << 20;
 /// and a dropped coverable one stays a box until its text changes. Upgrade: requeue on drain.
 const PROBE_QUEUE: usize = 1024;
 
-/// What a measurement is keyed by: every field of a [`ShapeRequest`]. Keying on a subset would be
-/// a wrong-answer bug, not a slow one, which is why `line_height` is here even though every caller
-/// today derives it as `font_size * 1.2`. Floats are held as bit patterns because `f32` is not
-/// `Hash` or `Eq`, making equality here stricter than `==` in both harmless directions: `NaN`s
-/// sharing a bit pattern share an entry `==` would call different, and `0.0`/`-0.0` get separate
-/// entries `==` would call equal. Neither direction can return another request's answer.
-#[derive(PartialEq, Eq, Hash)]
-struct ShapeKey {
-    text: String,
-    font_size: u32,
-    line_height: u32,
-    letter_spacing: u32,
-    font_weight: u32,
-    italic: bool,
-    variations: Variations,
-    max_width: Option<u32>,
-    runs: Vec<FontRun>,
-    font: Option<Arc<str>>,
-    glyphs: bool,
+/// What a measurement is keyed by: every field of a [`ShapeRequest`] plus whether glyphs are kept.
+/// Keying on a subset would be a wrong-answer bug, not a slow one, which is why `line_height` is
+/// here even though every caller today derives it as `font_size * 1.2`. Floats compare and hash by
+/// bit pattern because `f32` is not `Hash` or `Eq`, making equality stricter than `==` in both
+/// harmless directions: `NaN`s sharing a bit pattern share an entry `==` would call different, and
+/// `0.0`/`-0.0` get separate entries `==` would call equal. Neither direction can return another
+/// request's answer.
+struct ShapeKey(ShapeRequest, bool);
+
+impl ShapeKey {
+    /// Destructures `ShapeRequest` exhaustively so a new field fails to compile until keyed.
+    fn bits(&self) -> impl Eq + std::hash::Hash + '_ {
+        let ShapeRequest {
+            text,
+            font_size,
+            line_height,
+            letter_spacing,
+            font_weight,
+            italic,
+            variations,
+            max_width,
+            runs,
+            font,
+        } = &self.0;
+        (
+            [font_size, line_height, letter_spacing, font_weight].map(|f| f.to_bits()),
+            max_width.map(f32::to_bits),
+            (text, *italic, variations, runs, font, self.1),
+        )
+    }
+}
+
+impl PartialEq for ShapeKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.bits() == other.bits()
+    }
+}
+
+impl Eq for ShapeKey {}
+
+impl std::hash::Hash for ShapeKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.bits().hash(state);
+    }
 }
 
 /// The memo and the [`held`] bytes of its entries, all and those keeping glyphs.
@@ -513,21 +539,8 @@ impl ShapingHandle {
     }
 
     fn shape_keyed(&self, request: ShapeRequest, glyphs: bool) -> (ShapeResult, bool) {
-        // The text moves into the key rather than being cloned into it, so a hit allocates
-        // nothing and only a miss pays for the copy the worker needs.
-        let key = ShapeKey {
-            text: request.text,
-            font_size: request.font_size.to_bits(),
-            line_height: request.line_height.to_bits(),
-            letter_spacing: request.letter_spacing.to_bits(),
-            font_weight: request.font_weight.to_bits(),
-            italic: request.italic,
-            variations: request.variations,
-            max_width: request.max_width.map(f32::to_bits),
-            runs: request.runs,
-            font: request.font,
-            glyphs,
-        };
+        // The request moves into the key so a hit allocates nothing; only a miss clones for the worker.
+        let key = ShapeKey(request, glyphs);
         // A poisoned lock is recovered rather than propagated: this map is a pure memo, so no
         // invariant can break, and an unrelated thread's death shouldn't kill text measurement.
         if let Some((hit, boxed, at)) = self.cache.lock().unwrap_or_else(PoisonError::into_inner).entries.get(&key)
@@ -538,22 +551,7 @@ impl ShapingHandle {
 
         let (reply_tx, reply_rx) = mpsc::channel();
         self.requests
-            .send(Request::Shape(
-                ShapeRequest {
-                    text: key.text.clone(),
-                    font_size: f32::from_bits(key.font_size),
-                    line_height: f32::from_bits(key.line_height),
-                    letter_spacing: f32::from_bits(key.letter_spacing),
-                    font_weight: f32::from_bits(key.font_weight),
-                    italic: key.italic,
-                    variations: Arc::clone(&key.variations),
-                    max_width: key.max_width.map(f32::from_bits),
-                    runs: key.runs.clone(),
-                    font: key.font.clone(),
-                },
-                key.glyphs,
-                reply_tx,
-            ))
+            .send(Request::Shape(key.0.clone(), key.1, reply_tx))
             .expect("mantle-text-shaping worker thread died");
         let (result, boxed, at) = reply_rx.recv().expect("mantle-text-shaping worker thread died before replying");
 
@@ -562,12 +560,12 @@ impl ShapingHandle {
         if let Some((stale, ..)) = memo.entries.remove(&key) {
             let stale = held(&key, &stale);
             memo.bytes -= stale;
-            memo.glyph_bytes -= if key.glyphs { stale } else { 0 };
+            memo.glyph_bytes -= if key.1 { stale } else { 0 };
         }
         let size = held(&key, &result);
-        let glyphs = if key.glyphs { size } else { 0 };
+        let glyphs = if key.1 { size } else { 0 };
         // Answered but never kept: kept, it would hold the memo past its bound on every hit.
-        if size > if key.glyphs { SHAPE_GLYPH_BYTES } else { SHAPE_CACHE_BYTES } {
+        if size > if key.1 { SHAPE_GLYPH_BYTES } else { SHAPE_CACHE_BYTES } {
             return (result, boxed);
         }
         // Cleared wholesale rather than evicted one at a time: an LRU needs a recency order
@@ -584,7 +582,7 @@ impl ShapingHandle {
             memo.entries.clear();
             (memo.bytes, memo.glyph_bytes) = (0, 0);
         } else if full || memo.glyph_bytes + glyphs > SHAPE_GLYPH_BYTES {
-            memo.entries.retain(|key, _| !key.glyphs);
+            memo.entries.retain(|key, _| !key.1);
             memo.bytes -= memo.glyph_bytes;
             memo.glyph_bytes = 0;
             // Freeing under an eighth of the cap would walk the whole map again a few misses on.
@@ -727,8 +725,9 @@ fn paragraph_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
 /// coordinates. `Arc` contents count once per entry even when two entries share one, which cannot
 /// happen here: `shape` builds a fresh `ShapeResult` per miss.
 fn held(key: &ShapeKey, result: &ShapeResult) -> usize {
-    let key_bytes =
-        key.text.len() + key.runs.len() * std::mem::size_of::<FontRun>() + key.font.as_deref().map_or(0, str::len);
+    let key_bytes = key.0.text.len()
+        + key.0.runs.len() * std::mem::size_of::<FontRun>()
+        + key.0.font.as_deref().map_or(0, str::len);
     let range_bytes = result.line_ranges.len() * std::mem::size_of::<Range<usize>>();
     let glyph_bytes: usize =
         result.shaped.iter().map(|line| std::mem::size_of::<ShapedLine>() + std::mem::size_of_val(&*line.glyphs)).sum();
@@ -1205,11 +1204,35 @@ pub(crate) mod tests {
             ("font_weight", ShapeRequest { font_weight: 700.0, ..req("abc", 13.0) }),
             ("italic", ShapeRequest { italic: true, ..req("abc", 13.0) }),
             ("variations", ShapeRequest { variations: axes(&[(b"FILL", 1.0)]), ..req("abc", 13.0) }),
+            (
+                "runs",
+                ShapeRequest { runs: vec![FontRun { range: 0..1, bold: true, italic: false }], ..req("abc", 13.0) },
+            ),
+            ("font", ShapeRequest { font: Some(Arc::from("ZZ No Such Family")), ..req("abc", 13.0) }),
         ] {
             let before = handle.cached_len();
             handle.shape(request);
             assert_eq!(handle.cached_len(), before + 1, "a request differing only in `{label}` must not hit");
         }
+        let before = handle.cached_len();
+        handle.shape_glyphs(req("abc", 13.0));
+        assert_eq!(handle.cached_len(), before + 1, "a request differing only in `glyphs` must not hit");
+
+        // Float fields compare and hash by bit pattern: -0.0 != 0.0, identical NaNs match.
+        use std::hash::{Hash, Hasher};
+        let hash_of = |key: &ShapeKey| {
+            let mut hasher = rustc_hash::FxHasher::default();
+            key.hash(&mut hasher);
+            hasher.finish()
+        };
+        let pos = ShapeKey(req("abc", 13.0), false);
+        let neg = ShapeKey(ShapeRequest { letter_spacing: -0.0, ..req("abc", 13.0) }, false);
+        assert!(pos != neg);
+        assert_ne!(hash_of(&pos), hash_of(&neg));
+        let nan_a = ShapeKey(ShapeRequest { max_width: Some(f32::NAN), ..req("abc", 13.0) }, false);
+        let nan_b = ShapeKey(ShapeRequest { max_width: Some(f32::NAN), ..req("abc", 13.0) }, false);
+        assert!(nan_a == nan_b);
+        assert_eq!(hash_of(&nan_a), hash_of(&nan_b));
     }
 
     /// A clock is why this bound exists: it shapes a string nobody asks for twice, once a second,
@@ -1248,7 +1271,7 @@ pub(crate) mod tests {
     fn totals_match_a_walk(handle: &ShapingHandle) {
         let census = handle.census().1;
         let memo = handle.cache.lock().unwrap();
-        let glyphs = memo.entries.iter().filter(|(key, _)| key.glyphs).map(|(key, (result, ..))| held(key, result));
+        let glyphs = memo.entries.iter().filter(|(key, _)| key.1).map(|(key, (result, ..))| held(key, result));
         assert_eq!((memo.bytes, memo.glyph_bytes), (census, glyphs.sum()), "the running totals are the walk's");
         assert!(memo.bytes <= SHAPE_CACHE_BYTES && memo.glyph_bytes <= SHAPE_GLYPH_BYTES, "within both ceilings");
     }
@@ -1321,6 +1344,45 @@ pub(crate) mod tests {
         assert!(!handle.shape_glyphs(req(&huge, 13.0)).shaped[0].glyphs.is_empty());
         assert_eq!(handle.cached_len(), 1, "only the measurement is kept");
         totals_match_a_walk(&handle);
+    }
+
+    #[test]
+    fn held_counts_key_and_result_bytes() {
+        let key = ShapeKey(
+            ShapeRequest {
+                runs: vec![FontRun { range: 0..1, bold: true, italic: false }; 2],
+                font: Some(Arc::from("Noto Sans")),
+                ..req("hello", 14.0)
+            },
+            true,
+        );
+        let glyph = Glyph {
+            face: fontdb::ID::dummy(),
+            coords: 0,
+            id: 1,
+            x: 0.0,
+            y: 0.0,
+            advance: 5.0,
+            start: 0,
+            end: 1,
+            rtl: false,
+        };
+        let result = ShapeResult {
+            width: 5.0,
+            height: 16.0,
+            line_ranges: vec![0..2, 2..5].into(),
+            shaped: vec![ShapedLine { rtl: false, width: 5.0, baseline: 12.0, glyphs: vec![glyph; 3].into() }].into(),
+            coords: Vec::new().into(),
+        };
+        let want = std::mem::size_of::<ShapeKey>()
+            + std::mem::size_of::<ShapeResult>()
+            + "hello".len()
+            + 2 * std::mem::size_of::<FontRun>()
+            + "Noto Sans".len()
+            + 2 * std::mem::size_of::<Range<usize>>()
+            + std::mem::size_of::<ShapedLine>()
+            + 3 * std::mem::size_of::<Glyph>();
+        assert_eq!(held(&key, &result), want);
     }
 
     #[test]
