@@ -92,7 +92,6 @@ impl PublishedIdle {
     }
 
     /// Session-bus roster (`ScreenSaver` into `inhibitors`, `PowerManagement` into `sleep_inhibitors`).
-    /// Reported before logind answers, so a config sees the holder in the same push that stops its countdown.
     fn set_bus_holds(&mut self, kind: BusInhibit, holds: Vec<super::state::IdleInhibitor>) -> Option<IdleState> {
         match kind {
             BusInhibit::ScreenSaver => self.screensaver = holds,
@@ -552,11 +551,13 @@ impl IdleController {
     }
 }
 
-/// Checks whether `peer` still owns its unique name on `connection`.
+/// Checks whether `peer` still owns its unique name on `connection`. A failed check counts as
+/// alive: refusing would push Gecko off `ScreenSaver` to a sleep-only hold for the rest of its
+/// process (ADR-0414), and the departure watcher still frees the hold if the peer did leave.
 async fn peer_alive(connection: &zbus::Connection, peer: &str) -> bool {
     let Ok(name) = zbus::names::BusName::try_from(peer) else { return false };
-    let Ok(dbus) = zbus::fdo::DBusProxy::new(connection).await else { return false };
-    dbus.name_has_owner(name).await.unwrap_or(false)
+    let Ok(dbus) = zbus::fdo::DBusProxy::new(connection).await else { return true };
+    dbus.name_has_owner(name).await.unwrap_or(true)
 }
 
 /// The one logind fd every holder for `target.what` shares, taken while none is held. The caller
@@ -623,8 +624,8 @@ fn bus_holds(state: &InhibitState) -> Vec<super::state::IdleInhibitor> {
 /// 64-message socket reader and stalls `NameHasOwner` replies on the same connection.
 ///
 /// ponytail: the queue is unbounded; it only grows by the departures that arrive while one hold
-/// call holds the mutex, at most zbus's 25 s call timeout. Upgrade: bound it and, on overflow,
-/// reconcile every holder with `NameHasOwner`.
+/// call holds the mutex: its two bus calls, at most twice zbus's 25 s call timeout. Upgrade: bound
+/// it and, on overflow, reconcile every holder with `NameHasOwner`.
 async fn watch_bus_peers(
     mut names: zbus::fdo::NameOwnerChangedStream,
     controller: IdleController,
