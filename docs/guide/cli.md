@@ -332,7 +332,8 @@ shell act. niri's `repeat=false` keeps a held key from toggling repeatedly.
 
 **…start or stop the shell?** Start it from the compositor ([run the shell](installation.md#run-the-shell)),
 which gives it `XDG_RUNTIME_DIR` and the Wayland socket. From a terminal, `mantle -d` starts it
-and gives the prompt back. Stop it with Ctrl-C in the foreground, or `mantle stop` (`-c` or
+and gives the prompt back. Under a systemd user session it runs in a scope of its own, so closing
+the terminal, or the app it runs in, leaves the shell running. Stop it with Ctrl-C in the foreground, or `mantle stop` (`-c` or
 `--pid` picks one of several). A config stops its own shell with
 `process.detach("mantle", { "stop", "--pid", tostring(mantle.pid) })`, which outlives the
 shell it stops.

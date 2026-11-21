@@ -203,7 +203,7 @@ fn take_marker(name: &str) -> Option<std::ffi::OsString> {
 /// leaves `log::capture` a descriptor with nothing to preserve, so a detached shell writes its log
 /// without a drain thread behind it (ADR-0199).
 fn detach_self(root: &std::path::Path) -> Result<(), Box<dyn Error>> {
-    let mut command = std::process::Command::new(std::env::current_exe()?);
+    let mut command = in_own_scope(&std::env::current_exe()?, std::env::var_os("XDG_RUNTIME_DIR"));
     command
         .env(DETACHED_ENV, "1")
         .args(std::env::args().skip(1).filter(|arg| arg != "-d" && arg != "--detach"))
@@ -224,6 +224,19 @@ fn detach_self(root: &std::path::Path) -> Result<(), Box<dyn Error>> {
     }
     println!("{}", child.id());
     Ok(())
+}
+
+/// The command that runs `exe`, through `systemd-run --scope` when a systemd user manager runs
+/// (its socket under `runtime_dir`). `setsid` leaves the shell in its launcher's cgroup, so stopping
+/// that unit, such as a terminal app closing, killed the shell with it; the scope gives it its own.
+/// `systemd-run` execs `exe` in place, so the child's pid stays the Supervisor's.
+fn in_own_scope(exe: &Path, runtime_dir: Option<std::ffi::OsString>) -> std::process::Command {
+    if !runtime_dir.is_some_and(|dir| Path::new(&dir).join("systemd/private").exists()) {
+        return std::process::Command::new(exe);
+    }
+    let mut command = std::process::Command::new("systemd-run");
+    command.args(["--user", "--scope", "--quiet", "--collect", "--"]).arg(exe);
+    command
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -709,6 +722,22 @@ mod tests {
         let sh = reexec_command(mismatch, Ok(Path::new("/bin/sh")), argv, None, false, stdio("arg0"));
         assert!(sh.unwrap().status().unwrap().success());
         assert_eq!(std::fs::read_to_string(dir.path().join("arg0")).unwrap(), "launched-as\n");
+    }
+
+    #[test]
+    fn a_detached_shell_runs_in_its_own_scope_only_under_a_user_manager() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = Path::new("/usr/bin/mantle");
+        let program = |command: std::process::Command| {
+            let args: Vec<_> = command.get_args().map(|arg| arg.to_owned()).collect();
+            (command.get_program().to_owned(), args)
+        };
+        assert_eq!(program(in_own_scope(exe, None)), (exe.into(), vec![]));
+        assert_eq!(program(in_own_scope(exe, Some(dir.path().into()))), (exe.into(), vec![]));
+        std::fs::create_dir(dir.path().join("systemd")).unwrap();
+        std::fs::write(dir.path().join("systemd/private"), "").unwrap();
+        let scoped = ["--user", "--scope", "--quiet", "--collect", "--", "/usr/bin/mantle"].map(Into::into);
+        assert_eq!(program(in_own_scope(exe, Some(dir.path().into()))), ("systemd-run".into(), scoped.to_vec()));
     }
 
     #[test]
