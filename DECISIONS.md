@@ -9466,3 +9466,16 @@ list benches unchanged. An in-place edit of such a literal is not reliably drawn
 cached by table address (a re-`:set` table keeps its address, #159); a separate probe parse (froze
 getters, hid failing parses); caching at the first resolve (9 % slower for paths rebuilt each
 pass); learning `tables_plain` from the first walk (changed every other literal on the node).
+
+## 0412. A logind `sleep` inhibitor is published on `mantle.idle`, never gates idle
+
+T3 Code holds `systemd-inhibit --what=sleep --mode=block` while its agents work, the same scope as
+macOS `caffeinate -i`, and the user saw the screen lock and blank under it (#166). The gate keeps
+matching only `idle`: a `sleep` hold (a backup, a build, a download) blocks suspend, and treating it
+as `idle` would leave an unattended, unlocked screen lit for as long as it runs. Instead the
+`BlockInhibited` watch that drives the gate also publishes `sleep` `block` holders, other than this
+shell's lock-before-sleep `delay`, as `sleep_inhibited` and `sleep_inhibitors`, so a config can
+show them or skip its own lock and blank. A newer `BlockInhibited` edge cancels the in-flight
+`ListInhibitors` call, so a slow roster read never holds up a gate change. Rejected: gating on
+`sleep` (the unlocked-screen case above); polling `ListInhibitors` (ADR-0139). Video stops
+inhibiting when Zen leaves the foreground: Gecko's choice, outside Mantle.
