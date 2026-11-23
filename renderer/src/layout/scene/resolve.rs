@@ -726,6 +726,7 @@ mod tests {
             text { content = { { text = "hi ", bold = true }, { text = "long tail here" } },
                 width = "fill", wrap = "word", max_lines = 1, elide = "end" },
             text { content = "glow", foreground = fg, animate = { foreground = 100 } },
+            text { content = "plain fill", width = "fill", text_align = "center" },
         } } }"##;
 
     #[test]
@@ -756,6 +757,12 @@ mod tests {
         assert!(was_elided && cut.ends_with('\u{2026}') && cut.as_ref() != "fit-then-elide");
         assert!(!wrap_elided && wrapped.contains('\n'), "word wrap without elide: {wrapped:?}");
         assert!(cap_elided && capped.ends_with('\u{2026}') && capped_runs.iter().any(|r| r.bold));
+        // Paint measures a kept plain text's line against the box it gets now (#169).
+        let fits = |bar: &Fixture| match &bar.child(6).paint {
+            Some(PaintStyle::Text { widest_line, .. }) => *widest_line <= bar.child(6).rect.width,
+            other => panic!("expected text paint, got {other:?}"),
+        };
+        assert!(!fits(&bar), "a shrunk box cuts the line");
 
         bar.run("box_w:set(400)");
         let (restored_elide, _, _, elided_now) = text_paint(&bar, 2);
@@ -765,6 +772,7 @@ mod tests {
         assert_eq!(restored_wrap.as_ref(), "alpha omega");
         assert_eq!((restored_cap.as_ref(), cap_elided_now), ("hi long tail here", false));
         assert_eq!(restored_runs[0].range, 0..3);
+        assert!(fits(&bar), "a widened box keeps the ink");
 
         // A moving tween on a kept plain text still re-parses its animated paint properties.
         let t0 = Instant::now();

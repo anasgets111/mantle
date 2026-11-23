@@ -340,9 +340,11 @@ fn prepare_retained_children(
 /// than freeze it at the colour it last laid out with.
 fn repainted_keeping_fitted_text(old: Option<PaintStyle>, fresh: Option<PaintStyle>) -> Option<PaintStyle> {
     match (old, fresh) {
-        (Some(PaintStyle::Text { content, runs, elided, .. }), Some(mut fresh)) => {
-            if let PaintStyle::Text { content: c, runs: r, elided: e, .. } = &mut fresh {
-                (*c, *r, *e) = (content, runs, elided);
+        (Some(PaintStyle::Text { content, runs, elided, widest_line, face, .. }), Some(mut fresh)) => {
+            if let PaintStyle::Text { content: c, runs: r, elided: e, widest_line: w, face: f, .. } = &mut fresh {
+                // A line measured in another face (an exit tweening `font_size`) gets no sideways ink room.
+                let widest_line = if *f == face { widest_line } else { f32::INFINITY };
+                (*c, *r, *e, *w) = (content, runs, elided, widest_line);
             }
             Some(fresh)
         }
@@ -1218,7 +1220,7 @@ mod tests {
         let (lua, surface) = surface_from(
             r##"local label = text { id = "label", width = 60, font_size = 14, elide = "end",
                    content = "a long message that will not fit", foreground = "#000000",
-                   animate = { exit = { duration = 100, easing = "linear", foreground = "#ff0000" } } }
+                   animate = { exit = { duration = 100, easing = "linear", foreground = "#ff0000", font_size = 28 } } }
                return panel { id = "bar", child = row { children = state("kids", { label }) } }"##,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
@@ -1232,8 +1234,12 @@ mod tests {
         assert!(!scene.tick(&instances, &shaping, &lua, started + std::time::Duration::from_millis(50)).is_empty());
 
         let leaver = &scene.surface("bar@TEST").unwrap().children[0].children[0];
-        let Some(PaintStyle::Text { content, color, .. }) = leaver.paint.as_ref() else { panic!("{leaver:?}") };
+        let Some(PaintStyle::Text { content, color, widest_line, .. }) = leaver.paint.as_ref() else {
+            panic!("{leaver:?}")
+        };
         assert!(content.ends_with('\u{2026}'), "still the string it was fitted to, got {content:?}");
+        // Grown past the size it was measured at, the line has no sideways ink room (#169).
+        assert!(*widest_line > leaver.rect.width, "{widest_line} in {}", leaver.rect.width);
         assert_ne!(&**content, source, "not the one the config wrote, re-read from the properties");
         assert!((color.r - 0.5).abs() < 0.05 && color.g < 0.05, "halfway to red, got {color:?}");
     }

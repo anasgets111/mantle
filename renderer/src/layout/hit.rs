@@ -545,6 +545,7 @@ pub(crate) mod tests {
             wrap: crate::layout::node::Wrap::None,
             max_lines: None,
             elided: false,
+            widest_line: 0.0,
         });
         node
     }

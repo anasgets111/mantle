@@ -11,6 +11,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 - Fixed: `vpns` and the saved mark on `available_networks` follow a profile edited after startup, such as one renamed with `nmcli`; they kept the old values until another profile was added or removed.
 - Fixed: a key retyped with `network:connect` for a saved Wi-Fi network keeps the profile's DNS-over-TLS servers; saving the key dropped them.
 - Changed: `network.vpn_error` for a VPN that NetworkManager refuses to start carries NetworkManager's message, such as why the profile cannot start, instead of "connection failed".
+- Fixed: a `text` that fits its width no longer cuts glyph ink past its box sideways, so a script or italic face's last glyph (Caveat's "d") paints whole without right `padding`. Text wider than its box is still cut at the box's width, and a `textfield`'s line at the field's.
 
 ## 0.15.0 - 2026-11-22
 

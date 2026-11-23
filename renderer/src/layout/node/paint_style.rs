@@ -177,6 +177,10 @@ pub enum PaintStyle {
         max_lines: Option<usize>,
         /// Whether fitting removed source text, before any ancestor clip or paint transform.
         elided: bool,
+        /// The widest fitted line's advance, logical px. Paint compares it with the content box it
+        /// gets, which a kept or leaving node changes without a refit: text that fits keeps the ink
+        /// past its advances, an italic's overhang (Flutter's `RenderParagraph`).
+        widest_line: f32,
     },
     /// Theme name; `layout::paint::execute` resolves it, keeping filesystem access out of parsing
     /// and display-list building.
@@ -318,6 +322,7 @@ pub fn paint_style_with(
                 // Ignored without `wrap`, which paints every line.
                 max_lines: text_flow::max_lines.read(properties)?.filter(|_| wrap == Wrap::Word),
                 elided: false,
+                widest_line: 0.0,
             }
         }
         "icon" => PaintStyle::Icon { name: icon::name.read(properties)?, color: icon::foreground.read(properties)? },

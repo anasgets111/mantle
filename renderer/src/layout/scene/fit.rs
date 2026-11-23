@@ -18,10 +18,13 @@ pub(super) fn fit_text_to_box(
     unconstrained_width: Option<f32>,
     shaping: &ShapingHandle,
 ) {
-    let Some(PaintStyle::Text { content, runs, face, elide, wrap, max_lines, elided, .. }) = paint.as_mut() else {
+    let Some(PaintStyle::Text { content, runs, face, elide, wrap, max_lines, elided, widest_line, .. }) =
+        paint.as_mut()
+    else {
         return;
     };
     *elided = false;
+    *widest_line = 0.0;
     // Before the early returns below, and before any measurement: taffy's `compute_leaf_layout`
     // returns early when a node's width and height are both known, so a fully-sized `text` is never
     // handed to the measure callback, and without `elide` or `wrap` it never reaches the shaping
@@ -38,6 +41,8 @@ pub(super) fn fit_text_to_box(
             *elided = true;
             *content = "".into();
             runs.clear();
+        } else {
+            *widest_line = unconstrained_width.unwrap_or_else(|| measured_width(content, runs, face, shaping));
         }
         return;
     }
@@ -46,6 +51,7 @@ pub(super) fn fit_text_to_box(
         // skipping the binary search below is the difference on a list of them.
         node::Wrap::None => {
             let width = unconstrained_width.unwrap_or_else(|| measured_width(content, runs, face, shaping));
+            *widest_line = width;
             if *elide != node::Elide::None && width > content_width + FIT_SLACK {
                 let fitted = elide_edges(content, runs, *elide, face, content_width, shaping);
                 *elided = true;
@@ -56,11 +62,15 @@ pub(super) fn fit_text_to_box(
         }
         node::Wrap::Word => {
             let fitted = wrapped_to_fit(content, runs, face, *elide, *max_lines, content_width, shaping);
-            *elided = fitted.elided;
+            (*elided, *widest_line) = (fitted.elided, fitted.widest_line);
             Some(fitted)
         }
     };
     if let Some(Fitted { text, runs: styled, .. }) = fitted {
+        // An ellipsis can be wider than a narrow box, and a dropped line may have been the widest.
+        if *elided {
+            *widest_line = measured_width(&text, &styled, face, shaping);
+        }
         *content = text.into();
         *runs = styled;
     }
@@ -77,11 +87,13 @@ struct Fitted<'s> {
     text: String,
     runs: Vec<StyleRun>,
     elided: bool,
+    /// The widest shaped line's advance, dropped lines included.
+    widest_line: f32,
 }
 
 impl<'s> Fitted<'s> {
     fn new(source: &'s str, source_runs: &'s [StyleRun]) -> Self {
-        Self { source, source_runs, text: String::new(), runs: Vec::new(), elided: false }
+        Self { source, source_runs, text: String::new(), runs: Vec::new(), elided: false, widest_line: 0.0 }
     }
 
     /// Appends `source[range]` and the parts of any run that fall inside it, re-based.
@@ -133,6 +145,7 @@ fn wrapped_to_fit<'s>(
     let mut fitted = Fitted::new(content, runs);
     let cap = max_lines.unwrap_or(shaped.line_ranges.len());
     fitted.elided = cap < shaped.line_ranges.len();
+    fitted.widest_line = shaped.width;
     for (index, range) in shaped.line_ranges.iter().take(cap).enumerate() {
         if index > 0 {
             fitted.text.push('\n');

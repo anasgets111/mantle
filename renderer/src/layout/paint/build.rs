@@ -13,6 +13,7 @@ use crate::layout::node::{
 };
 
 use crate::layout::scene::{NodeId, ResolvedNode};
+use crate::text::shaping::FIT_SLACK;
 use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 
 mod pixels;
@@ -135,6 +136,15 @@ fn build_node(
     // An outline reaching past the box paints there too; children stay cut to the box.
     let bounds = match &node.paint {
         Some(PaintStyle::Box { radius, .. }) => radius.bounds(rect),
+        // Glyph ink passes the advances: a descender under a tight line, an italic's overhang. Text
+        // wider than its box stops at the box's width.
+        // ponytail: one em of room; upgrade: the shaped ink extents. An empty box draws nothing.
+        Some(PaintStyle::Text { face, widest_line, .. }) if !snap_to_physical(rect, scale).is_empty() => {
+            match *widest_line <= node.content_box(rect).width + FIT_SLACK {
+                true => grow(rect, face.font_size),
+                false => grow_y(rect, face.font_size),
+            }
+        }
         _ => rect,
     };
     let clip = parent_clip.intersect(snap_to_physical(bounds, scale));
@@ -182,14 +192,14 @@ fn build_node(
     // Cloned only when shadows must be stripped for a separate pass or when opening a layer.
     let shadowless = casts.then(|| node::Effect { shadows: Vec::new(), ..effect.clone() });
     let layered = shadowless.as_ref().unwrap_or(effect);
-    let own = layer_bounds(bounds, layered, scale);
+    let own = layer_bounds(rect, bounds, layered, scale);
     let reach = if casts && radius.analytic() {
         effect
             .shadows
             .iter()
             .fold(own, |reach, shadow| reach.union(snap_to_physical(shadow_reach(rect, *shadow), scale)))
     } else if effect.layers() {
-        layer_bounds(bounds, effect, scale)
+        layer_bounds(rect, bounds, effect, scale)
     } else {
         child_clip
     };
@@ -197,8 +207,8 @@ fn build_node(
     // A backdrop shader's padding can reach back into the clip from a box that is itself outside it.
     let padded_read =
         shader_padding(effect.backdrop_shader.as_deref()) > 0.0 && !parent_clip.intersect(read).is_empty();
-    // A box just scrolled out still casts the shadow reaching back in; one whose shadow is out still draws.
-    if parent_clip.intersect(reach).is_empty() && !padded_read {
+    // A box just scrolled out still casts the shadow reaching back in, and a text its ink; one whose shadow is out still draws.
+    if parent_clip.intersect(reach).is_empty() && clip.is_empty() && !padded_read {
         return;
     }
 
@@ -329,10 +339,12 @@ fn build_node(
             let (draw, border) =
                 if insets.is_empty() && !blends_layers { (draw, None) } else { split_fill_and_border(draw) };
             if let Some(draw) = draw {
-                // ponytail: ink can pass a tight line box, so text clips to one em of vertical room; upgrade: the shaped ink extents.
+                // ponytail: ink can pass a tight line box, so a field clips to one em of vertical room; upgrade: the shaped ink extents.
                 let clip = match &draw {
-                    // A multiline field's scrolled rows stop at its box.
-                    Draw::Text { face, wrap: None, .. } if !clip.is_empty() => {
+                    // A multiline field's scrolled rows stop at its box; a `text` has its room in `bounds`.
+                    Draw::Text { face, wrap: None, .. }
+                        if !clip.is_empty() && matches!(node.paint, Some(PaintStyle::TextField { .. })) =>
+                    {
                         parent_clip.intersect(snap_to_physical(grow_y(rect, face.font_size), scale))
                     }
                     _ => clip,
@@ -460,24 +472,22 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
         // `wrap` and `max_lines` are absent on purpose: `Scene::apply` already rewrote `content` to
         // the string that fits (ellipsized, or line-broken with `\n`) in the only place the box
         // width and the shaping worker are both in reach.
-        PaintStyle::Text { content, runs, face, color, align, elide: _, wrap: _, max_lines: _, elided: _ } => {
-            Some(Draw::Text {
-                content: content.clone(),
-                runs: runs
-                    .iter()
-                    .map(|run| StyleRun { color: run.color.map(|c| fade(c, opacity)), ..run.clone() })
-                    .collect(),
-                face: face.clone(),
-                color: fade(*color, opacity),
-                align: *align,
-                centered: false,
-                caret: None,
-                caret_on: false,
-                caret_style: CaretStyle::plain(face.font_size, fade(*color, opacity)),
-                wrap: None,
-                scale,
-            })
-        }
+        PaintStyle::Text { content, runs, face, color, align, .. } => Some(Draw::Text {
+            content: content.clone(),
+            runs: runs
+                .iter()
+                .map(|run| StyleRun { color: run.color.map(|c| fade(c, opacity)), ..run.clone() })
+                .collect(),
+            face: face.clone(),
+            color: fade(*color, opacity),
+            align: *align,
+            centered: false,
+            caret: None,
+            caret_on: false,
+            caret_style: CaretStyle::plain(face.font_size, fade(*color, opacity)),
+            wrap: None,
+            scale,
+        }),
 
         // Icons use `Contain` and the shorter edge: `size` is a bounding-box diameter.
         PaintStyle::Icon { name, color } => Some(Draw::Icon {
@@ -1123,9 +1133,10 @@ mod tests {
         );
     }
 
-    /// A tight `line_height` leaves ink outside the line box: the clip reaches past it vertically only, within ancestors' clips.
+    /// Ink passes a tight `line_height` and the last advance (#169): the clip reaches past the box
+    /// within ancestors' clips, and only vertically for text wider than its box.
     #[test]
-    fn a_texts_clip_reaches_past_a_tight_line_box_but_only_vertically() {
+    fn a_texts_clip_reaches_past_its_box_unless_the_text_overflows_it() {
         let src = |clip: &str| {
             format!(
                 r##"return panel {{ id = "bar", width = 100, height = 60, padding = 20, clip = "{clip}",
@@ -1136,12 +1147,59 @@ mod tests {
             build(&resolved_surface(&Lua::new(), &src("none"), LogicalSize { width: 100.0, height: 60.0 }), 1.0, None);
         let text = list.commands.iter().find(|c| matches!(c.draw, Draw::Text { .. })).unwrap();
         assert_eq!((text.rect.y, text.rect.height), (20.0, 10.0));
-        assert_eq!((text.clip.x0, text.clip.x1), (20, 60), "width still bounds overflow");
+        assert!(text.clip.x0 <= 0 && text.clip.x1 >= 80, "the ink either side of the box: {:?}", text.clip);
         assert!(text.clip.y0 <= 0 && text.clip.y1 >= 40, "the ink above and below the box: {:?}", text.clip);
         let changed = |content: &str| {
             let src = src("none").replace("Hg", content);
             build(&resolved_surface(&Lua::new(), &src, LogicalSize { width: 100.0, height: 60.0 }), 1.0, None)
         };
+        // `wrap` breaks inside a word, so only a glyph wider than the box overflows it.
+        for (long, x1) in [
+            (r#"Hgggggggg", width = 40"#, 60),
+            (r#"WW", width = 8, wrap = "word""#, 28),
+            (r#"Hg", width = 10, padding = { left = 5, right = 5 }"#, 30),
+            // An ellipsis alone is wider than this box.
+            (r#"Hg", width = 3, elide = "end""#, 23),
+        ] {
+            let src = src("none").replace(r#"Hg", width = 40"#, long);
+            let list =
+                build(&resolved_surface(&Lua::new(), &src, LogicalSize { width: 100.0, height: 60.0 }), 1.0, None);
+            let text = list.commands.iter().find(|c| matches!(c.draw, Draw::Text { .. })).unwrap();
+            assert_eq!((text.clip.x0, text.clip.x1), (20, x1), "width bounds overflow: {long}");
+        }
+        // A content-sized box is exactly its advances wide, and that text fits it.
+        // So is a capped wrap whose wider line was dropped.
+        for fits in [
+            r#"field", font_size = 23"#,
+            r#"Wf.;", font_size = 17.3"#,
+            r#"field", font_size = 23, wrap = "word""#,
+            r#"i W", width = 8, wrap = "word", max_lines = 1, font_size = 20"#,
+        ] {
+            let src = src("none").replace(r#"Hg", width = 40, font_size = 20"#, fits);
+            let list =
+                build(&resolved_surface(&Lua::new(), &src, LogicalSize { width: 100.0, height: 60.0 }), 1.0, None);
+            let text = list.commands.iter().find(|c| matches!(c.draw, Draw::Text { .. })).unwrap();
+            let right = (text.rect.x + text.rect.width) as i32;
+            assert!(
+                text.clip.x0 < 20 && text.clip.x1 > right + 10,
+                "ink room past the advances: {fits} {:?}",
+                text.clip
+            );
+        }
+        // An empty box draws nothing, whatever room its ink would have.
+        for empty in [r#"Hg", width = 40, height = 0"#, r#"Hg", width = 0"#] {
+            let src = src("none").replace(r#"Hg", width = 40"#, empty);
+            let list =
+                build(&resolved_surface(&Lua::new(), &src, LogicalSize { width: 100.0, height: 60.0 }), 1.0, None);
+            assert!(!list.commands.iter().any(|c| matches!(c.draw, Draw::Text { .. })), "{empty}");
+        }
+        // A box outside a clipping ancestor still draws the ink reaching back in.
+        let row = r##"return panel { id = "bar", width = 100, height = 60, padding = 20,
+            child = column { width = 40, clip = "box", children = {
+                text { content = "f", width = 10, font_size = 20, margin = { left = 40 } } } } }"##;
+        let culled = build(&resolved_surface(&Lua::new(), row, LogicalSize { width: 100.0, height: 60.0 }), 1.0, None);
+        let text = culled.commands.iter().find(|c| matches!(c.draw, Draw::Text { .. })).expect("the ink in the column");
+        assert_eq!((text.clip.x0, text.clip.x1, text.rect.x), (40, 60, 60.0));
         let damage = changed("Hy").damage_since(&list, true);
         assert!(damage.iter().any(|r| r.y1 >= 40 && r.y0 <= 0), "damage covers the ink: {damage:?}");
         let boxed =
@@ -1153,9 +1211,13 @@ mod tests {
     /// `padding` grows a `text` or `textfield` box, and the glyphs lay out inside it, not at its corner.
     #[test]
     fn text_draws_inside_its_padding() {
-        for child in [
-            r#"text { content = "Hg", width = 40, font_size = 20, line_height = 0.5,"#,
-            r#"textfield { placeholder = "Hg", width = 40, height = 20, font_size = 20, line_height = 0.5,"#,
+        // A `text` that fits its box keeps one em of ink room around it; a field's scrolled line stops at it.
+        for (child, clip) in [
+            (r#"text { content = "Hg", width = 40, font_size = 20, line_height = 0.5,"#, (0, 160)),
+            (
+                r#"textfield { placeholder = "Hg", width = 40, height = 20, font_size = 20, line_height = 0.5,"#,
+                (40, 120),
+            ),
         ] {
             let src = format!(
                 r##"return panel {{ id = "bar", width = 100, height = 60, padding = 20,
@@ -1165,7 +1227,8 @@ mod tests {
             let list = build(&tree, 2.0, None);
             let text = list.commands.iter().find(|c| matches!(c.draw, Draw::Text { .. })).unwrap();
             assert_eq!(text.rect, LogicalRect { x: 52.0, y: 56.0, width: 60.0, height: 20.0 }, "{child}");
-            assert_eq!((text.clip.x0, text.clip.x1), (40, 120), "the clip stays the border box: {child}");
+            // Both keep one em of room above the tight line box at y = 40.
+            assert_eq!((text.clip.x0, text.clip.x1, text.clip.y0), (clip.0, clip.1, 0), "{child}");
         }
     }
 
@@ -2165,6 +2228,26 @@ mod tests {
         assert_eq!(colors(&effect.shadows), [0.0, 1.0], "listed first on top");
     }
 
+    /// The canvas scales a spread shadow about the node's box, so the layer holds the ink room
+    /// scaled that way, not about the room's own centre (#169).
+    #[test]
+    fn a_texts_spread_shadow_scales_its_ink_room_about_the_box() {
+        let list =
+            effect_surface(r##"text { content = "hi", opacity = 0.5, shadows = { { spread = 10, blur = 4 } } }"##);
+        let layer = list.commands.last().unwrap();
+        let Draw::Layer { effect, commands, .. } = &layer.draw else {
+            panic!("expected a layer, got {:?}", layer.draw)
+        };
+        let Some(Draw::Text { face, .. }) = commands.iter().map(|c| &c.draw).find(|d| matches!(d, Draw::Text { .. }))
+        else {
+            panic!("no text in {commands:?}")
+        };
+        let room = grow(layer.rect, face.font_size);
+        let surface = PhysicalRect { x0: 0, y0: 0, x1: 200, y1: 100 };
+        let cast = snap_to_physical(shadow_rect(layer.rect, room, effect.shadows[0]), 1.0).intersect(surface);
+        assert!(layer.clip.contains(cast), "{cast:?} in {:?}", layer.clip);
+    }
+
     /// ADR-0254. Anything but an opaque box casts the shadow of its pixels, so its subtree goes
     /// offscreen as one group. Its content already carries the opacity, so the shadow colour
     /// does not fade twice.
@@ -2183,12 +2266,23 @@ mod tests {
             let (shadows, blur) = (&effect.shadows, &effect.blur);
             let [shadow] = shadows.as_slice() else { panic!("{child}: one shadow, got {shadows:?}") };
             assert_eq!((shadow.color.a, *blur, *alpha), (1.0, 0.0, 1.0), "{child}");
-            assert!(commands.iter().any(|cmd| matches!(cmd.draw, Draw::Text { .. })), "{child}");
             // The blur reaches 3 sigma, 6px, around the box, and the offset shifts its right edge 3.
             let node = snap_to_physical(layer.rect, 1.0);
-            // A text's glyph ink also reaches past its box vertically, so the layer may be taller.
-            assert_eq!((layer.clip.x0, layer.clip.x1), (node.x0 - 6, node.x1 + 9), "{child}");
-            assert!(layer.clip.y0 <= node.y0 - 6 && layer.clip.y1 >= node.y1 + 6, "{child}");
+            let text = commands.iter().find(|c| matches!(c.draw, Draw::Text { .. })).unwrap();
+            let Draw::Text { face, .. } = &text.draw else { unreachable!() };
+            let blurred = |ink: i32| PhysicalRect {
+                x0: node.x0 - 6 - ink,
+                y0: node.y0 - 6 - ink,
+                x1: node.x1 + 9 + ink,
+                y1: node.y1 + 6 + ink,
+            };
+            // A text's ink reaches one em past its box and blurs past that; a child's widens the layer to cover it.
+            let expected = if child.starts_with("text") {
+                blurred(face.font_size as i32)
+            } else {
+                blurred(0).union(command_bounds(text))
+            };
+            assert_eq!(layer.clip, expected, "{child}");
         }
     }
 
