@@ -729,6 +729,22 @@ mod tests {
         assert!(strips.iter().all(|s| !s.is_empty()));
     }
 
+    /// A holed `shape`'s region leaves out the union of its holes: their overlap and the part of a
+    /// hole inside the box that crosses its edge.
+    #[test]
+    fn a_holed_shape_region_leaves_out_every_hole() {
+        let mut strips = Vec::new();
+        let shape = crate::layout::node::shape::parse(crate::layout::node::shape::PUNCHED).unwrap().unwrap();
+        push_rounded_rect(
+            PhysicalRect { x0: 16, y0: 16, x1: 48, y1: 48 },
+            node::Radii([0.0; 4], 0.0, Some(shape)),
+            &mut strips,
+        );
+        let covers = |x: i32, y: i32| strips.iter().any(|s| s.x0 <= x && x < s.x1 && s.y0 <= y && y < s.y1);
+        assert!(covers(40, 40) && covers(18, 18), "the body");
+        assert!(!covers(28, 27) && !covers(43, 18) && !covers(24, 24), "the overlap, the edge's hole and a hole");
+    }
+
     /// A melt's region is each of its loops: two bubbles apart leave the ground between them out,
     /// and the bridge they melt into is in.
     #[test]

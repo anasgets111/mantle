@@ -18,7 +18,8 @@ uniform vec4 mantle_radii;
 uniform vec4 mantle_reach;
 uniform vec4 mantle_power;
 uniform vec4 mantle_round;
-// A `shape`'s contour as a polygon, two points to each element; `layout::node::shape::distance` mirrors it.
+// A `shape`'s contour as a polygon, two points to each element, or several closed loops each ended by
+// a point at 1e9; `layout::node::shape::distance` mirrors it.
 uniform vec4 mantle_shape[128];
 uniform int mantle_shape_len;
 
@@ -35,6 +36,10 @@ float mantle_sdf(vec2 p) {
         vec2 a = mantle_shape_point(mantle_shape_len - 1);
         for (int i = 0; i < mantle_shape_len; i++) {
             vec2 b = mantle_shape_point(i);
+            if (max(a.x, b.x) >= 1e9) {
+                a = b;
+                continue;
+            }
             vec2 e = b - a;
             vec2 w = p - a;
             float t = dot(e, e) > 0.0 ? clamp(dot(w, e) / dot(e, e), 0.0, 1.0) : 0.0;

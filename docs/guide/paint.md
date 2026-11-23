@@ -90,7 +90,7 @@ colours and no short `#RGB` form.
 | `radius` | `number\|Corners\|Bound`, `[0, 8192]` | `0` | Corner radius px; a number sets all four corners, a missing corner is `0`. Corners too big for a side shrink together, so `radius = 999` makes a pill or circle. Shadows round by the mean corner |
 | `corner_shape` | `"round"\|"scoop"\|Bound` | `"round"` | `"scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `compositor_blur` region follow |
 | `corner_smoothing` | `number\|Bound`, `[0, 1]` | `0` | Continuous corners, as Figma's corner smoothing: `0` is the circular arc, `0.6` is close to iOS. A smoothed corner spreads up to `(1 + corner_smoothing) * radius` along each side, less where the side is short. Refused with `corner_shape = "scoop"`. Fill, border, clip, mask, `effect.backdrop` and the `compositor_blur` region follow; a `"box"` shadow stays the circular mean-radius approximation |
-| `shape` | `Shape\|Bound` | None | The box's shape as one closed contour or a melt, in place of `radius`; see [Shape](#shape) |
+| `shape` | `Shape\|Bound` | None | The box's shape as one closed contour with any holes, or a melt, in place of `radius`; see [Shape](#shape) |
 | `border_color` | `Color\|BorderColors\|Gradient\|Bound` | None | A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width. A gradient runs along the whole outline and refuses a per-edge one; it snaps under `animate` |
 | `border_width` | `number\|Edges\|Bound`, `[0, 8192]` | `0` | Px per edge; a number sets all four, a missing edge is `0`. Borders draw inside the box and take no layout space |
 | `ring` | `Ring\|Bound` | None | A stroke of `width` px and `color` around the box, `offset` px outside its edge; see [Ring](#ring) |
@@ -153,9 +153,11 @@ return row {
 ### Shape
 
 `shape = { commands = { .. } }` replaces the rounded rectangle with any shape: one closed
-contour of [`path`](../nodes/path.md) commands: an `M`, at least two more commands, then `Z`, with
-no other `M` or `Z`, no `hole` and at most 256 commands. A popover and its arrow,
-a speech bubble's tail, a tab joined to its panel or a notched card is one shape, so the fill,
+contour of [`path`](../nodes/path.md) commands: an `M`, at least two more commands, then `Z`. Any
+holes follow, at most 41, each another closed contour whose `M` sets `hole = true`, wound either
+way; at most 256 commands in all. Holes subtract their union: where two overlap, or one reaches past
+the outline, the whole of each hole is empty. A popover and its arrow, a speech bubble's tail, a tab joined to its panel, a
+notched card or a card with punched holes is one shape, so the fill,
 the border, shadows (inset too), `clip = "rounded"`, `mask`, `effect.backdrop`, `effect.shader`'s
 `mantle_sdf`, hit testing and the `compositor_blur` region run round it without a seam. It refuses
 `radius`, `corner_shape` and `corner_smoothing`, and its border takes one width and one colour or
@@ -219,7 +221,9 @@ same commands; any other change snaps. A point written in px on one side and `"N
 crosses as their resolved positions would. A corner's radius holds at `0` and its smoothing in
 `[0, 1]` through an overshoot. The tween runs without a layout or Lua.
 
-`mantle_sdf` measures a shape as a polygon of at most 256 points, each curve cut every 3° of
+`mantle_sdf` measures a shape as a polygon of at most 256 points, each hole its own loop (when
+holes cut a shape into more than 42 loops, the 42 biggest: a smaller island reads as outside and a
+smaller hole as inside), each curve cut every 3° of
 turn; past 256 points the cut widens to 6°, 12° and so on, so the gradient bends by at most 3° at a
 point up to about 8 corners, more beyond (and straight segments past 256 are thinned). Hit testing
 reads the exact curves, so it and `mantle_sdf` can differ by a fraction of a pixel. A shadow
@@ -474,7 +478,8 @@ Mask alpha does not change the content's input or desktop blur region.
 `0`, inside when negative) from its edge with a clear gap between: Material's focus indicator (3 px,
 2 px offset) and CSS `outline` with `outline-offset`. `width = 0`, a clear `color` or an inset past
 the box's middle draws nothing. The gap stays `offset` all round, so a rounded corner's ring has
-radius `radius + offset + width` outside and follows `corner_smoothing` and `shape` too. It is
+radius `radius + offset + width` outside and follows `corner_smoothing` and `shape` too, ringing
+each hole of a shape and void of a melt inside it. It is
 paint only: no layout space or hit area, drawn over the children. The node's own `clip` does not cut
 it, a clipping ancestor does as it does a shadow, and `animate.ring` tweens all three numbers.
 

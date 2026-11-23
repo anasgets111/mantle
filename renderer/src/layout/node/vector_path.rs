@@ -98,13 +98,6 @@ impl PathData {
         spans(&self.segments).map(|(segment, range, _)| (segment, &self.points[range]))
     }
 
-    /// Every pixel value, which a shape's display scaling multiplies and a tween clamps.
-    pub fn for_each_pixel(&mut self, mut f: impl FnMut(&mut f32)) {
-        for (_, range, pixels) in spans(&self.segments) {
-            self.points[range.start..range.start + pixels].iter_mut().for_each(&mut f);
-        }
-    }
-
     /// `self` moved toward `to` by `t`, or `None` when their segments differ and the tween snaps.
     pub fn lerp(&self, to: &Self, t: f32) -> Option<Self> {
         if !Rc::ptr_eq(&self.segments, &to.segments) && self.segments != to.segments {

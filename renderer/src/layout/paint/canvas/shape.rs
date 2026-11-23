@@ -7,9 +7,11 @@ use femtovg::{Canvas, Color, Paint, Path, Solidity};
 
 use super::vector_path::femtovg_path;
 use crate::layout::node::corner::Squircle;
-use crate::layout::node::shape::inset;
+use crate::layout::node::shape::{boolean, inset};
 use crate::layout::node::{BorderColor, BorderPaint, EdgeInsets, Fill, Gradient, GradientShape, Radii, Rgba};
 use crate::text::snap::{LogicalRect, snap_border_band};
+use kurbo::{BezPath, PathEl, Shape as _};
+use linesweeper::BinaryOp;
 
 /// Below this the two sides of a box count as equal (`box_path`): the 0.05 px band the sweep in
 /// its doc comment found clear of femtovg's bevel fold, and far above any layout rounding error.
@@ -195,10 +197,16 @@ pub(super) fn paint_border(
         if let Some(paint) = uniform_paint
             && widths.top > 0.0
         {
-            let (mut bez, voids) = (outline.bez(rect), outline.voids(rect));
-            bez.extend(inset(&outline.polygon(rect, 0.1), f64::from(widths.top)));
-            let holes = voids.iter().copied().chain(voids.iter().map(|void| !void));
-            canvas.fill_path(&femtovg_path(&bez, holes), &paint);
+            let (by, voids) = (f64::from(widths.top), outline.voids(rect));
+            let (band, holes) = if voids.contains(&true) {
+                let Some(cut) = cut_band(outline, rect, by, BinaryOp::Intersection) else { return };
+                cut
+            } else {
+                let mut band = outline.bez(rect);
+                band.extend(inset(&outline.polygon(rect, 0.1), by));
+                (band, voids.iter().copied().chain(voids.iter().map(|void| !void)).collect())
+            };
+            canvas.fill_path(&femtovg_path(&band, holes.into_iter()), &paint);
         }
         return;
     }
@@ -542,6 +550,28 @@ fn paint_border_edge(
     canvas.fill_path(&path, &paint);
 }
 
+/// One closed subpath, reversed if need be so its area is negative for a hole, positive otherwise.
+/// A voided `outline` at `rect` cut by `op` with the band `by` px in from every edge: the band
+/// (`Intersection`) or the shape inside it (`Difference`). A band wider than the gap beside a void
+/// reaches into the void and past the box, and the cut keeps it to the shape.
+pub(super) fn cut_band(
+    outline: &crate::layout::node::Shape,
+    rect: LogicalRect,
+    by: f64,
+    op: BinaryOp,
+) -> Option<(BezPath, Vec<bool>)> {
+    let (shape, voids) = (outline.bez(rect), outline.voids(rect));
+    let mut band = shape.clone();
+    band.extend(inset(&outline.polygon(rect, 0.1), by));
+    let holes = voids.iter().copied().chain(voids.iter().map(|void| !void));
+    let wound: BezPath = band.subpaths().zip(holes).flat_map(|(l, hole)| wound(l, hole)).collect();
+    boolean(&shape, &wound, op)
+}
+
+fn wound(subpath: &[PathEl], hole: bool) -> BezPath {
+    let path = BezPath::from_vec(subpath.to_vec());
+    if (path.area() < 0.0) == hole { path } else { path.reverse_subpaths() }
+}
 #[cfg(test)]
 mod tests {
     use super::super::tests::{init_headless_egl, paint_points, pixel_at, text_painter};

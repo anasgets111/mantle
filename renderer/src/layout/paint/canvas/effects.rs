@@ -12,11 +12,12 @@ use crate::text::snap::{LogicalRect, PhysicalRect};
 
 use super::super::{LayerShader, UNCLIPPED, any_draw_matches, grow, reads_under, shadow_rect, transformed, volatile};
 use super::offscreen::{aligned, apply_mask, draw_into, fill_pooled, offscreen, pooled_paint, scratch};
-use super::shape::box_path;
+use super::shape::{box_path, cut_band};
 use super::vector_path::femtovg_path;
 use super::{Draw, DrawCmd, Frame, Shaders, Walk, fill_image, flush};
 use crate::layout::node::shape::inset;
 use kurbo::Shape as _;
+use linesweeper::BinaryOp;
 
 /// A shadow's gradient: its feather and its colour solid and at zero alpha. A ramp across 3 sigma
 /// is within 14/255 of the layer path's Gaussian; matching its slope instead, 22. The feather is
@@ -127,7 +128,13 @@ pub(super) fn paint_shape_inset(
     canvas.restore();
     canvas.set_render_target(target);
     let Some(cast) = cast_shadow(painter, walk, content, size, *shadow, target, snug) else { return };
-    let pad = femtovg_path(&inset(&loops, f64::from(widths.top)), voids.into_iter());
+    let (pad, voids) = if voids.contains(&true) && widths.top > 0.0 {
+        let Some(cut) = cut_band(shape, rect, f64::from(widths.top), BinaryOp::Difference) else { return };
+        cut
+    } else {
+        (inset(&loops, f64::from(widths.top)), voids)
+    };
+    let pad = femtovg_path(&pad, voids.into_iter());
     let at = LogicalRect { x: x0 as f32, y: y0 as f32, width: size.0 as f32, height: size.1 as f32 };
     let paint = pooled_paint(painter.canvas_mut(), cast, size, at, 1.0);
     painter.canvas_mut().fill_path(&pad, &paint);
@@ -145,8 +152,15 @@ fn knocked_out(rect: LogicalRect, radius: &Radii, outside: LogicalRect) -> Path 
     let (x0, y0) = (outside.x.min(rect.x) - 2.0, outside.y.min(rect.y) - 2.0);
     let x1 = (outside.x + outside.width).max(rect.x + rect.width) + 2.0;
     let y1 = (outside.y + outside.height).max(rect.y + rect.height) + 2.0;
-    let mut path = box_path(rect, radius);
-    path.solidity(Solidity::Hole);
+    let mut path = match &radius.2 {
+        // Every loop turned over, a void's too, or the body under a hole's loop is not cut out.
+        Some(outline) => femtovg_path(&outline.bez(rect), outline.voids(rect).into_iter().map(|void| !void)),
+        None => {
+            let mut path = box_path(rect, radius);
+            path.solidity(Solidity::Hole);
+            path
+        }
+    };
     path.rect(x0, y0, x1 - x0, y1 - y0);
     path.solidity(Solidity::Solid);
     path
@@ -740,6 +754,30 @@ mod tests {
         let clip = r##"clip = "rounded", children = { rect { width = 32, height = 32, background = "#0000FFFF" } }"##;
         let Some(px) = at(clip, &[top, (16, 16)]) else { return };
         assert!(near(px[0], (0, 0, 255)) && near(px[1], white), "children cut to the contour: {px:?}");
+    }
+
+    /// Holes subtract their union in paint: the overlap of two holes and a hole across the edge stay
+    /// empty; a border wider than the gap between a hole and the edge stays in the card; and an
+    /// offset shadow under a translucent card darkens no part of its body.
+    #[test]
+    fn a_punched_card_paints_nothing_in_its_holes() {
+        let (red, white, pink) = ((255, 0, 0), (255, 255, 255), (255, 127, 127));
+        let punched = format!("shape = {}", crate::layout::node::shape::PUNCHED);
+        // The overlap, the straddling hole inside the box, a hole, and the body.
+        let points = [(28, 27), (43, 18), (21, 24), (40, 40)];
+        let fill = format!(r##"{punched}, background = "#FF0000FF""##);
+        let Some(px) = paint_effect_at(&fill, &points) else { return };
+        assert!(px[..3].iter().all(|&p| near(p, white)) && near(px[3], red), "fill: {px:?}");
+        let border = format!(r##"{fill}, border_width = 8, border_color = "#000000FF""##);
+        let Some(px) = paint_effect_at(&border, &points) else { return };
+        assert!(px[..3].iter().all(|&p| near(p, white)), "border: {px:?}");
+        // The border grows a hole past the box's edge and over its neighbour: neither shades.
+        let inset = format!(r##"{border}, shadows = {{ {{ inset = true, spread = 2, color = "#000000FF" }} }}"##);
+        let Some(px) = paint_effect_at(&inset, &[(22, 22), (14, 14), (28, 27)]) else { return };
+        assert!(px.iter().all(|&p| near(p, white)), "an inset shadow under the border: {px:?}");
+        let cast = format!(r##"{punched}, background = "#FF000080", shadows = {{ {{ offset = {{ y = 16 }} }} }}"##);
+        let Some(px) = paint_effect_at(&cast, &[(40, 40), (18, 46)]) else { return };
+        assert!(near(px[0], pink) && near(px[1], pink), "the body over no shadow: {px:?}");
     }
 
     /// A melt whose 8 px bars ring a void: the void stays empty, and the border and an inset
@@ -1718,6 +1756,12 @@ mod tests {
             return;
         };
         assert_eq!(px.iter().copied().map(inside).collect::<Vec<_>>(), [true, false, false, true], "shape: {px:?}");
+        // Holes are outside: the overlap of two, and one across the edge, inside and past the box.
+        let punched = format!("shape = {}", crate::layout::node::shape::PUNCHED);
+        let Some(px) = paint_shader(frag, "padding = 8", &punched, &[(40, 40), (28, 27), (43, 18), (43, 14)]) else {
+            return;
+        };
+        assert_eq!(px.iter().copied().map(inside).collect::<Vec<_>>(), [true, false, false, false], "holes: {px:?}");
     }
 
     /// ADR-0336. A shader that does not build leaves the node as painted.
