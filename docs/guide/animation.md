@@ -124,7 +124,7 @@ Path coordinates stay within `[-8192, 8192]` and arc radii at 0 or more.
 
 | Tween on | Each frame |
 | :--- | :--- |
-| `opacity`, colours, `radius`, `translate`, `scale`, `rotate`, `origin`, `progress`, `commands`, `shape`, `fill`, `stroke`, `stroke_width`, `trim_start`, `trim_end`, `shift`, `corner_smoothing`, `shadows`, `ring`, `effect` | Repaints; no layout pass |
+| `opacity`, colours, `radius`, `translate`, `scale`, `rotate`, `origin`, `progress`, `commands`, `shape`, `fill`, `stroke`, `stroke_width`, `taper_start`, `taper_end`, `trim_start`, `trim_end`, `shift`, `corner_smoothing`, `shadows`, `ring`, `effect` | Repaints; no layout pass |
 | Anything else: `width`, `height`, `margin`, `padding`, `spacing`, `font_size`, … | Lays the surface out again |
 
 Slide with `translate` and grow on hover with `scale` when surrounding nodes should stay put.

@@ -304,6 +304,7 @@ pub fn paint_style_with(
             stroke_width: path::stroke_width.read(properties)?,
             stroke_cap: path::stroke_cap.read(properties)?,
             stroke_join: path::stroke_join.read(properties)?,
+            taper: (path::taper_start.read(properties)?, path::taper_end.read(properties)?),
             trim: (path::trim_start.read(properties)?, path::trim_end.read(properties)?),
             trim_axis: path::trim_axis.read(properties)?,
             shift: path::shift.read(properties)?,

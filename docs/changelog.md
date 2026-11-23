@@ -14,6 +14,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 - Fixed: a `text` that fits its width no longer cuts glyph ink past its box sideways, so a script or italic face's last glyph (Caveat's "d") paints whole without right `padding`. Text wider than its box is still cut at the box's width, and a `textfield`'s line at the field's.
 - Added: `strikethrough = true` on a `text` content run draws a line through it in the run's colour, following the run across wrapped lines.
 - Fixed: an underline, a link or a `textfield` selection on a letter a font joins into a ligature with a plain neighbour (the `i` of `fi`) covers that letter's share of the ligature. The underline and selection drew nothing there and the link could not be clicked.
+- Added: `path` takes `taper_start` and `taper_end`, lengths in pixels over which each open stroke end narrows to one physical pixel, for pen and brush lines. They follow `trim_start`/`trim_end` and animate.
 
 ## 0.15.0 - 2026-11-22
 

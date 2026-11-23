@@ -54,6 +54,7 @@ pub(super) fn ring_cmd(
             stroke_width: width,
             stroke_cap: node::StrokeCap::Butt,
             stroke_join: node::StrokeJoin::Round,
+            taper: (0.0, 0.0),
             trim: (0.0, 1.0),
             trim_axis: node::TrimAxis::Length,
             shift: (0.0, 0.0),

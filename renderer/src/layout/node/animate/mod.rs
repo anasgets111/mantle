@@ -481,6 +481,8 @@ const PAINT_ONLY: &[&str] = &[
     "fill",
     "stroke",
     "stroke_width",
+    "taper_start",
+    "taper_end",
     "trim_start",
     "trim_end",
     "shift",

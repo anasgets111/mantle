@@ -13,6 +13,8 @@ coordinates. Use the existing `scale` transform to scale a drawing.
 | `stroke_width` | `number\|Bound`, `[0, 8192]` | `1` | Stroke width in logical pixels; centered on the path |
 | `stroke_cap` | `"butt"\|"round"\|"square"\|Bound` | `"butt"` | How each open stroke end, trimmed ones included, finishes |
 | `stroke_join` | `"miter"\|"round"\|"bevel"\|Bound` | `"miter"` | How stroked segments meet at a corner |
+| `taper_start` | `number\|Bound`, `[0, 8192]` | `0` | Length in logical pixels over which the stroke widens from one physical pixel to `stroke_width` at the start of each open run, measured along the stroke as trimmed; a run shorter than both tapers peaks thinner. A subpath that ends where it began has no ends and keeps its width |
+| `taper_end` | `number\|Bound`, `[0, 8192]` | `0` | As `taper_start`, narrowing to one physical pixel at each run's end |
 | `trim_start` | `number\|Bound`, `[0, 1]` | `0` | Where the stroke starts, as a fraction of the length of every subpath in order, closing segments included. The fill is untrimmed |
 | `trim_end` | `number\|Bound`, `[0, 1]` | `1` | Where the stroke ends, as `trim_start`; at or before `trim_start` draws no stroke |
 | `trim_axis` | `"length"\|"x"\|Bound` | `"length"` | What `trim_start` and `trim_end` measure. `"length"`: fractions of the path's length. `"x"`: fractions of the node's width; the stroke keeps what lies inside that band of the box, cut at its edges with `stroke_cap` on every cut end, and the band stays put while `shift` moves the geometry through it |
@@ -138,6 +140,22 @@ return path {
     trim_end = value,
     commands = { { op = "A", points = { 24, 24, 20, -90, 360 } } },
     animate = { trim_end = { duration = 300, easing = "out_cubic" } },
+}
+```
+
+`taper_start` and `taper_end` narrow each open end of the stroke to one physical pixel over that many pixels
+of its length, for a pen or brush line. They measure the stroke as trimmed, so a growing
+`trim_end` keeps its tip; a subpath that ends where it began has no ends and keeps its width:
+
+```lua
+return path {
+    width = 120,
+    height = 32,
+    stroke = "#f5c2e7",
+    stroke_width = 6,
+    taper_start = 30,
+    taper_end = 50,
+    commands = { { op = "M", points = { 6, 24 } }, { op = "C", points = { 40, -4, 80, 40, 114, 8 } } },
 }
 ```
 

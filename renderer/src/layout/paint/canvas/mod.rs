@@ -903,8 +903,10 @@ pub(crate) mod tests {
                             { op = "Z", points = {} } } },
                     path { width = 16, height = 16, margin = { left = 44 }, fill = "#0000FFFF",
                         commands = { { op = "A", points = { 8, 8, 8, 0, 180 } } } },
-                    path { width = 32, height = 16, margin = { top = 32 }, stroke = "#FFFFFFFF", stroke_width = 4,
+                    path { width = 32, height = 16, margin = { top = 32 }, stroke = "#FFFFFFFF", stroke_width = 4, taper_start = 8,
                         shift = { x = 8, y = 4 }, commands = { { op = "M", points = { 0, 4 } }, { op = "L", points = { 16, 4 } } } },
+                    path { width = 16, height = 16, margin = { top = 48 }, stroke = "#FFFFFFFF", stroke_width = 4, taper_end = 8,
+                        commands = { { op = "M", points = { 0, 8 } }, { op = "L", points = { 16, 8 } } } },
                     path { width = 16, height = 16, margin = { left = 40, top = 40 }, fill = "#FFFFFFFF",
                         commands = { { op = "M", points = { 0, 0 } }, { op = "L", points = { 16, 0 } },
                             { op = "corner", points = { 16, 16 }, radius = 8 }, { op = "L", points = { 0, 16 } },
@@ -933,6 +935,9 @@ pub(crate) mod tests {
             assert_eq!(at(55.0, 55.0).3, 0);
             // A 4 px stroke shifted to x 8..24 at y 40: at its edge only with both scaled.
             assert!(at(22.0, 41.5).3 > 240, "{:?}", at(22.0, 41.5));
+            // Its 8 px taper scales too: 4 px in, it is half as wide; so does a taper at the far end.
+            assert_eq!(at(12.0, 41.5).3, 0);
+            assert_eq!((at(4.0, 57.5).3, at(12.0, 57.5).3), (255, 0));
             assert_eq!(at(4.0, 40.0).3, 0);
         }
     }

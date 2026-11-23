@@ -280,6 +280,8 @@ pub struct VectorPath {
     pub stroke_width: f32,
     pub stroke_cap: StrokeCap,
     pub stroke_join: StrokeJoin,
+    /// `taper_start` and `taper_end` in logical px.
+    pub taper: (f32, f32),
     /// `trim_start` and `trim_end`: the stroked fraction of the path's length or of the node's width.
     pub trim: (f32, f32),
     pub trim_axis: TrimAxis,

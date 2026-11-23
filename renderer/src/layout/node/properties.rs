@@ -566,6 +566,10 @@ props! {
         stroke_cap: Bound<OneOf<StrokeCap>> = absent(Choice("butt"));
         /// How stroked segments meet at a corner.
         stroke_join: Bound<OneOf<StrokeJoin>> = absent(Choice("miter"));
+        /// Length in logical pixels over which the stroke widens from one physical pixel to `stroke_width` at the start of each open run, measured along the stroke as trimmed; a run shorter than both tapers peaks thinner. A subpath that ends where it began has no ends and keeps its width.
+        taper_start: Bound<Num> = range(0.0, 8192.0).absent(Number(0.0));
+        /// As `taper_start`, narrowing to one physical pixel at each run's end.
+        taper_end: Bound<Num> = range(0.0, 8192.0).absent(Number(0.0));
         /// Where the stroke starts, as a fraction of the length of every subpath in order, closing segments included. The fill is untrimmed.
         trim_start: Bound<Num> = range(0.0, 1.0).absent(Number(0.0));
         /// Where the stroke ends, as `trim_start`; at or before `trim_start` draws no stroke.

@@ -889,8 +889,10 @@ mod tests {
                 stroke_width = on:map(function(o) return o and 4 or 2 end),
                 commands = on:map(function(o) return {{ op = "A", points = { 10, 10, o and 8 or 2, 0, 360 } }} end),
                 trim_end = on:map(function(o) return o and 0 or 1 end),
+                taper_end = on:map(function(o) return o and 20 or 0 end),
                 animate = { commands = { duration = 100 }, stroke = { duration = 100 },
-                            stroke_width = { duration = 100 }, trim_end = { duration = 100 } } } }"##,
+                            stroke_width = { duration = 100 }, trim_end = { duration = 100 },
+                            taper_end = { duration = 100 } } } }"##,
         );
         lua.load(r#"state("on", false):set(true)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
@@ -903,6 +905,7 @@ mod tests {
         assert_eq!(path.commands.points, [10.0, 10.0, 5.0, 0.0, 360.0], "halfway is the midpoint radius");
         assert_eq!(path.stroke_width, 3.0);
         assert_eq!(path.trim, (0.0, 0.5));
+        assert_eq!(path.taper, (0.0, 10.0));
         let Some(node::Fill::Color(stroke)) = path.stroke else { panic!("a colour stroke, got {:?}", path.stroke) };
         assert!(stroke.r > 0.1 && stroke.r < 0.9, "the stroke is between black and white, got {}", stroke.r);
     }

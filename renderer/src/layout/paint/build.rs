@@ -452,6 +452,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
                 stroke_width: path.stroke_width,
                 stroke_cap: path.stroke_cap,
                 stroke_join: path.stroke_join,
+                taper: path.taper,
                 trim: path.trim,
                 trim_axis: path.trim_axis,
                 shift: path.shift,
