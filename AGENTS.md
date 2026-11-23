@@ -84,7 +84,9 @@ agents). The hook skips `just book`,
 - **Domains.** One domain per file; split out a clear second one at any size, like `check`,
   `install` and `aur` in `updates/pacman/`. Past ~700 production lines, review the boundaries.
 - **Communication.** Concise, direct, organized: lead with the answer, bullets for parallel points,
-  tables for comparisons. Detail only when asked or needed for a decision, risk or blocker.
+  tables for comparisons. Detail only when asked or needed for a decision, risk or blocker. When
+  the host offers an HTML preview (T3 Code's `html_preview` and `html_render`), present reports,
+  designs and comparisons as a rendered page, with diagrams and tables, rather than terminal text.
 - **Writing.** Apply `unslop` everywhere; prefer numbers to adjectives. Comments explain
   non-obvious decisions or constraints, never narrate code. Commits state what changed and why.
 - **ADRs.** Append one to `DECISIONS.md` (next number) when a choice is hard to reverse, surprising
