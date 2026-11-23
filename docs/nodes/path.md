@@ -18,6 +18,8 @@ coordinates. Use the existing `scale` transform to scale a drawing.
 | `trim_start` | `number\|Bound`, `[0, 1]` | `0` | Where the stroke starts, as a fraction of the length of every subpath in order, closing segments included. The fill is untrimmed |
 | `trim_end` | `number\|Bound`, `[0, 1]` | `1` | Where the stroke ends, as `trim_start`; at or before `trim_start` draws no stroke |
 | `trim_axis` | `"length"\|"x"\|Bound` | `"length"` | What `trim_start` and `trim_end` measure. `"length"`: fractions of the path's length. `"x"`: fractions of the node's width; the stroke keeps what lies inside that band of the box, cut at its edges with `stroke_cap` on every cut end, and the band stays put while `shift` moves the geometry through it |
+| `stroke_dash` | `number[]\|Bound`, `[0, 8192]` | `{}` | Alternating dash and gap lengths in px, up to 16, an odd list repeated, as SVG's `stroke-dasharray`. Each subpath restarts the pattern, and a dash across a closed subpath's start stays one dash; `trim_*` cut it where it lies on the untrimmed path. `stroke_cap` ends every dash; a zero-length dash draws nothing, so dots take a short one with `stroke_cap = "round"`, and a zero gap joins its neighbours into one dash. Absent, `{}` or a list summing to `0` strokes solid, as does a pattern that would cut more than about 65536 dashes. Snaps under `animate` |
+| `stroke_dash_offset` | `number\|Bound`, `[-8192, 8192]` | `0` | Px into the pattern where each subpath starts, as SVG's `stroke-dashoffset`: a positive offset moves the dashes back along the path. Tween it for marching dashes |
 | `shift` | `Axes\|Bound`, `[-8192, 8192]` | `{ x = 0, y = 0 }` | Pixel offset of the geometry inside the node, applied before trimming and stroking. The box, the `trim_axis = "x"` band and the fill gradient do not move. Paint only |
 <!-- End of the generated table. -->
 
@@ -156,6 +158,33 @@ return path {
     taper_start = 30,
     taper_end = 50,
     commands = { { op = "M", points = { 6, 24 } }, { op = "C", points = { 40, -4, 80, 40, 114, 8 } } },
+}
+```
+
+`stroke_dash` cuts the stroke into dashes, as SVG's `stroke-dasharray`: alternating dash and gap
+lengths in px, restarted at each subpath. A dash across a closed subpath's start joins into one,
+and a zero gap joins its neighbours; a list summing to `0` strokes solid. The dashes stay where they
+lie on the whole path, so `trim_*` uncovers them in place. Tween `stroke_dash_offset` to slide the
+dashes along the path. With `taper_start` or `taper_end` set, each dash tapers on its own, as an
+open stroke; tapering the dashed stroke as a whole is
+[#176](https://github.com/anasgets111/mantle/issues/176). Box borders take the same pattern as
+`border_dash` ([dashed borders](../guide/paint.md#dashed-borders)):
+
+```lua
+local hover = state("drop", false)
+
+return path {
+    width = 96,
+    height = 64,
+    stroke = "#a6adc8",
+    stroke_width = 2,
+    stroke_dash = { 6, 4 },
+    stroke_dash_offset = hover:map(function(on) return on and -10 or 0 end),
+    commands = {
+        { op = "M", points = { 1, 1 } }, { op = "L", points = { 95, 1 } },
+        { op = "L", points = { 95, 63 } }, { op = "L", points = { 1, 63 } }, { op = "Z", points = {} },
+    },
+    animate = { stroke_dash_offset = { duration = 400 } },
 }
 ```
 

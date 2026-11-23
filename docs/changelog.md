@@ -18,6 +18,10 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 - Added: `fonts { files = { "fonts/Caveat.ttf" }, "Caveat" }` registers font files a config ships, so it needs no font installed. A relative path is read from the config directory. Their families take those files over any installed copy, in the chain and in a `text` node's `font`; list every weight and style file you use. `mantle check` measures text in the declared fonts and warns about a font file it cannot read.
 - Added: `image { fit = "tile" }` repeats the picture from the box's top-left corner at one image pixel per logical px, for a paper, fabric or noise texture over a box of any size. `capture.fit` refuses it.
 - Added: a box `shape` takes up to 41 holes: after its closed contour, more closed contours whose `M` sets `hole = true`. Fill, border, shadows, clip, hit testing, the `compositor_blur` region and `mantle_sdf` leave the union of the holes empty, overlaps and parts past the outline included, and `ring` strokes each hole's rim too. A shader reading the `mantle_shape` uniform directly finds, when a holed shape leaves more than one loop, each loop closed and followed by a point at `(1e9, 1e9)`; skip any edge that touches one. A hole across the edge that only notches the outline leaves one loop and no such point.
+- Added: `path` takes `stroke_dash`, a list of dash and gap lengths in px, and `stroke_dash_offset`,
+  which tweens. Dashes keep their place on the path under `trim_*`.
+- Added: boxes take `border_dash` and `border_dash_offset`, the same pattern run round the border on
+  any radius, corner shape, `shape`, per-edge widths and per-edge colours.
 
 ## 0.15.0 - 2026-11-22
 

@@ -20,7 +20,8 @@ pub use shape::Shape;
 #[cfg(test)]
 pub(crate) use vector_path::PathCommand;
 pub(crate) use vector_path::{
-    PathCommands, PathData, PathOp, Segment, StrokeCap, StrokeJoin, TrimAxis, VectorPath, plain_commands, tweened,
+    Dash, PathCommands, PathData, PathOp, Segment, StrokeCap, StrokeDash, StrokeJoin, TrimAxis, VectorPath,
+    plain_commands, tweened,
 };
 pub(crate) mod prop;
 mod resolve;

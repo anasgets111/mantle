@@ -44,7 +44,7 @@ use crate::text::snap::{COORD_LIMIT, LogicalRect, PhysicalRect, snap_to_physical
 #[derive(Debug, Clone, PartialEq)]
 pub enum Draw {
     /// Box fill, then border, for containers and all surface roles.
-    Box { background: Vec<Fill>, radius: Radii, border: BorderPaint, widths: EdgeInsets },
+    Box { background: Vec<Fill>, radius: Radii, border: BorderPaint, widths: EdgeInsets, dash: node::StrokeDash },
     Text {
         content: std::sync::Arc<str>,
         /// Byte ranges drawn in another face, underlined, or recoloured (ADR-0104).
@@ -746,6 +746,7 @@ mod tests {
                 radius: Radii::default(),
                 border: BorderPaint::default(),
                 widths: EdgeInsets::default(),
+                dash: node::StrokeDash::default(),
             };
             DrawCmd { rect, clip: snap_to_physical(rect, 1.0), draw }
         };

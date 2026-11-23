@@ -57,6 +57,7 @@ impl ResolvedNode {
                     clip: shape,
                     mask: None,
                     ring: None,
+                    dash: Default::default(),
                 })
             }
         }

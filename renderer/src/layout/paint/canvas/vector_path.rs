@@ -1,18 +1,16 @@
 //! Vector leaves use the same fills, canvas state and subtree effects as box paint.
 use super::shape::fill_paint;
-use crate::layout::node::{StrokeCap, StrokeJoin, TrimAxis, VectorPath};
+use crate::layout::node::{StrokeCap, StrokeDash, StrokeJoin, TrimAxis, VectorPath};
 use crate::text::snap::LogicalRect;
 
 use femtovg::{Canvas, LineCap, LineJoin, Paint, Path, Solidity, Verb, renderer::OpenGl};
 use kurbo::common::solve_cubic;
 use kurbo::{BezPath, CubicBez, Line, ParamCurve, ParamCurveArclen, PathEl, PathSeg, Point, Shape, Vec2};
 
-pub(super) fn paint(
-    canvas: &mut Canvas<OpenGl>,
-    rect: LogicalRect,
-    VectorPath { commands, fill, stroke, stroke_width, stroke_cap, stroke_join, taper, trim, trim_axis, shift }: &VectorPath,
-    scale: f32,
-) {
+pub(super) fn paint(canvas: &mut Canvas<OpenGl>, rect: LogicalRect, path_paint: &VectorPath, scale: f32) {
+    let VectorPath {
+        commands, fill, stroke, stroke_width, stroke_cap, stroke_join, taper, trim, trim_axis, shift, ..
+    } = path_paint;
     if rect.is_empty() || commands.segments.is_empty() {
         return;
     }
@@ -36,16 +34,20 @@ pub(super) fn paint(
         });
         let taper = (taper.0 * scale, taper.1 * scale);
         let mut stroke_path = |path: &Path| stroke_tapered(canvas, path, &paint, taper);
+        let dash = Dashes::new(&path_paint.dash, scale);
+        // ponytail: each dash tapers on its own, as an open subpath; a taper over the whole dashed
+        // stroke is #176.
         if *trim_axis == TrimAxis::X {
             // The band is the node's box, which `shift` does not move.
             let band = |t: f32| f64::from(rect.x + t * rect.width);
             if trim.0 < trim.1 {
-                stroke_path(&x_trimmed(&path, (band(trim.0), band(trim.1))));
+                let dashed = if dash.lengths.is_empty() { path } else { trimmed(&path, (0.0, 1.0), &dash) };
+                stroke_path(&x_trimmed(&dashed, (band(trim.0), band(trim.1))));
             }
-        } else if *trim == (0.0, 1.0) {
+        } else if *trim == (0.0, 1.0) && dash.lengths.is_empty() {
             stroke_path(&path);
         } else if trim.0 < trim.1 {
-            stroke_path(&trimmed(&path, *trim));
+            stroke_path(&trimmed(&path, *trim, &dash));
         }
     }
 }
@@ -200,6 +202,19 @@ fn cap(out: &mut Vec<Point>, cap: LineCap, p: Point, across: Vec2, px: f64) {
     }
 }
 
+/// A [`StrokeDash`] in buffer pixels; no lengths strokes solid.
+pub(super) struct Dashes {
+    pub(super) lengths: Vec<f64>,
+    pub(super) offset: f64,
+}
+
+impl Dashes {
+    pub(super) fn new(dash: &StrokeDash, scale: f32) -> Self {
+        let px = |length: f32| f64::from(length * scale);
+        Self { lengths: dash.lengths.iter().copied().map(px).collect(), offset: px(dash.offset) }
+    }
+}
+
 /// `bez` for femtovg, each subpath a hole as `holes` says in turn, so winding never decides one.
 pub(super) fn femtovg_path(bez: &BezPath, mut holes: impl Iterator<Item = bool>) -> Path {
     let p = |p: Point| (p.x as f32, p.y as f32);
@@ -277,27 +292,111 @@ fn append(out: &mut Path, part: PathSeg, continues: bool) {
     }
 }
 
-/// The part of `path` from `start` to `end` of its whole length, closing segments included. A
-/// subpath kept whole ends where it began, which femtovg strokes as closed.
-fn trimmed(path: &Path, (start, end): (f32, f32)) -> Path {
-    const ACCURACY: f64 = 0.01;
-    let segments: Vec<_> = segments(path).into_iter().map(|(s, begins)| (s, begins, s.arclen(ACCURACY))).collect();
+/// Arc-length tolerance in pixels.
+const ACCURACY: f64 = 0.01;
+/// Two points, or lengths along a path, this close are one: a dash after a zero gap continues.
+const SAME: f64 = 1e-6;
+
+/// [`segments`] with each one's length.
+fn measured(path: &Path) -> Vec<(PathSeg, bool, f64)> {
+    segments(path).into_iter().map(|(s, begins)| (s, begins, s.arclen(ACCURACY))).collect()
+}
+
+/// Past this many dashes a stroke or border goes solid.
+/// ponytail: a dasher on the GPU would lift it.
+pub(super) const MAX_DASHES: f64 = 65536.0;
+
+/// Whether `dash` would cut `segments` into so many dashes that the stroke goes solid.
+fn over_budget(segments: &[(PathSeg, bool, f64)], dash: &Dashes) -> bool {
+    let period: f64 = dash.lengths.iter().sum();
+    let dashes = dash.lengths.as_chunks::<2>().0.iter().filter(|[on, _]| *on > 0.0).count() as f64;
+    if dashes == 0.0 {
+        return false;
+    }
+    // A subpath holds at most its length in whole periods and a part period at either end.
+    let mut budget = 0.0;
+    for (_, begins, length) in segments {
+        budget += if *begins { 2.0 * dashes } else { 0.0 } + length / period * dashes;
+    }
+    budget > MAX_DASHES
+}
+
+/// The part of `path` from `start` to `end` of its whole length, closing segments included, cut
+/// into `dash`'s dashes laid from each subpath's start. A dash across a closed subpath's start is
+/// one dash, as is a subpath kept whole, which ends where it began and femtovg strokes as closed.
+fn trimmed(path: &Path, (start, end): (f32, f32), dash: &Dashes) -> Path {
+    let segments = measured(path);
     let total: f64 = segments.iter().map(|s| s.2).sum();
+    let period: f64 = dash.lengths.iter().sum();
+    if dash.lengths.as_chunks::<2>().0.iter().all(|[on, _]| *on == 0.0) && !dash.lengths.is_empty() {
+        return Path::new();
+    }
+    let pattern = if over_budget(&segments, dash) { &[][..] } else { &dash.lengths[..] };
     let (from, to) = (f64::from(start) * total, f64::from(end) * total);
     let mut out = Path::new();
-    // Where this segment begins along the path, and whether `out` continues at the pen.
-    let (mut at, mut drawing) = (0.0, false);
+    // The subpath's runs so far, each its start and end along the path and its pieces.
+    let mut runs: Vec<(f64, f64, Vec<PathSeg>)> = Vec::new();
+    // Where this segment and its subpath begin, along the path and as points, and the pen.
+    let (mut at, mut subpath, mut first, mut pen) = (0.0, 0.0, Point::ZERO, Point::ZERO);
     for (segment, begins, length) in segments {
-        drawing &= !begins;
-        let (a, b) = (from.max(at) - at, to.min(at + length) - at);
+        if begins {
+            flush(&mut out, &mut runs, pen.distance(first) < SAME, (subpath, at));
+            (subpath, first) = (at, segment.start());
+        }
+        pen = segment.end();
+        // A zero-length segment would break the stroke's join across it.
+        if length == 0.0 {
+            continue;
+        }
+        let (a, b) = (from.max(at), to.min(at + length));
+        let mut piece = |p: f64, q: f64| {
+            if p < q {
+                let part =
+                    segment.subsegment(segment.inv_arclen(p - at, ACCURACY)..segment.inv_arclen(q - at, ACCURACY));
+                match runs.last_mut() {
+                    Some(run) if p - run.1 < SAME => {
+                        run.1 = q;
+                        run.2.push(part);
+                    }
+                    _ => runs.push((p, q, vec![part])),
+                }
+            }
+        };
+        if pattern.is_empty() {
+            piece(a, b);
+        } else {
+            // Each period from the one holding `a`, its dashes clipped to `[a, b]`.
+            let mut base = a - (a - subpath + dash.offset).rem_euclid(period);
+            while base < b {
+                let mut dash_start = base;
+                for [on, off] in pattern.as_chunks::<2>().0 {
+                    piece(a.max(dash_start), b.min(dash_start + on));
+                    dash_start += on + off;
+                }
+                base += period;
+            }
+        }
         at += length;
-        if a < b {
-            let part = segment.subsegment(segment.inv_arclen(a, ACCURACY)..segment.inv_arclen(b, ACCURACY));
-            append(&mut out, part, drawing);
-            drawing = true;
+    }
+    flush(&mut out, &mut runs, pen.distance(first) < SAME, (subpath, at));
+    out
+}
+
+/// Appends a subpath's `runs` to `out`, each its own stroke, first joining the last onto the
+/// first when they meet across the start `span.0` of a `closed` subpath.
+fn flush(out: &mut Path, runs: &mut Vec<(f64, f64, Vec<PathSeg>)>, closed: bool, span: (f64, f64)) {
+    if closed
+        && runs.len() > 1
+        && (runs[0].0 - span.0).abs() < SAME
+        && let Some(last) = runs.pop_if(|last| (span.1 - last.1).abs() < SAME)
+    {
+        runs[0].2.splice(0..0, last.2);
+    }
+    for (_, _, parts) in runs.drain(..) {
+        for (i, part) in parts.into_iter().enumerate() {
+            append(out, part, i > 0);
         }
     }
-    out
 }
 
 /// The parts of `path` with `lo <= x <= hi`, each segment cut where its x crosses an edge. A
@@ -428,6 +527,20 @@ mod tests {
         let src = r##"path { width=64,height=64,stroke='#ffffff',stroke_width=16,taper_end=1,commands={{op='A',points={32,32,4,0,300}}} }"##;
         let px = paint_points(src, &[(32, 32), (28, 32), (32, 36), (32, 28), (26, 26)]).expect("headless EGL required");
         assert!(px.iter().all(|p| p.3 == 255), "{px:?}");
+    }
+
+    /// Dashed and tapered, each dash narrows on its own, as the open subpath it is (#176 tapers the
+    /// whole stroke).
+    #[test]
+    fn each_dash_of_a_tapered_stroke_tapers() {
+        let src = r##"path { width=64,height=64,stroke='#ffffff',stroke_width=8,stroke_dash={16,8},taper_end=16,
+            commands={{op='M',points={0,32}},{op='L',points={64,32}}} }"##;
+        let px = paint_points(src, &[(2, 29), (14, 29), (14, 32), (20, 32), (26, 29), (38, 29)])
+            .expect("headless EGL required");
+        // Full at each dash's start, thinner than 6 px by its end, which still draws.
+        let alpha: Vec<_> = px.iter().map(|p| p.3).collect();
+        assert!(alpha[0] == 255 && alpha[1] == 0 && alpha[2] > 128 && alpha[3] == 0, "{alpha:?}");
+        assert_eq!(alpha[4..], [255, 0], "{alpha:?}");
     }
 
     #[test]
@@ -604,6 +717,70 @@ mod tests {
         } }"##;
         let px = paint_points(src, &[(8, 16), (53, 53), (48, 56), (40, 48), (48, 40)]).expect("headless EGL required");
         assert_eq!(px.iter().map(|p| p.3).collect::<Vec<_>>(), [255, 255, 255, 0, 0], "{px:?}");
+    }
+
+    #[test]
+    fn dashes_lie_on_the_untrimmed_path_join_at_corners_and_restart_each_subpath() {
+        let square = "{op='M',points={16,16}},{op='L',points={48,16}},{op='L',points={48,48}},{op='L',points={16,48}},{op='Z',points={}}";
+        let alphas = |src: &str, points: &[(usize, usize)]| {
+            paint_points(src, points).expect("headless EGL required").iter().map(|p| p.3).collect::<Vec<_>>()
+        };
+        // `{8}` repeats to 8 on, 8 off; offset 4 lays dashes at 0-4, 12-20, 28-36, 44-52, 60-68 and
+        // 124-128 px along the path. The first ends at x = 20, so pixel 19 sees a 1 px shift.
+        // 28-36 turns the top-right corner, so it needs the miter at (49,15); 60-68 turns the
+        // bottom-right, and a half trim cuts it there, half the path's length. 124-128 and 0-4 meet
+        // at the start, one dash with the miter at (15,15).
+        for (style, expect) in [
+            ("", [255, 0, 255, 255, 255, 255]),
+            ("trim_end=0.5,", [255, 0, 255, 255, 0, 0]),
+            ("trim_axis='x',", [255, 0, 255, 255, 255, 255]),
+        ] {
+            let src = format!(
+                r##"path {{ width=64,height=64,stroke='#ffffff',stroke_width=4,stroke_dash={{8}},stroke_dash_offset=4,{style}commands={{{square}}} }}"##
+            );
+            let points = [(19, 16), (24, 16), (32, 16), (49, 15), (45, 49), (15, 15)];
+            assert_eq!(alphas(&src, &points), expect, "{style}");
+        }
+        // Dashes at 0-8 and 12-16 of every 20 px, so x 12-20 and 24-28 on the second subpath. The
+        // first is 42 px; a pattern run on would start the second 2 px in and end its dash at x = 18.
+        let src = r##"path { width=64,height=64,stroke='#ffffff',stroke_width=4,stroke_dash={8,4,4,4},commands={
+            {op='M',points={8,16}},{op='L',points={50,16}},{op='M',points={12,40}},{op='L',points={56,40}}
+        } }"##;
+        assert_eq!(alphas(src, &[(16, 40), (19, 40), (21, 40), (25, 40)]), [255, 255, 0, 255]);
+        let dashed = |pattern: &str, points: &[(usize, usize)]| {
+            alphas(
+                &format!(
+                    r##"path {{ width=64,height=64,stroke='#ffffff',stroke_width=4,{pattern},commands={{{square}}} }}"##
+                ),
+                points,
+            )
+        };
+        // The seam joins on a closed subpath followed by another, too.
+        assert_eq!(dashed("stroke_dash={8},stroke_dash_offset=4", &[(15, 15)]), [255]);
+        let src = format!(
+            r##"path {{ width=64,height=64,stroke='#ffffff',stroke_width=4,stroke_dash={{8}},stroke_dash_offset=4,commands={{{square},{{op='M',points={{56,60}}}},{{op='L',points={{60,60}}}}}} }}"##
+        );
+        assert_eq!(alphas(&src, &[(15, 15)]), [255]);
+        let src = format!(
+            r##"path {{ width=64,height=64,stroke='#ffffff',stroke_width=4,stroke_dash={{8}},stroke_dash_offset=4,commands={{{{op='M',points={{56,60}}}},{{op='L',points={{60,60}}}},{square}}} }}"##
+        );
+        assert_eq!(alphas(&src, &[(15, 15)]), [255], "and on a closed subpath after another");
+        // A short dash with round caps is a dot.
+        let dots = dashed("stroke_cap='round',stroke_dash={0.1,7.9}", &[(24, 16), (28, 16)]);
+        assert!(dots[0] >= 250 && dots[1] == 0, "{dots:?}");
+        // A zero gap joins its dashes: abutting butt caps would leave a seam at x = 23.5.
+        assert_eq!(dashed("stroke_dash={7.5,0}", &[(23, 16)]), [255]);
+        // Only zero-length dashes draw nothing, at any count.
+        assert_eq!(dashed("stroke_dash={0,1/1024}", &[(24, 16), (48, 40)]), [0, 0]);
+        // 128000 dashes on a 128 px square: past the ceiling, so solid.
+        assert_eq!(dashed("stroke_dash={0.0005}", &[(24, 16), (48, 40)]), [255, 255]);
+        // Two subpaths of 32 + 1/8192 and 32 - 7/8192 px hold 65537 dashes of 1/2048 px between
+        // them, past the ceiling though their length is 65535.25 periods.
+        let src = r##"path { width=64,height=64,stroke='#ffffff',stroke_width=4,stroke_dash={1/2048},commands={
+            {op='M',points={8,16}},{op='L',points={40.0001220703125,16}},
+            {op='M',points={8,40}},{op='L',points={39.9991455078125,40}}
+        } }"##;
+        assert_eq!(alphas(src, &[(20, 16), (20, 40)]), [255, 255]);
     }
 
     #[test]

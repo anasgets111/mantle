@@ -161,6 +161,8 @@ pub enum PaintStyle {
         mask: Option<Mask>,
         /// Paint only: drawn outside the box, over its children (`ring`).
         ring: Option<Ring>,
+        /// `border_dash`.
+        dash: StrokeDash,
     },
     /// Text before/after `layout::scene::finish::finish` rewrites it to an ellipsized prefix under `elide` or
     /// wrapped lines joined by `\n`; display-list paint may therefore receive `\n`-joined lines.
@@ -295,6 +297,10 @@ pub fn paint_style_with(
                 clip: ClipShape::of(kind, properties)?,
                 mask: paint::mask.read(properties)?,
                 ring: paint::ring.read(properties)?,
+                dash: StrokeDash {
+                    lengths: paint::border_dash.read(properties)?,
+                    offset: paint::border_dash_offset.read(properties)?,
+                },
             }
         }
         "path" => PaintStyle::Path(VectorPath {
@@ -308,6 +314,10 @@ pub fn paint_style_with(
             trim: (path::trim_start.read(properties)?, path::trim_end.read(properties)?),
             trim_axis: path::trim_axis.read(properties)?,
             shift: path::shift.read(properties)?,
+            dash: StrokeDash {
+                lengths: path::stroke_dash.read(properties)?,
+                offset: path::stroke_dash_offset.read(properties)?,
+            },
         }),
         "text" => {
             let (content, runs) = text::content.read(properties)?;

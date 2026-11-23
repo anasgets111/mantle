@@ -58,6 +58,7 @@ pub(super) fn ring_cmd(
             trim: (0.0, 1.0),
             trim_axis: node::TrimAxis::Length,
             shift: (0.0, 0.0),
+            dash: node::StrokeDash::default(),
         };
         (px, Draw::Path(path, scale))
     } else {
@@ -71,7 +72,13 @@ pub(super) fn ring_cmd(
             left: Some(color),
         });
         let widths = EdgeInsets { top: width, right: width, bottom: width, left: width };
-        let draw = Draw::Box { background: Vec::new(), radius: Radii(corners, fitted.1, None), border: edges, widths };
+        let draw = Draw::Box {
+            background: Vec::new(),
+            radius: Radii(corners, fitted.1, None),
+            border: edges,
+            widths,
+            dash: node::StrokeDash::default(),
+        };
         (grow(px, by * scale), draw)
     };
     Some(DrawCmd { rect: px, clip, draw: in_buffer_pixels(draw, scale) })
@@ -96,8 +103,10 @@ pub(super) fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
     let scale_shader =
         |shader: Option<LayerShader>| shader.map(|shader| LayerShader { radius: shader.radius * scale, ..shader });
     match draw {
-        Draw::Box { background, radius, border, widths } => {
-            Draw::Box { background, radius: radius * scale, border, widths: widths.scaled(scale) }
+        Draw::Box { background, radius, border, widths, dash } => {
+            let lengths = dash.lengths.iter().map(|length| length * scale).collect();
+            let dash = node::StrokeDash { lengths, offset: dash.offset * scale };
+            Draw::Box { background, radius: radius * scale, border, widths: widths.scaled(scale), dash }
         }
         Draw::Clipped { radius, mask, commands } => Draw::Clipped { radius: radius * scale, mask, commands },
         Draw::NodeMask { invert, radius, split, commands } => {
@@ -143,7 +152,7 @@ pub(super) fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
 /// Splits a box into fill and border so [`build_node`] can mask children between them. Other draws
 /// stay whole; [`rounded_clip`] only returns for boxes.
 pub(super) fn split_fill_and_border(draw: Option<Draw>) -> (Option<Draw>, Option<Draw>) {
-    let Some(Draw::Box { background, radius, border, widths }) = draw else {
+    let Some(Draw::Box { background, radius, border, widths, dash }) = draw else {
         return (draw, None);
     };
     let fill = (!background.is_empty()).then(|| Draw::Box {
@@ -151,9 +160,10 @@ pub(super) fn split_fill_and_border(draw: Option<Draw>) -> (Option<Draw>, Option
         radius: radius.clone(),
         border: BorderPaint::default(),
         widths: EdgeInsets::default(),
+        dash: node::StrokeDash::default(),
     });
     let border =
-        (widths != EdgeInsets::default()).then_some(Draw::Box { background: Vec::new(), radius, border, widths });
+        (widths != EdgeInsets::default()).then_some(Draw::Box { background: Vec::new(), radius, border, widths, dash });
     (fill, border)
 }
 
@@ -234,13 +244,13 @@ pub(super) fn push_fill(out: &mut Vec<DrawCmd>, fill: DrawCmd, layers: &[(Fill, 
     if layers.iter().all(|(_, blend)| *blend == Blend::Normal) {
         return out.push(fill);
     }
-    let DrawCmd { rect, clip, draw: Draw::Box { background, radius, border, widths } } = fill else {
+    let DrawCmd { rect, clip, draw: Draw::Box { background, radius, border, widths, dash } } = fill else {
         return out.push(fill);
     };
     let boxed = |background| DrawCmd {
         rect,
         clip,
-        draw: Draw::Box { background, radius: radius.clone(), border: border.clone(), widths },
+        draw: Draw::Box { background, radius: radius.clone(), border: border.clone(), widths, dash: dash.clone() },
     };
     let mut run = Vec::new();
     for (fill, (_, blend)) in background.into_iter().zip(layers).rev() {

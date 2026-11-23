@@ -20,8 +20,8 @@ use crate::layout::node::prop::{
 };
 use crate::layout::node::{
     Align, Anchor, AnchorRect, Animations, Axes, Background, Blend, Caret, Children, ClipShape, ColorOrEdges,
-    ConstraintAdjustment, Content, CornerShape, Cursor, Decorations, Direction, Effects, Elide, Exclusive, Fill, Font,
-    FontVariations, Images, Items, KeyboardInteractivity, LayerKind, LayoutError, Limit, Live, Mask, MaxLines,
+    ConstraintAdjustment, Content, CornerShape, Cursor, Dash, Decorations, Direction, Effects, Elide, Exclusive, Fill,
+    Font, FontVariations, Images, Items, KeyboardInteractivity, LayerKind, LayoutError, Limit, Live, Mask, MaxLines,
     NumberOrCorners, NumberOrEdges, Params, PathCommands, PopupAnchor, PopupExtent, PopupOffset, Region, Ring, Root,
     Scale, SecureSubmitTarget, Selection, ShadowMode, Shadows, Shape, SizeHint, SizeMode, StrokeCap, StrokeJoin,
     TextAlign, TransitionSpec, TrimAxis, Wrap,
@@ -379,6 +379,12 @@ props! {
         border_color: Bound<ColorOrEdges>;
         /// Px per edge; a number sets all four, a missing edge is `0`. Borders draw inside the box and take no layout space.
         border_width: Bound<NumberOrEdges> = range(0.0, 8192.0).absent(Number(0.0));
+        /// Dash and gap lengths in px along the box's outer edge, as `path`'s `stroke_dash`: the pattern starts at the top-left corner and runs clockwise; a `shape` restarts it at each contour's first point. Each gap removes the part of the solid border its stretch of outline owns, split at corners as the border's colours split, so widths and colours never move a dash. Each dashed border costs two offscreen passes.
+        ///
+        /// Book: Dash and gap lengths in px round the border, as `path`'s `stroke_dash`; see [Dashed borders](#dashed-borders)
+        border_dash: Bound<Dash> = range(0.0, 8192.0).absent(Lua("{}"));
+        /// Px into `border_dash` where the outline starts, as `path`'s `stroke_dash_offset`. Tweens.
+        border_dash_offset: Bound<Num> = range(-8192.0, 8192.0).absent(Number(0.0));
         /// A stroke of `width` px and `color` around the box, `offset` px outside its edge (default `0`, inside when negative) with the gap left clear: Material's focus ring, CSS `outline` with `outline-offset`. Follows `radius`, `corner_smoothing` and `outline`. Paints over the children and takes no layout space; a clipping ancestor cuts it. `width = 0` draws nothing.
         ///
         /// Book: A stroke of `width` px and `color` around the box, `offset` px outside its edge; see [Ring](#ring)
@@ -576,6 +582,10 @@ props! {
         trim_end: Bound<Num> = range(0.0, 1.0).absent(Number(1.0));
         /// What `trim_start` and `trim_end` measure. `"length"`: fractions of the path's length. `"x"`: fractions of the node's width; the stroke keeps what lies inside that band of the box, cut at its edges with `stroke_cap` on every cut end, and the band stays put while `shift` moves the geometry through it (ADR-0332).
         trim_axis: Bound<OneOf<TrimAxis>> = absent(Choice("length"));
+        /// Alternating dash and gap lengths in px, up to 16, an odd list repeated, as SVG's `stroke-dasharray`. Each subpath restarts the pattern, and a dash across a closed subpath's start stays one dash; `trim_*` cut it where it lies on the untrimmed path. `stroke_cap` ends every dash; a zero-length dash draws nothing, so dots take a short one with `stroke_cap = "round"`, and a zero gap joins its neighbours into one dash. Absent, `{}` or a list summing to `0` strokes solid, as does a pattern that would cut more than about 65536 dashes. Snaps under `animate`.
+        stroke_dash: Bound<Dash> = range(0.0, 8192.0).absent(Lua("{}"));
+        /// Px into the pattern where each subpath starts, as SVG's `stroke-dashoffset`: a positive offset moves the dashes back along the path. Tween it for marching dashes.
+        stroke_dash_offset: Bound<Num> = range(-8192.0, 8192.0).absent(Number(0.0));
         /// Pixel offset of the geometry inside the node, applied before trimming and stroking. The box, the `trim_axis = "x"` band and the fill gradient do not move. Paint only.
         shift: Bound<Axes> = range(-8192.0, 8192.0).absent(Lua("{ x = 0, y = 0 }"));
     }

@@ -416,22 +416,29 @@ pub(super) fn winding(loops: &[Vec<Point>]) -> f64 {
 /// a void's loop moves away from the void. A loop of under 3 points has no edge to move along and
 /// stays put, so the loops still pair with `voids`.
 pub fn inset(loops: &[Vec<Point>], by: f64) -> BezPath {
+    inset_loops(loops, by).into_iter().flat_map(closed).collect()
+}
+
+/// [`inset`]'s loops, each point moved from the point of `loops` at the same index.
+pub fn inset_loops(loops: &[Vec<Point>], by: f64) -> Vec<Vec<Point>> {
     let side = winding(loops);
     let one = |polygon: &Vec<Point>| {
         let n = polygon.len();
         if n < 3 {
-            return closed(polygon.iter().copied());
+            return polygon.clone();
         }
         let normal = |i: usize| {
             let e = polygon[(i + 1) % n] - polygon[i];
             kurbo::Vec2::new(-e.y, e.x).normalize() * side
         };
-        closed((0..n).map(move |i| {
-            let m = (normal((i + n - 1) % n) + normal(i)) / 2.0;
-            polygon[i] + m * by / m.hypot2().max(1.0 / 16.0)
-        }))
+        (0..n)
+            .map(|i| {
+                let m = (normal((i + n - 1) % n) + normal(i)) / 2.0;
+                polygon[i] + m * by / m.hypot2().max(1.0 / 16.0)
+            })
+            .collect()
     };
-    loops.iter().flat_map(one).collect()
+    loops.iter().map(one).collect()
 }
 
 /// `shape = { commands = { .. } }`.

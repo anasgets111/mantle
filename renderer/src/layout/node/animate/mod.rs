@@ -485,6 +485,8 @@ const PAINT_ONLY: &[&str] = &[
     "taper_end",
     "trim_start",
     "trim_end",
+    "stroke_dash_offset",
+    "border_dash_offset",
     "shift",
     "radius",
     "corner_smoothing",

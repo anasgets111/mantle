@@ -1,12 +1,13 @@
 //! Sends a built [`DisplayList`] to femtovg: boxes, borders, text, icons, images, rounded clips and
 //! transforms.
 
+mod dashed_border;
 mod effects;
 mod offscreen;
 mod shape;
 mod vector_path;
 
-use offscreen::{draw_clipped, draw_into, draw_node_mask, scratch};
+use offscreen::{draw_clipped, draw_dashed_border, draw_into, draw_node_mask, scratch};
 
 use std::time::{Duration, Instant};
 
@@ -226,13 +227,19 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                     walk.split.paths += t0.elapsed();
                 }
             }
-            Draw::Box { background, radius, border, widths } => {
+            Draw::Box { background, radius, border, widths, dash } => {
                 let t0 = timing.then(Instant::now);
                 // No layers skips the fill; alpha 0 remains an explicit transparent rect. The first layer is on top.
                 for fill in background.iter().rev() {
                     fill_rect(painter.canvas_mut(), rect, radius, fill);
                 }
-                paint_border(painter.canvas_mut(), rect, radius, border, *widths);
+                if dash.lengths.is_empty() {
+                    paint_border(painter.canvas_mut(), rect, radius, border, *widths);
+                } else {
+                    let dash = vector_path::Dashes::new(dash, 1.0);
+                    draw_dashed_border(painter, walk, rect, clip, radius, border, *widths, &dash, target);
+                    current_clip = None;
+                }
                 if let Some(t0) = t0 {
                     walk.split.boxes += t0.elapsed();
                 }
@@ -1909,6 +1916,62 @@ pub(crate) mod tests {
         assert_eq!(pixel_at(canvas, 45, 38), (255, 255, 255, 255));
         assert_eq!(pixel_at(canvas, 12, 10), (0, 0, 0, 255), "outside it");
         assert_eq!(pixel_at(canvas, 32, 24), (255, 255, 255, 255), "the centre stays put");
+    }
+
+    /// Dash lengths and offsets are logical px: at buffer scale 2, `{ 4 }` from 2 px in dashes
+    /// buffer x 0-4 and 12-20 on the path. The border's outer edge starts at buffer (0, 16): offset 1
+    /// dashes x 0-6 and 14-22.
+    #[test]
+    fn dashes_scale_with_the_buffer() {
+        let Some(instance) = init_headless_egl(64, 64) else { return };
+        let lua = Lua::new();
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 64, 64) else { return };
+        let root = resolved_surface(
+            &lua,
+            r##"return panel { id = "bar", width = 32, height = 32, child = column { children = {
+                path { width = 32, height = 8, stroke = "#ffffff", stroke_width = 2, stroke_dash = { 4 },
+                    stroke_dash_offset = 2, commands = { { op = "M", points = { 0, 4 } }, { op = "L", points = { 32, 4 } } } },
+                rect { width = 32, height = 24, border_width = 2, border_color = "#ffffff", border_dash = { 4 },
+                    border_dash_offset = 1 },
+            } } }"##,
+            LogicalSize { width: 32.0, height: 32.0 },
+        );
+        paint_tree(&mut painter, &mut ImageCache::new(), &root, 2.0);
+        let canvas = painter.canvas_mut();
+        let points = [(2, 8), (8, 8), (14, 8), (2, 17), (8, 17), (16, 17), (24, 17)];
+        assert_eq!(points.map(|(x, y)| pixel_at(canvas, x, y).3), [255, 0, 255, 255, 0, 255, 0]);
+    }
+
+    /// A holed shape's border dashes round its hole as round its outside, at a buffer scale of 1.5.
+    #[test]
+    fn a_holed_shape_s_border_dashes_round_the_hole() {
+        let Some(instance) = init_headless_egl(64, 64) else { return };
+        let lua = Lua::new();
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 64, 64) else { return };
+        let root = resolved_surface(
+            &lua,
+            r##"return panel { id = "bar", width = 32, height = 32, child = rect { width = 32, height = 32,
+                border_width = 2, border_color = "#ffffff", border_dash = { 4 },
+                shape = { commands = {
+                    { op = "M", points = { 0, 0 } }, { op = "L", points = { 32, 0 } }, { op = "L", points = { 32, 32 } },
+                    { op = "L", points = { 0, 32 } }, { op = "Z", points = {} },
+                    { op = "M", points = { 8, 8 }, hole = true }, { op = "L", points = { 24, 8 } },
+                    { op = "L", points = { 24, 24 } }, { op = "L", points = { 8, 24 } }, { op = "Z", points = {} },
+                } } } }"##,
+            LogicalSize { width: 32.0, height: 32.0 },
+        );
+        paint_tree(&mut painter, &mut ImageCache::new(), &root, 1.5);
+        let canvas = painter.canvas_mut();
+        let mut row = |y: usize, xs: std::ops::Range<usize>| xs.map(|x| pixel_at(canvas, x, y).3).collect::<Vec<_>>();
+        // Outside: the top band's first two dashes and gaps, 6 buffer px each, above the corner's
+        // mitre, whose lower half ends the left edge's last gap.
+        assert_eq!(row(1, 2..26).iter().step_by(3).copied().collect::<Vec<_>>(), [255, 255, 0, 0, 255, 255, 0, 0]);
+        // Round the hole, 12-36 px: its band above it, 9-12 px, dashes too, and the hole stays empty.
+        let around = row(10, 14..34);
+        assert!(around.contains(&255) && around.contains(&0), "{around:?}");
+        assert!(row(16, 14..34).iter().all(|a| *a == 0));
     }
 
     /// Paints the surface `src` at `size` through [`execute`] with a GL context, which a shader

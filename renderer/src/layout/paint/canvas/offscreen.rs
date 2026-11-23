@@ -9,8 +9,10 @@ use crate::text::atlas::TextPainter;
 use crate::text::snap::{LogicalRect, PhysicalRect};
 
 use super::super::{DrawCmd, UNCLIPPED, any_draw_matches, reads_under};
+use super::dashed_border::{Cut, cut};
 use super::effects::{read_target, replace};
-use super::shape::{box_path, gradient_paint};
+use super::shape::{border_stations, box_path, gradient_paint, paint_border};
+use super::vector_path::Dashes;
 use super::{Frame, Walk, run};
 
 /// Draws `commands` into an offscreen image, then fills the node's rounded path with that image.
@@ -94,6 +96,62 @@ pub(super) fn draw_node_mask(
     canvas.set_render_target(target);
     let at = LogicalRect { x: clip.x0 as f32, y: clip.y0 as f32, width, height };
     canvas.fill_path(&box_path(rect, radius), &pooled_paint(canvas, content, used, at, 1.0));
+}
+
+/// A dashed border: the solid border drawn offscreen, less a mask of the slices of its band between
+/// `dash`'s dashes. The dashes keep the solid border's corners, widths, colours and silhouette.
+/// ponytail: two scratch targets per dashed border, held until the frame flushes and pooled for a
+/// frame that repeats (ten 4K-sized borders near 640 MiB); femtovg draws at the flush, so borders
+/// can't share a pair without one between them. Upgrade: stroke directly when width and paint are
+/// uniform.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn draw_dashed_border(
+    painter: &mut TextPainter,
+    walk: &mut Walk<'_, '_>,
+    rect: LogicalRect,
+    clip: PhysicalRect,
+    radius: &node::Radii,
+    border: &node::BorderPaint,
+    widths: node::EdgeInsets,
+    dash: &Dashes,
+    target: RenderTarget,
+) {
+    let slices = match cut(&border_stations(rect, radius, border, widths), dash) {
+        Cut::Nothing => return,
+        Cut::Solid => return paint_border(painter.canvas_mut(), rect, radius, border, widths),
+        Cut::Slices(slices) => slices,
+    };
+    let used = ((clip.x1 - clip.x0) as usize, (clip.y1 - clip.y0) as usize);
+    if used.0 == 0 || used.1 == 0 {
+        return;
+    }
+    let snug = !aligned(painter.canvas_mut());
+    let (Some(mask), Some(image)) = (scratch(painter, walk, used, snug), scratch(painter, walk, used, snug)) else {
+        return paint_border(painter.canvas_mut(), rect, radius, border, widths);
+    };
+    let canvas = painter.canvas_mut();
+    let at = LogicalRect { x: clip.x0 as f32, y: clip.y0 as f32, width: used.0 as f32, height: used.1 as f32 };
+    let mut whole = Path::new();
+    whole.rect(at.x, at.y, at.width, at.height);
+    // Added, not layered, so where two pieces meet their edges' coverage sums to the whole pixel.
+    draw_into(canvas, mask, Some(used));
+    canvas.translate(-at.x, -at.y);
+    canvas.global_composite_operation(CompositeOperation::Lighter);
+    let opaque = Paint::color(Color::white());
+    for slice in &slices {
+        canvas.fill_path(slice, &opaque);
+    }
+    canvas.restore();
+    draw_into(canvas, image, Some(used));
+    canvas.translate(-at.x, -at.y);
+    paint_border(canvas, rect, radius, border, widths);
+    canvas.global_composite_operation(CompositeOperation::DestinationOut);
+    let gaps = pooled_paint(canvas, mask, used, at, 1.0);
+    canvas.fill_path(&whole, &gaps.with_anti_alias(false));
+    canvas.restore();
+    canvas.set_render_target(target);
+    let paint = pooled_paint(canvas, image, used, at, 1.0);
+    canvas.fill_path(&whole, &paint);
 }
 
 /// A pooled render target whose top-left `used` part the caller draws in, held until [`super::execute`]

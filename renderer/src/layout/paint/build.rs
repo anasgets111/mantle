@@ -276,6 +276,7 @@ fn build_node(
                 radius: radius.clone(),
                 border: BorderPaint::default(),
                 widths: EdgeInsets::default(),
+                dash: node::StrokeDash::default(),
             };
             let draw = Draw::Layer {
                 effect: Box::new(effect),
@@ -457,17 +458,19 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
                 trim: path.trim,
                 trim_axis: path.trim_axis,
                 shift: path.shift,
+                dash: path.dash.clone(),
             },
             scale,
         )),
         // The shared paint of `rect`/`row`/`column` and all four surface roles: background
         // fill, then borders. `clip` is not read here: it decides what this node's *children* are
         // cut to, `build_node`'s question, not this one's.
-        PaintStyle::Box { background, radius, border, widths, .. } => Some(Draw::Box {
+        PaintStyle::Box { background, radius, border, widths, dash, .. } => Some(Draw::Box {
             background: background.iter().map(|(fill, _)| fade_fill(fill, opacity)).collect(),
             radius: radius.clone(),
             border: fade_border(border, opacity),
             widths: *widths,
+            dash: dash.clone(),
         }),
 
         // `text`: `content` through `TextPainter`, at `rect`, coloured by `foreground`. `elide`,
@@ -1459,7 +1462,9 @@ mod tests {
                     ring = {{ width = 3, color = "#89b4ff", offset = {offset} }} }}"##
             ));
             let ring = list.commands.last().unwrap();
-            let Draw::Box { background, radius, border, widths } = &ring.draw else { panic!("a box: {:?}", ring.draw) };
+            let Draw::Box { background, radius, border, widths, .. } = &ring.draw else {
+                panic!("a box: {:?}", ring.draw)
+            };
             assert!(background.is_empty(), "a gap, not a fill");
             assert_eq!(radius, &Radii([corner, 0.0, 0.0, 0.0], 0.0, None));
             assert_eq!(*widths, EdgeInsets { top: 3.0, right: 3.0, bottom: 3.0, left: 3.0 });
@@ -2214,6 +2219,7 @@ mod tests {
                 radius: Radii::default(),
                 border: BorderPaint::default(),
                 widths: EdgeInsets::default(),
+                dash: node::StrokeDash::default(),
             }
         };
         let split = stack(r##"{ "#ff0000", "#00ff00", { fill = "#ffffff", blend = "screen" }, "#0000ff" }"##);

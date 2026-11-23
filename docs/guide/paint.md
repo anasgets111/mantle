@@ -64,7 +64,7 @@ or, with none close, listing them all.
 | Properties | Taken by |
 | :--- | :--- |
 | `shadows`, `effect`, `opacity` | Every node, including `text`, `icon`, `image`, `list`, `textfield` |
-| `background`, `radius`, `corner_shape`, `shape`, `border_color`, `border_width`, `ring`, `clip`, `mask`, `shadow_mode`, `compositor_blur` | Box kinds only |
+| `background`, `radius`, `corner_shape`, `shape`, `border_color`, `border_width`, `border_dash`, `border_dash_offset`, `ring`, `clip`, `mask`, `shadow_mode`, `compositor_blur` | Box kinds only |
 | `effect.backdrop` | Box kinds only; the key is refused elsewhere, naming it |
 | `source_blur` | `image` only |
 | `radius` | Box kinds and `image` |
@@ -93,6 +93,8 @@ colours and no short `#RGB` form.
 | `shape` | `Shape\|Bound` | None | The box's shape as one closed contour with any holes, or a melt, in place of `radius`; see [Shape](#shape) |
 | `border_color` | `Color\|BorderColors\|Gradient\|Bound` | None | A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width. A gradient runs along the whole outline and refuses a per-edge one; it snaps under `animate` |
 | `border_width` | `number\|Edges\|Bound`, `[0, 8192]` | `0` | Px per edge; a number sets all four, a missing edge is `0`. Borders draw inside the box and take no layout space |
+| `border_dash` | `number[]\|Bound`, `[0, 8192]` | `{}` | Dash and gap lengths in px round the border, as `path`'s `stroke_dash`; see [Dashed borders](#dashed-borders) |
+| `border_dash_offset` | `number\|Bound`, `[-8192, 8192]` | `0` | Px into `border_dash` where the outline starts, as `path`'s `stroke_dash_offset`. Tweens |
 | `ring` | `Ring\|Bound` | None | A stroke of `width` px and `color` around the box, `offset` px outside its edge; see [Ring](#ring) |
 | `compositor_blur` | `boolean\|Bound` | `false` | Ask the compositor to blur the desktop behind this box; see [Blurs](#blurs). Never inferred from a translucent background |
 | `shadow_mode` | `"box"\|"content"\|Bound` | `"box"` | `"box"`: CSS `box-shadow` of the box shape. `"content"`: CSS `drop-shadow` of everything painted. See [Shadows](#shadows) |
@@ -147,6 +149,32 @@ return row {
             border_color = { top = "#89B4FA", right = "#CBA6F7", bottom = "#F38BA8", left = "#A6E3A1" },
         }),
     },
+}
+```
+
+### Dashed borders
+
+`border_dash` cuts the border into dashes, as [`path`](../nodes/path.md)'s `stroke_dash` does:
+dash and gap lengths in px along the box's outer edge. The pattern starts at the top-left corner and
+runs clockwise round the whole outline, corners and scoops included, so it never restarts at an
+edge; a `shape` restarts it at each contour's first point. Each gap removes the part of the solid
+border its stretch of outline owns, split at corners where the border's colours split, so a thick
+edge keeps its corner and a change of width or colour never moves a dash. A dashed border costs two
+offscreen passes. `border_dash_offset` moves the pattern along the outline and tweens, for a drop
+zone whose dashes march while a file is over it:
+
+```lua
+local over = state("drop_over", false)
+
+return rect {
+    width = 160,
+    height = 96,
+    radius = 12,
+    border_width = 2,
+    border_color = "#A6ADC8",
+    border_dash = { 6, 4 },
+    border_dash_offset = over:map(function(on) return on and -40 or 0 end),
+    animate = { border_dash_offset = { duration = 800 } },
 }
 ```
 

@@ -280,6 +280,37 @@ pub struct VectorPath {
     pub trim_axis: TrimAxis,
     /// Moves the geometry inside the node box before trimming, in logical px.
     pub shift: (f32, f32),
+    pub dash: StrokeDash,
+}
+
+/// `stroke_dash` or `border_dash` with its offset, in logical px until the build scales a border's.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StrokeDash {
+    /// On and off lengths, of even length; empty strokes solid.
+    pub lengths: Rc<[f32]>,
+    pub offset: f32,
+}
+
+/// `stroke_dash` or `border_dash`: alternating on and off lengths, an odd list repeated to even
+/// length as SVG does. A list summing to 0 strokes solid, as in SVG.
+pub(crate) struct Dash;
+spelled!(Dash => format!("{}[]", f32::lua()));
+
+impl Prop for Dash {
+    type Out = Rc<[f32]>;
+    fn read(row: &Property, value: Option<&Value>) -> Result<Self::Out, LayoutError> {
+        let Some(value) = value else { return Ok(Rc::from([])) };
+        let Value::Table(table) = value else { return Err(invalid(row.name, "expected a list of lengths")) };
+        input::array_len(row.name, table, 16)?;
+        let lengths: Vec<f32> = input::read(row.name, row.name, value.clone())?;
+        for n in &lengths {
+            super::prop::within(row, *n)?;
+        }
+        if lengths.iter().sum::<f32>() == 0.0 {
+            return Ok(Rc::from([]));
+        }
+        Ok(if lengths.len() % 2 == 1 { lengths.repeat(2) } else { lengths }.into())
+    }
 }
 
 pub(crate) struct PathCommands;
@@ -469,16 +500,30 @@ mod tests {
         let style = |fields: &str| -> Result<_, LayoutError> {
             let props = super::super::props_from_src(&lua, format!("return {{ kind = 'path', {fields} }}"));
             match super::super::paint_style("path", &props)? {
-                Some(super::super::PaintStyle::Path(path)) => Ok((path.stroke_cap, path.stroke_join, path.trim)),
+                Some(super::super::PaintStyle::Path(path)) => {
+                    Ok((path.stroke_cap, path.stroke_join, path.trim, path.dash.lengths.to_vec()))
+                }
                 other => panic!("a path paints, got {other:?}"),
             }
         };
-        assert_eq!(style("").unwrap(), (StrokeCap::Butt, StrokeJoin::Miter, (0.0, 1.0)));
+        assert_eq!(style("").unwrap(), (StrokeCap::Butt, StrokeJoin::Miter, (0.0, 1.0), vec![]));
         assert_eq!(
-            style("stroke_cap = 'round', stroke_join = 'bevel', trim_start = 0.25, trim_end = 0.5").unwrap(),
-            (StrokeCap::Round, StrokeJoin::Bevel, (0.25, 0.5))
+            style("stroke_cap = 'round', stroke_join = 'bevel', trim_start = 0.25, trim_end = 0.5, stroke_dash = {3, 0, 1}")
+                .unwrap(),
+            (StrokeCap::Round, StrokeJoin::Bevel, (0.25, 0.5), vec![3.0, 0.0, 1.0, 3.0, 0.0, 1.0])
         );
-        for bad in ["stroke_cap = 'rounded'", "stroke_join = 1", "trim_start = -0.1", "trim_end = 1.5"] {
+        assert_eq!(style("stroke_dash = {2, 4}").unwrap().3, [2.0, 4.0]);
+        assert!(style("stroke_dash = {0, 0}").unwrap().3.is_empty(), "a zero sum strokes solid");
+        for bad in [
+            "stroke_cap = 'rounded'",
+            "stroke_join = 1",
+            "trim_start = -0.1",
+            "trim_end = 1.5",
+            "stroke_dash = 4",
+            "stroke_dash = {4, -1}",
+            "stroke_dash = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}",
+            "stroke_dash_offset = 9000",
+        ] {
             assert!(style(bad).is_err(), "accepted {bad}");
         }
     }

@@ -607,6 +607,7 @@ mod tests {
             clip: node::ClipShape::Box,
             ring: None,
             mask: None,
+            dash: node::StrokeDash::default(),
         });
         // Only the top half is inside the list.
         let list = region_node(2, "list", (0.0, 0.0, 100.0, 50.0), None, vec![card]).with_clip(node::ClipShape::Box);

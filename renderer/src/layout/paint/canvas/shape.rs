@@ -4,10 +4,11 @@ use std::f32::consts::{FRAC_PI_2, PI};
 
 use femtovg::renderer::OpenGl;
 use femtovg::{Canvas, Color, Paint, Path, Solidity};
+use kurbo::Point;
 
 use super::vector_path::femtovg_path;
 use crate::layout::node::corner::Squircle;
-use crate::layout::node::shape::{boolean, inset};
+use crate::layout::node::shape::{boolean, inset, inset_loops};
 use crate::layout::node::{BorderColor, BorderPaint, EdgeInsets, Fill, Gradient, GradientShape, Radii, Rgba};
 use crate::text::snap::{LogicalRect, snap_border_band};
 use kurbo::{BezPath, PathEl, Shape as _};
@@ -445,19 +446,8 @@ fn shaped_border(
     if drawn.iter().all(Option::is_none) {
         return;
     }
-    let radius = match radius.scoop() {
-        false => radius.fit(w, h),
-        true => radius.fit(w - 2.0 * HAIR, h - 2.0 * HAIR),
-    };
-    let [tl, tr, br, bl] = radius.0;
-    let [q_tl, q_tr, q_br, q_bl] = radius.squircles(w, h);
+    let corners = corners((x, y, w, h), radius, edges);
     let [top, right, bottom, left] = edges;
-    let corners = [
-        Corner::new((x, y), (1.0, 1.0), false, tl, q_tl, left, top),
-        Corner::new((x + w, y), (-1.0, 1.0), true, tr, q_tr, right, top),
-        Corner::new((x + w, y + h), (-1.0, -1.0), false, br, q_br, right, bottom),
-        Corner::new((x, y + h), (1.0, -1.0), true, bl, q_bl, left, bottom),
-    ];
     // Where corner `i`'s two colours meet: the share of its sweep the edge before it takes.
     let split = |i: usize| {
         let (before, after) = (edges[(i + 3) % 4], edges[i]);
@@ -509,6 +499,157 @@ fn shaped_border(
         outline.close(Solidity::Solid);
         fill(canvas, outline, color);
     }
+}
+
+/// The corners of the box at `(x, y)` sized `w` by `h`, clockwise from the top left, their inner
+/// arcs set in by the `[top, right, bottom, left]` widths.
+fn corners((x, y, w, h): (f32, f32, f32, f32), radius: &Radii, [top, right, bottom, left]: [f32; 4]) -> [Corner; 4] {
+    let radius = match radius.scoop() {
+        false => radius.fit(w, h),
+        true => radius.fit(w - 2.0 * HAIR, h - 2.0 * HAIR),
+    };
+    let [tl, tr, br, bl] = radius.0;
+    let [q_tl, q_tr, q_br, q_bl] = radius.squircles(w, h);
+    [
+        Corner::new((x, y), (1.0, 1.0), false, tl, q_tl, left, top),
+        Corner::new((x + w, y), (-1.0, 1.0), true, tr, q_tr, right, top),
+        Corner::new((x + w, y + h), (-1.0, -1.0), false, br, q_br, right, bottom),
+        Corner::new((x, y + h), (1.0, -1.0), true, bl, q_bl, left, bottom),
+    ]
+}
+
+/// An outer point of a border's band and the inner point the painter's split lines join it to.
+pub(super) type Station = ((f32, f32), (f32, f32));
+
+/// The band [`paint_border`] paints, as stations clockwise round each contour from its start: a
+/// box's from where its left edge meets the top-left corner, a `shape`'s from each loop's first
+/// point. Built from the painter's own snapped box, widths and corners; an edge it leaves unpainted
+/// on a square box has no depth, so its neighbour keeps the corner. Empty when nothing paints.
+pub(super) fn border_stations(
+    rect: LogicalRect,
+    radius: &Radii,
+    border: &BorderPaint,
+    widths: EdgeInsets,
+) -> Vec<Vec<Station>> {
+    let paints = match border {
+        BorderPaint::Edges(colors) => [colors.top, colors.right, colors.bottom, colors.left].map(|c| c.is_some()),
+        BorderPaint::Gradient(_) => [true; 4],
+    };
+    let raw = [widths.top, widths.right, widths.bottom, widths.left];
+    let point = |p: Point| (p.x as f32, p.y as f32);
+    if let Some(outline) = &radius.2 {
+        // `paint_border` fills a shape's band only in one paint, which the parser guarantees.
+        if raw[0] <= 0.0 || !paints[0] {
+            return Vec::new();
+        }
+        let outer = outline.polygon(rect, 0.1);
+        let inner = inset_loops(&outer, f64::from(raw[0]));
+        let pair = |(o, i): (&Vec<Point>, &Vec<Point>)| {
+            let n = o.len();
+            let bends = |k: usize| (o[k] - o[(k + n - 1) % n]).cross(o[(k + 1) % n] - o[k]).abs() > 1e-6;
+            // A point partway along a straight run takes its inner point from the run's inner edge,
+            // held between the corners' inner points, so it can't cross a corner's split line.
+            let inner = |k: usize| {
+                let Some((a, b)) = (1..n)
+                    .map(|back| (k + n - back) % n)
+                    .find(|&j| bends(j))
+                    .zip((1..n).map(|ahead| (k + ahead) % n).find(|&j| bends(j)))
+                else {
+                    return i[k];
+                };
+                let (a, b) = (i[a], i[b]);
+                let t = ((o[k] - a).dot(b - a) / (b - a).hypot2().max(f64::EPSILON)).clamp(0.0, 1.0);
+                if bends(k) { i[k] } else { a.lerp(b, t) }
+            };
+            let corners: Vec<Station> = (0..n).map(|k| (point(o[k]), point(inner(k)))).collect();
+            let next = |k: usize| corners[(k + 1) % corners.len()];
+            corners
+                .iter()
+                .enumerate()
+                .flat_map(|(k, &corner)| {
+                    [Some(corner)].into_iter().chain(square(corner, next(k)).into_iter().flatten().map(Some)).flatten()
+                })
+                .collect()
+        };
+        return outer.iter().zip(&inner).map(pair).collect();
+    }
+    let (x, w) = snap_border_band(rect.x, rect.width);
+    let (y, h) = snap_border_band(rect.y, rect.height);
+    if w <= 0.0 || h <= 0.0 || !(0..4).any(|i| paints[i] && raw[i] > 0.0) {
+        return Vec::new();
+    }
+    let [top, right, bottom, left] = if radius.is_zero() {
+        // Each painted edge's own rect, snapped on its thin axis as `paint_border_edge` snaps it; an
+        // unpainted edge has no depth.
+        let depth = |i: usize, start: f32, near: bool, edge: f32| {
+            if !paints[i] || raw[i] <= 0.0 {
+                return 0.0;
+            }
+            let (start, thick) = snap_border_band(start, raw[i]);
+            (if near { start + thick - edge } else { edge - start }).max(0.0)
+        };
+        [
+            depth(0, rect.y, true, y),
+            depth(1, rect.x + rect.width - raw[1], false, x + w),
+            depth(2, rect.y + rect.height - raw[2], false, y + h),
+            depth(3, rect.x, true, x),
+        ]
+    } else {
+        raw.map(|width| snap_border_band(rect.x, width).1)
+    };
+    // Opposite bands that overlap meet in proportion to their depths, so neither's gap crosses the
+    // other's dash and their inner points never cross.
+    let fit = |near: f32, far: f32, span: f32| match near + far {
+        sum if sum > span => (near * span / sum, far * span / sum),
+        _ => (near, far),
+    };
+    let ((top, bottom), (left, right)) = (fit(top, bottom, h), fit(left, right, w));
+    let corners = corners((x, y, w, h), radius, [top, right, bottom, left]);
+    // A corner's outer and inner points `t` of the way round it, as the painter's arcs place them.
+    let at = |corner: &Corner, t: f32| {
+        let end = |inner: bool| {
+            let mut arc = Outline { path: Path::new(), pen: None };
+            if t > 0.5 {
+                arc.arc(corner, inner, 0.0, t)
+            } else {
+                arc.arc(corner, inner, 1.0, t)
+            }
+            arc.pen.unwrap_or(corner.origin)
+        };
+        (end(false), end(true))
+    };
+    let arcs: Vec<Vec<Station>> = corners
+        .iter()
+        .map(|corner| {
+            let extent =
+                corner.outer.radii.0.max(corner.outer.radii.1).abs() * if corner.smooth.is_some() { 2.0 } else { 1.0 };
+            // Chords within about 0.05 px of the curve.
+            let steps = (6.0 * extent).sqrt().ceil().max(1.0) as usize;
+            // An inner arc under a pixel round is one point, so its stations fan from it as one
+            // slice: slices a pixel thin there would turn inside out under femtovg's fill.
+            let tip = (corner.inner.radii.0.max(corner.inner.radii.1).abs() < 1.0).then(|| at(corner, 0.5).1);
+            (0..=steps).map(|k| at(corner, k as f32 / steps as f32)).map(|(o, i)| (o, tip.unwrap_or(i))).collect()
+        })
+        .collect();
+    let mut stations = Vec::new();
+    for (i, arc) in arcs.iter().enumerate() {
+        stations.extend_from_slice(arc);
+        stations.extend(square(arc[arc.len() - 1], arcs[(i + 1) % 4][0]).into_iter().flatten());
+    }
+    vec![stations]
+}
+
+/// Along a straight edge from station `a` to `b`, the two stations between which dash ends cut
+/// square across the band: the inner points' feet on the outer edge, when both fall on it in order.
+/// Past either end the corner is concave on the outside, and the ends stay slanted: a fan from one
+/// outer point holds no length to dash along.
+fn square((o_a, i_a): Station, (o_b, i_b): Station) -> Option<[Station; 2]> {
+    let span = (o_b.0 - o_a.0).hypot(o_b.1 - o_a.1);
+    let d = ((o_b.0 - o_a.0) / span, (o_b.1 - o_a.1) / span);
+    let along = |p: (f32, f32)| (p.0 - o_a.0) * d.0 + (p.1 - o_a.1) * d.1;
+    let (from, to) = (along(i_a), along(i_b));
+    let foot = |by: f32| (o_a.0 + d.0 * by, o_a.1 + d.1 * by);
+    (0.0 <= from && from < to && to <= span).then(|| [(foot(from), i_a), (foot(to), i_b)])
 }
 
 /// Which dimension of an edge rect is the thin one: top/bottom are thin in y, left/right in x.
@@ -711,6 +852,253 @@ mod tests {
         let scoop = r##"rect { width = 40, height = 40, background = "#000000FF", corner_shape = "scoop",
             radius = { bottom_right = 12 } }"##;
         assert_eq!(filled(scoop).unwrap(), vec![true, true, false, true], "scoop");
+    }
+
+    /// A dashed border is the solid one with gaps cut out: never more opaque anywhere, on every
+    /// path a border takes, and its dashes do not move when only the colours change.
+    #[test]
+    fn a_dashed_border_only_removes_gaps_from_the_solid_one() {
+        let grid: Vec<_> = (0..64).flat_map(|y| (0..64).map(move |x| (x, y))).collect();
+        let alphas = |style: &str| {
+            let src = format!("rect {{ width=48,height=48,{style} }}");
+            paint_points(&src, &grid).expect("headless EGL required").iter().map(|p| p.3).collect::<Vec<_>>()
+        };
+        let frame = "shape={melt=0,parts={{left=0,top=0,right=48,bottom=8},{left=0,top=40,right=48,bottom=48},\
+            {left=0,top=0,right=8,bottom=48},{left=40,top=0,right=48,bottom=48}}}";
+        for style in [
+            "border_width=4,border_color='#ffffff'".to_string(),
+            "radius=12,border_width=4,border_color='#ffffff'".into(),
+            "radius=12,corner_shape='scoop',border_width={top=4},border_color='#ffffff'".into(),
+            "radius=12,corner_smoothing=0.6,border_width=4,border_color='#ffffff'".into(),
+            "radius=16,border_width={top=12,right=4,bottom=4,left=4},border_color='#ffffff'".into(),
+            "radius=2,border_width=8,border_color={top='#ff000080',right='#ffffff80',bottom='#ffffff80',left='#ffffff80'}"
+                .into(),
+            "border_width={top=4,right=4,bottom=4,left=8},border_color='#ffffff80'".into(),
+            "radius=8,border_width=4,border_color={gradient='linear',stops={{0,'#ff0000'},{1,'#0000ff'}}}".into(),
+            format!("{frame},border_width=6,border_color='#ffffff'"),
+        ] {
+            let solid = alphas(&style);
+            let dashed = alphas(&format!("{style},border_dash={{6}},border_dash_offset=2"));
+            let over = grid.iter().zip(solid.iter().zip(&dashed)).find(|(_, (s, d))| **d > s.saturating_add(2));
+            assert!(over.is_none(), "{style}: dashed above solid at {over:?}");
+            let sum = |alphas: &[u8]| alphas.iter().map(|a| u32::from(*a)).sum::<u32>();
+            assert!(sum(&dashed) > 0 && sum(&dashed) < sum(&solid) * 3 / 4, "{style}: dashes cut gaps");
+        }
+        // Compared only where both solids are opaque: a colour seam antialiases the solid border itself.
+        let widths = "radius=12,border_width={top=4,right=4,bottom=4,left=8}";
+        let colours = ["'#ffffff'", "{top='#ff0000',right='#ffffff',bottom='#ffffff',left='#ffffff'}"];
+        let [white, red] = colours.map(|colour| {
+            let style = format!("{widths},border_color={colour}");
+            (alphas(&style), alphas(&format!("{style},border_dash={{6,6}}")))
+        });
+        let moved = (0..grid.len())
+            .filter(|&i| white.0[i] == 255 && red.0[i] == 255 && (white.1[i] < 128) != (red.1[i] < 128))
+            .map(|i| grid[i])
+            .collect::<Vec<_>>();
+        assert!(moved.is_empty(), "a colour change moved dashes at {moved:?}");
+        assert!(white.1.iter().filter(|a| **a < 128).count() > white.0.iter().filter(|a| **a < 128).count() + 100);
+    }
+
+    /// The pattern runs along the outer edge clockwise from the top-left corner: on a square box,
+    /// `{8}` dashes the top edge at x 0-8, 16-24, ... and the left edge's last gap, y 8-0, takes the
+    /// corner square's half below its mitre. Offset 4 moves them back to 0-4, 12-20, one dash across
+    /// the corner with the left edge's last 4 px.
+    #[test]
+    fn a_dashed_border_starts_at_the_top_left_corner() {
+        let border = "width=48,height=48,border_width=4,border_color='#ffffff',border_dash={8}";
+        let alphas = |src: String, points: &[(usize, usize)]| {
+            paint_points(&src, points).expect("headless EGL required").iter().map(|p| p.3).collect::<Vec<_>>()
+        };
+        let points = [(6, 2), (12, 2), (20, 2), (28, 2), (1, 3), (2, 6), (2, 12)];
+        assert_eq!(alphas(format!("rect {{ {border} }}"), &points), [255, 0, 255, 0, 0, 0, 255]);
+        let points = [(2, 2), (8, 2), (16, 2), (24, 2), (1, 1), (2, 6), (2, 10)];
+        assert_eq!(alphas(format!("rect {{ {border},border_dash_offset=4 }}"), &points), [255, 0, 255, 0, 255, 0, 0]);
+        // Placed 8 px in, the dashes move with the box.
+        let row = format!("row {{ children = {{ rect {{ width=8,height=8 }}, rect {{ {border} }} }} }}");
+        assert_eq!(alphas(row, &[(14, 2), (20, 2), (28, 2), (36, 2)]), [255, 0, 255, 0]);
+        // `{6,2}` leaves gaps at 6-8 and 14-16; the cut clears a fractional band's last pixel.
+        let points = [(3, 2), (7, 2), (10, 2), (15, 2)];
+        assert_eq!(alphas(format!("rect {{ {border},border_dash={{6,2}} }}"), &points), [255, 0, 255, 0]);
+        let thin = alphas(format!("rect {{ {border},border_width=3.5 }}"), &[(4, 3), (12, 3)]);
+        assert!(thin[0] > 64 && thin[1] == 0, "{thin:?}");
+        // A thick top edge keeps its first dash, and the thin right edge its own beside it.
+        let thick = alphas(
+            format!("rect {{ {border},border_width={{top=12,right=4,bottom=4,left=4}} }}"),
+            &[(6, 2), (6, 10), (45, 20), (45, 28)],
+        );
+        assert_eq!(thick, [255, 255, 255, 0]);
+        // An edge without a width cuts nothing from its neighbour's dash.
+        assert_eq!(alphas(format!("rect {{ {border},border_width={{top=4}} }}"), &[(0, 2)]), [255]);
+        // Zero-length dashes draw nothing, as on a path, past the ceiling too.
+        for pattern in ["{0,4}", "{0,1/1024}"] {
+            let none =
+                alphas(format!("rect {{ {border},border_dash={pattern} }}"), &[(2, 2), (12, 2), (2, 24), (45, 30)]);
+            assert_eq!(none, [0; 4], "{pattern}");
+        }
+        // Under a moved, half-opaque parent the offscreen pass lands where the box is, faded once.
+        let src =
+            format!("rect {{ width=64,height=64,opacity=0.5,translate={{x=8,y=8}},children={{rect {{ {border} }}}} }}");
+        let faded = alphas(src, &[(14, 10), (20, 10), (28, 10), (4, 4)]);
+        assert!(
+            faded[0].abs_diff(128) <= 2 && faded[1] == 0 && faded[2].abs_diff(128) <= 2 && faded[3] == 0,
+            "{faded:?}"
+        );
+    }
+
+    /// Where the gaps fall, which tiling alone can't show: a dash and its complement still add up
+    /// when both cut on the same wrong line.
+    #[test]
+    fn a_dashed_border_cuts_where_its_pattern_says() {
+        let alphas = |src: &str, points: &[(usize, usize)]| {
+            paint_points(&format!("rect {{ width=48,height=48,{src} }}"), points)
+                .expect("headless EGL required")
+                .iter()
+                .map(|p| p.3)
+                .collect::<Vec<_>>()
+        };
+        let white = "border_color='#ffffff'";
+        // Bands past the box's middle meet there: the one gap clears the top edge's triangle.
+        let full = alphas(
+            &format!("border_width=48,{white},border_dash={{144,48}},border_dash_offset=144"),
+            &[(24, 2), (24, 18), (8, 4), (40, 4), (4, 24), (44, 24), (24, 44)],
+        );
+        assert_eq!(full, [0, 0, 0, 0, 255, 255, 255], "a full-width border's top gap");
+        // An edge with a width but no colour lends no depth: the top's gaps cut straight down.
+        let lone = alphas(
+            "border_width={top=4,right=20},border_color={top='#ffffff'},border_dash={8,8}",
+            &[(30, 1), (30, 3), (34, 1), (34, 3), (38, 3), (42, 1), (42, 3), (46, 1), (46, 3)],
+        );
+        assert_eq!(lone, [0, 0, 255, 255, 255, 0, 0, 0, 0], "a lone top edge's dashes");
+        // Two pairs: 0-4 on, 4-6 off, 6-12 on, 12-16 off, along the top edge above its mitre.
+        let pairs = alphas(
+            &format!("border_width=4,{white},border_dash={{4,2,6,4}}"),
+            &[(2, 1), (5, 1), (9, 1), (14, 1), (18, 1), (21, 1)],
+        );
+        assert_eq!(pairs, [255, 0, 255, 0, 255, 0]);
+        // One gap round the whole contour clears it, but for antialiasing on its inner corners.
+        let grid: Vec<_> = (0..48).flat_map(|y| (0..48).map(move |x| (x, y))).collect();
+        let gone =
+            alphas(&format!("radius=8,border_width=4,{white},border_dash={{1,1000}},border_dash_offset=1"), &grid);
+        let most = (0..grid.len()).max_by_key(|&i| gone[i]).unwrap_or(0);
+        assert!(gone[most] <= 16, "a gap round the whole border left {} at {:?}", gone[most], grid[most]);
+        // A zero dash between two gaps joins them into one.
+        for (split, whole) in [("{4,4,0,4}", "{4,8}"), ("{4,0.4,0,4}", "{4,4.4}")] {
+            let style = |pattern: &str| format!("radius=8,border_width=4,{white},border_dash={pattern}");
+            let (a, b) = (alphas(&style(split), &grid), alphas(&style(whole), &grid));
+            let worst = (0..grid.len()).max_by_key(|&i| a[i].abs_diff(b[i])).unwrap_or(0);
+            assert!(
+                a[worst].abs_diff(b[worst]) <= 8,
+                "{split} against {whole} at {:?}: {} {}",
+                grid[worst],
+                a[worst],
+                b[worst]
+            );
+        }
+    }
+
+    /// Dashes and the gaps between them tile the solid border: `{8,8}` and the same moved 8 px add
+    /// up to it, so no gap leaves an island of band and none reaches into a dash, whatever the
+    /// corners, widths, colours, snapping or clip; gaps under a hundredth of a pixel apart leave next
+    /// to nothing. femtovg's antialiasing is not exact area where a dash ends on a slant or a
+    /// corner's inner point: the first set misses at most 6.5 px in all, one taper pixel by 183 of
+    /// 255; the second, pointed or holeless bands, up to 9.4 px and a handful of whole pixels; the
+    /// third, bands about a pixel apart, up to 12.1 px, a quarter of a pixel on their inner edges.
+    #[test]
+    fn dashes_and_their_gaps_tile_the_solid_border() {
+        let grid: Vec<_> = (0..64).flat_map(|y| (0..64).map(move |x| (x, y))).collect();
+        let alphas = |src: &str| {
+            paint_points(src, &grid).expect("headless EGL required").iter().map(|p| i32::from(p.3)).collect::<Vec<_>>()
+        };
+        let white = "border_color='#ffffff'";
+        let frame = "shape={melt=0,parts={{left=0,top=0,right=48,bottom=12},{left=0,top=36,right=48,bottom=48},\
+            {left=0,top=0,right=12,bottom=48},{left=36,top=0,right=48,bottom=48}}}";
+        let wedge = "shape={commands={{op='M',points={0,0}},{op='L',points={48,0}},{op='L',points={24,40}},{op='Z',points={}}}}";
+        let backward = "shape={commands={{op='M',points={0,0}},{op='L',points={24,40}},{op='L',points={48,0}},{op='Z',points={}}}}";
+        let thin_frame = "shape={melt=0,parts={{left=0,top=0,right=48,bottom=10},{left=0,top=38,right=48,bottom=48},\
+            {left=0,top=0,right=10,bottom=48},{left=38,top=0,right=48,bottom=48}}}";
+        let boxed = |style: &str| format!("rect {{ width=48,height=48,{style} }}");
+        // Placed 8 px above the surface, so only the band's last rows show.
+        let clipped = |style: &str| format!("rect {{ width=48,height=48,translate={{y=-8}},{style} }}");
+        // Pixels in whole: total miss, pixels both halves cut or both keep, a near-all-gap's most left.
+        let exact = (8.0, 0, 32);
+        let pointed = (12.0, 4, 48);
+        let crowded = (12.5, 0, 64);
+        let mut failed = Vec::new();
+        for (src, (most, owned, left)) in [
+            (boxed(&format!("border_width=8,{white}")), exact),
+            (boxed(&format!("radius=2,border_width=12,{white}")), exact),
+            (boxed(&format!("radius=16,border_width={{top=12,right=2,bottom=2,left=2}},{white}")), exact),
+            (boxed(&format!("radius=16,border_width={{top=12}},{white}")), exact),
+            (boxed(&format!("border_width={{top=12,right=4,bottom=4,left=4}},{white}")), exact),
+            (
+                boxed(
+                    "border_width={top=12,right=4,bottom=4,left=4},border_color={top='#ffffff',bottom='#ffffff',left='#ffffff'}",
+                ),
+                exact,
+            ),
+            (boxed(&format!("border_width=0.1,{white}")), exact),
+            (boxed(&format!("radius=8,border_width=0.25,{white}")), exact),
+            (
+                boxed(
+                    "radius=2,border_width=8,border_color={top='#ff000080',right='#ffffff80',bottom='#ffffff80',left='#ffffff80'}",
+                ),
+                exact,
+            ),
+            (
+                boxed("radius=8,border_width=4,border_color={gradient='linear',stops={{0,'#ff0000'},{1,'#0000ff'}}}"),
+                exact,
+            ),
+            (clipped(&format!("border_width={{top=12,right=4,bottom=4,left=4}},{white}")), exact),
+            (clipped(&format!("{frame},border_width=6,{white}")), exact),
+            // Two contours whose bands meet, one starting partway along an edge.
+            (boxed(&format!("{frame},border_width=6,{white}")), exact),
+            // Bands a pixel or so apart, which the inward reach must not cross.
+            (boxed(&format!("{frame},border_width=5.45,{white}")), crowded),
+            (boxed(&format!("{thin_frame},border_width=4.5,{white}")), crowded),
+            // Chords under a pixel round a tight corner.
+            (boxed(&format!("radius=2,border_width=1,{white}")), exact),
+            // An inner corner under a pixel round, whose moved inner points pass each other.
+            (boxed(&format!("radius=8.5,border_width=8,{white}")), exact),
+            (boxed(&format!("radius=12,corner_shape='scoop',border_width=4,{white}")), pointed),
+            (boxed(&format!("radius=12,corner_shape='scoop',border_width={{top=4}},{white}")), pointed),
+            (
+                boxed(&format!(
+                    "radius=12,corner_smoothing=0.6,border_width={{top=8,right=4,bottom=4,left=2}},{white}"
+                )),
+                pointed,
+            ),
+            // No hole: the inner points meet in the middle.
+            (boxed(&format!("radius=10,border_width=24,{white}")), pointed),
+            (boxed(&format!("{wedge},border_width=6,{white}")), pointed),
+            // Wound the other way.
+            (boxed(&format!("{backward},border_width=6,{white}")), pointed),
+        ] {
+            let solid = alphas(&src);
+            let dashed = |pattern: &str| alphas(&src.replacen(" }", &format!(",{pattern} }}"), 1));
+            for offset in [0, 12] {
+                let on = dashed(&format!("border_dash={{8,8}},border_dash_offset={offset}"));
+                let off = dashed(&format!("border_dash={{8,8}},border_dash_offset={}", offset + 8));
+                assert!(on.iter().sum::<i32>() > 0 && off.iter().sum::<i32>() > 0, "{src}: both halves paint");
+                let missed = (0..grid.len()).map(|i| (on[i] + off[i] - solid[i]).abs()).sum::<i32>() as f32 / 255.0;
+                let wrong: Vec<_> = (0..grid.len())
+                    .filter(|&i| solid[i] >= 200 && (on[i] + off[i] <= 55 || on[i].min(off[i]) >= 200))
+                    .map(|i| (grid[i], solid[i], on[i], off[i]))
+                    .collect();
+                if missed > most || wrong.len() > owned {
+                    failed.push(format!("{src} at {offset}: {missed:.1} px off, owned wrong at {wrong:?}"));
+                }
+            }
+            let gaps = dashed("border_dash={0.01,7.99}");
+            let at = (0..grid.len()).max_by_key(|&i| gaps[i]).unwrap_or(0);
+            if gaps[at] > left {
+                failed.push(format!("{src}: a gap left {} at {:?}", gaps[at], grid[at]));
+            }
+        }
+        assert!(failed.is_empty(), "{failed:#?}");
+        // Under the dash ceiling but past it in gaps: solid, not erased.
+        let src = boxed(&format!("border_width=4,{white}"));
+        let past = alphas(&src.replacen(" }", ",border_dash={1/1024,1/1024,0,1/512} }", 1));
+        assert_eq!(past, alphas(&src));
     }
 
     #[test]

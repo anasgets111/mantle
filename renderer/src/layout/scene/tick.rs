@@ -890,9 +890,10 @@ mod tests {
                 commands = on:map(function(o) return {{ op = "A", points = { 10, 10, o and 8 or 2, 0, 360 } }} end),
                 trim_end = on:map(function(o) return o and 0 or 1 end),
                 taper_end = on:map(function(o) return o and 20 or 0 end),
+                stroke_dash = { 4 }, stroke_dash_offset = on:map(function(o) return o and 8 or 0 end),
                 animate = { commands = { duration = 100 }, stroke = { duration = 100 },
                             stroke_width = { duration = 100 }, trim_end = { duration = 100 },
-                            taper_end = { duration = 100 } } } }"##,
+                            taper_end = { duration = 100 }, stroke_dash_offset = { duration = 100 } } } }"##,
         );
         lua.load(r#"state("on", false):set(true)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
@@ -906,6 +907,7 @@ mod tests {
         assert_eq!(path.stroke_width, 3.0);
         assert_eq!(path.trim, (0.0, 0.5));
         assert_eq!(path.taper, (0.0, 10.0));
+        assert_eq!(path.dash.offset, 4.0);
         let Some(node::Fill::Color(stroke)) = path.stroke else { panic!("a colour stroke, got {:?}", path.stroke) };
         assert!(stroke.r > 0.1 && stroke.r < 0.9, "the stroke is between black and white, got {}", stroke.r);
     }
@@ -1570,14 +1572,17 @@ mod tests {
     }
 
     #[test]
-    fn corner_smoothing_shadow_and_blur_tweens_run_on_the_paint_only_tick() {
+    fn corner_smoothing_dash_shadow_and_blur_tweens_run_on_the_paint_only_tick() {
         // `corner_smoothing` only reshapes the outline, so its tween ticks without the solver and the
         // tick writes the eased value back into the box's radii.
         let (mut scene, lua, shaping, surface) = applied(
             r##"local up = state("up", false)
             return panel { id = "bar", child = rect { width = 10, height = 10, background = "#ffffff", radius = 4,
                 corner_smoothing = up:map(function(u) return u and 1 or 0 end),
-                animate = { corner_smoothing = { duration = 100, easing = "linear" } } } }"##,
+                border_width = 1, border_color = "#000000", border_dash = { 2 },
+                border_dash_offset = up:map(function(u) return u and 8 or 0 end),
+                animate = { corner_smoothing = { duration = 100, easing = "linear" },
+                            border_dash_offset = { duration = 100, easing = "linear" } } } }"##,
         );
         lua.load(r#"state("up", false):set(true)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
@@ -1585,9 +1590,10 @@ mod tests {
         assert!(root.tick_is_paint_only(), "a shape asks the solver nothing");
         let started = root.children[0].tweens[0].started;
         scene.tick(&[instance_at(&surface, full())], &shaping, &lua, started + std::time::Duration::from_millis(50));
-        let Some(PaintStyle::Box { radius, .. }) = &scene.surface("bar@TEST").unwrap().children[0].paint else {
+        let Some(PaintStyle::Box { radius, dash, .. }) = &scene.surface("bar@TEST").unwrap().children[0].paint else {
             panic!("a rect paints a box")
         };
+        assert!((dash.offset - 4.0).abs() < 0.01, "the dashes march halfway, got {}", dash.offset);
         assert_eq!(radius.0, [4.0; 4]);
         assert!((radius.1 - 0.5).abs() < 0.01, "halfway to 1, got {}", radius.1);
 

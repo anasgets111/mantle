@@ -99,7 +99,7 @@ shape decides whether it moves. The ones that do:
 
 | Shape | Properties |
 | :--- | :--- |
-| Number | `width`, `height`, `min_*`, `max_*`, `padding`, `margin`, `opacity`, `scale`, `rotate`; on boxes `radius`, `border_width`; `spacing` on `row`, `column`, `list`; `font_size` on `text` and `textfield`; `size` on `icon`; `progress` on `shader`; `stroke_width` on `path` |
+| Number | `width`, `height`, `min_*`, `max_*`, `padding`, `margin`, `opacity`, `scale`, `rotate`; on boxes `radius`, `border_width`; `spacing` on `row`, `column`, `list`; `font_size` on `text` and `textfield`; `size` on `icon`; `progress` on `shader`; `stroke_width` and `stroke_dash_offset` on `path`; `border_dash_offset` on boxes |
 | `"NN%"` | `width`, `height` |
 | Colour | `background`, `border_color` (single colour), `foreground`; `fill` and `stroke` on `path` |
 | `{ top, right, bottom, left }` | `padding`, `margin`, `border_width` as tables |
@@ -124,7 +124,7 @@ Path coordinates stay within `[-8192, 8192]` and arc radii at 0 or more.
 
 | Tween on | Each frame |
 | :--- | :--- |
-| `opacity`, colours, `radius`, `translate`, `scale`, `rotate`, `origin`, `progress`, `commands`, `shape`, `fill`, `stroke`, `stroke_width`, `taper_start`, `taper_end`, `trim_start`, `trim_end`, `shift`, `corner_smoothing`, `shadows`, `ring`, `effect` | Repaints; no layout pass |
+| `opacity`, colours, `radius`, `translate`, `scale`, `rotate`, `origin`, `progress`, `commands`, `shape`, `fill`, `stroke`, `stroke_width`, `taper_start`, `taper_end`, `trim_start`, `trim_end`, `stroke_dash_offset`, `border_dash_offset`, `shift`, `corner_smoothing`, `shadows`, `ring`, `effect` | Repaints; no layout pass |
 | Anything else: `width`, `height`, `margin`, `padding`, `spacing`, `font_size`, … | Lays the surface out again |
 
 Slide with `translate` and grow on hover with `scale` when surrounding nodes should stay put.
