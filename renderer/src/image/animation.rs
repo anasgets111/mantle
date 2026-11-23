@@ -19,6 +19,7 @@ pub(super) fn decode_gif(
     path: &Path,
     box_px: (u32, u32),
     cropped: bool,
+    tiled: bool,
     charge: Charge<'_>,
     budget: usize,
 ) -> Result<Decoded, String> {
@@ -31,7 +32,7 @@ pub(super) fn decode_gif(
     // The previous frame's disposal, applied before the next draws: its rect, and the pixels
     // `Previous` restores (`None` for `Background`, which clears to transparent).
     let mut pending: Option<(Rect, Option<Vec<u8>>)> = None;
-    assemble(source, box_px, cropped, charge, budget, 1, |canvas| {
+    assemble(source, box_px, cropped, tiled, charge, budget, 1, |canvas| {
         while let Some(frame) = decoder.read_next_frame().map_err(|err| err.to_string())? {
             let (left, top, w, h) =
                 (u32::from(frame.left), u32::from(frame.top), u32::from(frame.width), u32::from(frame.height));
@@ -94,6 +95,7 @@ pub(super) fn decode_frames(
     path: &Path,
     box_px: (u32, u32),
     cropped: bool,
+    tiled: bool,
     charge: Charge<'_>,
     budget: usize,
 ) -> Option<Decoded> {
@@ -114,7 +116,7 @@ pub(super) fn decode_frames(
         (decoder.dimensions(), decoder.apng().ok()?.into_frames())
     };
     // Four canvases: ours, the frame in hand, and the decoder's own two.
-    assemble(source, box_px, cropped, charge, budget, 4, |canvas| {
+    assemble(source, box_px, cropped, tiled, charge, budget, 4, |canvas| {
         let Some(frame) = frames.next() else { return Ok(None) };
         let frame = frame.map_err(|err| err.to_string())?;
         let delay = Duration::from(frame.delay());
@@ -134,10 +136,12 @@ pub(super) fn decode_frames(
 /// Past [`super::thumbnails`], which holds one surface per path and would answer frame 0 forever. A box
 /// that scales or crops loses the rects and keeps whole frames instead; `native` is that split.
 /// `canvases` is how many source-size buffers `next` keeps alive, for the budget charge.
+#[allow(clippy::too_many_arguments)] // `cropped` and `tiled` are the key's own fields, not a shape to invent.
 fn assemble(
     (source_width, source_height): (u32, u32),
     box_px: (u32, u32),
     cropped: bool,
+    tiled: bool,
     charge: Charge<'_>,
     budget: usize,
     canvases: u64,
@@ -146,7 +150,7 @@ fn assemble(
     if source_width.max(source_height) > MAX_DECODE_EDGE {
         return Err(format!("{source_width}x{source_height} is past the {MAX_DECODE_EDGE}px limit"));
     }
-    let (stored_width, stored_height) = stored_size(source_width, source_height, box_px);
+    let (stored_width, stored_height) = stored_size(source_width, source_height, box_px, tiled);
     let (width, height) =
         if cropped { (stored_width.min(box_px.0), stored_height.min(box_px.1)) } else { (stored_width, stored_height) };
     // Unscaled and uncut only, as a cover box the source fits is; see the doc comment above for the smaller-box fallback.
@@ -501,16 +505,16 @@ pub(in crate::image) mod tests {
             ],
         );
 
-        let decoded = decode_gif(&path, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        let decoded = decode_gif(&path, (4, 4), false, false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
         assert_eq!(decoded.deltas.len(), 4, "5 frames, the first is the base");
         assert!(decoded.deltas.iter().all(|delta| delta.rect == (0, 0, 2, 2)), "the native rect, not the full canvas");
         assert!(decoded.deltas.iter().all(|delta| delta.pixels.len() == 4), "a native delta holds one byte a pixel");
 
         assert_replays_like_a_full_recomposite(&path, &decoded, |frame| frame.as_raw().clone());
-        let covered = decode_gif(&path, (4, 4), true, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        let covered = decode_gif(&path, (4, 4), true, false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
         assert!(covered.deltas.iter().all(|delta| delta.pixels.len() == 4), "a cover box the source fits is native");
         assert_replays_like_a_full_recomposite(&path, &covered, |frame| frame.as_raw().clone());
-        let cut = decode_gif(&path, (4, 2), true, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        let cut = decode_gif(&path, (4, 2), true, false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
         assert_replays_like_a_full_recomposite(&path, &cut, |frame| {
             crop_to_box(frame.as_raw(), 4, 4, (4, 2)).unwrap().0
         });
@@ -527,7 +531,7 @@ pub(in crate::image) mod tests {
                 ((0, 2, 1, 1), [255, 255, 0, 255], Keep),
             ],
         );
-        let decoded = decode_gif(&moving, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        let decoded = decode_gif(&moving, (4, 4), false, false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
         assert_replays_like_a_full_recomposite(&moving, &decoded, |frame| frame.as_raw().clone());
     }
 
@@ -561,13 +565,13 @@ pub(in crate::image) mod tests {
         frames.extend((0..4u8).map(|n| ((0, 0, 2, 2), [0, n * 50, 0, 255], Keep)));
         let path = gif_fixture(dir.path(), "many.gif", (4, 4), &frames);
         // Each 2x2 delta is 16 bytes, charged the 80 a frame takes to hold; 160 keeps exactly two.
-        let decoded = decode_gif(&path, (4, 4), false, Charge::Free, 160).unwrap();
+        let decoded = decode_gif(&path, (4, 4), false, false, Charge::Free, 160).unwrap();
         assert_eq!(decoded.deltas.len(), 2, "a third would total 240 bytes, past the 160-byte budget");
         assert_eq!(decoded.delays.len(), 3, "the base plus the two kept deltas");
         // A native delta is charged indexed: 256 indices and one colour for a 16x16 frame of one colour.
         let frames = [((0, 0, 16, 16), [255, 0, 0, 255], Keep), ((0, 0, 16, 16), [0, 255, 0, 255], Keep)];
         let path = gif_fixture(dir.path(), "indexed.gif", (16, 16), &frames);
-        assert_eq!(decode_gif(&path, (16, 16), false, Charge::Free, 260).unwrap().deltas.len(), 1);
+        assert_eq!(decode_gif(&path, (16, 16), false, false, Charge::Free, 260).unwrap().deltas.len(), 1);
     }
 
     /// Indexing must not lose a colour: past 256, or where the palette costs more than it saves, a
@@ -617,7 +621,7 @@ pub(in crate::image) mod tests {
             &[((0, 0, 8, 8), [255, 0, 0, 255], Keep), ((4, 4, 4, 4), [0, 255, 0, 255], Keep)],
         );
 
-        let decoded = decode_gif(&path, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        let decoded = decode_gif(&path, (4, 4), false, false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
         assert_eq!((decoded.width, decoded.height), (4, 4), "8x8 halved into a 4x4 box");
         assert_eq!(decoded.base.len(), 4 * 4 * 4, "the base is still the whole stored frame");
         assert_eq!(decoded.deltas[0].rect, (1, 1, 3, 3), "the source rect halved, plus the kernel's reach");
@@ -642,7 +646,7 @@ pub(in crate::image) mod tests {
             ],
         );
         // 24x16 covers a 10x10 box at 15x10, then crops to 10x10.
-        let decoded = decode_gif(&path, (10, 10), true, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        let decoded = decode_gif(&path, (10, 10), true, false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
         assert_eq!((decoded.width, decoded.height), (10, 10));
         assert_eq!(decoded.deltas[0].rect, (2, 2, 5, 4), "the 3x3 change at (9, 5), scaled, grown and cropped");
         assert_replays_like_a_full_recomposite(&path, &decoded, |frame| {
@@ -663,7 +667,7 @@ pub(in crate::image) mod tests {
             &[((0, 0, 10, 7), [255, 0, 0, 255], Keep), ((6, 4, 4, 3), [0, 255, 0, 255], Keep)],
         );
 
-        let decoded = decode_gif(&path, (3, 3), true, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        let decoded = decode_gif(&path, (3, 3), true, false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
         assert_eq!((decoded.width, decoded.height), (3, 3));
         assert_eq!(decoded.base.len(), 3 * 3 * 4);
         let (_, _, w, h) = decoded.deltas[0].rect;
@@ -781,7 +785,7 @@ pub(in crate::image) mod tests {
         paint(&mut green, (1, 1, 2, 2), [0, 255, 0, 255]);
         paint(&mut cleared, (1, 1, 2, 2), [0; 4]);
         paint(&mut cleared, (2, 0, 1, 2), [0, 0, 255, 255]);
-        let decoded = decode_frames(&path, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        let decoded = decode_frames(&path, (4, 4), false, false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
         let rects: Vec<_> = decoded.deltas.iter().map(|delta| delta.rect).collect();
         assert_eq!(rects, [(1, 1, 2, 2), (1, 0, 2, 3)], "the second covers the cleared square and its own rect");
         for (index, frame) in [red, green, cleared].iter().enumerate() {
@@ -795,7 +799,7 @@ pub(in crate::image) mod tests {
     fn identical_frames_are_cut_off_by_the_budget_rather_than_decoded_without_end() {
         let mut calls = 0;
         // A 64x64 canvas is 16 KiB, so a frame costs 256 bytes and 4 KiB admits sixteen.
-        let decoded = assemble((64, 64), (64, 64), false, Charge::Free, 4096, 1, |_| {
+        let decoded = assemble((64, 64), (64, 64), false, false, Charge::Free, 4096, 1, |_| {
             calls += 1;
             Ok((calls < 10_000).then_some(((0, 0, 0, 0), Duration::from_millis(50))))
         })
@@ -807,7 +811,7 @@ pub(in crate::image) mod tests {
         // delta take to hold, or the lists grow with the file.
         let mut calls = 0;
         let held = size_of::<Delta>() + size_of::<Duration>();
-        assemble((1, 1), (1, 1), false, Charge::Free, 10 * held, 1, |_| {
+        assemble((1, 1), (1, 1), false, false, Charge::Free, 10 * held, 1, |_| {
             calls += 1;
             Ok((calls < 10_000).then_some(((0, 0, 0, 0), Duration::from_millis(50))))
         })
@@ -817,7 +821,7 @@ pub(in crate::image) mod tests {
         // With one that does change, the frames that do not still keep their delays, and an empty
         // rect on either axis is none, whatever the other says.
         let mut calls = 0;
-        let decoded = assemble((64, 64), (64, 64), false, Charge::Free, 1 << 20, 1, |canvas| {
+        let decoded = assemble((64, 64), (64, 64), false, false, Charge::Free, 1 << 20, 1, |canvas| {
             calls += 1;
             canvas[0] = calls as u8;
             let changed = [(0, 0, 0, 0), (0, 0, 0, 5), (5, 0, 5, 0), (0, 0, 1, 1)].get(calls as usize - 1).copied();
@@ -834,14 +838,14 @@ pub(in crate::image) mod tests {
     fn an_animated_webp_scales_and_budgets_like_a_gif() {
         let dir = tempfile::tempdir().unwrap();
         let path = webp_fixture(dir.path(), "a.webp", &frames(), &[50, 50, 50]);
-        let halved = decode_frames(&path, (2, 2), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        let halved = decode_frames(&path, (2, 2), false, false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
         assert_eq!((halved.width, halved.height), (2, 2));
         for (index, frame) in frames().into_iter().enumerate() {
             let frame = ::image::DynamicImage::ImageRgba8(::image::RgbaImage::from_raw(4, 4, frame).unwrap());
             assert_eq!(replayed(&halved, index), downscale(&frame, (2, 2)).unwrap().into_raw(), "frame {index}");
         }
         // Each delta is charged the 80 bytes a frame takes to hold: that keeps the first and drops the second.
-        let kept = decode_frames(&path, (4, 4), false, Charge::Free, 80).unwrap();
+        let kept = decode_frames(&path, (4, 4), false, false, Charge::Free, 80).unwrap();
         assert_eq!((kept.deltas.len(), kept.delays.len()), (1, 2));
     }
 
@@ -852,7 +856,7 @@ pub(in crate::image) mod tests {
         let pool = super::super::budget::Budget::default();
         let seen = std::cell::Cell::new(0);
         let mut calls = 0;
-        let decoded = assemble((4, 4), (4, 4), false, Charge::Immediate(&pool), 100, 3, |_| {
+        let decoded = assemble((4, 4), (4, 4), false, false, Charge::Immediate(&pool), 100, 3, |_| {
             seen.set(*pool.in_flight.lock().unwrap());
             calls += 1;
             Ok((calls == 1).then_some(((0, 0, 4, 4), Duration::ZERO)))
@@ -877,7 +881,7 @@ pub(in crate::image) mod tests {
             red,
         ];
         let path = gif_fixture(dir.path(), "full.gif", (4, 4), &frames);
-        let decoded = decode_gif(&path, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        let decoded = decode_gif(&path, (4, 4), false, false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
         let rects: Vec<_> = decoded.deltas.iter().map(|delta| delta.rect).collect();
         let (pixel, none) = ((1, 2, 1, 1), (0, 0, 0, 0));
         assert_eq!(rects, [pixel, pixel, pixel, none], "a redraw restores one pixel, then changes none");
@@ -885,7 +889,7 @@ pub(in crate::image) mod tests {
 
         let previous = ((0, 0, 4, 4), [255, 0, 0, 255], Previous);
         let path = gif_fixture(dir.path(), "previous.gif", (4, 4), &[red, previous, red]);
-        let decoded = decode_gif(&path, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        let decoded = decode_gif(&path, (4, 4), false, false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
         assert!(decoded.deltas.is_empty(), "red restored over red changes nothing: a still");
     }
 
@@ -913,7 +917,7 @@ pub(in crate::image) mod tests {
                 encoder.encode_frame(::image::Frame::from_parts(img, 0, 0, delay)).unwrap();
             }
         }
-        let decoded = decode_gif(&encoded_path, (8, 8), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        let decoded = decode_gif(&encoded_path, (8, 8), false, false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
         let rects: Vec<_> = decoded.deltas.iter().map(|delta| delta.rect).collect();
         assert_eq!(rects, [(1, 2, 3, 2), (2, 2, 3, 2)], "only the square's old and new positions");
         assert_replays_like_a_full_recomposite(&encoded_path, &decoded, |frame| frame.as_raw().clone());
@@ -921,7 +925,9 @@ pub(in crate::image) mod tests {
         // Full-size `Background` frames that redraw the same pixels collapse to a still.
         let red_bg = ((0, 0, 4, 4), [255, 0, 0, 255], Background);
         let still = gif_fixture(dir.path(), "bg_still.gif", (4, 4), &[red_bg, red_bg, red_bg]);
-        assert!(decode_gif(&still, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap().deltas.is_empty());
+        assert!(
+            decode_gif(&still, (4, 4), false, false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap().deltas.is_empty()
+        );
 
         // Exhaustive oracle over all 3x3 (cleared, drawn) rect pairs: pixels and exact bounds
         // must match an independent clear-then-draw pass.
@@ -971,7 +977,7 @@ pub(in crate::image) mod tests {
             write(0, 0, 2, 2, [g, t, t, t].concat(), Background);
             write(0, 0, 1, 1, b.to_vec(), Keep);
         }
-        let decoded = decode_gif(&tighter, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        let decoded = decode_gif(&tighter, (4, 4), false, false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
         assert_eq!(decoded.deltas[1].rect, (0, 0, 1, 1), "already-zero pixels in cleared rect stay out of delta");
         assert_replays_like_a_full_recomposite(&tighter, &decoded, |frame| frame.as_raw().clone());
 
@@ -991,7 +997,7 @@ pub(in crate::image) mod tests {
             (5, 1),
             &[((0, 0, 2, 1), r, Background), ((3, 0, 2, 1), b, Previous), ((0, 0, 5, 1), t, Keep)],
         );
-        let decoded = decode_gif(&disjoint, (5, 1), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        let decoded = decode_gif(&disjoint, (5, 1), false, false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
         assert_eq!(decoded.deltas.len(), 2);
         assert_replays_like_a_full_recomposite(&disjoint, &decoded, |frame| frame.as_raw().clone());
 
@@ -1009,7 +1015,7 @@ pub(in crate::image) mod tests {
             ],
         );
         let budget = 3 * (size_of::<Delta>() + size_of::<Duration>());
-        let decoded = decode_gif(&noop_restore, (16, 16), false, Charge::Free, budget).unwrap();
+        let decoded = decode_gif(&noop_restore, (16, 16), false, false, Charge::Free, budget).unwrap();
         assert_eq!(decoded.deltas.len(), 3, "the final 1x1 draw fits once the no-op restore is dropped");
         assert_eq!(decoded.deltas[2].rect, (0, 0, 1, 1));
         assert_replays_like_a_full_recomposite(&noop_restore, &decoded, |frame| frame.as_raw().clone());
@@ -1027,7 +1033,7 @@ pub(in crate::image) mod tests {
                 ((0, 0, 4, 4), t, Keep),
             ],
         );
-        let decoded = decode_gif(&bg_then_prev, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        let decoded = decode_gif(&bg_then_prev, (4, 4), false, false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
         assert_eq!(decoded.deltas[0].rect, (0, 0, 0, 0), "frame 1 matches frame 0");
         assert_replays_like_a_full_recomposite(&bg_then_prev, &decoded, |frame| frame.as_raw().clone());
 
@@ -1045,7 +1051,8 @@ pub(in crate::image) mod tests {
                 ((0, 0, 4, 4), t, Keep),
             ],
         );
-        let decoded = decode_gif(&partial_bg_prev, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        let decoded =
+            decode_gif(&partial_bg_prev, (4, 4), false, false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
         assert_replays_like_a_full_recomposite(&partial_bg_prev, &decoded, |frame| frame.as_raw().clone());
 
         // `rect_differs` inspects non-zero rows and offsets accurately.
@@ -1076,7 +1083,7 @@ pub(in crate::image) mod tests {
                 ((0, 3, 4, 2), [9, 9, 9, 255], Keep),
             ],
         );
-        let decoded = decode_gif(&path, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        let decoded = decode_gif(&path, (4, 4), false, false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
         assert_eq!(decoded.delays, [Duration::from_millis(50); 5], "5 cs each, the out-of-canvas frame gone");
         assert_eq!(decoded.deltas[1].rect, (1, 0, 3, 3), "the cleared (1, 0, 1, 2) joined to (3, 1, 1, 2)");
         assert_eq!(decoded.deltas[3].rect, (0, 0, 3, 3), "the cleared (1, 1, 2, 2) joined to (0, 0, 1, 1)");
@@ -1136,7 +1143,7 @@ pub(in crate::image) mod tests {
         let others = [garbage, dir.path().join("missing.png"), dir.path().join("a.jpg")];
         for path in stills.iter().chain(&others) {
             assert!(
-                decode_frames(path, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET).is_none(),
+                decode_frames(path, (4, 4), false, false, Charge::Free, STARTING_TEXTURE_BUDGET).is_none(),
                 "{}",
                 path.display()
             );

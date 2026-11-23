@@ -45,7 +45,7 @@ return { panel {
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
 | `source` | `string\|Bound` | `""` | A file path (`mantle.config_dir .. "/img/a.png"`, or `~/` under `$HOME`), never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, ICO, BMP, SVG or SVGZ; animated GIF, WebP and APNG loop |
-| `fit` | `"cover"\|"contain"\|"stretch"\|Bound` | `"cover"` | `"cover"` fills the box and crops, `"contain"` fits inside it, `"stretch"` distorts to it |
+| `fit` | `"cover"\|"contain"\|"stretch"\|"tile"\|Bound` | `"cover"` | `"cover"` fills the box and crops, `"contain"` fits inside it, `"stretch"` distorts to it, `"tile"` repeats it from the top-left corner at one image pixel per logical px; see [tile a texture](#tile-a-texture) |
 | `async` | `boolean\|Bound` | `false` | `false` decodes in the frame that first draws it, except SVG and SVGZ, which always decode on a worker. `true` decodes on a worker and draws nothing until the first decode lands. A resize keeps drawing the previous size, scaled, until the new size decodes; use it for many or large images |
 | `retain` | `boolean\|Bound` | `false` | Keep drawing the last picture while a new `source` decodes, and on a failed decode. Needs `async = true` or an SVG `source`, and a stable `id` |
 | `transition` | `Transition\|Bound` | None | Cross from the held picture to each newly decoded `source`. Implies `retain`; needs `async = true` or an SVG `source`, and a stable `id`. Unknown keys are refused. See [transition](#transition) |
@@ -89,6 +89,7 @@ size) or failed: see [image_status](../guide/signals.md#image_status-read-an-ima
 | Crossfade a wallpaper | The example above: `async`, `transition` and a stable `id` |
 | Wipe instead of fade | `transition = { duration = 700, shader = mantle.config_dir .. "/shaders/wipe.frag" }` with a `.frag` that mixes `mantle_from` and `mantle_to` |
 | Round an image's corners | [Below](#round-an-images-corners) |
+| Repeat a paper or noise texture behind a box | [Below](#tile-a-texture) |
 | Make a circular avatar | The same, with `radius` half the size ([paint](../guide/paint.md#circular-avatar)) |
 | Show many thumbnails without stutter | `async = true` on each, in a [`list`](list.md) |
 | Blur a wallpaper once | `source_blur = 20` |
@@ -112,6 +113,33 @@ image {
 }
 ```
 
+### Tile a texture
+
+`fit = "tile"` repeats the picture from the box's top-left corner at its own size, one image pixel
+per logical px, so its grain stays the same on any box. An SVG tiles at the size its document
+declares. As the first child of a [`rect`](rect.md), a tiled `image` is that box's background:
+give it the rect's `radius`, and `blend` to composite it with what is under it. The rect's
+`padding` insets it too, so pad the content beside it instead. `source_blur` on a tile wraps
+around its edges, so no seam shows, and a `transition` crosses the whole box.
+
+```lua
+rect {
+    width = "fill",
+    height = 240,
+    radius = 16,
+    children = {
+        image {
+            width = "fill",
+            height = "fill",
+            radius = 16,
+            fit = "tile",
+            source = mantle.config_dir .. "/img/paper.png",
+        },
+        text { content = "Notes", font_size = 18, align_h = "center", align_v = "center" },
+    },
+}
+```
+
 ## Gotchas
 
 | Trap | Fix |
@@ -123,6 +151,7 @@ image {
 | A relative `source` draws nothing | It resolves against the Renderer's working directory, not the config. Build paths from `mantle.config_dir` |
 | `transition.params` or `transition.images` is refused | Both need a `shader` |
 | An animation restarts from its first frame | Playback, `playing` included, is per node and file: a new `source`, or the node leaving the tree (its surface closes, a `list` drops it), starts it again |
+| A large `fit = "tile"` texture tiles smaller than its own size | A tile is stored at most 2048 px on its longer edge, 16 MiB; a larger source is shrunk to fit. Scale the file down to the tile you want |
 | Two nodes on one animation show each other's frame | Past the texture budget, or eight nodes on one file and size, nodes share one texture |
 
 See also: [icon](icon.md), [shader](shader.md), [paint](../guide/paint.md), [animation](../guide/animation.md).

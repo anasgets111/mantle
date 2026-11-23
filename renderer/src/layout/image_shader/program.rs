@@ -129,6 +129,7 @@ impl ShaderStage {
                 from_rect: named("u_from_rect"),
                 to_rect: named("u_to_rect"),
                 fill: named("u_fill"),
+                tiled: named("u_tiled"),
                 opacity: named("mantle_opacity"),
                 radii: named("mantle_radii"),
                 reach: named("mantle_reach"),

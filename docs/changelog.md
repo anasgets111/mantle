@@ -16,6 +16,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 - Fixed: an underline, a link or a `textfield` selection on a letter a font joins into a ligature with a plain neighbour (the `i` of `fi`) covers that letter's share of the ligature. The underline and selection drew nothing there and the link could not be clicked.
 - Added: `path` takes `taper_start` and `taper_end`, lengths in pixels over which each open stroke end narrows to one physical pixel, for pen and brush lines. They follow `trim_start`/`trim_end` and animate.
 - Added: `fonts { files = { "fonts/Caveat.ttf" }, "Caveat" }` registers font files a config ships, so it needs no font installed. A relative path is read from the config directory. Their families take those files over any installed copy, in the chain and in a `text` node's `font`; list every weight and style file you use. `mantle check` measures text in the declared fonts and warns about a font file it cannot read.
+- Added: `image { fit = "tile" }` repeats the picture from the box's top-left corner at one image pixel per logical px, for a paper, fabric or noise texture over a box of any size. `capture.fit` refuses it.
 
 ## 0.15.0 - 2026-11-22
 

@@ -609,9 +609,11 @@ mod tests {
     }
 
     #[test]
-    fn fit_parses_the_three_spelled_modes_and_rejects_everything_else() {
+    fn fit_parses_the_four_spelled_modes_and_rejects_everything_else() {
         let lua = mlua::Lua::new();
-        for (spelling, expected) in [("cover", Fit::Cover), ("contain", Fit::Contain), ("stretch", Fit::Stretch)] {
+        for (spelling, expected) in
+            [("cover", Fit::Cover), ("contain", Fit::Contain), ("stretch", Fit::Stretch), ("tile", Fit::Tile)]
+        {
             assert_eq!(
                 fields::image::fit
                     .read(&props_from_src(&lua, format!(r#"return {{ kind = "image", fit = "{spelling}" }}"#)))
@@ -631,7 +633,7 @@ mod tests {
 
         // A mode that does not exist is refused rather than covering silently.
         let err =
-            fields::image::fit.read(&props_from_src(&lua, r#"return { kind = "image", fit = "fill" }"#)).unwrap_err();
+            fields::image::fit.read(&props_from_src(&lua, r#"return { kind = "image", fit = "repeat" }"#)).unwrap_err();
         assert!(format!("{err}").contains("cover"), "the error should name the modes that do exist, got {err}");
 
         let err = fields::image::fit.read(&props_from_src(&lua, r#"return { kind = "image", fit = 3 }"#)).unwrap_err();

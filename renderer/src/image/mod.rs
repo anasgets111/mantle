@@ -110,6 +110,13 @@ const MAX_DECODE_EDGE: u32 = 8_192;
 /// larger file is downscaled), since a sampler reads texels and not a fitted picture.
 pub(crate) const MAX_SAMPLER_EDGE: u32 = 2_048;
 
+/// Longest stored edge of a `fit = "tile"` source: 16 MiB, as a sampler image, since a tile's
+/// texture follows its source rather than its box.
+///
+/// ponytail: a larger source tiles shrunk to fit, so smaller than one image pixel per logical px.
+/// Upgrade: draw a capped tile at its source size from the slot's `natural`.
+const MAX_TILE_EDGE: u32 = MAX_SAMPLER_EDGE;
+
 /// Decoded pixels the background pool holds at once, and the most one decode may produce.
 ///
 /// This replaced a 64 MiB *per-decode* cap whose own doc said the real ceiling was itself times
@@ -150,6 +157,9 @@ struct CacheKey {
     /// sampler or an icon takes the first frame, from the still path, and no animation's deltas:
     /// a different slot even for the same file and box.
     plays: bool,
+    /// [`Fit::Tile`]: stored at the source's own size on a texture that repeats, so a clamped
+    /// slot of the same file never stands in for it.
+    tiled: bool,
     font_generation: u64,
 }
 
@@ -189,6 +199,29 @@ crate::layout::node::prop::keywords! {
         Contain,
         /// Ignores aspect ratio.
         Stretch,
+        /// Repeats the picture from the box's top-left corner, one image pixel per logical px.
+        Tile,
+    }
+}
+
+crate::layout::node::prop::keywords! {
+    /// [`Fit`] for a `capture`, whose texture the image cache never makes and so never repeats.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+    pub enum CaptureFit {
+        #[default]
+        Cover,
+        Contain,
+        Stretch,
+    }
+}
+
+impl From<CaptureFit> for Fit {
+    fn from(fit: CaptureFit) -> Fit {
+        match fit {
+            CaptureFit::Cover => Fit::Cover,
+            CaptureFit::Contain => Fit::Contain,
+            CaptureFit::Stretch => Fit::Stretch,
+        }
     }
 }
 
@@ -543,7 +576,7 @@ impl ImageCache {
                 continue;
             }
             let text = result.as_ref().is_ok_and(|decoded| decoded.text);
-            let slot = upload_or_log(canvas, &key.path, result);
+            let slot = upload_or_log(canvas, &key, result);
             self.count_animated(&key.path, &slot, true);
             match slot {
                 Slot::Ready { bytes, .. } => {
@@ -606,7 +639,7 @@ impl ImageCache {
                     &self.fonts,
                 );
                 let text = decoded.as_ref().is_ok_and(|decoded| decoded.text);
-                let slot = upload_or_log(canvas, &key.path, decoded);
+                let slot = upload_or_log(canvas, &key, decoded);
                 self.insert(key.clone(), slot).text = text;
                 self.showing(canvas, &key, request.clock)
             }
@@ -691,10 +724,12 @@ impl ImageCache {
             unslotted.iter().for_each(|path| self.versions.forget(path));
         }
         let version = self.versions.read(path, Instant::now());
+        let tiled = fit == Fit::Tile;
         CacheKey {
             font_generation: if vector { self.font_generation } else { 0 },
             path: path.to_path_buf(),
-            box_px: cache_box(path, box_px),
+            // A raster never upscales, so every source up to the cap keeps its own size.
+            box_px: if tiled { (MAX_TILE_EDGE, MAX_TILE_EDGE) } else { cache_box(path, box_px) },
             version,
             // Only vectors carry `currentColor`; drop PNG tint instead of splitting unused slots.
             tint: if vector { tint.map(packed_rgb) } else { None },
@@ -705,6 +740,7 @@ impl ImageCache {
             // full animation budget for byte-identical frames.
             blur_px: if is_gif(path) { 0 } else { blur_px },
             plays: clock.is_some() && decode::may_animate(path),
+            tiled,
         }
     }
 
@@ -749,6 +785,7 @@ mod tests {
         let rect = |x, y, w, h| LogicalRect { x, y, width: w, height: h };
         for (fit, (iw, ih), expected, case) in [
             (Fit::Stretch, (640.0, 480.0), box_rect(), "stretch takes the box exactly"),
+            (Fit::Tile, (64.0, 32.0), rect(10.0, 20.0, 64.0, 32.0), "tile is one image at the box's corner"),
             (Fit::Contain, (64.0, 64.0), rect(35.0, 20.0, 50.0, 50.0), "contain fits inside and centres"),
             (Fit::Cover, (64.0, 64.0), rect(10.0, -5.0, 100.0, 100.0), "cover overflows rather than leave a gap"),
             (Fit::Cover, (0.0, 64.0), box_rect(), "a zero-width image falls back to the box"),
@@ -809,6 +846,7 @@ mod tests {
             cropped: false,
             blur_px: 0,
             plays: false,
+            tiled: false,
             font_generation: 0,
         }
     }

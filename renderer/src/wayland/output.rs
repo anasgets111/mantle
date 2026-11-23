@@ -52,8 +52,8 @@ const MIN_TEXTURE_BUDGET: usize = 16 << 20;
 /// A constant cannot be right for an engine other people's shells run on. 16 MB was measured
 /// against one 1920x1200 laptop and one config's 54-file picker, and a single 4K wallpaper is 33 MB
 /// on its own, so that machine would sit permanently over budget while this one has room to
-/// spare. Every texture this cache holds is sized by the box it is drawn into, so display geometry
-/// is the one thing in reach that scales with the working set.
+/// spare. Every texture this cache holds is sized by the box it is drawn into, but a tile's, at most
+/// 16 MiB, so display geometry is the one thing in reach that scales with the working set.
 ///
 /// One screenful per output is the largest single image a shell draws, times the number of places
 /// it can draw one, which is what a config changing every wallpaper at once asks for. Physical

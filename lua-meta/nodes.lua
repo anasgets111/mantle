@@ -224,7 +224,7 @@
 ---@class ImageProps: NodeBase, PlacedBase
 ---@field animate? ImageAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). `move` eases a matched node to its new parent-relative layout position; an ancestor that shifts needs its own `move`. `exit` runs after removal. Only a node already on screen animates, unless an entry has `from`.
 ---@field source? string|Bound Default `""`. File path, absolute or `~/` under `$HOME`, never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, ICO, BMP, SVG or SVGZ; animated GIF, WebP and APNG loop (ADR-0233).
----@field fit? "cover"|"contain"|"stretch"|Bound Default `"cover"`. `"cover"` fills the box and crops, `"contain"` fits inside it, `"stretch"` distorts to it. No intrinsic size: set `width`/`height`.
+---@field fit? "cover"|"contain"|"stretch"|"tile"|Bound Default `"cover"`. `"cover"` fills the box and crops, `"contain"` fits inside it, `"stretch"` distorts to it, `"tile"` repeats the picture at one image pixel per logical px from the top-left corner. No intrinsic size: set `width`/`height`.
 ---@field async? boolean|Bound Default `false`. `false` decodes in the frame that first draws it, except SVG and SVGZ, which always decode on a worker (ADR-0387). `true` decodes on a worker and draws nothing until the first decode lands (ADR-0122). A resize keeps drawing the previous size, scaled, until the new size decodes; use it for many or large images.
 ---@field retain? boolean|Bound Default `false`. Keep drawing the last picture while a new `source` decodes, and on a failed decode (ADR-0180, ADR-0183). Needs `async = true` or an SVG `source`, and a stable `id`.
 ---@field transition? Transition|Bound Cross-fade from the held picture to a newly decoded `source` (ADR-0181, ADR-0186). Implies `retain`; needs `async = true` or an SVG `source`, and a stable `id`. The first picture appears without one.
@@ -239,7 +239,7 @@
 ---@field animate? CaptureAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). `move` eases a matched node to its new parent-relative layout position; an ancestor that shifts needs its own `move`. `exit` runs after removal. Only a node already on screen animates, unless an entry has `from`.
 ---@field output? string|Bound Default `""`. Connector name, e.g. `"DP-1"`; `""` draws nothing. An unknown name draws nothing and warns once. Changing it starts a fresh capture.
 ---@field window? string|Bound Default `""`. A `mantle.windows` entry's `id`; `""` draws nothing. Currently requires Hyprland's exact toplevel mapping and ext capture protocols. Cannot combine with a nonempty `output` or `region`. A closed window clears its preview.
----@field fit? "cover"|"contain"|"stretch"|Bound Default `"cover"`. As `image.fit`.
+---@field fit? "cover"|"contain"|"stretch"|Bound Default `"cover"`. As `image.fit`, without `"tile"`.
 ---@field live? boolean|number|Bound Default `false`. `false`: capture on show and on each target change. `true`: every frame, one in flight. A number: at most that many fps, `[0.001, 1000]` (ADR-0263). Hiding the node or unmapping its surface drops the capture; showing starts a fresh one.
 ---@field region? Rect|Bound `[0, 8192]`, default: the whole output. Part of the output in its logical px, placed by `fit` as the whole frame. Every key is required and in that range; the size is non-zero.
 ---@field paint_cursor? boolean|Bound Default `false`. Include the pointer in the frame.

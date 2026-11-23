@@ -64,7 +64,7 @@ float mantle_sdf(vec2 p) {
 /// The transition's half of the contract, between [`PRELUDE`] and [`RENAME`].
 ///
 /// `mantle_from`/`mantle_to` return the endpoint's colour at a node-space coordinate, or
-/// `u_fill` outside the picture -- the engine has already applied each endpoint's `fit`, so a
+/// `u_fill` outside the picture, which a tile (`u_tiled`) repeats over instead -- the engine has already applied each endpoint's `fit`, so a
 /// shader never repeats that arithmetic and never disagrees with how the same image draws
 /// ordinarily.
 pub(super) const SAMPLERS: &str = r#"
@@ -74,10 +74,11 @@ uniform sampler2D u_to;
 uniform vec4 u_from_rect;
 uniform vec4 u_to_rect;
 uniform vec4 u_fill;
+uniform bool u_tiled;
 
 vec4 mantle_sample(sampler2D tex, vec4 rect, vec2 uv) {
     vec2 local = (uv - rect.xy) / rect.zw;
-    if (local.x < 0.0 || local.x > 1.0 || local.y < 0.0 || local.y > 1.0) {
+    if (!u_tiled && (local.x < 0.0 || local.x > 1.0 || local.y < 0.0 || local.y > 1.0)) {
         return u_fill;
     }
     return texture(tex, local);

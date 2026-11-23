@@ -355,7 +355,7 @@ pub fn paint_style_with(
             }
             PaintStyle::Capture {
                 target: if window.is_empty() { CaptureTarget::Output(output) } else { CaptureTarget::Window(window) },
-                fit: capture::fit.read(properties)?,
+                fit: capture::fit.read(properties)?.into(),
                 live: capture::live.read(properties)?,
                 paint_cursor: capture::paint_cursor.read(properties)?,
                 region,
@@ -659,6 +659,10 @@ mod tests {
                 region: None,
             }
         );
+        let contain = style(&lua, r#"return { kind = "capture", output = "DP-1", fit = "contain" }"#).unwrap();
+        assert!(matches!(contain, Some(PaintStyle::Capture { fit: Fit::Contain, .. })), "{contain:?}");
+        // Its texture is the capture's own, which never repeats.
+        assert!(style(&lua, r#"return { kind = "capture", output = "DP-1", fit = "tile" }"#).is_err());
     }
 
     /// ADR-0253, ADR-0300. A param is a number or a flat list of up to 4096; `progress` may sit

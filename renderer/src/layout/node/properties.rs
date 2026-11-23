@@ -12,7 +12,7 @@
 use Absent::{Bool, Choice, Lua, Number, Prose, Required, Unset};
 
 use super::events::{DragPhase, Dropped, Escape, KeyPress, KeyRelease, MouseButton, SubmitKey};
-use crate::image::Fit;
+use crate::image::{CaptureFit, Fit};
 use crate::layout::hit::LogicalPoint;
 use crate::layout::node::prop::{
     Bound, Callback, Color, Field, FileText, Flag, Focus, Handle, Id, Name, Num, OneOf, Path, Pixels, Prop, Refused,
@@ -491,9 +491,9 @@ props! {
         ///
         /// Book: A file path (`mantle.config_dir .. "/img/a.png"`, or `~/` under `$HOME`), never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, ICO, BMP, SVG or SVGZ; animated GIF, WebP and APNG loop
         source: Bound<FileText> = absent(Lua(r#""""#));
-        /// `"cover"` fills the box and crops, `"contain"` fits inside it, `"stretch"` distorts to it. No intrinsic size: set `width`/`height`.
+        /// `"cover"` fills the box and crops, `"contain"` fits inside it, `"stretch"` distorts to it, `"tile"` repeats the picture at one image pixel per logical px from the top-left corner. No intrinsic size: set `width`/`height`.
         ///
-        /// Book: `"cover"` fills the box and crops, `"contain"` fits inside it, `"stretch"` distorts to it
+        /// Book: `"cover"` fills the box and crops, `"contain"` fits inside it, `"stretch"` distorts to it, `"tile"` repeats it from the top-left corner at one image pixel per logical px; see [tile a texture](#tile-a-texture)
         fit: Bound<OneOf<Fit>> = absent(Choice("cover"));
         /// `false` decodes in the frame that first draws it, except SVG and SVGZ, which always decode on a worker (ADR-0387). `true` decodes on a worker and draws nothing until the first decode lands (ADR-0122). A resize keeps drawing the previous size, scaled, until the new size decodes; use it for many or large images.
         r#async: Bound<Flag> = absent(Bool(false));
@@ -524,10 +524,10 @@ props! {
         output: Bound<Text> = absent(Lua(r#""""#));
         /// A `mantle.windows` entry's `id`; `""` draws nothing. Currently requires Hyprland's exact toplevel mapping and ext capture protocols. Cannot combine with a nonempty `output` or `region`. A closed window clears its preview.
         window: Bound<Text> = absent(Lua(r#""""#));
-        /// As `image.fit`.
+        /// As `image.fit`, without `"tile"`.
         ///
-        /// Book: As on [`image`](image.md)
-        fit: Bound<OneOf<Fit>> = absent(Choice("cover"));
+        /// Book: As on [`image`](image.md), without `"tile"`
+        fit: Bound<OneOf<CaptureFit>> = absent(Choice("cover"));
         /// `false`: capture on show and on each target change. `true`: every frame, one in flight. A number: at most that many fps, `[0.001, 1000]` (ADR-0263). Hiding the node or unmapping its surface drops the capture; showing starts a fresh one.
         live: Bound<Live> = absent(Bool(false));
         /// Part of the output in its logical px, placed by `fit` as the whole frame. Every key is required and in that range; the size is non-zero.
@@ -835,8 +835,9 @@ pub(crate) fn absent_number(property: &str) -> Option<f32> {
 mod tests {
     use super::*;
 
-    /// A parser reads the first row of a name, so a second that disagrees would document what no
-    /// parser does.
+    /// `range` and `absent_number` read the first row of a name, so a second that disagrees would
+    /// document what no parser does. Choices resolve per kind (`accepted`), so only rows sharing
+    /// a kind must agree on them.
     #[test]
     fn rows_sharing_a_name_agree() {
         let rows: Vec<&Property> = properties().collect();
@@ -844,7 +845,13 @@ mod tests {
             // Same name, other type (`wrap` is a string on a `text`): nothing to agree on.
             for b in rows[index + 1..].iter().filter(|b| b.name == a.name && (b.ty)() == (a.ty)()) {
                 let both = |x: bool, y: bool| !(x && y);
-                assert!(both(!a.choices.is_empty(), !b.choices.is_empty()) || a.choices == b.choices, "{}", a.name);
+                // Choices resolve per kind (`accepted`): `capture.fit` has no `"tile"`.
+                let shared = a.kinds & b.kinds != 0;
+                assert!(
+                    !shared || both(!a.choices.is_empty(), !b.choices.is_empty()) || a.choices == b.choices,
+                    "{}",
+                    a.name
+                );
                 assert!(both(a.range.is_some(), b.range.is_some()) || a.range == b.range, "{}", a.name);
                 let parsed = |row: &Property| matches!(row.absent, Number(_) | Bool(_) | Choice(_));
                 assert!(both(parsed(a), parsed(b)) || a.absent == b.absent, "{}", a.name);

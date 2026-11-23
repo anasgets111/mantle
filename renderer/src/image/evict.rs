@@ -222,6 +222,7 @@ fn compatible_stand_in(wanted: &CacheKey, candidate: &CacheKey) -> bool {
         || wanted.cropped != candidate.cropped
         || wanted.blur_px != candidate.blur_px
         || wanted.plays != candidate.plays
+        || wanted.tiled != candidate.tiled
         || wanted.font_generation != candidate.font_generation
         || wanted.box_px == candidate.box_px
     {
@@ -294,6 +295,7 @@ mod tests {
         assert!(!compatible_stand_in(&wanted, &CacheKey { tint: Some(0xff00ff), ..half.clone() }));
         assert!(!compatible_stand_in(&wanted, &CacheKey { blur_px: 2, ..half.clone() }));
         assert!(!compatible_stand_in(&wanted, &CacheKey { cropped: false, ..half.clone() }));
+        assert!(!compatible_stand_in(&wanted, &CacheKey { tiled: true, ..half.clone() }));
         assert!(!compatible_stand_in(&wanted, &CacheKey { path: "/other.png".into(), ..half.clone() }));
         assert!(!compatible_stand_in(
             &wanted,

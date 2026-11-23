@@ -271,8 +271,14 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                         wants_size: false,
                         clock: None,
                     };
-                    let draw =
-                        FileDraw { request, rect, alpha: *alpha, load: Load::Inline, radius: &node::Radii::default() };
+                    let draw = FileDraw {
+                        request,
+                        rect,
+                        alpha: *alpha,
+                        load: Load::Inline,
+                        radius: &node::Radii::default(),
+                        scale,
+                    };
                     draw_file(painter.canvas_mut(), walk.images, draw);
                 }
                 if let Some(t0) = t0 {
@@ -303,7 +309,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                     wants_size: *wants_size,
                     clock: Some((*node, *playing)),
                 };
-                let draw = FileDraw { request, rect, alpha: *alpha, load: *load, radius };
+                let draw = FileDraw { request, rect, alpha: *alpha, load: *load, radius, scale };
                 let under = retained.as_deref().map(|under| draw.of(std::path::Path::new(under)));
                 match dissolve {
                     Some(progress) => {
@@ -409,6 +415,7 @@ fn dissolve_image(
 ) {
     let FileDraw { rect, alpha, radius, .. } = draw;
     let scale = walk.scale;
+    let tiled = draw.request.fit == Fit::Tile;
     // Asked for whether or not a pixel of it is visible yet: the answer is about the texture, and
     // it is what starts the run (ADR-0183).
     let to = file_texture(painter.canvas_mut(), walk.images, draw);
@@ -424,7 +431,7 @@ fn dissolve_image(
                 shader.map_or((&[][..], &[][..]), |(_, params, files)| (params.as_slice(), files.as_slice()));
             let images = sampler_images(painter.canvas_mut(), walk.images, files);
             // The incoming picture's visible box, so the cross ends where the plain draw resumes.
-            let seen = to_rect.intersect(rect);
+            let seen = if tiled { rect } else { to_rect.intersect(rect) };
             let round = LogicalRect {
                 x: (seen.x - rect.x) / scale,
                 y: (seen.y - rect.y) / scale,
@@ -432,7 +439,7 @@ fn dissolve_image(
                 height: seen.height / scale,
             };
             let run = image_shader::Run {
-                cross: Some(image_shader::Cross { from, to, from_rect, to_rect }),
+                cross: Some(image_shader::Cross { from, to, from_rect, to_rect, tiled }),
                 radii: (radius.clone() * (1.0 / scale)).fit(round.width, round.height),
                 round,
                 ..shader_run(rect, scale, (scissor, frame), (alpha, progress), params, &images)
@@ -454,10 +461,10 @@ fn dissolve_image(
     // and are why this stays.
     if !crossed {
         if let Some((id, fitted)) = from {
-            fill_image_rounded(painter.canvas_mut(), id, fitted, rect, radius, alpha);
+            fill_image_rounded(painter.canvas_mut(), id, fitted, rect, radius, alpha, tiled);
         }
         if let Some((id, fitted)) = to {
-            fill_image_rounded(painter.canvas_mut(), id, fitted, rect, radius, alpha * progress);
+            fill_image_rounded(painter.canvas_mut(), id, fitted, rect, radius, alpha * progress, tiled);
         }
     }
 }
@@ -582,6 +589,8 @@ struct FileDraw<'a> {
     alpha: f32,
     load: Load,
     radius: &'a node::Radii,
+    /// Buffer px per logical px: a tile is the texture's size in logical px.
+    scale: f32,
 }
 
 impl<'a> FileDraw<'a> {
@@ -598,7 +607,8 @@ impl<'a> FileDraw<'a> {
 /// its `retain` cover should take the frame (ADR-0180).
 fn draw_file(canvas: &mut Canvas<OpenGl>, images: &mut ImageCache, draw: FileDraw) -> Option<()> {
     let (id, fitted) = file_texture(canvas, images, draw)?;
-    fill_image_rounded(canvas, id, fitted, draw.rect, draw.radius, draw.alpha);
+    let tiled = draw.request.fit == Fit::Tile;
+    fill_image_rounded(canvas, id, fitted, draw.rect, draw.radius, draw.alpha, tiled);
     Some(())
 }
 
@@ -609,19 +619,19 @@ fn file_texture(
     images: &mut ImageCache,
     draw: FileDraw,
 ) -> Option<(ImageId, LogicalRect)> {
-    let FileDraw { request, rect, load, .. } = draw;
+    let FileDraw { request, rect, load, scale, .. } = draw;
     let exact = images.image(canvas, &request, load);
     let id = exact.or_else(|| (load == Load::Background).then(|| images.stand_in(canvas, &request)).flatten())?;
     let (width, height) = canvas.image_size(id).ok()?;
-    Some((id, image::fitted_rect(rect, width as f32, height as f32, request.fit)))
+    Some((id, image::fitted_rect(rect, width as f32 * scale, height as f32 * scale, request.fit)))
 }
 
 fn fill_image(canvas: &mut Canvas<OpenGl>, id: ImageId, fitted: LogicalRect, alpha: f32) {
-    fill_image_rounded(canvas, id, fitted, fitted, &node::Radii::default(), alpha);
+    fill_image_rounded(canvas, id, fitted, fitted, &node::Radii::default(), alpha, false);
 }
 
 /// `radius` rounds what shows: `fitted` clipped to the box, so `Contain` rounds the picture and
-/// `Cover` the box. The pattern keeps `fitted`'s placement.
+/// `Cover` the box. The pattern keeps `fitted`'s placement; `tiled` repeats it over the whole box.
 fn fill_image_rounded(
     canvas: &mut Canvas<OpenGl>,
     id: ImageId,
@@ -629,8 +639,14 @@ fn fill_image_rounded(
     rect: LogicalRect,
     radius: &node::Radii,
     alpha: f32,
+    tiled: bool,
 ) {
-    let path = box_path(if radius.is_zero() { fitted } else { fitted.intersect(rect) }, radius);
+    let shown = match (tiled, radius.is_zero()) {
+        (true, _) => rect,
+        (false, true) => fitted,
+        (false, false) => fitted.intersect(rect),
+    };
+    let path = box_path(shown, radius);
     canvas.fill_path(&path, &Paint::image(id, fitted.x, fitted.y, fitted.width, fitted.height, 0.0, alpha));
 }
 
@@ -1109,6 +1125,157 @@ pub(crate) mod tests {
         let icon = root(format!(r#"icon {{ name = "{}", size = 64 }}"#, green.display()));
         paint_tree(&mut painter, &mut ImageCache::new(), &icon, 1.0);
         assert_eq!(pixel_at(painter.canvas_mut(), 32, 32), (0, 255, 0, 255), "an icon draws in its first frame");
+    }
+
+    const RED: (u8, u8, u8, u8) = (255, 0, 0, 255);
+    const BLUE: (u8, u8, u8, u8) = (0, 0, 255, 255);
+
+    /// A `size` px PNG in `dir`, red in its top-left quarter and blue elsewhere.
+    fn quarter_png(dir: &std::path::Path, size: u32) -> std::path::PathBuf {
+        let path = dir.join(format!("quarter{size}.png"));
+        let (red, blue) = (::image::Rgba([255, 0, 0, 255]), ::image::Rgba([0, 0, 255, 255]));
+        let half = size / 2;
+        ::image::RgbaImage::from_fn(size, size, |x, y| if x < half && y < half { red } else { blue })
+            .save(&path)
+            .unwrap();
+        path
+    }
+
+    /// `child` in a 32 logical px panel painted at `scale`, read at buffer `points`.
+    fn paint_scaled(
+        images: &mut ImageCache,
+        child: &str,
+        scale: f32,
+        points: &[(usize, usize)],
+    ) -> Option<Vec<(u8, u8, u8, u8)>> {
+        let edge = (32.0 * scale).ceil() as u32;
+        let instance = init_headless_egl(edge as i32, edge as i32)?;
+        let shaping = ShapingHandle::spawn();
+        let mut painter = text_painter(&instance, &shaping, edge, edge)?;
+        let src = format!(r#"return panel {{ id = "bar", width = 32, height = 32, child = {child} }}"#);
+        let root = resolved_surface(&Lua::new(), &src, LogicalSize { width: 32.0, height: 32.0 });
+        paint_tree(&mut painter, images, &root, scale);
+        Some(points.iter().map(|&(x, y)| pixel_at(painter.canvas_mut(), x, y)).collect())
+    }
+
+    fn tile(source: &std::path::Path, extra: &str) -> String {
+        format!(r#"image {{ width = 32, height = 32, fit = "tile", source = "{}"{extra} }}"#, source.display())
+    }
+
+    /// A 10px tile is 10 logical px at any scale, fractional included, and repeats on both axes.
+    #[test]
+    fn a_tiled_image_repeats_at_its_own_size_in_logical_px() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = quarter_png(dir.path(), 10);
+        for scale in [2.0, 1.5] {
+            // Mid-quarter in buffer px: red at 2.5, blue at 7.5, one tile on at 12.5.
+            let at = |logical: f32| (logical * scale) as usize;
+            let points = [
+                (at(2.5), at(2.5)),
+                (at(7.5), at(2.5)),
+                (at(12.5), at(2.5)),
+                (at(2.5), at(12.5)),
+                (at(22.5), at(22.5)),
+            ];
+            let Some(px) = paint_scaled(&mut ImageCache::inline(), &tile(&source, ""), scale, &points) else { return };
+            assert_eq!(px, [RED, BLUE, RED, RED, RED], "scale {scale}");
+        }
+    }
+
+    /// A source larger than its box keeps its own size rather than the box's: the 48px source's
+    /// red quarter reaches x 24, where one stored at the 32px box would stop at 16.
+    #[test]
+    fn a_tiled_image_larger_than_its_box_keeps_its_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(px) =
+            paint_scaled(&mut ImageCache::inline(), &tile(&quarter_png(dir.path(), 48), ""), 1.0, &[(20, 4), (28, 4)])
+        else {
+            return;
+        };
+        assert_eq!(px, [RED, BLUE]);
+    }
+
+    /// `radius` cuts the box's corners, not each tile's.
+    #[test]
+    fn a_tiled_image_radius_rounds_the_box() {
+        let dir = tempfile::tempdir().unwrap();
+        let points = [(0, 0), (12, 1), (31, 31), (22, 22)];
+        let Some(px) =
+            paint_scaled(&mut ImageCache::inline(), &tile(&quarter_png(dir.path(), 10), ", radius = 8"), 1.0, &points)
+        else {
+            return;
+        };
+        assert_eq!(px, [(0, 0, 0, 0), RED, (0, 0, 0, 0), RED]);
+    }
+
+    /// An animation's own textures repeat too.
+    #[test]
+    fn a_tiled_gif_repeats() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("quarter.gif");
+        let mut file = std::fs::File::create(&path).unwrap();
+        let mut encoder = gif::Encoder::new(&mut file, 10, 10, &[]).unwrap();
+        // The second frame turns the bottom-right pixel green, so the file animates.
+        for frame in 0..2 {
+            let mut rgba: Vec<u8> = (0..100)
+                .flat_map(|i| match i {
+                    99 if frame == 1 => [0, 255, 0, 255],
+                    _ if i % 10 < 5 && i / 10 < 5 => [255, 0, 0, 255],
+                    _ => [0, 0, 255, 255],
+                })
+                .collect();
+            let mut frame = gif::Frame::from_rgba_speed(10, 10, &mut rgba, 10);
+            frame.delay = 5;
+            encoder.write_frame(&frame).unwrap();
+        }
+        drop(encoder);
+        let images = &mut ImageCache::inline();
+        let Some(px) = paint_scaled(images, &tile(&path, ""), 1.0, &[(2, 2), (7, 2), (12, 2), (2, 12)]) else { return };
+        // Only an animation's playback holds a node clock; `is_animated` answers yes for any GIF.
+        assert!(images.has_node_clocks(), "the fixture animates");
+        assert_eq!(px, [RED, BLUE, RED, RED]);
+    }
+
+    /// A tiled cross: the shader stage repeats both endpoints and fades as a plain cross does, at
+    /// the node's opacity throughout; without a stage the fallback still fills the box.
+    #[test]
+    fn a_tiled_image_crosses_over_its_whole_box() {
+        let dir = tempfile::tempdir().unwrap();
+        let solid = |name: &str, rgba: [u8; 4]| {
+            let path = dir.path().join(name);
+            ::image::RgbaImage::from_pixel(4, 4, ::image::Rgba(rgba)).save(&path).unwrap();
+            path
+        };
+        let (red, green) = (solid("red.png", [255, 0, 0, 255]), solid("green.png", [0, 255, 0, 255]));
+        let Some(instance) = init_headless_egl(64, 32) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 64, 32) else { return };
+        let src = format!(
+            r#"return panel {{ id = "bar", width = 64, height = 32, child = image {{ width = 64, height = 32, opacity = 0.5, fit = "tile", source = "{}" }} }}"#,
+            red.display()
+        );
+        let root = resolved_surface(&Lua::new(), &src, LogicalSize { width: 64.0, height: 32.0 });
+        let mut list = build(&root, 1.0, None);
+        for cmd in &mut list.commands {
+            if let Draw::Image { retained, dissolve, .. } = &mut cmd.draw {
+                *retained = Some(green.display().to_string());
+                *dissolve = Some(0.9);
+            }
+        }
+        let gl = test_gl(&instance);
+        let mut stage = image_shader::ShaderStage::default();
+        let whole = PhysicalRect { x0: 0, y0: 0, x1: 64, y1: 32 };
+        for staged in [true, false] {
+            let shaders = staged.then_some(Shaders { gl: &gl, stage: &mut stage });
+            let (images, captures) = (&mut ImageCache::inline(), &mut CaptureCache::default());
+            let _ = execute("test", &mut painter, images, captures, &list, 1.0, (64.0, 32.0), &[whole], shaders);
+            let (.., alpha) = pixel_at(painter.canvas_mut(), 50, 20);
+            match staged {
+                true => assert!(alpha.abs_diff(128) <= 3, "the cross stays at the node's opacity, got {alpha}"),
+                // Past the first tile, at the two-draw approximation's 1 - 0.5 * (1 - 0.45) (ADR-0186).
+                false => assert!(alpha.abs_diff(185) <= 3, "the fallback fills past the first tile, got {alpha}"),
+            }
+        }
     }
 
     #[test]

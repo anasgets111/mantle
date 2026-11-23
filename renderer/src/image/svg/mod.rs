@@ -10,8 +10,8 @@ use resvg::usvg::{ImageHrefResolver, ImageKind, Options, Tree};
 
 use shared::warn;
 
-use super::MAX_DECODE_EDGE;
 use super::decode::{plausible, read_capped, take_capped};
+use super::{MAX_DECODE_EDGE, MAX_TILE_EDGE};
 use crate::layout::node::{Rgba, byte};
 use crate::text::shaping::FontDatabase;
 use limits::{MAX_SVG_DEPTH, XmlError, parse_xml, within_recursion_limits};
@@ -26,12 +26,13 @@ const MAX_SVG_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_SVG_NESTING: u32 = 1;
 
 /// Rasterizes with longest edge `box_px`, at most [`MAX_DECODE_EDGE`] as a raster source is, since
-/// the box is the config's; [`fitted_rect`](super::fitted_rect) handles placement.
+/// the box is the config's; or, for `None`, at the document's own size, at most [`MAX_TILE_EDGE`];
+/// [`fitted_rect`](super::fitted_rect) handles placement.
 /// The `bool` says whether the document asked for a font, so only those pixels go stale when the
 /// loaded fonts change; the last field is the document's own size, rounded.
 pub(super) fn rasterize_svg(
     path: &Path,
-    box_px: u32,
+    box_px: Option<u32>,
     tint: Option<Rgba>,
     fonts: &FontDatabase,
 ) -> Result<(Vec<u8>, u32, u32, bool, super::Natural), String> {
@@ -110,7 +111,8 @@ pub(super) fn rasterize_svg(
     if !longest.is_finite() || longest <= 0.0 {
         return Err(format!("svg declares a {}x{} viewport", size.width(), size.height()));
     }
-    let scale = box_px.min(MAX_DECODE_EDGE) as f32 / longest;
+    let edge = box_px.map_or(longest.min(MAX_TILE_EDGE as f32), |edge| edge.min(MAX_DECODE_EDGE) as f32);
+    let scale = edge / longest;
     let width = ((size.width() * scale).round() as u32).max(1);
     let height = ((size.height() * scale).round() as u32).max(1);
     let mut pixmap =
@@ -309,10 +311,10 @@ pub(super) mod tests {
             std::fs::write(&path, format!(
                 r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60"><text x="4" y="45" font-size="40" {attrs}>Mantle ffi</text></svg>"#
             )).unwrap();
-            rasterize_svg(&path, 240, None, snapshot).unwrap().0
+            rasterize_svg(&path, Some(240), None, snapshot).unwrap().0
         };
         let plain = render("", &fonts);
-        let (_, _, _, text, _) = rasterize_svg(&path, 240, None, &FontDatabase::default()).unwrap();
+        let (_, _, _, text, _) = rasterize_svg(&path, Some(240), None, &FontDatabase::default()).unwrap();
         assert!(text, "text no loaded face could draw still waits on a later font");
         assert!(plain.as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count() > 500);
         assert_eq!(plain, render(r#"font-family="Noto Sans""#, &fonts));
@@ -357,7 +359,7 @@ pub(super) mod tests {
         let svg = dir.path().join("text.svg");
         let render = |family: &str| {
             std::fs::write(&svg, format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60"><text x="4" y="45" font-size="40" font-family="{family}">Mantle</text></svg>"#)).unwrap();
-            rasterize_svg(&svg, 240, None, &fonts).unwrap().0
+            rasterize_svg(&svg, Some(240), None, &fonts).unwrap().0
         };
         assert_eq!(render("Missing Fixture Family"), render("Noto Sans Symbols 2"));
         assert_eq!(render("monospace"), render("Noto Sans Symbols 2"));
@@ -378,7 +380,7 @@ pub(super) mod tests {
         )
         .unwrap();
         let red = Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 };
-        let (pixels, _, _, text, _) = rasterize_svg(&path, 240, Some(red), &fonts).unwrap();
+        let (pixels, _, _, text, _) = rasterize_svg(&path, Some(240), Some(red), &fonts).unwrap();
         assert!(text, "text inside a mask still depends on the fonts");
         assert!(pixels.as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count() > 500);
         assert!(pixels.as_chunks::<4>().0.iter().all(|p| p[0] == p[3] && p[1] == 0 && p[2] == 0));
@@ -407,18 +409,18 @@ pub(super) mod tests {
         let render = |name: &str| {
             let path = dir.path().join(name);
             std::fs::write(&path, svg).unwrap();
-            rasterize_svg(&path, 2, Some(tint()), &FontDatabase::default()).unwrap().0
+            rasterize_svg(&path, Some(2), Some(tint()), &FontDatabase::default()).unwrap().0
         };
         assert_eq!(&render("mic-symbolic.svg")[..4], &[0xcd, 0xd6, 0xf4, 0xff]);
         assert_eq!(&render("slack.svg")[..4], &[0x33, 0x33, 0x33, 0xff]);
         let accent = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2" fill="currentColor"><path fill="#ff7800" d="M0 0h2v2h-2z"/></svg>"##;
         let path = dir.path().join("caution-symbolic.svg");
         std::fs::write(&path, accent).unwrap();
-        let pixels = rasterize_svg(&path, 2, Some(tint()), &FontDatabase::default()).unwrap().0;
+        let pixels = rasterize_svg(&path, Some(2), Some(tint()), &FontDatabase::default()).unwrap().0;
         assert_eq!(&pixels[..4], &[0xff, 0x78, 0x00, 0xff], "a currentColor icon keeps its accent");
         let path = dir.path().join("lower-symbolic.svg");
         std::fs::write(&path, accent.replace("currentColor", "currentcolor")).unwrap();
-        let pixels = rasterize_svg(&path, 2, Some(tint()), &FontDatabase::default()).unwrap().0;
+        let pixels = rasterize_svg(&path, Some(2), Some(tint()), &FontDatabase::default()).unwrap().0;
         assert_eq!(&pixels[..4], &[0xff, 0x78, 0x00, 0xff], "`currentcolor` is the same keyword");
         assert!(is_symbolic(Path::new("/i/Adwaita/symbolic/apps/x.svg")));
         assert!(!is_symbolic(Path::new("/i/hicolor/apps/symbolic-ish.svg")));
@@ -481,7 +483,7 @@ pub(super) mod tests {
         let svg = dir.path().join("gradient.svg");
         std::fs::write(&svg, GRADIENT_SVG).unwrap();
         let (pixels, width, height, text, natural) =
-            rasterize_svg(&svg, 128, None, &FontDatabase::default()).expect("the fixture should parse");
+            rasterize_svg(&svg, Some(128), None, &FontDatabase::default()).expect("the fixture should parse");
         assert!(!text, "a text-free document survives a font change");
         // 1920x1080 viewBox, longest edge 128, preserves the aspect ratio.
         assert_eq!((width, height), (128, 72));
@@ -504,8 +506,15 @@ pub(super) mod tests {
         let path = dir.path().join("sliver.svg");
         let doc = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10000" height="1"><rect width="10000" height="1" fill="red"/></svg>"#;
         std::fs::write(&path, doc).unwrap();
-        let (_, width, height, ..) = rasterize_svg(&path, 10_000, None, &FontDatabase::default()).unwrap();
+        let fonts = FontDatabase::default();
+        let (_, width, height, ..) = rasterize_svg(&path, Some(10_000), None, &fonts).unwrap();
         assert_eq!((width, height), (MAX_DECODE_EDGE, 1));
+        // No box is a tile's document size, under the tile's edge.
+        let (_, width, height, ..) = rasterize_svg(&path, None, None, &fonts).unwrap();
+        assert_eq!((width, height), (MAX_TILE_EDGE, 1));
+        std::fs::write(&path, RED_SVG).unwrap();
+        let (_, width, height, ..) = rasterize_svg(&path, None, None, &fonts).unwrap();
+        assert_eq!((width, height), (2, 2));
     }
 
     pub(super) const RED_SVG: &str =
@@ -553,7 +562,7 @@ pub(super) mod tests {
         let path = dir.path().join("row.svg");
         let doc = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="2">{images}</svg>"#);
         std::fs::write(&path, doc).unwrap();
-        let pixels = rasterize_svg(&path, width as u32, None, &FontDatabase::default()).unwrap().0;
+        let pixels = rasterize_svg(&path, Some(width as u32), None, &FontDatabase::default()).unwrap().0;
         (0..hrefs.len()).map(|i| pixels.as_chunks::<4>().0[2 * i]).collect()
     }
 
@@ -630,7 +639,7 @@ pub(super) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("twice.svgz");
         std::fs::write(&path, &twice).unwrap();
-        assert!(rasterize_svg(&path, 4, None, &FontDatabase::default()).is_err());
+        assert!(rasterize_svg(&path, Some(4), None, &FontDatabase::default()).is_err());
         assert!(all_clear(&rasterize_doc(&image_doc(&data_url("image/svg+xml", &twice)))));
     }
 
@@ -662,7 +671,7 @@ pub(super) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("doc.svg");
         std::fs::write(&path, doc).unwrap();
-        rasterize_svg(&path, edge, None, &FontDatabase::default()).map(|(pixels, ..)| pixels)
+        rasterize_svg(&path, Some(edge), None, &FontDatabase::default()).map(|(pixels, ..)| pixels)
     }
 
     #[test]
@@ -740,7 +749,10 @@ pub(super) mod tests {
         std::fs::write(&plain, GRADIENT_SVG).unwrap();
         std::fs::write(&zipped, gzip(GRADIENT_SVG.as_bytes())).unwrap();
         let fonts = FontDatabase::default();
-        assert_eq!(rasterize_svg(&zipped, 64, None, &fonts).unwrap(), rasterize_svg(&plain, 64, None, &fonts).unwrap());
+        assert_eq!(
+            rasterize_svg(&zipped, Some(64), None, &fonts).unwrap(),
+            rasterize_svg(&plain, Some(64), None, &fonts).unwrap()
+        );
     }
 
     #[test]
@@ -751,15 +763,15 @@ pub(super) mod tests {
         let bomb = dir.path().join("bomb.svgz");
         std::fs::write(&bomb, gzip(&vec![b' '; MAX_SVG_BYTES as usize + 1])).unwrap();
         assert!(std::fs::metadata(&bomb).unwrap().len() < MAX_SVG_BYTES, "the compressed file passes the read cap");
-        let err =
-            rasterize_svg(&bomb, 24, None, &FontDatabase::default()).expect_err("an inflating svgz must be refused");
+        let err = rasterize_svg(&bomb, Some(24), None, &FontDatabase::default())
+            .expect_err("an inflating svgz must be refused");
         assert!(err.contains("inflates past"), "the refusal should say why: {err}");
 
         let bloated = dir.path().join("huge.svg");
         // One byte over, so the refusal is the size check and not a parse failure.
         std::fs::write(&bloated, vec![b' '; MAX_SVG_BYTES as usize + 1]).unwrap();
-        let err =
-            rasterize_svg(&bloated, 24, None, &FontDatabase::default()).expect_err("an oversized svg must be refused");
+        let err = rasterize_svg(&bloated, Some(24), None, &FontDatabase::default())
+            .expect_err("an oversized svg must be refused");
         assert!(err.contains("over the"), "the refusal should say why: {err}");
     }
 

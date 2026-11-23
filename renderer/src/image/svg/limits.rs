@@ -249,7 +249,7 @@ mod tests {
             let path = dir.path().join("deep.svg");
             std::fs::write(&path, &doc).unwrap();
             let thread = std::thread::Builder::new().stack_size(DECODE_STACK_BYTES);
-            let drawn = thread.spawn(move || rasterize_svg(&path, 2, None, &FontDatabase::default())).unwrap();
+            let drawn = thread.spawn(move || rasterize_svg(&path, Some(2), None, &FontDatabase::default())).unwrap();
             drawn.join().unwrap().is_ok_and(|(pixels, ..)| all_red(&pixels))
         };
         // The root counts, so the rect is at depth `MAX_SVG_DEPTH`.
@@ -604,7 +604,7 @@ mod tests {
         for bad in [&b"\xff\xfe<svg/>"[..], b"<svg><rect"] {
             let path = dir.path().join("bad.svg");
             std::fs::write(&path, bad).unwrap();
-            assert!(rasterize_svg(&path, 4, None, &fonts).is_err());
+            assert!(rasterize_svg(&path, Some(4), None, &fonts).is_err());
             assert!(all_clear(&rasterize_doc(&image_doc(&data_url("image/svg+xml", bad)))));
         }
         let nested_doc = image_doc(&data_url("image/svg+xml", RED_SVG.as_bytes()));

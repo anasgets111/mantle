@@ -21,18 +21,26 @@ pub(super) struct Animation {
     deltas: Vec<Delta>,
     /// The frame index on the slot's texture.
     current: usize,
+    /// Every texture of it is created with these, so a tiled animation repeats too.
+    flags: ImageFlags,
 }
 
 /// Uploads a decode or warns once per path when filling its slot; `Failed` stops the next frame
 /// asking again.
-pub(super) fn upload_or_log(canvas: &mut Canvas<OpenGl>, path: &Path, decoded: Result<Decoded, String>) -> Slot {
+pub(super) fn upload_or_log(canvas: &mut Canvas<OpenGl>, key: &CacheKey, decoded: Result<Decoded, String>) -> Slot {
     let result = decoded.and_then(|decoded| {
         // Host delta bytes counted beside the texture's, or nothing reclaims them: `trim` is the
         // only thing that drops an entry, a shown source is pinned against it either way, and an
         // animation nobody draws held its whole ceiling for the life of the process (ADR-0235).
         let bytes = decoded.base.len() + decoded.deltas.iter().map(Delta::bytes).sum::<usize>();
         let natural = decoded.natural;
-        upload(canvas, decoded).map(|(image, anim)| Slot::Ready {
+        // Wrap is fixed when a texture is created; a clamped texture would smear its edge row
+        // across every tile but the first.
+        let flags = match key.tiled {
+            true => ImageFlags::PREMULTIPLIED | ImageFlags::REPEAT_X | ImageFlags::REPEAT_Y,
+            false => ImageFlags::PREMULTIPLIED,
+        };
+        upload(canvas, decoded, flags).map(|(image, anim)| Slot::Ready {
             image,
             bytes,
             clock: Clock::default(),
@@ -43,8 +51,8 @@ pub(super) fn upload_or_log(canvas: &mut Canvas<OpenGl>, path: &Path, decoded: R
     match result {
         Ok(slot) => slot,
         Err(err) => {
-            if super::first_failure(&path.to_string_lossy()) {
-                warn!("{:?}: {err}", path);
+            if super::first_failure(&key.path.to_string_lossy()) {
+                warn!("{:?}: {err}", key.path);
             }
             Slot::Failed
         }
@@ -118,18 +126,22 @@ fn replay_steps(current: usize, target: usize) -> (bool, std::ops::Range<usize>)
 /// copied to the GPU anyway.
 ///
 /// An animation's texture waits for a draw without a node: each `image` node draws its own.
-fn upload(canvas: &mut Canvas<OpenGl>, decoded: Decoded) -> Result<(Option<ImageId>, Option<Animation>), String> {
+fn upload(
+    canvas: &mut Canvas<OpenGl>,
+    decoded: Decoded,
+    flags: ImageFlags,
+) -> Result<(Option<ImageId>, Option<Animation>), String> {
     let Decoded { mut base, delays, mut deltas, width, height, premultiplied, .. } = decoded;
     if !premultiplied {
         premultiply(&mut base);
         deltas.iter_mut().for_each(Delta::premultiply);
     }
     if !deltas.is_empty() {
-        return Ok((None, Some(Animation { base, width, height, delays, deltas, current: 0 })));
+        return Ok((None, Some(Animation { base, width, height, delays, deltas, current: 0, flags })));
     }
     let source = ImageSource::from(femtovg::imgref::Img::new(base.as_rgba(), width as usize, height as usize));
     // ponytail: femtovg 0.27's `ErrorKind` all prints "canvas error"; use `Display` once it doesn't.
-    Ok((Some(canvas.create_image(source, ImageFlags::PREMULTIPLIED).map_err(|err| format!("{err:?}"))?), None))
+    Ok((Some(canvas.create_image(source, flags).map_err(|err| format!("{err:?}"))?), None))
 }
 
 /// One `image` node's playback of one file: its clock, kept while the node is in a tree, and its
@@ -163,7 +175,7 @@ fn node_textures(clocks: &super::HashMap<NodeId, Vec<NodeClock>>, key: &CacheKey
 /// A texture of `anim`'s first frame.
 fn first_frame(canvas: &mut Canvas<OpenGl>, anim: &Animation) -> Option<ImageId> {
     let base = femtovg::imgref::Img::new(anim.base.as_rgba(), anim.width as usize, anim.height as usize);
-    canvas.create_image(ImageSource::from(base), ImageFlags::PREMULTIPLIED).ok()
+    canvas.create_image(ImageSource::from(base), anim.flags).ok()
 }
 
 /// Puts frame `target` on `id`, which shows frame `current`.
@@ -389,6 +401,7 @@ pub(in crate::image) mod tests {
             delays: vec![Duration::from_millis(20); 2],
             deltas: vec![Delta { rect: (0, 0, 1, 1), pixels: vec![0; 4], palette: Vec::new() }],
             current: 0,
+            flags: ImageFlags::PREMULTIPLIED,
         }
     }
 

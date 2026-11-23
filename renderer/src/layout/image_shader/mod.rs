@@ -65,6 +65,7 @@ struct Program {
     from_rect: Option<glow::UniformLocation>,
     to_rect: Option<glow::UniformLocation>,
     fill: Option<glow::UniformLocation>,
+    tiled: Option<glow::UniformLocation>,
     opacity: Option<glow::UniformLocation>,
     radii: Option<glow::UniformLocation>,
     reach: Option<glow::UniformLocation>,
@@ -93,6 +94,8 @@ pub struct Cross {
     /// Fitted rects, absolute like `rect`; the prelude reads them as fractions of it.
     pub from_rect: LogicalRect,
     pub to_rect: LogicalRect,
+    /// `fit = "tile"`: each rect is one tile of a texture that repeats, so nothing is outside it.
+    pub tiled: bool,
 }
 
 /// What one run draws: the endpoints if it is a transition, and how far across the run is.
@@ -285,6 +288,7 @@ impl ShaderStage {
                 gl.uniform_4_f32_slice(program.from_rect.as_ref(), &relative(cross.from_rect));
                 gl.uniform_4_f32_slice(program.to_rect.as_ref(), &relative(cross.to_rect));
                 gl.uniform_4_f32(program.fill.as_ref(), 0.0, 0.0, 0.0, 0.0);
+                gl.uniform_1_i32(program.tiled.as_ref(), i32::from(cross.tiled));
             }
 
             bind_samplers(gl, program, first, images);

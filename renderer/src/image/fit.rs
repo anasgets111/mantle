@@ -31,6 +31,8 @@ pub fn fitted_rect(box_rect: LogicalRect, image_width: f32, image_height: f32, f
         Fit::Cover => horizontal.max(vertical),
         Fit::Contain => horizontal.min(vertical),
         Fit::Stretch => return box_rect,
+        // One tile at the box's corner; the draw repeats it.
+        Fit::Tile => return LogicalRect { width: image_width, height: image_height, ..box_rect },
     };
     let width = image_width * scale;
     let height = image_height * scale;

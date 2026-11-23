@@ -12,6 +12,7 @@ use crate::layout::node::{
     Radii, Rgba, Ring, Segment, StyleRun,
 };
 
+use crate::image::Fit;
 use crate::layout::scene::{NodeId, ResolvedNode};
 use crate::text::shaping::FIT_SLACK;
 use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
@@ -540,7 +541,8 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
                         // snaps back to the outgoing, and only then crosses.
                         None => (transition.is_some() && has_cover).then_some(0.0),
                     },
-                    blur_px: physical_blur(*source_blur, scale),
+                    // A tile's texel is a logical px, a fitted picture's a buffer px.
+                    blur_px: physical_blur(*source_blur, if *fit == Fit::Tile { 1.0 } else { scale }),
                     radius: radius.clone() * scale,
                     wants_size: *wants_size,
                     playing: *playing,
@@ -775,6 +777,24 @@ mod tests {
             Draw::Image { retained, dissolve, .. } => Some((retained.clone(), *dissolve)),
             _ => None,
         })
+    }
+
+    /// A tile's texel is a logical px, so its blur is in logical px; any other fit's texel is a
+    /// buffer px.
+    #[test]
+    fn a_tiled_image_blurs_in_logical_px_and_other_fits_in_buffer_px() {
+        let lua = Lua::new();
+        for (fit, expected) in [("tile", 4), ("cover", 8)] {
+            let src = format!(
+                r#"return panel {{ id = "bar", width = 40, height = 40, child = image {{ source = "/tmp/a.png", fit = "{fit}", source_blur = 4, width = "fill", height = "fill" }} }}"#
+            );
+            let tree = resolved_surface(&lua, &src, LogicalSize { width: 40.0, height: 40.0 });
+            let blur = build(&tree, 2.0, None).commands.iter().find_map(|cmd| match &cmd.draw {
+                Draw::Image { blur_px, .. } => Some(*blur_px),
+                _ => None,
+            });
+            assert_eq!(blur, Some(expected), "{fit}");
+        }
     }
 
     /// ADR-0183. The frame that first has the incoming texture must already be drawing the cross,

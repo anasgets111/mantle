@@ -10,8 +10,8 @@ use shared::{debug, error};
 use super::budget::{Budget, Charge, Permit};
 use super::svg::rasterize_svg;
 use super::{
-    CacheKey, DECODE_POOL_BYTES, Decoded, Job, MAX_DECODE_EDGE, MAX_DECODE_WORKERS, MAX_INFLIGHT_DECODES, Natural,
-    Pool, thumbnails,
+    CacheKey, DECODE_POOL_BYTES, Decoded, Job, MAX_DECODE_EDGE, MAX_DECODE_WORKERS, MAX_INFLIGHT_DECODES,
+    MAX_TILE_EDGE, Natural, Pool, thumbnails,
 };
 use crate::layout::node::Rgba;
 
@@ -196,13 +196,19 @@ pub(super) fn decode(
     animation_bytes: usize,
     fonts: &crate::text::shaping::FontDatabase,
 ) -> Result<Decoded, String> {
-    let CacheKey { path, box_px, cropped, blur_px, plays, .. } = key;
+    let CacheKey { path, box_px, cropped, blur_px, plays, tiled, .. } = key;
     // An SVG rasterizes to `box_px`, not to whatever the file declares, so it is bounded by the
     // request, and by `MAX_DECODE_EDGE` like a raster. `MAX_SVG_BYTES` is what bounds the parse.
     if is_vector(path) {
-        let (pixels, width, height, text, natural) = rasterize_svg(path, box_px.0.max(box_px.1), tint, fonts)?;
+        // ponytail: a tile rasterizes at its document size, soft past scale 1. Upgrade: key the
+        // output scale and rasterize at document size times it.
+        let edge = (!tiled).then_some(box_px.0.max(box_px.1));
+        let (pixels, width, height, text, natural) = rasterize_svg(path, edge, tint, fonts)?;
         let natural = plausible(natural);
-        let pixels = blur_rgba(pixels, width, height, *blur_px, true)?;
+        let pixels = match *tiled {
+            true => blur_tile(pixels, width, height, *blur_px, true),
+            false => blur_rgba(pixels, width, height, *blur_px, true)?,
+        };
         return Ok(Decoded {
             base: pixels,
             delays: vec![Duration::ZERO],
@@ -224,20 +230,25 @@ pub(super) fn decode(
     // is not known to animate until it decodes, so there each `source_blur` value is a slot.
     // Upgrade: re-key a landed animation to blur 0.
     if is_gif(path) {
-        return super::animation::decode_gif(path, *box_px, *cropped, charge, animation_bytes);
+        return super::animation::decode_gif(path, *box_px, *cropped, *tiled, charge, animation_bytes);
     }
-    if *plays && let Some(animation) = super::animation::decode_frames(path, *box_px, *cropped, charge, animation_bytes)
+    if *plays
+        && let Some(animation) =
+            super::animation::decode_frames(path, *box_px, *cropped, *tiled, charge, animation_bytes)
     {
         return Ok(animation);
     }
     let (mut pixels, mut width, mut height, natural) =
-        decode_raster(path, *box_px, *cropped, thumbnails, charge, still_wanted)?;
+        decode_raster(path, *box_px, *cropped, *tiled, thumbnails, charge, still_wanted)?;
     // A downscale already cropped as it resampled; this is for a raster `decode_raster` returns unscaled.
     if *cropped && let Some(kept) = crop_to_box(&pixels, width, height, *box_px) {
         (pixels, width, height) = kept; // drops the uncropped source before the blur
     }
     let premultiplied = *blur_px > 0;
-    let pixels = blur_rgba(pixels, width, height, *blur_px, false)?;
+    let pixels = match *tiled {
+        true => blur_tile(pixels, width, height, *blur_px, false),
+        false => blur_rgba(pixels, width, height, *blur_px, false)?,
+    };
     Ok(Decoded {
         base: pixels,
         delays: vec![Duration::ZERO],
@@ -306,6 +317,65 @@ fn blur_rgba(pixels: Vec<u8>, width: u32, height: u32, blur_px: u32, premultipli
     Ok(::image::imageops::fast_blur(&image, blur_px as f32).into_raw())
 }
 
+/// [`blur_rgba`] for a tile, which repeats: the same three box passes, reading each row and column
+/// modulo the tile, so the blur sees the tiles around it at any width and holds one tile and one
+/// line. Box widths are `fast_blur`'s (Kovesi's), so a tile blurs as much as a fitted picture.
+fn blur_tile(mut pixels: Vec<u8>, width: u32, height: u32, blur_px: u32, premultiplied: bool) -> Vec<u8> {
+    if blur_px == 0 || width == 0 || height == 0 {
+        return pixels;
+    }
+    if !premultiplied {
+        premultiply(&mut pixels);
+    }
+    let (width, height) = (width as usize, height as usize);
+    for radius in box_radii(blur_px as f32) {
+        (0..height).for_each(|y| wrapped_box(&mut pixels, y * width * 4, 4, width, radius));
+        (0..width).for_each(|x| wrapped_box(&mut pixels, x * 4, width * 4, height, radius));
+    }
+    pixels
+}
+
+/// The three box radii approximating a Gaussian of `sigma`, as `image::imageops::fast_blur` picks
+/// them (Kovesi, "Fast Almost-Gaussian Filtering", 2010), in its exact float order: a division
+/// for its reciprocal rounds the pass count the other way at sigma 30.
+fn box_radii(sigma: f32) -> [usize; 3] {
+    let ideal = f32::sqrt((12.0 * sigma.powi(2) / 3.0) + 1.0).floor();
+    let lower = if ideal % 2.0 == 0.0 { ideal - 1.0 } else { ideal };
+    let lower_count = (0.25 * 3.0 * (lower + 3.0) - 3.0 * sigma.powi(2) * (lower + 1.0).recip()).round();
+    let radius = |pass: f32| {
+        let width = if pass < lower_count { lower } else { lower + 2.0 } as usize;
+        (width.saturating_sub(1) / 2) | 1
+    };
+    [radius(0.0), radius(1.0), radius(2.0)]
+}
+
+/// One box pass of `radius` over the `len` RGBA pixels from byte `start`, `step` bytes apart,
+/// wrapping at both ends.
+fn wrapped_box(pixels: &mut [u8], start: usize, step: usize, len: usize, radius: usize) {
+    let line: Vec<[u8; 4]> =
+        (0..len).map(|i| std::array::from_fn(|channel| pixels[start + i * step + channel])).collect();
+    // The window from `-radius`: whole laps of the line, then the rest, so a radius past the line
+    // costs no more than one.
+    let span = 2 * radius + 1;
+    let (laps, rest) = ((span / len) as u64, span % len);
+    let mut sum = [0u64; 4];
+    for px in &line {
+        (0..4).for_each(|channel| sum[channel] += laps * u64::from(px[channel]));
+    }
+    for offset in 0..rest {
+        let px = line[(offset + len - radius % len) % len];
+        (0..4).for_each(|channel| sum[channel] += u64::from(px[channel]));
+    }
+    for i in 0..len {
+        let at = start + i * step;
+        (0..4).for_each(|channel| pixels[at + channel] = ((sum[channel] + span as u64 / 2) / span as u64) as u8);
+        let (entering, leaving) = (line[(i + radius + 1) % len], line[(i + len - radius % len) % len]);
+        (0..4).for_each(|channel| {
+            sum[channel] = sum[channel] + u64::from(entering[channel]) - u64::from(leaving[channel])
+        });
+    }
+}
+
 /// `image` scaled to exactly `size` as straight-alpha RGBA8 (ADR-0317), in its decoded pixel type
 /// so a JPEG widens to RGBA at the target size, never the source's.
 pub(super) fn downscale(image: &::image::DynamicImage, size: (u32, u32)) -> Result<::image::RgbaImage, String> {
@@ -350,8 +420,13 @@ pub(super) fn fit_inside(width: u32, height: u32, edge: u32) -> (u32, u32) {
 
 /// Stored raster size for a `box_px` box (ADR-0122): scale by the larger ratio to cover as
 /// `Fit::Cover` crops, never upscale a small file. Use the same rule for every `Fit`; `Contain`
-/// could be smaller, but one rule keeps one slot per box.
-pub(super) fn stored_size(width: u32, height: u32, box_px: (u32, u32)) -> (u32, u32) {
+/// could be smaller, but one rule keeps one slot per box. A `tiled` source is sized by itself, not
+/// a box, so it only fits inside [`MAX_TILE_EDGE`], every frame of an animation included; under
+/// it, the tile's own `MAX_TILE_EDGE` square box keeps it whole.
+pub(super) fn stored_size(width: u32, height: u32, box_px: (u32, u32), tiled: bool) -> (u32, u32) {
+    if tiled && width.max(height) > MAX_TILE_EDGE {
+        return fit_inside(width, height, MAX_TILE_EDGE);
+    }
     if width == 0 || height == 0 || (width <= box_px.0 && height <= box_px.1) {
         return (width, height);
     }
@@ -377,6 +452,7 @@ fn decode_raster(
     path: &Path,
     box_px: (u32, u32),
     cropped: bool,
+    tiled: bool,
     thumbnails: Option<&Path>,
     charge: Charge<'_>,
     still_wanted: &dyn Fn() -> bool,
@@ -396,7 +472,7 @@ fn decode_raster(
             slots.push(slot);
             continue;
         };
-        let stored = stored_size(width, height, box_px);
+        let stored = stored_size(width, height, box_px, tiled);
         if stored == (width, height) {
             return Ok((pixels, width, height, None));
         }
@@ -409,7 +485,7 @@ fn decode_raster(
     // covering thumbnail is never made to wait for room it does not need (ADR-0187).
     let (decoded, _permit) = decode_within_limits(path, MAX_DECODE_EDGE, charge, still_wanted)?;
     let (width, height) = (decoded.width(), decoded.height());
-    let (stored_width, stored_height) = stored_size(width, height, box_px);
+    let (stored_width, stored_height) = stored_size(width, height, box_px, tiled);
     // Sized to the stored raster rather than the box, so the next open finds one that covers.
     let slot = slots.into_iter().find(|slot| slot.px >= stored_width.max(stored_height));
     // The thumbnail this pass writes is also the best source for the texture, whenever it still
@@ -603,7 +679,7 @@ mod tests {
         let png = dir.path().join("fixture.png");
         std::fs::write(&png, PIL_2X2_RGBA_PNG).unwrap();
 
-        let (pixels, width, height, _) = decode_raster(&png, (2, 2), false, None, Charge::Free, &|| true)
+        let (pixels, width, height, _) = decode_raster(&png, (2, 2), false, false, None, Charge::Free, &|| true)
             .expect("a PNG decoder must be compiled in");
         assert_eq!((width, height), (2, 2));
         // Straight alpha in Pillow's order: half-transparent green stays 0x00ff00, not
@@ -618,7 +694,7 @@ mod tests {
         for name in ["fixture.ico", "fixture.bmp"] {
             let path = dir.path().join(name);
             ::image::RgbaImage::from_raw(2, 2, rgba.clone()).unwrap().save(&path).unwrap();
-            let (pixels, ..) = decode_raster(&path, (2, 2), false, None, Charge::Free, &|| true).expect(name);
+            let (pixels, ..) = decode_raster(&path, (2, 2), false, false, None, Charge::Free, &|| true).expect(name);
             assert_eq!(pixels, rgba, "{name}");
         }
     }
@@ -628,21 +704,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("not-really.png");
         std::fs::write(&fake, b"<svg/>").unwrap();
-        let err = decode_raster(&fake, (8, 8), false, None, Charge::Free, &|| true).unwrap_err();
+        let err = decode_raster(&fake, (8, 8), false, false, None, Charge::Free, &|| true).unwrap_err();
         assert!(err.contains("Invalid PNG signature"), "the decoder's own reason, not a bare failure: {err}");
     }
 
     #[test]
     fn a_raster_is_stored_scaled_down_to_cover_its_box_and_never_up() {
         // 4K into a 16:9 tile: ratios agree.
-        assert_eq!(stored_size(3840, 2160, (230, 130)), (232, 130));
+        assert_eq!(stored_size(3840, 2160, (230, 130), false), (232, 130));
         // Portrait into landscape: the larger width ratio covers.
-        assert_eq!(stored_size(1080, 1920, (230, 130)), (230, 409));
+        assert_eq!(stored_size(1080, 1920, (230, 130), false), (230, 409));
         // Smaller on both edges: untouched.
-        assert_eq!(stored_size(16, 16, (24, 24)), (16, 16));
+        assert_eq!(stored_size(16, 16, (24, 24), false), (16, 16));
         // Larger on one edge only: the larger ratio is still under one.
-        assert_eq!(stored_size(300, 10, (100, 100)), (300, 10));
-        assert_eq!(stored_size(0, 0, (100, 100)), (0, 0));
+        assert_eq!(stored_size(300, 10, (100, 100), false), (300, 10));
+        assert_eq!(stored_size(0, 0, (100, 100), false), (0, 0));
         // Thumbnails fit inside their square instead, and a sliver keeps one pixel.
         assert_eq!(fit_inside(3840, 2160, 128), (128, 72));
         assert_eq!(fit_inside(10_000, 10, 128), (128, 1));
@@ -725,10 +801,10 @@ mod tests {
             ::image::RgbaImage::from_fn(width, height, pixel).save(&path).unwrap();
             for &box_px in boxes {
                 let (whole, width, height, _) =
-                    decode_raster(&path, box_px, false, None, Charge::Free, &|| true).unwrap();
+                    decode_raster(&path, box_px, false, false, None, Charge::Free, &|| true).unwrap();
                 let (mut after, ..) = crop_to_box(&whole, width, height, box_px).expect("the box overflows");
                 let (mut during, width, height, _) =
-                    decode_raster(&path, box_px, true, None, Charge::Free, &|| true).unwrap();
+                    decode_raster(&path, box_px, true, false, None, Charge::Free, &|| true).unwrap();
                 assert_eq!((width, height), box_px);
                 premultiply(&mut after);
                 premultiply(&mut during);
@@ -813,27 +889,27 @@ mod tests {
         let cache = dir.path().join("cache");
 
         let (_, width, height, _) =
-            decode_raster(&big, (100, 100), false, Some(&cache), Charge::Free, &|| true).unwrap();
+            decode_raster(&big, (100, 100), false, false, Some(&cache), Charge::Free, &|| true).unwrap();
         assert_eq!((width, height), (200, 100), "the texture is the box's, whatever the thumbnail is");
         // A `normal` 128x64 would not cover the 100x100 box, so the slot is the stored size's.
         let slot = thumbnails::Slot::for_file(&cache, &big, (200, 100)).unwrap();
         let (_, thumb_width, thumb_height) = slot.read_valid().expect("a `large` thumbnail was written");
         assert_eq!((thumb_width, thumb_height), (256, 128));
         let (_, width, height, natural) =
-            decode_raster(&big, (100, 100), false, Some(&cache), Charge::Free, &|| true).unwrap();
+            decode_raster(&big, (100, 100), false, false, Some(&cache), Charge::Free, &|| true).unwrap();
         assert_eq!((width, height, natural), (200, 100, None), "the next open draws the thumbnail, at the same size");
 
         // Another program's `normal` thumbnail, which cannot cover the box, is passed over.
         let normal = thumbnails::Slot::for_file(&cache, &big, (100, 100)).unwrap();
         normal.write(&[9, 8, 7, 255].repeat(128 * 64), 128, 64).unwrap();
         let (_, width, height, _) =
-            decode_raster(&big, (100, 100), false, Some(&cache), Charge::Free, &|| true).unwrap();
+            decode_raster(&big, (100, 100), false, false, Some(&cache), Charge::Free, &|| true).unwrap();
         assert_eq!((width, height), (200, 100), "a 128x64 thumbnail drawn into a 100x100 cover box is upscaled");
 
         // Source gone: only the thumbnail can answer, and it does.
         std::fs::remove_file(&big).unwrap();
         assert!(
-            decode_raster(&big, (100, 100), false, Some(&cache), Charge::Free, &|| true).is_err(),
+            decode_raster(&big, (100, 100), false, false, Some(&cache), Charge::Free, &|| true).is_err(),
             "no source, no mtime, no slot"
         );
     }
@@ -853,7 +929,7 @@ mod tests {
             slot.write(&[9, 8, 7, 255].repeat(128 * 64), 128, 64).unwrap();
             let written = std::fs::read(slot.path()).unwrap();
             let (_, width, height, size) =
-                decode_raster(source, (128, 64), false, Some(&cache), Charge::Free, &|| true).unwrap();
+                decode_raster(source, (128, 64), false, false, Some(&cache), Charge::Free, &|| true).unwrap();
             assert_eq!(((width, height), size), ((128, 64), None), "the thumbnail drew: {}", source.display());
             assert_eq!(header_size(source), natural);
             assert_eq!(std::fs::read(slot.path()).unwrap(), written, "the thumbnail is never rewritten");
@@ -866,7 +942,7 @@ mod tests {
         let small = dir.path().join("icon.png");
         ::image::RgbaImage::from_pixel(32, 32, ::image::Rgba([10, 20, 30, 255])).save(&small).unwrap();
         let cache = dir.path().join("cache");
-        decode_raster(&small, (24, 24), false, Some(&cache), Charge::Free, &|| true).unwrap();
+        decode_raster(&small, (24, 24), false, false, Some(&cache), Charge::Free, &|| true).unwrap();
         assert!(!cache.exists(), "a 32px file has nothing to gain from a 128px thumbnail");
     }
 
@@ -890,6 +966,106 @@ mod tests {
         let real = dir.path().join("real.svg");
         std::fs::write(&real, b"<svg/>").unwrap();
         assert!(read_capped(&real, 1024).unwrap().is_some());
+    }
+
+    /// A tile is stored inside [`MAX_TILE_EDGE`], an animated one too, and its blur wraps across the seams it repeats
+    /// over, as if blurred among its neighbours.
+    #[test]
+    fn a_tile_is_capped_and_blurs_across_its_own_seams() {
+        let dir = tempfile::tempdir().unwrap();
+        let fonts = crate::text::shaping::FontDatabase::default();
+        let tiled = |path: &Path, blur_px| CacheKey {
+            box_px: (MAX_TILE_EDGE, MAX_TILE_EDGE),
+            tiled: true,
+            blur_px,
+            ..super::super::tests::key(path, 1, Default::default())
+        };
+        let decoded =
+            |key: &CacheKey| decode(key, None, None, Charge::Free, &|| true, STARTING_TEXTURE_BUDGET, &fonts).unwrap();
+        let wide = dir.path().join("wide.png");
+        ::image::RgbaImage::new(MAX_TILE_EDGE + 100, 4).save(&wide).unwrap();
+        assert_eq!(decoded(&tiled(&wide, 0)).width, MAX_TILE_EDGE);
+        // Every frame of an animation too: two frames, the second changing one pixel.
+        let edge = (MAX_TILE_EDGE + 100) as u16;
+        let frames = [
+            ((0, 0, edge, 4), [255, 0, 0, 255], gif::DisposalMethod::Keep),
+            ((0, 0, 1, 1), [0, 0, 255, 255], gif::DisposalMethod::Keep),
+        ];
+        let animated = super::super::animation::tests::gif_fixture(dir.path(), "wide.gif", (edge, 4), &frames);
+        let decoded_gif = decoded(&tiled(&animated, 0));
+        assert!(!decoded_gif.deltas.is_empty(), "the fixture animates");
+        assert_eq!(decoded_gif.width, MAX_TILE_EDGE);
+        // A blur four tiles wide flattens a black|white tile to its mean, with no seam left.
+        let halves = dir.path().join("halves.png");
+        let (black, white) = (::image::Rgba([0, 0, 0, 255]), ::image::Rgba([255, 255, 255, 255]));
+        ::image::RgbaImage::from_fn(8, 8, |x, _| if x < 4 { black } else { white }).save(&halves).unwrap();
+        let flat = decoded(&tiled(&halves, 32));
+        let reds = flat.base.as_chunks::<4>().0.iter().map(|px| px[0]);
+        assert!(reds.clone().all(|red| red.abs_diff(128) <= 2), "{:?}", reds.collect::<Vec<_>>());
+    }
+
+    /// Away from its edges a tile blurs as a fitted picture does: `fast_blur`'s widths, translucent
+    /// pixels premultiplied first, and no blur at zero. Where nothing wraps into reach, within two
+    /// levels of rounding.
+    #[test]
+    fn a_tile_blurs_like_fast_blur_where_nothing_wraps() {
+        let edge = 96;
+        let pixels: Vec<u8> = (0..edge * edge)
+            .flat_map(|i| match (i % edge, i / edge) {
+                (40..56, 40..56) => [255, 255, 255, 255],
+                _ => [255, 0, 0, 128],
+            })
+            .collect();
+        for sigma in [0, 1, 2, 3, 5, 8] {
+            let tile = blur_tile(pixels.clone(), edge, edge, sigma, false);
+            let fast = blur_rgba(pixels.clone(), edge, edge, sigma, false).unwrap();
+            let worst = tile.iter().zip(&fast).map(|(a, b)| a.abs_diff(*b)).max();
+            assert!(worst <= Some(2), "sigma {sigma}: off by {worst:?}");
+        }
+        assert!(blur_tile(Vec::new(), edge, 0, 3, false).is_empty(), "an empty tile has nothing to blur");
+        // Past this image's reach: `boxes_for_gauss` multiplies by a reciprocal, which rounds its
+        // pass count down at sigma 30 where a division would round it up.
+        assert_eq!(box_radii(30.0), [29, 31, 31]);
+    }
+
+    /// A box wider than its line wraps around it whole times: seeded per lap, the same as the
+    /// naive sum over every sample of the window.
+    #[test]
+    fn a_wrapped_box_wider_than_its_line_matches_the_naive_sum() {
+        let line: Vec<u8> = [[10, 20, 30, 40], [200, 100, 0, 255], [7, 77, 177, 255]].concat();
+        let len = 3;
+        for radius in [0, 1, 2, 5, 4096] {
+            let mut got = line.clone();
+            wrapped_box(&mut got, 0, 4, len, radius);
+            let span = 2 * radius + 1;
+            let naive = |i: usize, channel: usize| {
+                let sum: u64 =
+                    (0..span).map(|k| u64::from(line[(i + k + len * radius - radius) % len * 4 + channel])).sum();
+                ((sum + span as u64 / 2) / span as u64) as u8
+            };
+            let want: Vec<u8> = (0..len).flat_map(|i| (0..4).map(move |channel| naive(i, channel))).collect();
+            assert_eq!(got, want, "radius {radius}");
+        }
+    }
+
+    /// A tile blurs as one tile of an endless plane: the same as the top-left tile of a blurred 2x2
+    /// mosaic of it, past a blur wider than the tile. Not square, so a swapped axis shows.
+    #[test]
+    fn a_tile_blurs_as_its_own_mosaic_does() {
+        let (w, h) = (8u32, 7u32);
+        let shade = |x: u32, y: u32| [(x * 31) as u8, (y * 43) as u8, ((x + y) * 17) as u8, 255];
+        let plane = |times: u32| -> Vec<u8> {
+            (0..h * times)
+                .flat_map(|y| (0..w * times).map(move |x| (x, y)))
+                .flat_map(|(x, y)| shade(x % w, y % h))
+                .collect()
+        };
+        for blur in [1, 3, 20] {
+            let tile = blur_tile(plane(1), w, h, blur, false);
+            let mosaic = blur_tile(plane(2), 2 * w, 2 * h, blur, false);
+            assert_eq!(tile, super::super::animation::read_rect(&mosaic, 2 * w, (0, 0, w, h)), "blur {blur}");
+            assert_ne!(tile, plane(1), "blur {blur} changes the tile");
+        }
     }
 
     /// ADR-0240. `blur_px == 0` must be a true no-op: `physical_blur` in `layout::paint` floors at
