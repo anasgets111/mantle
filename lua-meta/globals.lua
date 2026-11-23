@@ -74,9 +74,10 @@ function log.debug(...) end
 
 ---Declares the font fallback chain. Each glyph falls back across it, so one chain covers body text,
 ---CJK and emoji; a `text` node's `font` goes in front of it (ADR-0144). Read once at startup: a
----change needs a shell restart (ADR-0043). The last call wins.
+---change needs a shell restart (ADR-0043). The last call wins. `files` registers font files, so
+---`fonts { files = { "fonts/Caveat.ttf" }, "Caveat" }` needs no install.
 ---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#fonts)
----@param chain string[] Family names. The first is the body face and the only one whose bold and italic load; the rest cover glyphs it lacks. A hole, a named key or a non-string raises; an uninstalled family is skipped and logged at `-vvv`. Never calling it keeps `sans-serif`, Noto Sans CJK JP, Noto Color Emoji.
+---@param chain { [integer]: string, files?: string[], [string]: "no such property" } Family names. The first is the body face and the only one whose bold and italic load; the rest cover glyphs it lacks. A hole, a named key other than `files` or a non-string raises; an uninstalled family is skipped and logged at `-vvv`. Never calling it keeps `sans-serif`, Noto Sans CJK JP, Noto Color Emoji. `files`: paths relative to the config directory, absolute or `~/`, whose families resolve to these files before fontconfig; a file that loads no face is skipped with a warning.
 function fonts(chain) end
 
 ---fzf's score for `needle` in `haystack`, or `nil, nil` when its characters do not appear in order

@@ -6,10 +6,10 @@
 //! faces; FemtoVG draws the same faces (`text::atlas`, ADR-0211).
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use fontdb::{Database, Family, Query};
+use fontdb::{Database, FaceInfo, Family, Query, Source};
 use shared::{debug, error, warn};
 
 /// Generic CSS family names fontconfig always resolves by substitution -- there is no literal
@@ -36,6 +36,8 @@ pub struct ResolvedFonts {
     /// from one the declared chain already mapped (ADR-0144). Carried out of resolution rather
     /// than rebuilt from `db.faces()`, which would have to re-derive it on every runtime load.
     pub loaded_paths: HashSet<PathBuf>,
+    /// The faces of the config's font files, whose families resolve to them before fontconfig.
+    pub registered: Vec<FaceInfo>,
 }
 
 thread_local! {
@@ -51,13 +53,72 @@ thread_local! {
 /// not silently substituted -- see `fc_match`'s doc comment for how a "hit" is told apart from
 /// fontconfig's own substitution, which never fails on its own.
 ///
+/// A chain entry naming a family from `files` takes those files rather than fontconfig's answer,
+/// the way CSS `@font-face` shadows an installed family of the same name. Database order is
+/// fallback order (`text::shaping::worker`), so each file joins at the first entry naming one of
+/// its families, and a file no entry names joins after the whole chain.
+///
 /// Logs per chain entry, to diagnose "why is my bar drawing in the wrong font".
-pub fn resolve_chain(chain: &[&str]) -> ResolvedFonts {
+pub fn resolve_chain(chain: &[&str], files: &[PathBuf]) -> ResolvedFonts {
     let mut db = Database::new();
     let mut loaded_paths: HashSet<PathBuf> = HashSet::new();
-    match load_chain(&mut db, chain, &mut loaded_paths) {
-        Some(primary_family) => ResolvedFonts { db, primary_family, loaded_paths },
-        None => system_fallback(chain),
+    let registered = scan_files(files);
+    let primary_family = load_chain(&mut db, chain, &mut loaded_paths, &registered);
+    for face in &registered {
+        load_file(&mut db, &registered, face_path(face), &mut loaded_paths);
+    }
+    match primary_family {
+        Some(primary_family) => ResolvedFonts { db, primary_family, loaded_paths, registered },
+        None => system_fallback(chain, ResolvedFonts { db, primary_family: String::new(), loaded_paths, registered }),
+    }
+}
+
+/// Reads the faces `files` hold, each file once, without adding them to any chain yet. A file that
+/// yields no face is the config naming the wrong path, so it warns rather than logging at `-vvv`.
+fn scan_files(files: &[PathBuf]) -> Vec<FaceInfo> {
+    let mut scratch = Database::new();
+    for (index, path) in files.iter().enumerate() {
+        if files[..index].contains(path) {
+            continue;
+        }
+        // A FIFO would block startup in the open below.
+        if let Err(e) = crate::image::refuse_irregular(path) {
+            warn!("font file {path:?} skipped: {e}");
+            continue;
+        }
+        let before = scratch.len();
+        match scratch.load_font_file(path) {
+            Err(e) => warn!("font file {path:?} failed to load: {e}"),
+            Ok(()) if scratch.len() == before => warn!("font file {path:?} holds no font face"),
+            Ok(()) => {}
+        }
+    }
+    scratch.faces().cloned().collect()
+}
+
+/// The file a face came from. Every face here was loaded from a path.
+fn face_path(face: &FaceInfo) -> &Path {
+    match &face.source {
+        Source::File(path) | Source::SharedFile(path, _) => path,
+        Source::Binary(_) => Path::new(""),
+    }
+}
+
+/// The spelling the font files give `name`, when one of them holds that family.
+fn registered_family<'a>(registered: &'a [FaceInfo], name: &str) -> Option<&'a str> {
+    registered
+        .iter()
+        .flat_map(|face| &face.families)
+        .map(|(family, _)| family.as_str())
+        .find(|family| family.eq_ignore_ascii_case(name))
+}
+
+/// Adds every face of the registered file at `path` to `db`, unless it is already there.
+fn load_file(db: &mut Database, registered: &[FaceInfo], path: &Path, loaded_paths: &mut HashSet<PathBuf>) {
+    if loaded_paths.insert(path.to_path_buf()) {
+        for face in registered.iter().filter(|face| face_path(face) == path) {
+            db.push_face_info(face.clone());
+        }
     }
 }
 
@@ -73,7 +134,13 @@ pub fn covering_file(ch: char) -> Option<PathBuf> {
 
 /// Loads `path`, the file [`covering_file`] answered for `ch`. `true` when the database gained a
 /// face and the caller must shape again.
-pub fn load_cover(db: &mut Database, ch: char, path: PathBuf, loaded_paths: &mut HashSet<PathBuf>) -> bool {
+pub fn load_cover(
+    db: &mut Database,
+    ch: char,
+    path: PathBuf,
+    loaded_paths: &mut HashSet<PathBuf>,
+    registered: &[FaceInfo],
+) -> bool {
     let cp = ch as u32;
     // The shaper tried every loaded face before reaching here, so fontconfig answering with one of
     // them is it declining rather than helping -- this query's substitution check (ADR-0239).
@@ -81,17 +148,46 @@ pub fn load_cover(db: &mut Database, ch: char, path: PathBuf, loaded_paths: &mut
         debug!(2; "font chain: U+{cp:04X} -> no installed face covers it");
         return false;
     }
-    match db.load_font_file(&path) {
-        Ok(()) => {
-            debug!(2; "font chain: U+{cp:04X} -> {path:?}");
-            loaded_paths.insert(path);
-            true
-        }
-        Err(e) => {
-            debug!(2; "font chain: U+{cp:04X} resolved to {path:?}, which failed to load: {e}");
-            false
-        }
+    if let Err(reason) = load_installed(db, &path, registered) {
+        debug!(2; "font chain: U+{cp:04X} resolved to {path:?}, skipped: {reason}");
+        return false;
     }
+    debug!(2; "font chain: U+{cp:04X} -> {path:?}");
+    loaded_paths.insert(path);
+    true
+}
+
+/// Loads the installed file at `path`, or none of it when it holds a family the config's files
+/// register. Not only the shadowed faces: Fontique registers every face of a file
+/// (`Collection::register_fonts`) and unregisters by width, style and weight alone, which would
+/// take the registered face too, so a collection's other faces would bring the shadowed one along.
+fn load_installed(db: &mut Database, path: &Path, registered: &[FaceInfo]) -> Result<(), String> {
+    let ids = db.load_font_source(Source::File(path.to_path_buf()));
+    if ids.is_empty() {
+        return Err("it holds no loadable face".into());
+    }
+    let shadowed = ids
+        .iter()
+        .filter_map(|id| db.face(*id))
+        .flat_map(|face| &face.families)
+        .find_map(|(family, _)| registered_family(registered, family))
+        .map(str::to_string);
+    prune_shadowed(db, registered);
+    shadowed.map_or(Ok(()), |family| Err(format!("it also holds {family:?}, which a font file registers")))
+}
+
+/// Removes every face of each file, other than a registered one, that holds a registered family.
+fn prune_shadowed(db: &mut Database, registered: &[FaceInfo]) {
+    let own: HashSet<&Path> = registered.iter().map(face_path).collect();
+    let shadows =
+        |face: &FaceInfo| face.families.iter().any(|(family, _)| registered_family(registered, family).is_some());
+    let files: HashSet<PathBuf> = db
+        .faces()
+        .filter(|face| !own.contains(face_path(face)) && shadows(face))
+        .map(|face| face_path(face).to_path_buf())
+        .collect();
+    let ids: Vec<fontdb::ID> = db.faces().filter(|face| files.contains(face_path(face))).map(|face| face.id).collect();
+    ids.into_iter().for_each(|id| db.remove_face(id));
 }
 
 /// Loads every entry of one chain into `db` and returns the first that hit, which is that chain's
@@ -100,14 +196,43 @@ pub fn load_cover(db: &mut Database, ch: char, path: PathBuf, loaded_paths: &mut
 /// A one-name chain is `text { font = "..." }` loaded by hand into the database the declared chain
 /// already filled (ADR-0144): same `fc_match`, same hit-versus-substitution check. Reusing that
 /// database keeps the declared chain's CJK and emoji faces working as fallback behind the named
-/// family, and keeps this from being a second font discovery (ADR-0043 decision 2). `None` for a
+/// family, and keeps this from being a second font discovery (ADR-0043 decision 2). A family the
+/// config's font files hold, named or answered for a generic alias, loads those files and no
+/// installed copy or variant. `None` for a
 /// family nothing answers: the caller draws in the declared chain and logs it once at `-vvv`.
-pub(crate) fn load_chain(db: &mut Database, chain: &[&str], loaded_paths: &mut HashSet<PathBuf>) -> Option<String> {
+pub(crate) fn load_chain(
+    db: &mut Database,
+    chain: &[&str],
+    loaded_paths: &mut HashSet<PathBuf>,
+    registered: &[FaceInfo],
+) -> Option<String> {
     let mut primary_family: Option<String> = None;
 
     for &name in chain {
-        let Some((path, resolved_family)) = fc_match(name) else {
-            debug!(2; "font chain: {name:?} -> no installed match, skipped");
+        let (resolved_family, path) = match registered_family(registered, name) {
+            Some(family) => (family.to_string(), None),
+            None => {
+                let Some((path, resolved)) = fc_match(name) else {
+                    debug!(2; "font chain: {name:?} -> no installed match, skipped");
+                    continue;
+                };
+                match registered_family(registered, &resolved) {
+                    Some(family) => (family.to_string(), None),
+                    None => (resolved, Some(path)),
+                }
+            }
+        };
+        let Some(path) = path else {
+            // Every file of the family, variants included: the config listed the ones it wants.
+            debug!(2; "font chain: {name:?} -> registered files ({resolved_family:?})");
+            let paths: Vec<PathBuf> = registered
+                .iter()
+                .filter(|face| face.families.iter().any(|(family, _)| family.eq_ignore_ascii_case(&resolved_family)))
+                .map(|face| face_path(face).to_path_buf())
+                .collect();
+            paths.iter().for_each(|path| load_file(db, registered, path, loaded_paths));
+            set_generic(db, name, &resolved_family);
+            primary_family.get_or_insert(resolved_family);
             continue;
         };
         debug!(2; "font chain: {name:?} -> {path:?} ({resolved_family:?})");
@@ -115,32 +240,33 @@ pub(crate) fn load_chain(db: &mut Database, chain: &[&str], loaded_paths: &mut H
         // Two chain entries can resolve to the same file (e.g. a generic alias and the literal
         // family name it happens to expand to) -- load it once.
         if !loaded_paths.contains(&path) {
-            match db.load_font_file(&path) {
-                Ok(()) => {
-                    loaded_paths.insert(path);
-                }
-                Err(e) => {
-                    debug!(2; "font chain: {name:?} resolved to {path:?}, which failed to load: {e}");
-                    continue;
-                }
+            if let Err(reason) = load_installed(db, &path, registered) {
+                warn!("font chain: {name:?} resolved to {path:?}, skipped: {reason}");
+                continue;
             }
+            loaded_paths.insert(path);
         }
 
-        match name.to_ascii_lowercase().as_str() {
-            "serif" => db.set_serif_family(resolved_family.clone()),
-            "sans-serif" => db.set_sans_serif_family(resolved_family.clone()),
-            "monospace" => db.set_monospace_family(resolved_family.clone()),
-            "cursive" => db.set_cursive_family(resolved_family.clone()),
-            "fantasy" => db.set_fantasy_family(resolved_family.clone()),
-            _ => {}
-        }
+        set_generic(db, name, &resolved_family);
         if primary_family.is_none() {
-            load_variants(db, name, &resolved_family, loaded_paths);
+            load_variants(db, name, &resolved_family, loaded_paths, registered);
             primary_family = Some(resolved_family);
         }
     }
 
     primary_family
+}
+
+/// Points `name`, when it is a generic alias, at the family it resolved to.
+fn set_generic(db: &mut Database, name: &str, family: &str) {
+    match name.to_ascii_lowercase().as_str() {
+        "serif" => db.set_serif_family(family),
+        "sans-serif" => db.set_sans_serif_family(family),
+        "monospace" => db.set_monospace_family(family),
+        "cursive" => db.set_cursive_family(family),
+        "fantasy" => db.set_fantasy_family(family),
+        _ => {}
+    }
 }
 
 /// Loads the primary family's bold, italic and bold-italic files, when fontconfig has them, so a
@@ -154,7 +280,13 @@ pub(crate) fn load_chain(db: &mut Database, chain: &[&str], loaded_paths: &mut H
 /// variant the family does not have with the nearest face it does, which is the regular file again
 /// or a different family entirely -- the same family check `fc_match` applies everywhere rejects
 /// the latter, and the former is a duplicate path and skipped.
-fn load_variants(db: &mut Database, name: &str, resolved_family: &str, loaded_paths: &mut HashSet<PathBuf>) {
+fn load_variants(
+    db: &mut Database,
+    name: &str,
+    resolved_family: &str,
+    loaded_paths: &mut HashSet<PathBuf>,
+    registered: &[FaceInfo],
+) {
     for (variant, pattern) in
         [("bold", "weight=bold"), ("italic", "slant=italic"), ("bold italic", "weight=bold:slant=italic")]
     {
@@ -164,12 +296,12 @@ fn load_variants(db: &mut Database, name: &str, resolved_family: &str, loaded_pa
         if !family.eq_ignore_ascii_case(resolved_family) || loaded_paths.contains(&path) {
             continue;
         }
-        match db.load_font_file(&path) {
+        match load_installed(db, &path, registered) {
             Ok(()) => {
                 debug!(2; "font chain: {name:?} {variant} -> {path:?}");
                 loaded_paths.insert(path);
             }
-            Err(e) => debug!(2; "font chain: {name:?} {variant} resolved to {path:?}, which failed to load: {e}"),
+            Err(reason) => debug!(2; "font chain: {name:?} {variant} resolved to {path:?}, skipped: {reason}"),
         }
     }
 }
@@ -181,21 +313,23 @@ fn load_variants(db: &mut Database, name: &str, resolved_family: &str, loaded_pa
 /// whole-system-scan path ADR-0043 decision 2 spends this module avoiding. Correct only
 /// because it's the last resort, not the common case -- if this line shows up in a real user's
 /// logs, the fix is diagnosing why `fc-match` isn't reachable, not tuning this fallback.
-fn system_fallback(chain: &[&str]) -> ResolvedFonts {
+///
+/// `fonts` holds the registered files, which stay: the scan adds to them.
+fn system_fallback(chain: &[&str], mut fonts: ResolvedFonts) -> ResolvedFonts {
     warn!(
         "font chain: none of {chain:?} resolved via fc-match (fontconfig not installed, or \
          fc-match missing from $PATH) -- falling back to a full system font scan, which is \
          the slow, memory-heavy path ADR-0043 decision 2 exists to avoid"
     );
-    let mut db = Database::new();
-    db.load_system_fonts();
-    let primary_family = system_primary(&db).unwrap_or_else(|| {
+    fonts.db.load_system_fonts();
+    prune_shadowed(&mut fonts.db, &fonts.registered);
+    fonts.primary_family = system_primary(&fonts.db).unwrap_or_else(|| {
         error!("font chain: no usable face in the system font database -- no text can be drawn");
         String::new()
     });
-    // Every face in the database came from the scan rather than a named file, so nothing here has
-    // a path a later `load_chain` could collide with.
-    ResolvedFonts { db, primary_family, loaded_paths: HashSet::new() }
+    // The scan's faces came from no named file, so only a registered file's path is one a later
+    // `load_chain` could collide with.
+    fonts
 }
 
 /// The family to shape the fallback database against: its sans serif, else any face it holds.
@@ -295,7 +429,7 @@ mod tests {
         }
         // If the miss were silently accepted, `primary_family` would be whatever fontconfig
         // picked for the absent name instead of the real hit that follows it.
-        let resolved = resolve_chain(&["ZZ No Such Family 9184", TEST_FAMILY]);
+        let resolved = resolve_chain(&["ZZ No Such Family 9184", TEST_FAMILY], &[]);
         assert_eq!(resolved.primary_family, TEST_FAMILY);
         assert!(!resolved.db.is_empty(), "the real hit's own face should have loaded");
     }
@@ -315,10 +449,10 @@ mod tests {
             eprintln!("no two distinct families installed to tell apart, skip");
             return;
         };
-        let mut resolved = resolve_chain(&[TEST_FAMILY]);
+        let mut resolved = resolve_chain(&[TEST_FAMILY], &[]);
         let before = resolved.db.faces().count();
 
-        let hit = load_chain(&mut resolved.db, &[named], &mut resolved.loaded_paths);
+        let hit = load_chain(&mut resolved.db, &[named], &mut resolved.loaded_paths, &[]);
         assert_eq!(hit.as_deref(), Some(named), "the named family resolves to itself, not a substitute");
         assert!(resolved.db.faces().count() > before, "its faces joined the same database");
         for family in [TEST_FAMILY, named] {
@@ -339,11 +473,123 @@ mod tests {
             return;
         }
         for (family, expected) in [("ZZ No Such Family 9184", None), (TEST_FAMILY, Some(TEST_FAMILY))] {
-            let mut resolved = resolve_chain(&[TEST_FAMILY]);
+            let mut resolved = resolve_chain(&[TEST_FAMILY], &[]);
             let before = resolved.db.faces().count();
-            assert_eq!(load_chain(&mut resolved.db, &[family], &mut resolved.loaded_paths).as_deref(), expected);
+            assert_eq!(load_chain(&mut resolved.db, &[family], &mut resolved.loaded_paths, &[]).as_deref(), expected);
             assert_eq!(resolved.db.faces().count(), before, "{family:?} must not change the database");
         }
+    }
+
+    fn fixture(path: &str) -> PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures").join(path)
+    }
+
+    /// Each family's first face, in database order: the order shaping falls back in.
+    fn family_order(db: &Database) -> Vec<String> {
+        let mut order: Vec<String> = Vec::new();
+        for (family, _) in db.faces().filter_map(|face| face.families.first()) {
+            if !order.contains(family) {
+                order.push(family.clone());
+            }
+        }
+        order
+    }
+
+    /// A config's file answers its family, by any case, ahead of an installed copy (Inter Variable
+    /// is one on some machines), and no `fc-match` answer joins it. A missing path, a file that is
+    /// no font, a FIFO (which would block the open) and a repeated path are skipped without costing
+    /// the rest.
+    #[test]
+    fn a_registered_file_answers_its_family_before_fontconfig() {
+        let file = fixture("variable/InterVariable-subset.ttf");
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("fifo.ttf");
+        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU).expect("the test needs a real FIFO");
+        let once = resolve_chain(&["Inter Variable"], std::slice::from_ref(&file)).db.len();
+        let files = [fixture("no-such-font.ttf"), fixture("../Cargo.toml"), fifo, file.clone(), file.clone()];
+        let mut resolved = resolve_chain(&["Inter Variable"], &files);
+        assert_eq!(resolved.primary_family, "Inter Variable");
+        assert_eq!(resolved.db.len(), once, "a repeated path loads once");
+        let hit = load_chain(&mut resolved.db, &["inter variable"], &mut resolved.loaded_paths, &resolved.registered);
+        assert_eq!(hit.as_deref(), Some("Inter Variable"), "a node's `font` resolves to the registered family");
+        assert_eq!(resolved.db.len(), once, "and loads nothing more");
+        assert!(once > 0);
+        for face in resolved.db.faces() {
+            assert_eq!(face_path(face), file, "every face is the fixture's, none fontconfig's");
+        }
+    }
+
+    /// Database order is fallback order, so a registered family takes its place in the chain, not
+    /// the front, and one the chain never names (registered for a node's `font`) goes last.
+    #[test]
+    fn registered_files_join_at_their_chain_position_and_unnamed_ones_after_it() {
+        FONTCONFIG_FILE.set(Some(fixture("shots/fonts/fonts.conf")));
+        // The split subset is one fontconfig is told to reject, so only the registration finds it.
+        let files = [fixture("variable/InterVariable-subset.ttf"), fixture("shots/fonts/split/Mono-Regular-2500.ttf")];
+        let resolved = resolve_chain(&["Noto Sans Symbols 2", "Noto Sans", "Noto Sans Mono"], &files);
+        assert_eq!(
+            family_order(&resolved.db),
+            ["Noto Sans Symbols 2", "Noto Sans", "Noto Sans Mono", "Inter Variable"],
+            "Latin text falls back to Noto Sans before a font registered for one node"
+        );
+    }
+
+    /// `sans-serif` answered with the family a config ships takes the shipped file: the installed
+    /// copy's bold must not join, by the chain's variants or by a codepoint rescue.
+    #[test]
+    fn a_generic_alias_resolving_to_a_registered_family_keeps_out_the_installed_copy() {
+        FONTCONFIG_FILE.set(Some(fixture("shots/fonts/fonts.conf")));
+        let regular = fixture("shots/fonts/NotoSans-Regular.ttf");
+        let mut resolved = resolve_chain(&["sans-serif"], std::slice::from_ref(&regular));
+        assert_eq!(resolved.primary_family, "Noto Sans");
+        assert_eq!(resolved.db.family_name(&Family::SansSerif), "Noto Sans", "SVG `sans-serif` text finds it too");
+        let bold = fixture("shots/fonts/NotoSans-Bold.ttf");
+        let landed = load_cover(&mut resolved.db, 'A', bold.clone(), &mut resolved.loaded_paths, &resolved.registered);
+        assert!(!landed, "a rescue answered with the installed copy is declined");
+        for face in resolved.db.faces() {
+            assert_eq!(face_path(face), regular, "the installed bold never loads");
+        }
+    }
+
+    /// An installed collection holding a registered family brings none of its faces, not even its
+    /// other family: the shaper would register the shadowed face with them. A rescue declining it
+    /// leaves the file free to decline a later named lookup too, rather than report a hit.
+    #[test]
+    fn an_installed_collection_holding_a_registered_family_loads_no_face() {
+        let dir = tempfile::tempdir().unwrap();
+        let collection = dir.path().join("Mono-Symbols2-25CF.ttc");
+        std::fs::copy(fixture("shots/fonts/split/Mono-Symbols2-25CF.ttc"), &collection).unwrap();
+        let config = dir.path().join("fonts.conf");
+        let d = dir.path().display();
+        std::fs::write(&config, format!("<fontconfig><dir>{d}</dir><cachedir>{d}/cache</cachedir></fontconfig>"))
+            .unwrap();
+        FONTCONFIG_FILE.set(Some(config));
+        let mono = fixture("shots/fonts/split/Mono-Regular-2500.ttf");
+        let mut resolved = resolve_chain(&["Noto Sans Mono", "Noto Sans Symbols 2"], std::slice::from_ref(&mono));
+        assert_eq!(family_order(&resolved.db), ["Noto Sans Mono"], "the collection's Symbols 2 is skipped with it");
+        let cover = load_cover(&mut resolved.db, '●', collection, &mut resolved.loaded_paths, &resolved.registered);
+        assert!(!cover, "a rescue answered with the collection is declined");
+        let named =
+            load_chain(&mut resolved.db, &["Noto Sans Symbols 2"], &mut resolved.loaded_paths, &resolved.registered);
+        assert_eq!(named, None, "a family that never loaded is a miss, not a hit");
+        for face in resolved.db.faces() {
+            assert_eq!(face_path(face), mono, "only the registered file's face is loaded");
+        }
+    }
+
+    /// The system scan, the last resort, drops a shadowing file the same way.
+    #[test]
+    fn pruning_keeps_registered_files_and_drops_every_face_of_a_shadowing_one() {
+        let mono = fixture("shots/fonts/split/Mono-Regular-2500.ttf");
+        let registered = scan_files(std::slice::from_ref(&mono));
+        let mut db = Database::new();
+        db.load_font_file(fixture("shots/fonts/split/Mono-Symbols2-25CF.ttc")).unwrap();
+        db.load_font_file(fixture("shots/fonts/split/Symbols2-2713.ttf")).unwrap();
+        load_file(&mut db, &registered, &mono, &mut HashSet::new());
+        prune_shadowed(&mut db, &registered);
+        let mut paths: Vec<PathBuf> = db.faces().map(|face| face_path(face).to_path_buf()).collect();
+        paths.sort();
+        assert_eq!(paths, [mono, fixture("shots/fonts/split/Symbols2-2713.ttf")], "an unrelated file stays");
     }
 
     /// A machine with no font files at all -- the case `system_fallback` reaches when even the
@@ -359,7 +605,7 @@ mod tests {
             eprintln!("fc-match not available, skip");
             return;
         }
-        let resolved = resolve_chain(DEFAULT_CHAIN);
+        let resolved = resolve_chain(DEFAULT_CHAIN, &[]);
         // The system has 2648 faces on the machine ADR-0043 measured against; three requests
         // stay well under 100 -- not a fragile exact count.
         assert!(

@@ -26,6 +26,7 @@ mod animation;
 mod budget;
 pub mod capture;
 mod decode;
+pub(crate) use decode::refuse_irregular;
 mod evict;
 mod file;
 mod fit;
@@ -986,7 +987,7 @@ mod tests {
         cache.insert(icon.clone(), Slot::Failed);
         cache.insert(label.clone(), Slot::Failed).text = true;
         let snapshot = cache.fonts.generation;
-        shaping.set_chain(&["Noto Sans Symbols 2".into()]);
+        shaping.set_chain(&["Noto Sans Symbols 2".into()], &[]);
         let mut cue = cache.poll();
         cue.sort();
         assert_eq!(cue, vec![vector.path.clone(), label.path.clone()]);

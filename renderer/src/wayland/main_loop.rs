@@ -83,7 +83,8 @@ pub fn run(
     // Set the declared font chain after evaluation but before first paint; `TextPainter` loads it
     // lazily, and `set_chain` rebuilds instead of respawning. No declaration keeps the default.
     // A family a node names by hand is not resolved here: it lands on first sight (ADR-0144).
-    app.shaping.set_chain(&crate::lua::fonts::declared_chain(app.client.lua()));
+    let (chain, files) = crate::lua::fonts::declared_chain(app.client.lua());
+    app.shaping.set_chain(&chain, &files);
     // 100 ms: about 6 `fc-match` calls at 15 ms each (#110).
     let mut inline_lookups = true;
     app.shaping.look_up_inline_until(Some(std::time::Instant::now() + std::time::Duration::from_millis(100)));

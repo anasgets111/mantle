@@ -40,6 +40,8 @@ pub(super) struct WorkerFonts {
     families: HashMap<Arc<str>, Option<String>>,
     /// Every file already loaded, so `load_chain` can tell a new one from a repeat.
     loaded_paths: HashSet<PathBuf>,
+    /// The faces of the config's font files, which a named family resolves to before fontconfig.
+    registered: Vec<fontdb::FaceInfo>,
     /// Codepoints already looked up by [`WorkerFonts::cover`], found or not, so one nothing on the
     /// system covers costs a single `fc-match` for the life of the process rather than one per
     /// measurement -- the bargain `families` strikes for a family that is not installed.
@@ -49,8 +51,8 @@ pub(super) struct WorkerFonts {
 }
 
 impl WorkerFonts {
-    pub(super) fn new(chain: &[&str], restyles: Arc<AtomicU64>) -> Self {
-        let ResolvedFonts { mut db, primary_family, loaded_paths } = fonts::resolve_chain(chain);
+    pub(super) fn new(chain: &[&str], files: &[PathBuf], restyles: Arc<AtomicU64>) -> Self {
+        let ResolvedFonts { mut db, primary_family, loaded_paths, registered } = fonts::resolve_chain(chain, files);
         // Map once in fontdb, then register the same bytes with Parley.
         let chain_data = font_chain_data(&mut db);
         let mut font_context = FontContext::new();
@@ -68,6 +70,7 @@ impl WorkerFonts {
             primary_family,
             families: HashMap::new(),
             loaded_paths,
+            registered,
             probed: HashSet::new(),
             chain_data,
         };
@@ -107,7 +110,7 @@ impl WorkerFonts {
                 [Serif, SansSerif, Cursive, Fantasy, Monospace].map(|generic| db.family_name(&generic).to_owned())
             };
             let before = (self.loaded_paths.len(), generics(&self.db));
-            let hit = fonts::load_chain(&mut self.db, &[&**asked], &mut self.loaded_paths);
+            let hit = fonts::load_chain(&mut self.db, &[&**asked], &mut self.loaded_paths, &self.registered);
             self.families.insert(Arc::clone(asked), hit);
             if (self.loaded_paths.len(), generics(&self.db)) != before {
                 self.chain_data = font_chain_data(&mut self.db);
@@ -146,7 +149,7 @@ impl WorkerFonts {
 
     /// Loads `path`, the face fontconfig answered `ch` with. `true` when the database changed.
     pub(super) fn land(&mut self, ch: char, path: PathBuf, generation: &AtomicU64) -> bool {
-        if !fonts::load_cover(&mut self.db, ch, path, &mut self.loaded_paths) {
+        if !fonts::load_cover(&mut self.db, ch, path, &mut self.loaded_paths, &self.registered) {
             return false;
         }
         self.chain_data = font_chain_data(&mut self.db);
@@ -423,7 +426,7 @@ mod tests {
         if !fonts::fc_lists("Noto Sans") {
             return;
         }
-        let mut fonts = WorkerFonts::new(&["Noto Sans"], Arc::default());
+        let mut fonts = WorkerFonts::new(&["Noto Sans"], &[], Arc::default());
         let (result, ..) = shape(&mut fonts, "Noto Sans", &req("finished", 20.0), true);
         let glyphs = &result.shaped[0].glyphs;
         let fi = glyphs.iter().find(|glyph| glyph.start == 0).unwrap();
@@ -464,7 +467,7 @@ mod tests {
             return;
         }
 
-        let mut fonts = WorkerFonts::new(&["Noto Sans", "Noto Sans Mono"], Arc::default());
+        let mut fonts = WorkerFonts::new(&["Noto Sans", "Noto Sans Mono"], &[], Arc::default());
 
         let request = ShapeRequest { line_height: 28.8, ..req("Mantle Engine Renderer", 24.0) };
         let (proportional, ..) = shape(&mut fonts, "Noto Sans", &request, false);
@@ -487,7 +490,7 @@ mod tests {
     /// database. It must measure nothing without asking Parley to select a face.
     #[test]
     fn shaping_against_an_empty_database_measures_nothing_rather_than_panicking() {
-        let mut fonts = WorkerFonts::new(fonts::DEFAULT_CHAIN, Arc::default());
+        let mut fonts = WorkerFonts::new(fonts::DEFAULT_CHAIN, &[], Arc::default());
         fonts.chain_data.clear();
         let (measured, missing, _) = shape(&mut fonts, "", &req("Mantle", 14.0), true);
         assert_eq!((measured.width, measured.height), (0.0, 0.0));
@@ -503,7 +506,7 @@ mod tests {
         }
         let shots = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shots/fonts/fonts.conf");
         fonts::FONTCONFIG_FILE.set(Some(shots));
-        let mut fonts = WorkerFonts::new(&["Noto Sans"], Arc::default());
+        let mut fonts = WorkerFonts::new(&["Noto Sans"], &[], Arc::default());
         let (generation, ensured) = (AtomicU64::new(0), Mutex::new(HashSet::new()));
         fonts.family_for(Some(&Arc::from("noto sans")), &generation, &ensured);
         assert_eq!(generation.load(Ordering::Acquire), 0, "another name for the loaded Noto Sans");
@@ -527,7 +530,7 @@ mod tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shots/fonts");
         fonts::FONTCONFIG_FILE.set(Some(dir.join("fonts.conf")));
         let counter = Arc::new(AtomicU64::new(0));
-        let mut fonts = WorkerFonts::new(&["Noto Sans Symbols 2"], Arc::clone(&counter));
+        let mut fonts = WorkerFonts::new(&["Noto Sans Symbols 2"], &[], Arc::clone(&counter));
         let (generation, ensured) = (AtomicU64::new(0), Mutex::new(HashSet::new()));
         let restyles = || counter.load(Ordering::Acquire);
         fonts.family_for(Some(&Arc::from("Noto Sans")), &generation, &ensured);
@@ -540,7 +543,7 @@ mod tests {
 
     #[test]
     fn the_family_memo_clears_at_its_cap_and_takes_the_handle_side_with_it() {
-        let mut fonts = WorkerFonts::new(fonts::DEFAULT_CHAIN, Arc::default());
+        let mut fonts = WorkerFonts::new(fonts::DEFAULT_CHAIN, &[], Arc::default());
         let generation = AtomicU64::new(0);
         let ensured: Mutex<HashSet<Arc<str>>> = Mutex::new(HashSet::new());
         for i in 0..SHAPE_CACHE_CAPACITY {

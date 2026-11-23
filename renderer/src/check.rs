@@ -61,10 +61,18 @@ fn check(config_dir: &Path) -> Result<String, String> {
     let shell_lua = config_dir.join("shell.lua");
     let (output, specs, namespace, loader) = evaluate(config_dir)?;
     let size = LogicalSize { width: 1920.0, height: 1080.0 };
-    let warnings =
-        lay_out_passes(&output, &specs, &namespace, &loader, &ShapingHandle::spawn(), size).map_err(|failures| {
-            failures.iter().map(|failure| format!("{}: {failure}", config_dir.display())).collect::<Vec<_>>().join("\n")
-        })?;
+    // Measured in the declared fonts, as the shell draws: an icon font's glyphs change widths.
+    let (chain, files) = crate::lua::fonts::declared_chain(loader.lua());
+    let shaping = ShapingHandle::spawn();
+    shaping.set_chain(&chain, &files);
+    let mut warnings = lay_out_passes(&output, &specs, &namespace, &loader, &shaping, size).map_err(|failures| {
+        failures.iter().map(|failure| format!("{}: {failure}", config_dir.display())).collect::<Vec<_>>().join("\n")
+    })?;
+    for file in &files {
+        if let Err(err) = crate::image::refuse_irregular(file) {
+            warnings.push(format!("fonts: font file {} is skipped: {err}", file.display()));
+        }
+    }
     let mut report = format!("{}: ok, {} surface(s)\n", shell_lua.display(), specs.len());
     for spec in &specs {
         report.push_str(&format!("  {:<7} {}\n", spec.role(), spec.declared_id()));
@@ -471,6 +479,18 @@ mod tests {
         let report = super::run(dir.path()).expect("the config must evaluate");
         assert!(report.contains("ok, 1 surface(s)"), "{report}");
         assert!(report.contains("panel   bar"), "the bar must be in the report:\n{report}");
+    }
+
+    /// A font file path is relative to the config, and one that can't load is a warning, since the
+    /// shell starts without it.
+    #[test]
+    fn a_font_file_the_shell_cannot_load_is_a_warning_resolved_against_the_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("shell.lua"), "fonts { files = { \"fonts/Missing.ttf\" } }\nreturn {}\n")
+            .unwrap();
+        let report = super::run(dir.path()).expect("a missing font file is not a config error");
+        let missing = dir.path().join("fonts/Missing.ttf");
+        assert!(report.contains(&format!("warning: fonts: font file {} is skipped", missing.display())), "{report}");
     }
 
     /// `mantle check` on a panel `lens` (`props`) holding a pill `pill` with `shadow`.

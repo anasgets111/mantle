@@ -168,7 +168,7 @@ ellipsis; it never merges content from later lines into the preview.
 | Show at most two lines | `wrap = "word"`, `max_lines = 2`, `elide = "end"` and a bounded width, as in the card |
 | Bold one word | A [run](#runs) with `bold = true` |
 | Make a clickable link | A run with `href` plus `on_link` on the node ([`process.detach`](../guide/processes.md#processdetach) to open it) |
-| Use an icon font glyph | `font = "Symbols Nerd Font"` (any installed family) with the glyph as `content` |
+| Use an icon font glyph | `font = "Symbols Nerd Font"` (any installed family, or one [`fonts`](../guide/scripting.md#fonts) `files` registers) with the glyph as `content` |
 | Fill a Material Symbols icon | `font_variations = { FILL = 1 }` ([variable fonts](#variable-fonts)) |
 | Centre text in a fixed-width box | `text_align = "center"` with a `width` |
 | Show a live value | Bind `content` to a signal: `content = volume:map(function(v) return v and tostring(v) or "" end)` |

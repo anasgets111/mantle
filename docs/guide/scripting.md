@@ -401,16 +401,19 @@ in a callback, like [`palette.quantize`](#palettequantize). Worked example: [Col
 ## fonts
 
 `fonts { family, ... }` sets the fallback chain every `text` node uses. Each glyph takes the
-first family that covers it.
+first family that covers it. `files` registers font files the config ships.
 
 ```lua
 fonts { "Inter", "Symbols Nerd Font", "Noto Color Emoji" }
+fonts { files = { "fonts/Caveat-Regular.ttf" }, "Caveat", "Noto Sans" }
 ```
 
 | Part | Contract |
 | :--- | :--- |
-| Argument | Dense array of family-name strings. A hole, a named key or a non-string raises |
-| Resolution | Through `fc-match`. The first family that resolves is the primary and also loads its bold and italic faces; a family with no install is skipped (logged at `-vvv`) |
+| Argument | Dense array of family-name strings, plus an optional `files`. A hole, another named key or a non-string raises |
+| `files` | Font file paths: relative to the config directory, absolute, or `~/` under `$HOME`. A family a file holds resolves to it before `fc-match`, ignoring case, in the chain, in a generic name such as `sans-serif` and in a node's `font`, and no installed copy joins it: list each weight and style file you use. An installed file that also holds such a family loads none of its faces, so a family that shares a collection with one (Inter Display beside Inter in `Inter.ttc`) needs its own file registered too. A file joins the fallback order where the chain names its family, or after the chain when it names none. A missing or non-regular file is skipped with a warning, which `mantle check` also reports; so is a file with no font face, at startup only |
+| Replacing a file | Loaded font files, registered or installed, stay mapped until restart: overwriting one in place while the shell runs can crash it. Write the new file beside it and rename it over the old one |
+| Resolution | Through `fc-match` for a family no file registers. The first family that resolves is the primary and also loads its bold and italic faces; a family with no install is skipped (logged at `-vvv`) |
 | Default | Without a call: `sans-serif`, `Noto Sans CJK JP`, `Noto Color Emoji` |
 | Per node | A `text` node's `font` goes in front of the chain ([nodes](../nodes/text.md)); `font_variations` sets a variable font's axes ([variable fonts](../nodes/text.md#variable-fonts)) |
 | Uncovered glyph | fontconfig is asked for any installed face that covers it |

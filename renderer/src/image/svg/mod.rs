@@ -294,7 +294,7 @@ pub(super) mod tests {
     pub(crate) fn fixture_shaping() -> crate::text::shaping::ShapingHandle {
         let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shots/fonts/fonts.conf");
         let shaping = crate::text::shaping::ShapingHandle::spawn_with(Some(config));
-        shaping.set_chain(&["Noto Sans".into()]);
+        shaping.set_chain(&["Noto Sans".into()], &[]);
         shaping
     }
 
@@ -319,7 +319,7 @@ pub(super) mod tests {
         assert_eq!(plain, render(r#"font-family="Missing Fixture Family""#, &fonts));
         assert_ne!(plain, render(r#"font-weight="700""#, &fonts));
         assert_ne!(plain, render(r#"font-style="italic""#, &fonts));
-        shaping.set_chain(&["Noto Sans Symbols 2".into()]);
+        shaping.set_chain(&["Noto Sans Symbols 2".into()], &[]);
         let replacement = shaping.font_database();
         assert!(replacement.generation > fonts.generation);
         assert_eq!(replacement.primary_family, "Noto Sans Symbols 2");
@@ -345,7 +345,7 @@ pub(super) mod tests {
         )
         .unwrap();
         let shaping = crate::text::shaping::ShapingHandle::spawn_with(Some(config));
-        shaping.set_chain(&["Noto Sans".into(), "monospace".into(), "serif".into()]);
+        shaping.set_chain(&["Noto Sans".into(), "monospace".into(), "serif".into()], &[]);
         let fonts = shaping.font_database();
         let named = fonts
             .db

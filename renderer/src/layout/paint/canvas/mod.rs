@@ -1006,7 +1006,7 @@ pub(crate) mod tests {
         let instance = init_headless_egl(64, 64).expect("SVG integration test requires headless EGL");
         let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shots/fonts/fonts.conf");
         let shaping = ShapingHandle::spawn_with(Some(config));
-        shaping.set_chain(&["Noto Sans".into()]);
+        shaping.set_chain(&["Noto Sans".into()], &[]);
         let mut painter = text_painter(&instance, &shaping, 64, 64).expect("FemtoVG context");
         let mut images = ImageCache::inline().with_fonts(shaping.clone());
         let dir = tempfile::tempdir().unwrap();
@@ -1068,7 +1068,7 @@ pub(crate) mod tests {
         assert_eq!(coverage[0], coverage[1]);
         assert_eq!(coverage[0], coverage[2]);
         assert_eq!(coverage[0], coverage[3], "path alpha and SVG text mask the captured window together");
-        shaping.set_chain(&["Noto Sans Symbols 2".into()]);
+        shaping.set_chain(&["Noto Sans Symbols 2".into()], &[]);
         assert!(!images.poll().is_empty(), "unchanged SVG paths still owe a repaint after fonts change");
     }
 
@@ -1422,7 +1422,7 @@ pub(crate) mod tests {
         let Some(instance) = init_headless_egl(80, 60) else { return };
         let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shots/fonts/fonts.conf");
         let shaping = ShapingHandle::spawn_with(Some(config));
-        shaping.set_chain(&["Noto Sans".into()]);
+        shaping.set_chain(&["Noto Sans".into()], &[]);
         let Some(mut painter) = text_painter(&instance, &shaping, 80, 60) else { return };
         // Box rows 20..24; "Hgjpq" at 20px has ink below y = 24.
         let root = resolved_surface(
@@ -1444,7 +1444,7 @@ pub(crate) mod tests {
         let Some(instance) = init_headless_egl(100, 100) else { return };
         let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shots/fonts/fonts.conf");
         let shaping = ShapingHandle::spawn_with(Some(config));
-        shaping.set_chain(&["Noto Sans".into()]);
+        shaping.set_chain(&["Noto Sans".into()], &[]);
         let Some(mut painter) = text_painter(&instance, &shaping, 100, 100) else { return };
         let mut ink = |transform: &str| {
             let src = format!(
@@ -1492,7 +1492,7 @@ pub(crate) mod tests {
         assert!(first.is_some() && layers == 1, "one raster kept: {layers}");
         assert_eq!(kept(25), (first, 1), "the new angle composites the same image");
         // Any new face can fill a box the raster holds (#55).
-        shaping.set_chain(&["sans-serif".into()]);
+        shaping.set_chain(&["sans-serif".into()], &[]);
         painter.sync();
         assert_eq!(painter.census().2, 0, "a new face set drops every kept raster");
     }
@@ -1569,7 +1569,7 @@ pub(crate) mod tests {
             return;
         }
         let shaping = ShapingHandle::spawn();
-        shaping.set_chain(&[declared.to_string()]);
+        shaping.set_chain(&[declared.to_string()], &[]);
         let Some(mut painter) = text_painter(&instance, &shaping, 400, 60) else { return };
         let declared_face = first_face(&shaping, None);
         let declared_id = painter.font_id(declared_face);

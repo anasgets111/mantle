@@ -186,7 +186,7 @@ enum Request {
     /// Replace the chain this worker measures against, once the config has said what it wants
     /// (ADR-0043 decision 2). Replies once the new font set is live, so the next
     /// `font_chain_data` call answers with the new faces.
-    SetChain(Vec<String>, mpsc::Sender<()>),
+    SetChain(Vec<String>, Vec<PathBuf>, mpsc::Sender<()>),
     /// Resolve a family without measuring anything (ADR-0144). A `text` node with an explicit
     /// width *and* height is never handed to taffy's measure callback (`compute_leaf_layout`
     /// returns early when both are known) and, without `elide` or `wrap`, never reaches
@@ -320,7 +320,7 @@ impl ShapingHandle {
     pub(crate) fn spawn_variable_fixture() -> Self {
         let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/variable/fonts.conf");
         let handle = Self::spawn_with(Some(config));
-        handle.set_chain(&["Inter Variable".into()]);
+        handle.set_chain(&["Inter Variable".into()], &[]);
         handle
     }
 
@@ -343,7 +343,7 @@ impl ShapingHandle {
                 fonts::FONTCONFIG_FILE.set(fontconfig);
                 // A handle dropped before its first request needs no font discovery.
                 let Ok(first) = rx.recv() else { return };
-                let mut fonts = WorkerFonts::new(fonts::DEFAULT_CHAIN, Arc::clone(&restyles));
+                let mut fonts = WorkerFonts::new(fonts::DEFAULT_CHAIN, &[], Arc::clone(&restyles));
                 let mut probes: Option<(mpsc::SyncSender<char>, Waker)> = None;
                 // Lookups before this still run before the reply with a probe thread (#110).
                 let mut inline_until: Option<Instant> = None;
@@ -426,9 +426,12 @@ impl ShapingHandle {
                         Request::FontChainData(reply) => {
                             let _ = reply.send(fonts.chain_data.clone());
                         }
-                        Request::SetChain(chain, reply) => {
-                            let borrowed: Vec<&str> = chain.iter().map(String::as_str).collect();
-                            fonts = WorkerFonts::new(&borrowed, Arc::clone(&restyles));
+                        Request::SetChain(chain, files, reply) => {
+                            let mut borrowed: Vec<&str> = chain.iter().map(String::as_str).collect();
+                            if borrowed.is_empty() {
+                                borrowed = fonts::DEFAULT_CHAIN.to_vec();
+                            }
+                            fonts = WorkerFonts::new(&borrowed, &files, Arc::clone(&restyles));
                             generation.fetch_add(1, Ordering::Release);
                             let _ = reply.send(());
                         }
@@ -607,11 +610,12 @@ impl ShapingHandle {
     /// (`renderer/src/wayland/main_loop.rs`), and `TextPainter` is built lazily on a surface's first paint, after, so
     /// femtovg picks up the new faces once the caller drops any painter it already built.
     ///
-    /// A no-op for an empty chain: a config declaring no fonts keeps [`fonts::DEFAULT_CHAIN`],
-    /// since a chain no font on the system can honour would otherwise leave `TextPainter::new`
-    /// with nothing to load and the shell with no text.
-    pub fn set_chain(&self, chain: &[String]) {
-        if chain.is_empty() {
+    /// `files` are font files to register first (`fonts::resolve_chain`). An empty chain keeps
+    /// [`fonts::DEFAULT_CHAIN`], since a chain no font on the system can honour would otherwise
+    /// leave `TextPainter::new` with nothing to load and the shell with no text; with no files
+    /// either, this is a no-op.
+    pub fn set_chain(&self, chain: &[String], files: &[PathBuf]) {
+        if chain.is_empty() && files.is_empty() {
             return;
         }
         debug!("setting font chain to {} faces", chain.len());
@@ -621,7 +625,7 @@ impl ShapingHandle {
         self.ensured.lock().unwrap_or_else(PoisonError::into_inner).clear();
         let (reply_tx, reply_rx) = mpsc::channel();
         self.requests
-            .send(Request::SetChain(chain.to_vec(), reply_tx))
+            .send(Request::SetChain(chain.to_vec(), files.to_vec(), reply_tx))
             .expect("mantle-text-shaping worker thread died");
         let _ = reply_rx.recv();
     }
@@ -792,7 +796,7 @@ pub(crate) mod tests {
             return;
         };
         let handle = ShapingHandle::spawn();
-        handle.set_chain(&[declared.to_string()]);
+        handle.set_chain(&[declared.to_string()], &[]);
         let before = handle.font_generation();
 
         let shaped = handle.shape_glyphs(req(&rescued.to_string(), 20.0));
@@ -820,7 +824,7 @@ pub(crate) mod tests {
             return;
         }
         let handle = ShapingHandle::spawn();
-        handle.set_chain(&[declared.to_string()]);
+        handle.set_chain(&[declared.to_string()], &[]);
 
         let shaped = handle.shape_glyphs(req(&format!("{hopeless}{rescued}"), 20.0));
 
@@ -841,7 +845,7 @@ pub(crate) mod tests {
             return;
         };
         let handle = ShapingHandle::spawn();
-        handle.set_chain(&[declared.to_string()]);
+        handle.set_chain(&[declared.to_string()], &[]);
         let before = handle.font_generation();
 
         handle.ensure_family(&Arc::from(named));
@@ -867,10 +871,10 @@ pub(crate) mod tests {
             return;
         };
         let handle = ShapingHandle::spawn();
-        handle.set_chain(&[declared.to_string()]);
+        handle.set_chain(&[declared.to_string()], &[]);
         handle.ensure_family(&Arc::from(named));
 
-        handle.set_chain(&[declared.to_string()]);
+        handle.set_chain(&[declared.to_string()], &[]);
         let after_reset = handle.font_generation();
         handle.ensure_family(&Arc::from(named));
 
@@ -890,7 +894,7 @@ pub(crate) mod tests {
             return;
         };
         let handle = ShapingHandle::spawn();
-        handle.set_chain(&[declared.to_string()]);
+        handle.set_chain(&[declared.to_string()], &[]);
         let before = handle.font_generation();
 
         handle.shape(req_in("hello", 20.0, Some(named)));
@@ -910,7 +914,7 @@ pub(crate) mod tests {
             return;
         };
         let handle = ShapingHandle::spawn();
-        handle.set_chain(&[declared.to_string()]);
+        handle.set_chain(&[declared.to_string()], &[]);
         // Proportional against monospaced: "iiii" is much narrower in a sans than in a mono, which
         // no amount of cache-key confusion could produce on its own.
         let plain = handle.shape(req_in("iiii", 32.0, None)).width;
@@ -942,15 +946,15 @@ pub(crate) mod tests {
             return;
         };
         let handle = ShapingHandle::spawn();
-        handle.set_chain(&[declared.to_string()]);
+        handle.set_chain(&[declared.to_string()], &[]);
         handle.shape(req_in("hello", 20.0, Some(named)));
         assert!(named_face_is_handed(&handle, named));
 
-        handle.set_chain(&[named.to_string()]);
+        handle.set_chain(&[named.to_string()], &[]);
         // Face ids restart with a new database, so compare against a chain that never knew the old
         // family rather than against the old ids.
         let fresh = ShapingHandle::spawn();
-        fresh.set_chain(&[named.to_string()]);
+        fresh.set_chain(&[named.to_string()], &[]);
         let sizes = |handle: &ShapingHandle| {
             let mut sizes: Vec<usize> = handle.font_chain_data().iter().map(|face| face.data.as_ref().len()).collect();
             sizes.sort_unstable();
@@ -976,7 +980,7 @@ pub(crate) mod tests {
             eprintln!("skip: no second family installed, so the chain could not change");
             return;
         };
-        handle.set_chain(std::slice::from_ref(&wanted));
+        handle.set_chain(std::slice::from_ref(&wanted), &[]);
         assert_eq!(handle.resolved_primary_family(), wanted, "the worker measures against what the config asked for");
     }
 
@@ -991,7 +995,7 @@ pub(crate) mod tests {
             return;
         };
         let before: Vec<usize> = handle.font_chain_data().iter().map(|data| data.data.as_ref().len()).collect();
-        handle.set_chain(&[wanted]);
+        handle.set_chain(&[wanted], &[]);
         let after: Vec<usize> = handle.font_chain_data().iter().map(|data| data.data.as_ref().len()).collect();
         assert!(!after.is_empty(), "a one-family chain loads that family's faces");
         assert_ne!(after, before, "the bytes femtovg would load must be the new font's, not the old chain's");
@@ -1071,7 +1075,7 @@ pub(crate) mod tests {
             return;
         }
         let handle = ShapingHandle::spawn();
-        handle.set_chain(&["Noto Sans".to_string()]);
+        handle.set_chain(&["Noto Sans".to_string()], &[]);
         let plain = handle.shape_glyphs(req("Mantle", 20.0));
         let italic = handle.shape_glyphs(ShapeRequest { italic: true, ..req("Mantle", 20.0) });
         assert_ne!(plain.shaped[0].glyphs[0].face, italic.shaped[0].glyphs[0].face);
@@ -1166,8 +1170,17 @@ pub(crate) mod tests {
     fn an_empty_declaration_leaves_the_default_chain_standing() {
         let handle = ShapingHandle::spawn();
         let before = handle.resolved_primary_family();
-        handle.set_chain(&[]);
+        handle.set_chain(&[], &[]);
         assert_eq!(handle.resolved_primary_family(), before, "declaring nothing is not declaring an empty chain");
+        // Files alone register over the default chain rather than being dropped with the no-op.
+        let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/variable/InterVariable-subset.ttf");
+        handle.set_chain(&[], std::slice::from_ref(&file));
+        let fonts = handle.font_database();
+        assert!(
+            fonts.db.faces().any(|face| matches!(&face.source,
+                fontdb::Source::File(path) | fontdb::Source::SharedFile(path, _) if *path == file)),
+            "the registered file reaches the worker's database"
+        );
     }
 
     /// Every entry was measured against faces the new chain replaces, so keeping any of them would
@@ -1177,7 +1190,7 @@ pub(crate) mod tests {
         let handle = ShapingHandle::spawn();
         handle.shape(req("Mantle", 14.0));
         assert_eq!(handle.cached_len(), 1);
-        handle.set_chain(&["Noto Sans".to_string()]);
+        handle.set_chain(&["Noto Sans".to_string()], &[]);
         assert_eq!(handle.cached_len(), 0);
     }
 
@@ -1511,7 +1524,7 @@ pub(crate) mod tests {
         }
         let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shots/fonts/fonts.conf");
         let handle = ShapingHandle::spawn_with(Some(config));
-        handle.set_chain(&["Noto Sans".into()]);
+        handle.set_chain(&["Noto Sans".into()], &[]);
         Some(handle)
     }
 

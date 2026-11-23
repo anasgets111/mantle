@@ -484,7 +484,7 @@ pub(super) fn take_capped(source: impl std::io::Read, cap: u64) -> std::io::Resu
 /// Stat-then-open leaves a TOCTOU window, the same one
 /// `capabilities::notifications::icon::validate_trusted_path` already accepts. It turns "hangs
 /// forever" into "hangs only if something wins a race", without an `O_NONBLOCK` fd dance.
-pub(super) fn refuse_irregular(path: &Path) -> std::io::Result<()> {
+pub(crate) fn refuse_irregular(path: &Path) -> std::io::Result<()> {
     if std::fs::metadata(path)?.is_file() {
         return Ok(());
     }

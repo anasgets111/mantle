@@ -208,7 +208,7 @@ impl Loader {
         action::register(&lua)?;
         json::register(&lua)?;
         log::register(&lua)?;
-        fonts::register(&lua)?;
+        fonts::register(&lua, config_dir)?;
         fuzzy::register(&lua)?;
         focus::register(&lua)?;
         toplevel::register(&lua, dirty.clone())?;
