@@ -64,8 +64,9 @@ pub fn caret_x(line: &ShapedLine, offset: usize) -> f32 {
     // Across every glyph of it, never just the first: `س` shapes to two in some faces, and where
     // they meet is the middle of the letter.
     let (lo, hi) = cluster_span(cluster);
-    // Only the cluster's last byte sits on its trailing edge; every other offset leads it.
-    match (offset == cluster[0].end as usize && offset != cluster[0].start as usize) != cluster[0].rtl {
+    // Only the cluster's first byte sits on its leading edge; its end, or a byte inside a ligature,
+    // draws on the trailing one.
+    match (offset != cluster[0].start as usize) != cluster[0].rtl {
         true => hi,
         false => lo,
     }
@@ -73,7 +74,7 @@ pub fn caret_x(line: &ShapedLine, offset: usize) -> f32 {
 
 /// One cluster's glyphs at a time. A cluster can shape to several, each carrying its whole byte
 /// range, and they arrive together because the line is in visual order.
-fn clusters(glyphs: &[Glyph]) -> impl Iterator<Item = &[Glyph]> {
+pub fn clusters(glyphs: &[Glyph]) -> impl Iterator<Item = &[Glyph]> {
     glyphs.chunk_by(|a, b| a.start == b.start && a.end == b.end)
 }
 

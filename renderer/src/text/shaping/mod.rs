@@ -18,7 +18,7 @@ use crate::wake::Waker;
 mod caret;
 mod worker;
 
-pub use caret::{caret_at, caret_thickness, caret_visible_left, caret_x, cluster_span};
+pub use caret::{caret_at, caret_thickness, caret_visible_left, caret_x, cluster_span, clusters};
 use worker::{WorkerFonts, shape};
 
 /// A byte range of a request's text shaped in a bold and/or italic face rather than the chain's
@@ -90,6 +90,10 @@ pub struct ShapeResult {
     /// The normalized axis coordinates Parley shaped each run at, in `fvar` order, indexed by
     /// [`Glyph::coords`]: paint rasterizes at exactly these, so outlines match the advances.
     pub coords: Arc<[Box<[i16]>]>,
+    /// How far above the baseline a strike-through centres in each face and [`Glyph::coords`]
+    /// instance a glyph names: each run is struck at its own face's height, not a neighbour's in
+    /// another font, and a variable face's weights each at theirs.
+    pub strikes: Arc<[(fontdb::ID, u32, f32)]>,
 }
 
 /// One laid-out line (ADR-0211): which way it reads, how far its baseline sits below the line's
@@ -1373,6 +1377,7 @@ pub(crate) mod tests {
             line_ranges: vec![0..2, 2..5].into(),
             shaped: vec![ShapedLine { rtl: false, width: 5.0, baseline: 12.0, glyphs: vec![glyph; 3].into() }].into(),
             coords: Vec::new().into(),
+            strikes: Vec::new().into(),
         };
         let want = std::mem::size_of::<ShapeKey>()
             + std::mem::size_of::<ShapeResult>()

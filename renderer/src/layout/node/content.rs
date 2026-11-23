@@ -15,7 +15,7 @@ use super::*;
 use crate::lua::luacats::lua_shape;
 
 /// A stretch of a `text`'s content drawn differently from the rest (ADR-0104): in the chain's
-/// bold and/or italic face, underlined, or in its own colour. Ranges are bytes into the node's
+/// bold and/or italic face, underlined, struck through, or in its own colour. Ranges are bytes into the node's
 /// `content` string, in order and non-overlapping, and `layout::scene` remaps them when a wrap or
 /// an elide rewrites that string. A `text` whose content is one plain string has none.
 #[derive(Debug, Clone, PartialEq)]
@@ -24,14 +24,15 @@ pub struct StyleRun {
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
+    pub strikethrough: bool,
     pub color: Option<Rgba>,
     /// What a press on this run hands the node's `on_link` (ADR-0106). Carried, never opened: the
     /// engine knows which run was pressed and nothing about URLs.
     pub href: Option<String>,
 }
 
-/// The bold/italic subset of `runs` in the form the shaper needs. Underline and colour do not
-/// change shaping, so contents differing only by underline or colour share a memo entry.
+/// The bold/italic subset of `runs` in the form the shaper needs. Decorations and colour do not
+/// change shaping, so contents differing only by them share a memo entry.
 pub fn font_runs(runs: &[StyleRun]) -> Vec<FontRun> {
     runs.iter()
         .filter(|run| run.bold || run.italic)
@@ -63,6 +64,8 @@ lua_shape! {
         italic: Option<bool>,
         /// Underline in the run's colour.
         underline: Option<bool>,
+        /// Strike through in the run's colour, at the font's strikeout position.
+        strikethrough: Option<bool>,
         /// Overrides the node's `foreground`.
         color: Option<Rgba>,
         /// Passed to the node's `on_link` when clicked; never opened by the engine (ADR-0106).
@@ -103,21 +106,22 @@ fn parse_runs(runs: &mlua::Table) -> Result<(String, Vec<StyleRun>), LayoutError
         let Value::Table(run) = run else {
             return Err(invalid("content", format!("run {index}: expected a table, got {}", preview_for_error(&run))));
         };
-        let TextRun { text, bold, italic, underline, color, href, kind } =
-            TextRun::read("", &run).map_err(|error| match error {
+        let TextRun { text, bold, italic, underline, strikethrough, color, href, kind } = TextRun::read("", &run)
+            .map_err(|error| match error {
                 LayoutError::InvalidProperty { detail, .. } => invalid("content", format!("run {index}: {detail}")),
                 other => other.under(&format!("content[{index}]")),
             })?;
         let href = href.filter(|href| !href.is_empty());
         let _ = kind;
-        let (bold, italic, underline) = (bold.unwrap_or(false), italic.unwrap_or(false), underline.unwrap_or(false));
+        let [bold, italic, underline, strikethrough] =
+            [bold, italic, underline, strikethrough].map(|on| on.unwrap_or(false));
         if text.is_empty() {
             continue;
         }
         let start = content.len();
         content.push_str(&text);
-        if bold || italic || underline || color.is_some() || href.is_some() {
-            styles.push(StyleRun { range: start..content.len(), bold, italic, underline, color, href });
+        if bold || italic || underline || strikethrough || color.is_some() || href.is_some() {
+            styles.push(StyleRun { range: start..content.len(), bold, italic, underline, strikethrough, color, href });
         }
     }
     Ok((content, styles))
@@ -482,16 +486,19 @@ mod tests {
         let lua = mlua::Lua::new();
         let (content, runs) = runs_content(
             &lua,
-            r##"{ { text = "Alice" , bold = true }, { text = ": see " }, { text = "this", underline = true, color = "#ff0000" }, { text = "!" } }"##,
+            r##"{ { text = "Alice" , bold = true }, { text = ": see " }, { text = "this", underline = true, color = "#ff0000" }, { text = "!" }, { text = "old", strikethrough = true }, { text = "?", italic = true } }"##,
         )
         .unwrap();
-        assert_eq!(content, "Alice: see this!");
-        assert_eq!(runs.len(), 2, "plain runs are text with no style entry of their own");
+        assert_eq!(content, "Alice: see this!old?");
+        assert_eq!(runs.len(), 4, "plain runs are text with no style entry of their own");
         assert_eq!(runs[0].range, 0..5);
         assert!(runs[0].bold && !runs[0].italic && !runs[0].underline && runs[0].color.is_none());
         assert_eq!(runs[1].range, 11..15);
-        assert!(runs[1].underline);
+        assert!(runs[1].underline && !runs[1].strikethrough);
         assert_eq!(runs[1].color, Some(Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 }));
+        assert_eq!(runs[2].range, 16..19, "a strike-only run keeps its entry");
+        assert!(runs[2].strikethrough && !runs[2].underline);
+        assert!(runs[3].italic && !runs[3].bold, "an italic-only run keeps its entry");
     }
 
     #[test]
@@ -567,9 +574,33 @@ mod tests {
     #[test]
     fn font_runs_keep_only_the_runs_the_shaper_can_see() {
         let runs = vec![
-            StyleRun { range: 0..2, bold: false, italic: false, underline: true, color: None, href: None },
-            StyleRun { range: 2..4, bold: true, italic: false, underline: false, color: None, href: None },
-            StyleRun { range: 4..6, bold: false, italic: true, underline: true, color: None, href: None },
+            StyleRun {
+                range: 0..2,
+                bold: false,
+                italic: false,
+                underline: true,
+                strikethrough: false,
+                color: None,
+                href: None,
+            },
+            StyleRun {
+                range: 2..4,
+                bold: true,
+                italic: false,
+                underline: false,
+                strikethrough: false,
+                color: None,
+                href: None,
+            },
+            StyleRun {
+                range: 4..6,
+                bold: false,
+                italic: true,
+                underline: true,
+                strikethrough: false,
+                color: None,
+                href: None,
+            },
         ];
         let fonts = font_runs(&runs);
         assert_eq!(fonts.len(), 2);

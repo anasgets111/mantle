@@ -133,6 +133,7 @@
 ---@field bold? boolean|Bound Uses the family's bold face when fontconfig has one.
 ---@field italic? boolean|Bound Uses the family's italic face when fontconfig has one.
 ---@field underline? boolean|Bound Underline in the run's colour.
+---@field strikethrough? boolean|Bound Strike through in the run's colour, at the font's strikeout position.
 ---@field color? Color|Bound Overrides the node's `foreground`.
 ---@field href? string|Bound Passed to the node's `on_link` when clicked; never opened by the engine (ADR-0106).
 ---@field kind? "text"|Bound A notification text span's, so one passes through.

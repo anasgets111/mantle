@@ -10,6 +10,7 @@ use crate::layout::node::{
     invert_affine,
 };
 use crate::layout::scene::ResolvedNode;
+use crate::text::atlas::x_spans;
 use crate::text::shaping::{self, ShapeResult, ShapedLine, ShapingHandle};
 use crate::text::snap::LogicalRect;
 use cursor_icon::CursorIcon;
@@ -62,8 +63,8 @@ pub fn hit_path(root: &ResolvedNode, point: LogicalPoint) -> Vec<&ResolvedNode> 
 /// own coordinates.
 ///
 /// The geometry is paint's own: the rows [`ShapingHandle::shape_lines`] lays out, a `line_height`
-/// apart, under the same alignment (ADR-0211); the run under the pointer holds the byte its glyph
-/// came from.
+/// apart, under the same alignment (ADR-0211); a link's spans are the ones its underline draws, so a
+/// link on half a ligature takes that half.
 pub fn link_under(node: &ResolvedNode, point: LogicalPoint, shaping: &ShapingHandle) -> Option<String> {
     let Some(PaintStyle::Text { content, runs, face, align, .. }) = node.paint.as_ref() else {
         return None;
@@ -83,10 +84,14 @@ pub fn link_under(node: &ResolvedNode, point: LogicalPoint, shaping: &ShapingHan
             continue;
         };
         let left = align.line_left(laid.rtl, 0.0, inner.width, laid.width);
-        let glyph =
-            laid.glyphs.iter().find(|glyph| (left + glyph.x..left + glyph.x + glyph.advance).contains(&point.x))?;
-        let at = line_start + glyph.start as usize;
-        return runs.iter().find(|run| run.range.contains(&at)).and_then(|run| run.href.clone());
+        let x = point.x - left;
+        let on = |range: &std::ops::Range<usize>| {
+            let range = range.start.saturating_sub(line_start)..range.end.saturating_sub(line_start);
+            x_spans(content.get(line_start..).unwrap_or_default(), &laid.glyphs, range)
+                .iter()
+                .any(|(x0, x1)| (*x0..*x1).contains(&x))
+        };
+        return runs.iter().filter(|run| run.href.is_some() && on(&run.range)).find_map(|run| run.href.clone());
     }
     None
 }
@@ -551,7 +556,15 @@ pub(crate) mod tests {
     }
 
     fn link(range: std::ops::Range<usize>, href: &str) -> StyleRun {
-        StyleRun { range, bold: false, italic: false, underline: true, color: None, href: Some(href.to_string()) }
+        StyleRun {
+            range,
+            bold: false,
+            italic: false,
+            underline: true,
+            strikethrough: false,
+            color: None,
+            href: Some(href.to_string()),
+        }
     }
 
     fn width_of(shaping: &ShapingHandle, text: &str) -> f32 {
@@ -750,6 +763,17 @@ pub(crate) mod tests {
         assert_eq!(link_under(&node, LogicalPoint { x, y: step * 2.5 }, &shaping), None, "below the last line");
     }
 
+    /// #170: a link on the `i` of a plain `f` + `i` that Noto Sans joins into one `fi` glyph holds
+    /// that glyph's right half, where its underline draws.
+    #[test]
+    fn a_link_on_half_a_ligature_is_found_on_that_half() {
+        let shaping = ShapingHandle::spawn();
+        let node = styled_text("fi", vec![link(1..2, "https://i/")], TextAlign::Start, 200.0);
+        let w = width_of(&shaping, "fi");
+        assert_eq!(link_under(&node, LogicalPoint { x: w * 0.75, y: 5.0 }, &shaping), Some("https://i/".to_string()));
+        assert_eq!(link_under(&node, LogicalPoint { x: w * 0.25, y: 5.0 }, &shaping), None, "the `f` half is plain");
+    }
+
     /// Centred and right-aligned lines start where paint starts them, not at zero.
     #[test]
     fn alignment_moves_where_the_line_starts() {
@@ -810,7 +834,15 @@ pub(crate) mod tests {
         assert_eq!(link_under(&plain, LogicalPoint { x: 3.0, y: 3.0 }, &shaping), None);
         let bold_only = styled_text(
             "hello",
-            vec![StyleRun { range: 0..5, bold: true, italic: false, underline: false, color: None, href: None }],
+            vec![StyleRun {
+                range: 0..5,
+                bold: true,
+                italic: false,
+                underline: false,
+                strikethrough: false,
+                color: None,
+                href: None,
+            }],
             TextAlign::Start,
             100.0,
         );

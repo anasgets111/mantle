@@ -86,6 +86,7 @@ Each run in a `content` array is a table:
 | `text` | String | Required | A run without it is refused; an empty one is skipped |
 | `bold`, `italic` | Boolean | `false` | `bold` uses weight 700; `italic` enables italic. Other node-level styles carry through |
 | `underline` | Boolean | `false` | Underline in the run's colour |
+| `strikethrough` | Boolean | `false` | A line through the run in its colour, at the font's strikeout position and the underline's thickness |
 | `color` | [Colour](../guide/paint.md#colours) | The node's `foreground` | |
 | `href` | String | None | Handed to `on_link` on click; the pointer shows `"pointer"` over it. `""` is no link |
 
@@ -93,7 +94,7 @@ A run also takes `kind = "text"`, so a [notification](../capabilities/notificati
 text spans pass through unchanged. Drop its image spans, which have no `text`. A `nil` hole ends the
 array.
 
-<!-- shot-alt: A paragraph reading "Update ready. 3 packages can be installed. Release notes", with "3 packages" in bold and "Release notes" underlined in blue. -->
+<!-- shot-alt: A paragraph reading "Update ready. 3 packages can be installed, 120 MB 80 MB. Release notes", with "3 packages" in bold, "120 MB" struck through and "Release notes" underlined in blue. -->
 ```lua,shot
 local body = text {
     width = 280,
@@ -101,7 +102,9 @@ local body = text {
     content = {
         { text = "Update ready. " },
         { text = "3 packages", bold = true },
-        { text = " can be installed. " },
+        { text = " can be installed, " },
+        { text = "120 MB", strikethrough = true },
+        { text = " 80 MB. " },
         { text = "Release notes", underline = true, color = "#89B4FA", href = "https://example.org/notes" },
     },
     on_link = function(href) process.detach("xdg-open", { href }) end,

@@ -202,6 +202,7 @@ pub(super) fn shape(
                 line_ranges: Vec::new().into(),
                 shaped: Vec::new().into(),
                 coords: Vec::new().into(),
+                strikes: Vec::new().into(),
             },
             Vec::new(),
             false,
@@ -252,6 +253,7 @@ pub(super) fn shape(
     let mut line_ranges = Vec::new();
     let mut shaped = Vec::new();
     let mut coords: Vec<Box<[i16]>> = Vec::new();
+    let mut strikes: Vec<(fontdb::ID, u32, f32)> = Vec::new();
     let mut missing = Vec::new();
     let mut partial = false;
     // ASCII holds no right-to-left character, so every paragraph of it is LTR.
@@ -279,8 +281,22 @@ pub(super) fn shape(
                 coords.push(bits().collect());
                 coords.len() - 1
             }) as u32;
+            if let Some(face) = face.filter(|face| !strikes.iter().any(|(seen, at, _)| (seen, *at) == (face, instance)))
+            {
+                strikes.push((face, instance, strike_centre(run.font_metrics())));
+            }
             for cluster in run.visual_clusters() {
                 let mut range = cluster.text_range();
+                // A ligature's glyphs carry every character it joins: Parley hands them all to its
+                // first cluster and none to the rest, whose bytes no glyph would otherwise cover.
+                let mut next = cluster.next_logical();
+                while let Some(joined) = next.filter(|_| cluster.is_ligature_start()) {
+                    if !joined.is_ligature_continuation() {
+                        break;
+                    }
+                    range.end = joined.text_range().end;
+                    next = joined.next_logical();
+                }
                 range.end = range.end.min(request.text.len());
                 range.start = range.start.min(range.end);
                 // The shaper fakes a thin space or hides a ZWJ the face lacks, so no glyph 0 shows
@@ -335,8 +351,19 @@ pub(super) fn shape(
         line_ranges: line_ranges.into(),
         shaped: shaped.into(),
         coords: coords.into(),
+        strikes: strikes.into(),
     };
     (result, missing, partial)
+}
+
+/// How far above the baseline a strike-through centres in a face with `font`'s metrics. A strikeout
+/// at or below the baseline (0 in the Material Symbols fonts) is read as none, so the line sits at
+/// half the ascent, where Parley puts it for a face with no OS/2 table.
+fn strike_centre(font: &parley::layout::FontMetrics) -> f32 {
+    match font.strikethrough_offset > 0.0 {
+        true => font.strikethrough_offset - font.strikethrough_size / 2.0,
+        false => font.ascent / 2.0,
+    }
 }
 
 /// Whether Parley counts `ch` toward a face's coverage: not a control, line or paragraph separator,
@@ -402,6 +429,23 @@ mod tests {
         let fi = glyphs.iter().find(|glyph| glyph.start == 0).unwrap();
         let n = glyphs.iter().find(|glyph| glyph.start == 2).unwrap();
         assert!((n.x - (fi.x + fi.advance)).abs() < 1.0, "a ligature's zero-glyph continuation adds no pen advance");
+        assert_eq!(fi.end, 2, "the ligature's glyph carries the `i` it joins");
+        let after = caret_x(&result.shaped[0], 1);
+        assert_eq!(after, fi.x + fi.advance, "a caret inside the ligature still draws after it");
+        // Noto Sans's OS/2 strikeout: top 322 and thickness 50 per 1000 units above the baseline.
+        let [(face, _, centre)] = *result.strikes else { panic!("one face: {:?}", result.strikes) };
+        assert_eq!(face, fi.face);
+        assert!((centre - (322.0 - 25.0) / 1000.0 * 20.0).abs() < 0.1, "strike centred at {centre}");
+    }
+
+    /// #170: a face whose OS/2 strikeout sits on the baseline (0 in the Material Symbols fonts) is
+    /// struck at half its ascent, as a face with no table is.
+    #[test]
+    fn a_strikeout_on_the_baseline_falls_back_to_half_the_ascent() {
+        let font = parley::layout::FontMetrics::fallback(20.0);
+        assert_eq!(strike_centre(&parley::layout::FontMetrics { strikethrough_offset: 0.0, ..font }), 8.0);
+        let set = parley::layout::FontMetrics { strikethrough_offset: 6.0, strikethrough_size: 1.0, ..font };
+        assert_eq!(strike_centre(&set), 5.5);
     }
 
     #[test]

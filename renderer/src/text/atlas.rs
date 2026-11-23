@@ -9,6 +9,8 @@
 use rustc_hash::FxHashMap as HashMap;
 use std::error::Error;
 use std::ffi::c_void;
+use std::ops::Range;
+use unicode_segmentation::UnicodeSegmentation;
 
 use femtovg::renderer::OpenGl;
 use femtovg::{Canvas, FontId, ImageId, Paint, Path, PositionedGlyph, TextContext};
@@ -17,7 +19,9 @@ use shared::debug;
 use crate::layout::field_rows;
 use crate::layout::node::{CaretStyle, Rgba, StyleRun, TextAlign, Typeface, font_runs};
 use crate::layout::paint::DrawCmd;
-use crate::text::shaping::{FontFace, Glyph, ShapingHandle, caret_thickness, caret_x, cluster_span};
+use crate::text::shaping::{
+    FontFace, Glyph, ShapedLine, ShapingHandle, caret_thickness, caret_x, cluster_span, clusters,
+};
 
 use super::snap::{LogicalRect, snap_to_physical};
 
@@ -147,15 +151,89 @@ fn register(
     faces
 }
 
-/// The spans under the glyphs `in_run` picks, one per visually contiguous group of them: bidi can
-/// split a run around text that is not in it (ADR-0211). `glyphs` are in visual order.
-fn x_spans(glyphs: &[Glyph], in_run: impl Fn(&Glyph) -> bool) -> Vec<(f32, f32)> {
-    glyphs
-        .chunk_by(|a, b| in_run(a) == in_run(b))
-        .filter(|group| in_run(&group[0]))
-        .map(cluster_span)
-        .filter(|(x0, x1)| x0 < x1)
-        .collect()
+/// The spans under the line-relative bytes `range`, one per visually contiguous stretch: bidi can
+/// split a run around text that is not in it (ADR-0211). `glyphs` are in visual order. A cluster
+/// partly in `range`, as a ligature joining a struck letter to a plain one, gives the share of its
+/// width those graphemes hold, as Parley splits a ligature's advance evenly over them. `text` is
+/// what the glyphs' byte offsets index.
+pub(crate) fn x_spans(text: &str, glyphs: &[Glyph], range: Range<usize>) -> Vec<(f32, f32)> {
+    let graphemes = |from: usize, to: usize| text.get(from..to).map_or(to - from, |s| s.graphemes(true).count());
+    let mut spans: Vec<(f32, f32)> = Vec::new();
+    let mut open = false;
+    for cluster in clusters(glyphs) {
+        let (start, end) = (cluster[0].start as usize, cluster[0].end as usize);
+        let (lo, hi) = (start.max(range.start), end.min(range.end));
+        if lo >= hi {
+            open = false;
+            continue;
+        }
+        let (x0, x1) = cluster_span(cluster);
+        let share = |at: usize| graphemes(start, at) as f32 / graphemes(start, end) as f32 * (x1 - x0);
+        // A covered edge is the cluster's own, never one rebuilt in floats, so abutting clusters
+        // meet exactly. Only a stretch reaching the right edge runs on into the next cluster: the
+        // uncovered half of a ligature between them is not bridged.
+        let (left_in, right_in) = match cluster[0].rtl {
+            false => (lo == start, hi == end),
+            true => (hi == end, lo == start),
+        };
+        let a = match (left_in, cluster[0].rtl) {
+            (true, _) => x0,
+            (false, false) => x0 + share(lo),
+            (false, true) => x1 - share(hi),
+        };
+        let b = match (right_in, cluster[0].rtl) {
+            (true, _) => x1,
+            (false, false) => x0 + share(hi),
+            (false, true) => x1 - share(lo),
+        };
+        match spans.last_mut().filter(|_| open && left_in) {
+            Some(span) => *span = (span.0.min(a), span.1.max(b)),
+            None => spans.push((a, b)),
+        }
+        open = right_in;
+    }
+    spans.retain(|(x0, x1)| x0 < x1);
+    spans
+}
+
+/// The underlines and strike-throughs `runs` draw on `laid`, as `(x, y, width, tint)` rects
+/// `thickness` tall, with the line at `left` and `baseline` in buffer px. `text` is the paragraph
+/// starting at byte `line_start`. Both lines take the underline's weight, so a run with both draws
+/// them alike.
+fn decorations(
+    (text, line_start, laid): (&str, usize, &ShapedLine),
+    runs: &[StyleRun],
+    strikes: &[(fontdb::ID, u32, f32)],
+    color: Rgba,
+    (left, baseline, scale): (f32, f32, f32),
+    thickness: f32,
+) -> Vec<(f32, f32, f32, Rgba)> {
+    let mut rects = Vec::new();
+    for run in runs.iter().filter(|run| run.underline || run.strikethrough) {
+        let range = run.range.start.saturating_sub(line_start)..run.range.end.saturating_sub(line_start);
+        // At the face instance most of the run's glyphs here are in, as Pango weighs one across
+        // fonts: a fallback icon in the run does not move it, and a neighbour in another font never
+        // does. Counted in one pass, and only for a run that strikes.
+        let mut counts: Vec<((fontdb::ID, u32), usize)> = Vec::new();
+        for glyph in laid.glyphs.iter().filter(|glyph| run.strikethrough && selected(glyph, range.start, range.end)) {
+            match counts.iter_mut().find(|(key, _)| *key == (glyph.face, glyph.coords)) {
+                Some((_, count)) => *count += 1,
+                None => counts.push(((glyph.face, glyph.coords), 1)),
+            }
+        }
+        let face = counts.iter().max_by_key(|(_, count)| *count).map(|(key, _)| *key);
+        let centre = strikes.iter().find(|(id, coords, _)| Some((*id, *coords)) == face).map_or(0.0, |strike| strike.2);
+        let lines = [
+            (run.underline, (baseline + thickness).round()),
+            (run.strikethrough, (baseline - centre * scale - thickness / 2.0).round()),
+        ];
+        for (x0, x1) in x_spans(text, &laid.glyphs, range) {
+            for (_, y) in lines.iter().filter(|(on, _)| *on) {
+                rects.push((left + x0 * scale, *y, (x1 - x0) * scale, run.color.unwrap_or(color)));
+            }
+        }
+    }
+    rects
 }
 
 impl TextPainter {
@@ -374,7 +452,7 @@ impl TextPainter {
     /// nodes onto this same canvas and flushes once at the end.
     ///
     /// Rows are the glyphs [`ShapingHandle::shape_lines`] laid out, so measurement and paint share
-    /// one shaper (ADR-0211); `runs` (ADR-0104) colour and underline by the byte each glyph came from.
+    /// one shaper (ADR-0211); `runs` (ADR-0104) colour and decorate by the byte each glyph came from.
     pub fn draw_text(&mut self, line: TextDraw<'_>, rect: LogicalRect, scale: f32) {
         let TextDraw { text, runs, face, color, align, caret, caret_on, caret_style, wrap } = line;
         let Typeface { font_size, line_height, ref font, .. } = *face;
@@ -400,6 +478,7 @@ impl TextPainter {
         let mut row = 0;
         for (line_start, shaped) in shaped_lines.iter() {
             let line_start = *line_start;
+            let paragraph = text.get(line_start..).unwrap_or_default();
             for laid in shaped.shaped.iter() {
                 let baseline = top + row as f32 * step + laid.baseline * scale;
                 row += 1;
@@ -431,7 +510,7 @@ impl TextPainter {
                 // Behind the glyphs, so the words inside it stay readable. One rect per visually
                 // contiguous stretch: a selection crossing a direction change is not one box.
                 if let Some((lo, hi)) = selection.map(|(anchor, at)| (anchor.min(at), anchor.max(at))) {
-                    for (x0, x1) in x_spans(&laid.glyphs, |glyph| selected(glyph, lo, hi)) {
+                    for (x0, x1) in x_spans(paragraph, &laid.glyphs, lo..hi) {
                         self.fill(
                             left + x0 * scale,
                             top,
@@ -473,26 +552,16 @@ impl TextPainter {
                     );
                 }
 
-                for run in runs.iter().filter(|run| run.underline) {
-                    let tint = run.color.unwrap_or(color);
-                    for (x0, x1) in
-                        x_spans(&laid.glyphs, |glyph| run.range.contains(&(line_start + glyph.start as usize)))
-                    {
-                        self.fill(
-                            left + x0 * scale,
-                            (baseline + thickness).round(),
-                            (x1 - x0) * scale,
-                            thickness,
-                            0.0,
-                            tint,
-                        );
-                    }
+                let at = (left, baseline, scale);
+                let line = (paragraph, line_start, laid);
+                for (x, y, width, tint) in decorations(line, runs, &shaped.strikes, color, at, thickness) {
+                    self.fill(x, y, width, thickness, 0.0, tint);
                 }
             }
         }
     }
 
-    /// One filled rectangle, rounded by `radius` (femtovg squares off a zero one): an underline, a caret, or the highlight behind a selection.
+    /// One filled rectangle, rounded by `radius` (femtovg squares off a zero one): an underline, a strike-through, a caret, or the highlight behind a selection.
     fn fill(&mut self, x: f32, y: f32, width: f32, height: f32, radius: f32, color: Rgba) {
         let mut path = Path::new();
         path.rounded_rect(x, y, width, height, radius);
@@ -518,7 +587,7 @@ impl TextPainter {
 
 /// Whether `glyph` lies in the selected bytes `lo..hi`.
 fn selected(glyph: &Glyph, lo: usize, hi: usize) -> bool {
-    (glyph.start as usize) < hi && glyph.end as usize > lo
+    lo < hi && (glyph.start as usize) < hi && glyph.end as usize > lo
 }
 
 #[cfg(test)]
@@ -589,17 +658,130 @@ mod tests {
             rtl: false,
         };
         let glyphs = [glyph(0.0, 4), glyph(10.0, 5), glyph(20.0, 0), glyph(30.0, 6)];
-        assert_eq!(x_spans(&glyphs, |glyph| glyph.start >= 4), vec![(0.0, 20.0), (30.0, 40.0)]);
-        assert_eq!(x_spans(&glyphs, |glyph| glyph.start == 9), Vec::new());
+        assert_eq!(x_spans("", &glyphs, 4..9), vec![(0.0, 20.0), (30.0, 40.0)]);
+        assert_eq!(x_spans("", &glyphs, 9..10), Vec::new());
         // Bytes 4..7 are contiguous in the source and two boxes on screen, which is why a
         // selection cannot be one rect.
         let (lo, hi) = (4, 7);
         assert_eq!(
-            x_spans(&glyphs, |glyph| selected(glyph, lo, hi)),
+            x_spans("", &glyphs, lo..hi),
             vec![(0.0, 20.0), (30.0, 40.0)],
             "one rect per visually contiguous stretch"
         );
         // Half-open: the glyph ending at `lo` and the one starting at `hi` are outside it.
-        assert_eq!(x_spans(&glyphs, |glyph| selected(glyph, 1, 5)), vec![(0.0, 10.0)]);
+        assert_eq!(x_spans("", &glyphs, 1..5), vec![(0.0, 10.0)]);
+        // A right-to-left ligature of bytes 0..2 leads on the right, so its second byte is the left half.
+        let lam_alef = Glyph { end: 2, advance: 12.0, rtl: true, ..glyph(0.0, 0) };
+        assert_eq!(x_spans("", &[lam_alef], 1..2), vec![(0.0, 6.0)]);
+        // A cluster covered only on one side ends the stretch there: the half outside the range is
+        // not bridged to the next cluster.
+        let fi = Glyph { end: 2, advance: 12.0, ..glyph(0.0, 0) };
+        let space = Glyph { x: 12.0, advance: 4.0, ..glyph(0.0, 2) };
+        assert_eq!(x_spans("", &[fi, space], 0..1), vec![(0.0, 6.0)], "the `f` half alone");
+        // `مرحبا fi` leaving `i` plain: the space after `fi` on screen is the byte before it.
+        let fi_after = Glyph { start: 1, end: 3, ..fi };
+        let space_before = Glyph { x: 12.0, advance: 4.0, ..glyph(0.0, 0) };
+        assert_eq!(
+            x_spans("", &[fi_after, space_before], 0..2),
+            vec![(0.0, 6.0), (12.0, 16.0)],
+            "`f`, not `i`, then the space"
+        );
+        // Shares are graphemes, as Parley splits a ligature: `f̩` is three bytes and one of two.
+        assert_eq!(x_spans("f\u{0329}i", &[Glyph { end: 4, ..fi }], 3..4), vec![(6.0, 12.0)]);
+        let lam_alef_at = Glyph { x: 10.0, end: 3, start: 1, advance: 12.0, rtl: true, ..glyph(0.0, 0) };
+        assert_eq!(
+            x_spans("", &[glyph(0.0, 0), lam_alef_at], 0..2),
+            vec![(0.0, 10.0), (16.0, 22.0)],
+            "`ab لا` leaving `ا` plain"
+        );
+        assert!(!selected(&fi, 1, 1), "an empty selection inside a ligature selects nothing");
+        assert!(!selected(&glyph(0.0, 0), 1, 2), "half-open: the glyph ending at `lo` is outside");
+        // Fractional advances: a fully covered cluster keeps its exact edges, so the stretch stays one.
+        for rtl in [false, true] {
+            let left = Glyph { x: 0.73, advance: 11.41, rtl, ..glyph(0.0, 0) };
+            let right = Glyph { x: left.x + left.advance, advance: 11.41, rtl, ..glyph(0.0, 1) };
+            let x1 = right.x + right.advance;
+            assert_eq!(x_spans("", &[left, right], 0..2), vec![(0.73, x1)], "one span, rtl {rtl}");
+        }
+        let zero_width = Glyph { advance: 0.0, ..glyph(0.0, 0) };
+        assert_eq!(x_spans("", &[zero_width], 0..1), Vec::new(), "a mark with no advance draws no line");
+    }
+
+    /// #170: a strike or underline on the `i` of an `fi` ligature covers its half of the glyph,
+    /// and each run is struck at its own face's height, at scale 2.
+    #[test]
+    fn decorations_cover_half_a_ligature_at_their_own_face_height() {
+        let mut db = fontdb::Database::new();
+        let fonts = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shots/fonts");
+        for file in ["NotoSans-Regular.ttf", "NotoSansSymbols2-Regular.ttf"] {
+            db.load_font_file(fonts.join(file)).unwrap();
+        }
+        let ids: Vec<_> = db.faces().map(|face| face.id).collect();
+        let (latin, symbols) = (ids[0], ids[1]);
+        let glyph = |face, x: f32, advance: f32, start: u32, end: u32| Glyph {
+            face,
+            coords: 0,
+            id: 0,
+            x,
+            y: 0.0,
+            advance,
+            start,
+            end,
+            rtl: false,
+        };
+        // "afi✓b": a plain `a`, the `fi` ligature (bytes 1..3), a check mark in a fallback face, a `b`.
+        let laid = ShapedLine {
+            rtl: false,
+            width: 42.0,
+            baseline: 15.0,
+            glyphs: vec![
+                glyph(latin, 0.0, 10.0, 0, 1),
+                glyph(latin, 10.0, 12.0, 1, 3),
+                glyph(symbols, 22.0, 10.0, 3, 6),
+                glyph(latin, 32.0, 10.0, 6, 7),
+            ]
+            .into(),
+        };
+        let run = |range: Range<usize>, underline: bool| StyleRun {
+            range,
+            bold: false,
+            italic: false,
+            underline,
+            strikethrough: true,
+            color: None,
+            href: None,
+        };
+        let strikes = [(latin, 0, 5.0), (symbols, 0, 3.0), (latin, 1, 4.0)];
+        let ink = Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+        // The line starts at byte 10 of the text, 100 px in, its baseline at 40.
+        let rects = decorations(
+            ("", 10, &laid),
+            &[run(12..13, true), run(13..16, false)],
+            &strikes,
+            ink,
+            (100.0, 40.0, 2.0),
+            2.0,
+        );
+        assert_eq!(
+            rects,
+            vec![(132.0, 42.0, 12.0, ink), (132.0, 29.0, 12.0, ink), (144.0, 33.0, 20.0, ink)],
+            "the `i`'s half of `fi` underlined and struck at Noto Sans's height, the check mark at its own"
+        );
+        let whole = decorations(("", 10, &laid), &[run(10..17, false)], &strikes, ink, (100.0, 40.0, 2.0), 2.0);
+        assert_eq!(
+            whole,
+            vec![(100.0, 29.0, 84.0, ink)],
+            "three Latin glyphs to one symbol: struck at Noto Sans's height"
+        );
+        // A bolder instance of the same variable face: struck at its own height.
+        let bold =
+            ShapedLine { glyphs: laid.glyphs.iter().map(|glyph| Glyph { coords: 1, ..*glyph }).collect(), ..laid };
+        let instance = decorations(("", 10, &bold), &[run(10..11, false)], &strikes, ink, (100.0, 40.0, 2.0), 2.0);
+        assert_eq!(instance, vec![(100.0, 31.0, 20.0, ink)]);
+        // The symbol first, then two Latin glyphs: the majority still wins.
+        let order = [glyph(symbols, 0.0, 10.0, 0, 3), glyph(latin, 10.0, 10.0, 3, 4), glyph(latin, 20.0, 10.0, 4, 5)];
+        let first = ShapedLine { glyphs: order.into(), ..bold };
+        let majority = decorations(("", 0, &first), &[run(0..5, false)], &strikes, ink, (100.0, 40.0, 2.0), 2.0);
+        assert_eq!(majority, vec![(100.0, 29.0, 60.0, ink)]);
     }
 }

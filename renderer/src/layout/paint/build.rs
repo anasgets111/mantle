@@ -601,6 +601,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
                             bold: false,
                             italic: false,
                             underline: true,
+                            strikethrough: false,
                             color: None,
                             href: None,
                         }];
