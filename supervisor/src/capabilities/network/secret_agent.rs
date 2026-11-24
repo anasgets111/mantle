@@ -12,6 +12,7 @@ use tokio::sync::oneshot;
 use zbus::message::Header;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 
+use super::edit::{Settings, read};
 use super::proxies::AgentManagerProxy;
 use super::vpn::VpnState;
 use super::{NetworkController, NetworkSignal};
@@ -27,9 +28,6 @@ const FLAG_REQUEST_NEW: u32 = 2;
 /// Secret flags NM sets for "agent-owned" (1) and "not saved" (2): secrets the agent must supply.
 const SECRET_FLAGS_ASKED: u32 = 3;
 const ASK_TIMEOUT: Duration = Duration::from_secs(120);
-
-/// ponytail: `OwnedValue` holds an `ay` as one `Value` per byte; NetworkManager is the only sender; upgrade: typed fields.
-type Settings = HashMap<String, HashMap<String, OwnedValue>>;
 
 /// `org.freedesktop.NetworkManager.SecretAgent.*`, the names libnm agents reply with.
 #[derive(Debug, zbus::DBusError)]
@@ -51,22 +49,21 @@ pub(super) struct PendingSecret {
 
 /// Keys from NM's hints, else the profile's agent-owned or unsaved `<key>-flags`. WireGuard: `private-key` only.
 fn wanted_keys(connection: &Settings, setting: &str, hints: &[String]) -> Vec<String> {
-    let field = |section: &str, key: &str| connection.get(section)?.get(key).cloned();
-    if field("connection", "type").and_then(|kind| String::try_from(kind).ok()).as_deref() != Some(setting) {
+    if read::<String>(connection.get("connection"), "type").as_deref() != Some(setting) {
         return Vec::new();
     }
     let asked = |flags: u32| flags & SECRET_FLAGS_ASKED != 0;
     let mut keys: Vec<String> = match setting {
         "vpn" => hints.iter().filter(|hint| !hint.starts_with("x-vpn-message:")).cloned().collect(),
         "wireguard" => {
-            let flagged = field(setting, "private-key-flags").and_then(|f| u32::try_from(f).ok()).is_some_and(asked);
+            let flagged = read(connection.get(setting), "private-key-flags").is_some_and(asked);
             let hinted = hints.iter().any(|hint| hint == "private-key");
             return if flagged || hinted { vec!["private-key".into()] } else { Vec::new() };
         }
         _ => return Vec::new(),
     };
     if keys.is_empty() {
-        let data = field(setting, "data").and_then(|data| HashMap::<String, String>::try_from(data).ok());
+        let data = read::<HashMap<String, String>>(connection.get(setting), "data");
         let flagged = data.into_iter().flatten().filter(|(_, flags)| flags.parse().is_ok_and(asked));
         keys = flagged.filter_map(|(key, _)| key.strip_suffix("-flags").map(str::to_owned)).collect();
     }
@@ -275,15 +272,12 @@ pub(super) async fn register(connection: &zbus::Connection) {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+    use crate::capabilities::network::tests::owned;
     use crate::capabilities::test_support::private_bus;
-
-    fn value(value: impl Into<Value<'static>>) -> OwnedValue {
-        OwnedValue::try_from(value.into()).unwrap()
-    }
 
     fn profile(kind: &str, section: Option<(&str, OwnedValue)>) -> Settings {
         let mut settings =
-            HashMap::from([("connection".to_string(), HashMap::from([("type".to_string(), value(kind.to_string()))]))]);
+            HashMap::from([("connection".to_string(), HashMap::from([("type".to_string(), owned(kind.to_string()))]))]);
         if let Some((key, flags)) = section {
             settings.insert(kind.to_string(), HashMap::from([(key.to_string(), flags)]));
         }
@@ -301,14 +295,14 @@ pub(super) mod tests {
 
         let data = HashMap::from([("password-flags", "1"), ("cert-flags", "0"), ("otp-flags", "2"), ("remote", "x")]);
         let data = data.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<HashMap<_, _>>();
-        let flagged = profile("vpn", Some(("data", value(zbus::zvariant::Dict::from(data)))));
+        let flagged = profile("vpn", Some(("data", owned(zbus::zvariant::Dict::from(data)))));
         assert_eq!(wanted_keys(&flagged, "vpn", &[]), ["otp", "password"]);
 
-        let wireguard = profile("wireguard", Some(("private-key-flags", value(1u32))));
+        let wireguard = profile("wireguard", Some(("private-key-flags", owned(1u32))));
         assert_eq!(wanted_keys(&wireguard, "wireguard", &[]), ["private-key"]);
         assert_eq!(wanted_keys(&wireguard, "wireguard", &strings(&["private-key", "peers"])), ["private-key"]);
         assert!(
-            wanted_keys(&profile("wireguard", Some(("private-key-flags", value(0u32)))), "wireguard", &[]).is_empty()
+            wanted_keys(&profile("wireguard", Some(("private-key-flags", owned(0u32)))), "wireguard", &[]).is_empty()
         );
         assert!(wanted_keys(&profile("802-11-wireless", None), "802-11-wireless-security", &hints).is_empty());
         assert!(wanted_keys(&profile("vpn", None), "wireguard", &hints).is_empty(), "the setting must match the type");

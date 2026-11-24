@@ -68,7 +68,7 @@ impl ConnectionHandshake {
 /// fails until the bump is made and its recorded shape updated with it.
 /// `ConnectionHandshake`'s `generation_id` and `protocol` never change shape: they are how a
 /// mismatch is read at all.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Control clients (`mantle set`, `mantle toggle`) use this `generation_id` in
 /// [`ConnectionHandshake`] (ADR-0112). It is not a generation: the Supervisor registers no
@@ -527,7 +527,7 @@ mod tests {
     /// when the frame types' diff shows no wire change; a needless bump makes a running `mantle`
     /// exit 76 on upgrade. Upgrade path for the schemars case: pin it to an exact version.
     #[cfg(feature = "schema")]
-    const WIRE_SHAPE: (u32, u64) = (2, 0x5be5_3b5a_4bc3_73af);
+    const WIRE_SHAPE: (u32, u64) = (3, 0xc14b_717c_c8cf_2e1e);
 
     /// `value` as JSON with sorted keys and no doc-comment descriptions, so a reworded comment, or
     /// a `serde_json` that keeps insertion order, leaves the shape alone.

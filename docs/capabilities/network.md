@@ -146,6 +146,60 @@ Call each as `mantle.network:<action>(arguments...)`; `?` marks an argument you 
 | `connect_vpn` | `uuid: string` | Activates the saved VPN or WireGuard profile with this UUID. A missing secret raises `vpn_secret`. |
 | `disconnect_vpn` | `uuid: string` | Deactivates the VPN or WireGuard profile with this UUID. |
 | `cancel_vpn_secret` |  | Declines the pending `vpn_secret` request, failing that activation. |
+| `update_profile` | `uuid: string, edit: ProfileEdit` | Edits the saved profile with this UUID and writes it to disk; keys `edit` leaves out keep their value. Needs NetworkManager 1.44+. An active profile's device keeps the old settings until `reapply_profile` or its next activation. |
+| `delete_profile` | `uuid: string` | Deletes the saved profile with this UUID. |
+| `reapply_profile` | `uuid: string, interface?: string` | Applies the saved settings of the profile with this UUID, without reconnecting, on `interface` or on every device it is active on. When NetworkManager refuses a change, `error` says so and `activate_profile` applies it by reconnecting. |
+| `activate_profile` | `uuid: string, interface?: string` | Activates the profile with this UUID on `interface`, or on a device NetworkManager picks. A VPN or WireGuard profile goes through `connect_vpn`. A Wi-Fi profile without a saved key fails; join with `connect` instead. |
+| `deactivate_profile` | `uuid: string` | Deactivates the profile with this UUID wherever it is active. |
+
+### `IpEdit`
+
+`ProfileEdit.ipv4` and `.ipv6`. A list replaces the saved one and `{}` clears it.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `addresses?` | `string[]` | `"address/prefix"` strings. |
+| `dns?` | `string[]` | DNS server addresses, in order. Replaces DNS-over-TLS entries too. |
+| `dns_search?` | `string[]` | Search domains. |
+| `gateway?` | `string` | An address, or `""` to remove it; needs `addresses`. |
+| `ignore_auto_dns?` | `boolean` | Use only `dns`, ignoring servers from DHCP or router advertisements. |
+| `method?` | `IpMethod` | `"manual"` needs `addresses`. |
+
+### `IpMethod`
+
+NetworkManager's IP method, spelled as `IpSettings.method` reads.
+
+| Value | Description |
+| --- | --- |
+| `"auto"` |  |
+| `"manual"` |  |
+| `"link-local"` |  |
+| `"disabled"` |  |
+| `"dhcp"` | IPv6 only: DHCPv6 without router advertisements. |
+| `"shared"` | Shares this connection with other devices. |
+| `"ignore"` | IPv6 only: leaves IPv6 to the kernel. |
+
+### `Metered`
+
+`connection.metered`, also `update_profile`'s `metered`.
+
+| Value | Description |
+| --- | --- |
+| `"yes"` |  |
+| `"no"` |  |
+| `"unknown"` | NetworkManager guesses from the device. |
+
+### `ProfileEdit`
+
+`network:update_profile`'s table. Absent keys keep their value; one invalid key raises at the call.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `autoconnect?` | `boolean` |  |
+| `autoconnect_priority?` | `integer` | `-999` to `999`; higher wins among profiles that can autoconnect on one device. |
+| `ipv4?` | `IpEdit` | IPv4 addresses only. |
+| `ipv6?` | `IpEdit` | IPv6 addresses only. |
+| `metered?` | `Metered` |  |
 
 ## Backend
 
@@ -159,7 +213,7 @@ Call each as `mantle.network:<action>(arguments...)`; `?` marks an argument you 
 | Connect | A saved profile or an open network in range joins at once. Anything else sets `password_ssid` and waits for the key from a `secure_submit = { capability = "network", action = "connect" }` field ([secure fields](../guide/input.md#secure-fields)); the key never reaches Lua |
 | Join verdict | Watched for up to 90 s, then the join is stopped. A rejected key sets `password_ssid` again. A new network's profile, key included, is saved when the join starts and stays after a rejection; a key retyped for a saved profile reaches disk only once NetworkManager accepts it |
 | Abort | `abort_connect` deletes a profile the join created, else deactivates the join |
-| VPN profiles | `vpns` lists saved profiles of type `vpn` (plugin VPNs) and `wireguard`, by name. `active` and `activating` follow NetworkManager's active connections, so a VPN started elsewhere shows too. The list needs a profile change or restart to notice an edited profile |
+| VPN profiles | `vpns` lists saved profiles of type `vpn` (plugin VPNs) and `wireguard`, by name. `active` and `activating` follow NetworkManager's active connections, so a VPN started elsewhere shows too. An edited profile is re-read |
 | VPN activation | `connect_vpn(uuid)` calls `ActivateConnection` and watches the verdict for 90 s, not counting time on that profile's secret prompt; at 90 s it deactivates the attempt. A failure lands in `vpn_error`; `disconnect_vpn` or `cancel_vpn_secret` during the attempt sets none. A second `connect_vpn` for a profile already waiting does nothing. Only profiles NetworkManager manages: no VPN client the shell runs itself |
 | VPN secrets | The engine registers a NetworkManager secret agent, answering only NetworkManager itself. When an activation needs secrets, `vpn_secret` lists the `fields` to enter and waits for `secure_submit` fields named `request.id .. "/" .. field`; the last one answers NetworkManager. One request at a time: a second is refused. `cancel_vpn_secret` or a 120 s wait fails the activation; a NetworkManager restart clears the request. Nothing is stored; NetworkManager asks again when a secret is agent-owned |
 | VPN secret scope | Only `vpn` and `wireguard` requests are answered; other connection types get "no secrets", as with no agent. Fields come from NetworkManager's hints, else from the profile's `<key>-flags` entries marked agent-owned or not saved. WireGuard asks for `private-key` only; a peer's preshared key and a plugin's `x-vpn-message` text are not handled. Registering needs polkit's `org.freedesktop.NetworkManager.network-control`; without it a warning is logged and VPN activation still works for secrets NetworkManager already stores. NetworkManager takes one agent per identifier per user, so only the first running shell gets prompts; a second logs the same warning |

@@ -93,6 +93,59 @@ where
     }
 }
 
+/// A list that replaces a stored one: an absent key keeps it (`None`), `{}` clears it.
+fn replacing_list<'de, D, T>(deserializer: D) -> Result<Option<Vec<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    lua_list(deserializer).map(Some)
+}
+
+/// NetworkManager's `connection.autoconnect-priority` range.
+fn priority<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<i32>, D::Error> {
+    let value = <i32 as serde::Deserialize>::deserialize(deserializer)?;
+    if (-999..=999).contains(&value) {
+        Ok(Some(value))
+    } else {
+        Err(serde::de::Error::custom("expected a priority from -999 to 999"))
+    }
+}
+
+fn ipv4<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<IpEdit>, D::Error> {
+    ip_edit(deserializer, false)
+}
+
+fn ipv6<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<IpEdit>, D::Error> {
+    ip_edit(deserializer, true)
+}
+
+/// An [`IpEdit`] whose addresses are literals of its own family, with prefixes in range; `None` if empty.
+fn ip_edit<'de, D: serde::Deserializer<'de>>(deserializer: D, v6: bool) -> Result<Option<IpEdit>, D::Error> {
+    let edit = <IpEdit as serde::Deserialize>::deserialize(deserializer)?;
+    let (family, bits) = if v6 { ("IPv6", 128) } else { ("IPv4", 32) };
+    if !v6 && matches!(edit.method, Some(IpMethod::Dhcp | IpMethod::Ignore)) {
+        return Err(serde::de::Error::custom("\"dhcp\" and \"ignore\" are IPv6 methods"));
+    }
+    let address = |text: &str| text.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_ipv6() == v6);
+    for text in edit.addresses.iter().flatten() {
+        let prefixed = text.split_once('/').is_some_and(|(ip, prefix)| {
+            address(ip)
+                && prefix.bytes().all(|b| b.is_ascii_digit())
+                && prefix.parse::<u8>().is_ok_and(|p| (1..=bits).contains(&p))
+        });
+        if !prefixed {
+            return Err(serde::de::Error::custom(format!("{text:?} is not an {family} address/prefix")));
+        }
+    }
+    for text in edit.dns.iter().flatten().chain(edit.gateway.iter().filter(|gateway| !gateway.is_empty())) {
+        if !address(text) {
+            return Err(serde::de::Error::custom(format!("{text:?} is not an {family} address")));
+        }
+    }
+    Ok(Some(edit).filter(|edit| *edit != IpEdit::default()))
+}
+
 /// `{ NAME = "value", OTHER = false }` as set (`Some`) and unset (`None`) pairs. A name that is empty or holds
 /// `=` or NUL, or a NUL value, fails the spawn; refusing it here puts the error on the config's call.
 fn env_overrides<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<(String, Option<String>)>, D::Error> {
@@ -119,6 +172,10 @@ fn env_overrides<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Ve
 fn non_empty<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
     let value = <String as serde::Deserialize>::deserialize(deserializer)?;
     if value.is_empty() { Err(serde::de::Error::custom("expected a non-empty string")) } else { Ok(value) }
+}
+
+fn some_non_empty<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+    non_empty(deserializer).map(Some)
 }
 
 fn absolute<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
@@ -243,6 +300,69 @@ mod tests {
                 Ok(r#"SendFiles { id: "phone", files: ["/a.txt", "/b.txt"] }"#),
             ),
             (decode::<AndroidConnectAction>("send_files", json!(["phone", ["/a.txt", "b.txt"]])), Err("absolute")),
+            (
+                decode::<NetworkAction>(
+                    "update_profile",
+                    json!(["u", {"ipv4": {"dns": {}, "addresses": ["10.0.0.2/24"]}}]),
+                ),
+                Ok(
+                    r#"UpdateProfile { uuid: "u", edit: ProfileEdit { autoconnect: None, autoconnect_priority: None, metered: None, ipv4: Some(IpEdit { method: None, addresses: Some(["10.0.0.2/24"]), gateway: None, dns: Some([]), dns_search: None, ignore_auto_dns: None }), ipv6: None } }"#,
+                ),
+            ),
+            (decode::<NetworkAction>("update_profile", json!(["u", {"ipv4": {"dns": ["::1"]}}])), Err("IPv4 address")),
+            (decode::<NetworkAction>("update_profile", json!(["u", {"ipv6": {"gateway": "10.0.0.1"}}])), Err("IPv6")),
+            (
+                decode::<NetworkAction>("update_profile", json!(["u", {"ipv4": {"addresses": ["10.0.0.2/33"]}}])),
+                Err("prefix"),
+            ),
+            (
+                decode::<NetworkAction>("update_profile", json!(["u", {"ipv4": {"addresses": ["10.0.0.2/0"]}}])),
+                Err("prefix"),
+            ),
+            (
+                decode::<NetworkAction>("update_profile", json!(["u", {"ipv4": {}}])),
+                Ok(
+                    r#"UpdateProfile { uuid: "u", edit: ProfileEdit { autoconnect: None, autoconnect_priority: None, metered: None, ipv4: None, ipv6: None } }"#,
+                ),
+            ),
+            (
+                decode::<NetworkAction>("update_profile", json!(["u", {"ipv4": {"addresses": ["10.0.0.2"]}}])),
+                Err("prefix"),
+            ),
+            (
+                decode::<NetworkAction>("update_profile", json!(["u", {"autoconnect_priority": 1000}])),
+                Err("-999 to 999"),
+            ),
+            (
+                decode::<NetworkAction>("update_profile", json!(["u", {"autoconnect_priority": -999}])),
+                Ok(
+                    r#"UpdateProfile { uuid: "u", edit: ProfileEdit { autoconnect: None, autoconnect_priority: Some(-999), metered: None, ipv4: None, ipv6: None } }"#,
+                ),
+            ),
+            (decode::<NetworkAction>("update_profile", json!(["u", {"ipv4": {"dnss": {}}}])), Err("unknown field")),
+            (decode::<NetworkAction>("update_profile", json!(["", {}])), Err("non-empty")),
+            (
+                decode::<NetworkAction>("update_profile", json!(["u", {"ipv4": {"method": "dhcp"}}])),
+                Err("IPv6 methods"),
+            ),
+            (decode::<NetworkAction>("activate_profile", json!(["u", ""])), Err("non-empty")),
+            (
+                decode::<NetworkAction>("activate_profile", json!(["u"])),
+                Ok(r#"ActivateProfile { uuid: "u", interface: None }"#),
+            ),
+            (
+                decode::<NetworkAction>("reapply_profile", json!(["u"])),
+                Ok(r#"ReapplyProfile { uuid: "u", interface: None }"#),
+            ),
+            (
+                decode::<NetworkAction>(
+                    "update_profile",
+                    json!(["u", {"ipv6": {"method": "link-local", "gateway": ""}}]),
+                ),
+                Ok(
+                    r#"UpdateProfile { uuid: "u", edit: ProfileEdit { autoconnect: None, autoconnect_priority: None, metered: None, ipv4: None, ipv6: Some(IpEdit { method: Some(LinkLocal), addresses: None, gateway: Some(""), dns: None, dns_search: None, ignore_auto_dns: None }) } }"#,
+                ),
+            ),
         ] {
             match (&decoded, expected) {
                 (Ok(got), Ok(want)) => assert_eq!(got, want),

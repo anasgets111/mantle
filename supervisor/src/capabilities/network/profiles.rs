@@ -1,45 +1,62 @@
 //! Saved NetworkManager profiles for `mantle.network`: reading them, the saved-SSID cache,
-//! `forget`, wired autoconnect, and shaping a typed key into a saved profile.
+//! `network_profiles`, `forget`, wired autoconnect, and shaping a typed key into a saved profile.
 
 use std::collections::HashMap;
 
-use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+use shared::state::network_profiles::{NetworkProfilesState, ProfileError, ProfileInfo};
+use zbus::zvariant::{OwnedObjectPath, Value};
 
 use super::devices::WifiDevice;
-use super::proxies::{DeviceProxy, SettingsConnectionProxy};
-use super::{NetworkController, root_object_path};
+use super::edit::Settings;
+use super::proxies::{ACTIVE_STATE_ACTIVATED, ACTIVE_STATE_ACTIVATING, DeviceProxy, SettingsConnectionProxy};
+use super::{NetworkController, edit, root_object_path};
 use crate::capabilities::bind;
 use shared::{debug, warn};
 
+/// `network_profiles`' sources: the walk's profiles by path, `(uuid, state)` per active connection,
+/// and the last failed `_profile` action.
+#[derive(Default)]
+pub(super) struct Profiles {
+    pub(super) list: Vec<(OwnedObjectPath, ProfileInfo)>,
+    pub(super) active: Vec<(String, u32)>,
+    pub(super) error: Option<ProfileError>,
+}
+
+impl Profiles {
+    pub(super) fn snapshot(&self) -> NetworkProfilesState {
+        let profiles = self
+            .list
+            .iter()
+            .map(|(_, profile)| {
+                let state = |wanted| self.active.iter().any(|(uuid, state)| *uuid == profile.uuid && *state == wanted);
+                ProfileInfo {
+                    active: state(ACTIVE_STATE_ACTIVATED),
+                    activating: state(ACTIVE_STATE_ACTIVATING),
+                    ..profile.clone()
+                }
+            })
+            .collect();
+        NetworkProfilesState { profiles, error: self.error.clone() }
+    }
+}
+
 /// Whether `get_settings()` permits autoconnect. Missing means NetworkManager's default `true`
 /// (ADR-0029: only explicit `false` disqualifies a profile).
-pub(super) fn connection_wants_autoconnect(settings: &HashMap<String, HashMap<String, OwnedValue>>) -> bool {
-    settings
-        .get("connection")
-        .and_then(|section| section.get("autoconnect"))
-        .and_then(|value| bool::try_from(value.clone()).ok())
-        .unwrap_or(true)
+pub(super) fn connection_wants_autoconnect(settings: &Settings) -> bool {
+    edit::read(settings.get("connection"), "autoconnect").unwrap_or(true)
 }
 
 /// The SSID bytes of a Wi-Fi profile's `get_settings()`, or `None` for any other connection type.
-pub(super) fn profile_ssid(settings: &HashMap<String, HashMap<String, OwnedValue>>) -> Option<Vec<u8>> {
-    settings
-        .get("802-11-wireless")
-        .and_then(|section| section.get("ssid"))
-        .and_then(|value| Vec::<u8>::try_from(value.clone()).ok())
+pub(super) fn profile_ssid(settings: &Settings) -> Option<Vec<u8>> {
+    edit::read(settings.get("802-11-wireless"), "ssid")
 }
 
 /// ponytail: the fallback misses NM policy restrictions; upgrade path: query NM compatibility
 /// for hidden or out-of-range SSIDs.
-fn profile_matches_device(
-    settings: &HashMap<String, HashMap<String, OwnedValue>>,
-    id: &str,
-    mac: Option<&str>,
-) -> bool {
-    let field =
-        |section: &str, key: &str| settings.get(section)?.get(key).and_then(|v| String::try_from(v.clone()).ok());
-    if field("connection", "type").is_some_and(|kind| kind != "802-11-wireless")
-        || field("connection", "interface-name").is_some_and(|name| name != id)
+fn profile_matches_device(settings: &Settings, id: &str, mac: Option<&str>) -> bool {
+    let field = |key: &str| edit::read::<String>(settings.get("connection"), key);
+    if field("type").is_some_and(|kind| kind != "802-11-wireless")
+        || field("interface-name").is_some_and(|name| name != id)
     {
         return false;
     }
@@ -52,24 +69,12 @@ fn profile_matches_device(
 
 /// Changes only the PSK in a full `UpdateUnsaved` dict. Rejects key management modes that take
 /// no PSK; forcing WPA-PSK would downgrade SAE or break 802.1X.
-pub(super) fn merge_psk<'a>(
-    settings: &'a HashMap<String, HashMap<String, OwnedValue>>,
-    psk: &'a str,
-) -> Option<HashMap<&'a str, HashMap<&'a str, Value<'a>>>> {
-    let key_mgmt = settings
-        .get("802-11-wireless-security")
-        .and_then(|security| security.get("key-mgmt"))
-        .and_then(|value| String::try_from(value.clone()).ok());
+pub(super) fn merge_psk<'a>(settings: &'a Settings, psk: &'a str) -> Option<edit::Dict<'a>> {
+    let key_mgmt = edit::read::<String>(settings.get("802-11-wireless-security"), "key-mgmt");
     if !matches!(key_mgmt.as_deref(), None | Some("wpa-psk" | "sae")) {
         return None;
     }
-    let mut merged: HashMap<&str, HashMap<&str, Value>> = settings
-        .iter()
-        .map(|(section, keys)| {
-            (section.as_str(), keys.iter().map(|(key, value)| (key.as_str(), Value::from(value.clone()))).collect())
-        })
-        .collect();
-
+    let mut merged = edit::to_dict(settings);
     let security = merged.entry("802-11-wireless-security").or_default();
     security.entry("key-mgmt").or_insert_with(|| Value::new("wpa-psk"));
     security.insert("psk", Value::new(psk));
@@ -81,7 +86,7 @@ pub(super) fn merge_psk<'a>(
 pub(super) struct SavedProfile {
     pub(super) path: OwnedObjectPath,
     pub(super) connection: SettingsConnectionProxy<'static>,
-    pub(super) settings: HashMap<String, HashMap<String, OwnedValue>>,
+    pub(super) settings: Settings,
 }
 
 impl NetworkController {
@@ -155,23 +160,54 @@ impl NetworkController {
         futures_util::future::join_all(reads).await.into_iter().flatten().collect()
     }
 
-    /// Replaces the saved-SSID and VPN profile caches with one `ListConnections` walk.
+    /// Replaces the saved-SSID and `network_profiles` caches with one `ListConnections` walk.
     pub(super) async fn refresh_profiles(&self) {
-        // ponytail: an edited profile stays stale until another profile change or NM restart;
-        // upgrade path: Settings.Connection.Updated.
-        let mut ssids = HashMap::new();
-        let mut vpns = Vec::new();
+        let (mut ssids, mut list) = (HashMap::new(), Vec::new());
         for profile in self.list_all_profiles("saved profiles").await {
             if let Some(ssid) = profile_ssid(&profile.settings) {
                 ssids.insert(profile.path.clone(), ssid);
             }
-            if let Some(vpn) = super::vpn::profile_of(&profile.settings) {
-                vpns.push((profile.path, vpn));
+            if let Some(info) = edit::project(&profile.settings) {
+                list.push((profile.path, info));
             }
         }
-        vpns.sort_by(|a, b| a.1.id.cmp(&b.1.id));
+        list.sort_by(|a, b| a.1.id.cmp(&b.1.id));
         *self.saved_ssids.lock().expect("mutex poisoned") = ssids;
-        self.vpn.lock().expect("mutex poisoned").profiles = vpns;
+        self.profiles.lock().expect("mutex poisoned").list = list;
+    }
+
+    /// Re-reads the one profile NetworkManager reported `Updated` into the same caches.
+    pub(super) async fn refresh_profile(&self, path: OwnedObjectPath) {
+        let Some(profile) = self.read_profiles(vec![path.clone()], "updated profile").await.pop() else { return };
+        let settings = &profile.settings;
+        let mut ssids = self.saved_ssids.lock().expect("mutex poisoned");
+        match profile_ssid(settings) {
+            Some(ssid) => ssids.insert(path.clone(), ssid),
+            None => ssids.remove(&path),
+        };
+        drop(ssids);
+        let mut profiles = self.profiles.lock().expect("mutex poisoned");
+        profiles.list.retain(|(listed, _)| *listed != path);
+        profiles.list.extend(edit::project(settings).map(|info| (path, info)));
+        profiles.list.sort_by(|a, b| a.1.id.cmp(&b.1.id));
+    }
+
+    /// Re-reads which profiles are active, after an activation changed.
+    pub(super) async fn read_profile_activity(&self) {
+        match self.active_connections().await {
+            Ok(active) => {
+                let active = active.into_iter().map(|(_, uuid, state)| (uuid, state)).collect();
+                self.profiles.lock().expect("mutex poisoned").active = active;
+            }
+            // Kept, and read again on the next rebuild, rather than marking every profile inactive.
+            Err(_) => self.activity.store(true, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+
+    /// Sends `network_profiles` under its lock, so two pushes cannot land out of order.
+    pub(super) fn push_profiles(&self) {
+        let profiles = self.profiles.lock().expect("mutex poisoned");
+        let _ = self.profile_states.send(profiles.snapshot());
     }
 
     /// Deletes every connection profile matching `ssid`.
@@ -217,15 +253,15 @@ impl NetworkController {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::network::tests::owned;
 
-    fn settings_with(section: &str, key: &str, value: OwnedValue) -> HashMap<String, HashMap<String, OwnedValue>> {
+    fn settings_with(section: &str, key: &str, value: zbus::zvariant::OwnedValue) -> Settings {
         HashMap::from([(section.to_string(), HashMap::from([(key.to_string(), value)]))])
     }
 
     #[test]
     fn only_an_explicit_false_declines_autoconnect() {
-        let setting =
-            |value: bool| settings_with("connection", "autoconnect", OwnedValue::try_from(Value::from(value)).unwrap());
+        let setting = |value: bool| settings_with("connection", "autoconnect", owned(value));
         assert!(connection_wants_autoconnect(&HashMap::new()), "an absent key defaults to true");
         assert!(!connection_wants_autoconnect(&setting(false)));
         assert!(connection_wants_autoconnect(&setting(true)));
@@ -233,18 +269,13 @@ mod tests {
 
     #[test]
     fn profile_ssid_and_device_bindings_filter_saved_connections() {
-        let settings =
-            settings_with("802-11-wireless", "ssid", OwnedValue::try_from(Value::from(b"HomeWifi".to_vec())).unwrap());
+        let settings = settings_with("802-11-wireless", "ssid", owned(b"HomeWifi".to_vec()));
         assert_eq!(profile_ssid(&settings).as_deref(), Some(&b"HomeWifi"[..]));
         assert_eq!(profile_ssid(&HashMap::new()), None, "a profile without a wireless section has no SSID");
-        let named = settings_with("connection", "interface-name", OwnedValue::try_from(Value::from("wlan1")).unwrap());
+        let named = settings_with("connection", "interface-name", owned("wlan1"));
         assert!(!profile_matches_device(&named, "wlan0", None));
         assert!(profile_matches_device(&named, "wlan1", None));
-        let bound = settings_with(
-            "802-11-wireless",
-            "mac-address",
-            OwnedValue::try_from(Value::from(vec![0x12u8, 0x34])).unwrap(),
-        );
+        let bound = settings_with("802-11-wireless", "mac-address", owned(vec![0x12u8, 0x34]));
         assert!(!profile_matches_device(&bound, "wlan1", None));
         assert!(profile_matches_device(&bound, "wlan1", Some("12:34")));
     }
@@ -253,35 +284,36 @@ mod tests {
     fn merge_psk_passes_every_other_section_through_untouched() {
         // `Update` replaces the whole profile; dropping any section loses static addresses,
         // metrics, or autoconnect priority.
-        let settings: HashMap<String, HashMap<String, OwnedValue>> = HashMap::from([
-            (
-                "connection".to_string(),
-                HashMap::from([("id".to_string(), OwnedValue::try_from(Value::from("HomeWifi")).unwrap())]),
-            ),
+        let settings: Settings = HashMap::from([
+            ("connection".to_string(), HashMap::from([("id".to_string(), owned("HomeWifi"))])),
             (
                 "ipv4".to_string(),
-                HashMap::from([("method".to_string(), OwnedValue::try_from(Value::from("manual")).unwrap())]),
+                HashMap::from([
+                    ("method".to_string(), owned("manual")),
+                    ("dns".to_string(), owned(vec![0x0101_0101_u32])),
+                    ("dns-data".to_string(), owned(vec!["dns+tls://1.1.1.1"])),
+                ]),
             ),
         ]);
 
         let merged = merge_psk(&settings, "hunter2").unwrap();
         assert_eq!(String::try_from(merged["connection"]["id"].clone()).unwrap(), "HomeWifi");
         assert_eq!(String::try_from(merged["ipv4"]["method"].clone()).unwrap(), "manual");
+        // The daemon would prefer legacy `dns`, which cannot carry the DNS-over-TLS server.
+        assert!(merged["ipv4"].contains_key("dns-data") && !merged["ipv4"].contains_key("dns"));
     }
 
     #[test]
     fn merge_psk_adds_a_security_section_to_an_open_profile_and_replaces_an_existing_key() {
         // An open profile has no security section, so add `key-mgmt` beside `psk`.
-        let settings =
-            settings_with("802-11-wireless", "ssid", OwnedValue::try_from(Value::from(b"HomeWifi".to_vec())).unwrap());
+        let settings = settings_with("802-11-wireless", "ssid", owned(b"HomeWifi".to_vec()));
 
         let merged = merge_psk(&settings, "hunter2").unwrap();
         let security = &merged["802-11-wireless-security"];
         assert_eq!(String::try_from(security["key-mgmt"].clone()).unwrap(), "wpa-psk");
         assert_eq!(String::try_from(security["psk"].clone()).unwrap(), "hunter2");
 
-        let settings =
-            settings_with("802-11-wireless-security", "psk", OwnedValue::try_from(Value::from("stale")).unwrap());
+        let settings = settings_with("802-11-wireless-security", "psk", owned("stale"));
 
         let merged = merge_psk(&settings, "hunter2").unwrap();
         assert_eq!(String::try_from(merged["802-11-wireless-security"]["psk"].clone()).unwrap(), "hunter2");
@@ -289,9 +321,7 @@ mod tests {
 
     #[test]
     fn merge_psk_keeps_sae_and_refuses_key_types_that_take_no_psk() {
-        let with = |key_mgmt: &str| {
-            settings_with("802-11-wireless-security", "key-mgmt", OwnedValue::try_from(Value::from(key_mgmt)).unwrap())
-        };
+        let with = |key_mgmt: &str| settings_with("802-11-wireless-security", "key-mgmt", owned(key_mgmt));
         let sae = with("sae");
         let merged = merge_psk(&sae, "hunter2").unwrap();
         assert_eq!(String::try_from(merged["802-11-wireless-security"]["key-mgmt"].clone()).unwrap(), "sae");

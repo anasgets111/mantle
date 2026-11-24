@@ -79,6 +79,7 @@
   - [lock](capabilities/lock.md)
   - [mpris](capabilities/mpris.md)
   - [network](capabilities/network.md)
+  - [network_profiles](capabilities/network_profiles.md)
   - [notifications](capabilities/notifications.md)
   - [polkit](capabilities/polkit.md)
   - [power](capabilities/power.md)

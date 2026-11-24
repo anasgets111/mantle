@@ -7,6 +7,11 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Added: `mantle.network_profiles` lists saved NetworkManager profiles with their IP method, addresses, gateway, DNS servers and search domains, autoconnect and metered settings, and whether each is active. `mantle.network:update_profile(uuid, edit)` changes only the fields `edit` names, such as `{ ipv4 = { dns = { "1.1.1.1" }, ignore_auto_dns = true } }`, and saves the profile (NetworkManager 1.44+); `reapply_profile`, `activate_profile`, `deactivate_profile` and `delete_profile` act on a profile by UUID. A failure lands in `network_profiles.error`.
+- Fixed: `vpns` and the saved mark on `available_networks` follow a profile edited after startup, such as one renamed with `nmcli`; they kept the old values until another profile was added or removed.
+- Fixed: a key retyped with `network:connect` for a saved Wi-Fi network keeps the profile's DNS-over-TLS servers; saving the key dropped them.
+- Changed: `network.vpn_error` for a VPN that NetworkManager refuses to start carries NetworkManager's message, such as why the profile cannot start, instead of "connection failed".
+
 ## 0.15.0 - 2026-11-22
 
 17 fixes, 8 changes, 3 additions and 3 breaking changes. Read Breaking first; each entry names the edit.

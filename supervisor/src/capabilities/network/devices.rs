@@ -1,11 +1,12 @@
 //! NetworkManager devices for `mantle.network`: resolving the Wi-Fi and wired devices, and the
 //! forwarder tasks that turn their signals, and the manager's, into [`NetworkSignal`]s.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use futures_util::{FutureExt, Stream, StreamExt, stream, stream_select};
 use tokio::sync::mpsc::UnboundedSender;
-use zbus::proxy::CacheProperties;
 use zbus::zvariant::OwnedObjectPath;
 
 use super::proxies::{
@@ -13,7 +14,7 @@ use super::proxies::{
     WirelessProxy,
 };
 use super::{NetworkController, NetworkSignal};
-use crate::capabilities::{bind, forward_until_closed};
+use crate::capabilities::{bind, bind_uncached, forward_until_closed};
 use shared::{debug, error, warn};
 
 /// One resolved Wi-Fi device: its path for `AddAndActivateConnection2`, plus the `Device` and
@@ -56,11 +57,7 @@ pub(super) async fn resolve_devices(
     for path in nm.get_all_devices().await? {
         // Probe uncached: a cached proxy's first read triggers `GetAll`, match rules and
         // `GetNameOwner`, paid for every unrelated device on each `DevicesChanged`.
-        let probe = match DeviceProxy::builder(connection).path(path.clone()) {
-            Ok(builder) => builder.cache_properties(CacheProperties::No).build().await,
-            Err(err) => Err(err),
-        };
-        let probe = match probe {
+        let probe = match bind_uncached::<DeviceProxy>(connection, path.clone()).await {
             Ok(probe) => probe,
             Err(err) => {
                 debug!("failed to bind device {path}: {err}");
@@ -257,14 +254,20 @@ fn spawn_device_state_forwarder(
 /// Forwards manager-wide properties used by `NetworkState`: radio switches and the default route.
 /// Device tasks cannot cover them; networking can switch off while devices stay put, and the route
 /// can move between two activated devices.
-pub(super) fn spawn_manager_forwarder(nm: NetworkManagerProxy<'static>, events: UnboundedSender<NetworkSignal>) {
+/// An `ActiveConnections` change also sets `activity`, as [`super::vpn::forward_active_changes`] does.
+pub(super) fn spawn_manager_forwarder(
+    nm: NetworkManagerProxy<'static>,
+    events: UnboundedSender<NetworkSignal>,
+    activity: Arc<AtomicBool>,
+) {
     tokio::spawn(async move {
+        let activations = nm.receive_active_connections_changed().await;
         // `stream_select!` can re-poll a stream that already ended, so each input is fused.
         let changes = stream_select!(
             nm.receive_wireless_enabled_changed().await.map(drop).fuse(),
             nm.receive_networking_enabled_changed().await.map(drop).fuse(),
             nm.receive_primary_connection_changed().await.map(drop).fuse(),
-            nm.receive_active_connections_changed().await.map(drop).fuse()
+            activations.map(move |_| activity.store(true, Ordering::Relaxed)).fuse()
         );
         forward_until_closed(changes, events, NetworkSignal::Changed).await;
     });
@@ -532,7 +535,8 @@ pub(super) mod tests {
             .unwrap();
         let conn = bus.connection().await;
         let (events, mut signals) = tokio::sync::mpsc::unbounded_channel();
-        let controller = NetworkController::new(conn.clone(), events).await.unwrap();
+        let controller =
+            NetworkController::new(conn.clone(), events, tokio::sync::mpsc::unbounded_channel().0).await.unwrap();
         drain_signals(&mut signals, 4, 1).await;
         let mut monitor = method_call_monitor(&bus).await;
         let _ = collect_method_calls(&mut monitor, &conn).await;
@@ -559,7 +563,7 @@ pub(super) mod tests {
         })
         .await;
         let (events, mut signals) = tokio::sync::mpsc::unbounded_channel();
-        spawn_manager_forwarder(NetworkManagerProxy::new(&connection).await.unwrap(), events);
+        spawn_manager_forwarder(NetworkManagerProxy::new(&connection).await.unwrap(), events, Arc::default());
         assert!(matches!(within(signals.recv()).await, Some(NetworkSignal::Changed)));
     }
 

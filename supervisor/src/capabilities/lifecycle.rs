@@ -262,12 +262,13 @@ impl Capabilities {
                     let _ = self.senders.android_connect.send(());
                 }
             }
-            Capability::Network => {
+            // One NetworkManager worker feeds both.
+            Capability::Network | Capability::NetworkProfiles => {
                 if self.network.as_ref().is_none_or(UnboundedSender::is_closed) {
                     let (events, signals) = unbounded_channel();
-                    let connection = self.connection.clone();
+                    let (connection, profiles) = (self.connection.clone(), self.senders.network_profiles.clone());
                     let build = async move {
-                        NetworkController::new(connection, events)
+                        NetworkController::new(connection, events, profiles)
                             .await
                             .map_err(|err| {
                                 debug!("NetworkManager is unreachable; disabled until the next start: {err}")
@@ -553,6 +554,7 @@ impl Capabilities {
             Signal::Audio(state) => push!(Capability::Audio, &state),
             Signal::AudioLevels(state) => push!(Capability::AudioLevels, &state),
             Signal::Network(state) => push!(Capability::Network, &state),
+            Signal::NetworkProfiles(state) => push!(Capability::NetworkProfiles, &state),
             Signal::Bluetooth(state) => push!(Capability::Bluetooth, &state),
             // No debounce: `snapshot` already reads recomputed data (ADR-0031).
             Signal::Tray => push_held!(Tray, self.tray),
@@ -632,6 +634,7 @@ impl Capabilities {
             // Read-only: no action enum; a named command is malformed Renderer input.
             Capability::Appearance
             | Capability::AudioLevels
+            | Capability::NetworkProfiles
             | Capability::Battery
             | Capability::Privacy
             | Capability::Secrets => {

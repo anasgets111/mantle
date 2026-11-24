@@ -90,8 +90,7 @@ async fn complete(connection: &zbus::Connection, path: &OwnedObjectPath) -> zbus
     if path.as_str() == NONE {
         return Ok(None);
     }
-    let prompt =
-        PromptProxy::builder(connection).path(path)?.cache_properties(zbus::proxy::CacheProperties::No).build().await?;
+    let prompt = super::bind_uncached::<PromptProxy>(connection, path.clone()).await?;
     // Subscribe first, or a fast service's signal is lost.
     let mut completed = prompt.receive_completed().await?;
     let mut owner = prompt.inner().receive_owner_changed().await?;
@@ -137,11 +136,7 @@ async fn store_on(connection: &zbus::Connection, name: &str, secret: &[u8]) -> z
         ("org.freedesktop.Secret.Item.Attributes", Value::from(Dict::from(attributes))),
     ]);
     let body = SecretBytes { session, parameters: &[], bytes: secret, content_type: CONTENT_TYPE };
-    let collection = CollectionProxy::builder(connection)
-        .path(&collection)?
-        .cache_properties(zbus::proxy::CacheProperties::No)
-        .build()
-        .await?;
+    let collection = super::bind_uncached::<CollectionProxy>(connection, collection).await?;
     let (_item, prompt) = collection.create_item(properties, &body, true).await?;
     complete(connection, &prompt).await?;
     Ok(())

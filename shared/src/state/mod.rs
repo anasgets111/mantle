@@ -16,6 +16,7 @@ pub mod keyboard;
 pub mod lock;
 pub mod mpris;
 pub mod network;
+pub mod network_profiles;
 pub mod notifications;
 pub mod polkit;
 pub mod power;

@@ -223,7 +223,7 @@ pub(super) mod tests {
     fn an_access_point_reads_from_one_get_all_and_needs_its_ssid_strength_and_frequency() {
         let all = |pairs: Vec<(&str, OwnedValue)>| pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
         let reading = ApReading::from_properties(all(vec![
-            ("Ssid", OwnedValue::try_from(zbus::zvariant::Value::from(b"home".to_vec())).unwrap()),
+            ("Ssid", crate::capabilities::network::tests::owned(b"home".to_vec())),
             ("Strength", OwnedValue::from(62u8)),
             ("Frequency", OwnedValue::from(5180u32)),
             ("RsnFlags", OwnedValue::from(0x100u32)),

@@ -9517,3 +9517,16 @@ a client that already left is refused and pushes stay in order. The departure st
 unbounded queue, so a burst cannot stall zbus's 64-message reader. Current Firefox skips this name
 for background audio and asks the portal directly; that path stays rejected outside Mantle. Rejected:
 a second connection or inhibit machine; gating idle on these holds.
+
+## 0415. Saved NetworkManager profiles get their own `network_profiles` payload, written with `Update2`
+
+Push dedupe compares whole payloads (ADR-0037), so profiles on `network` would ride every
+signal-strength tick: with 1 Wi-Fi device, 20 access points and 15 profiles, merging grows `network`
+from 2187 B to 7915 B and parse plus serialize per push from 104 µs to 359 µs (headless debug). One
+worker feeds both, as for `audio` and `audio_levels`; the actions stay on `mantle.network`.
+`update_profile` merges the edit into `GetSettings` and writes it with `Update2(TO_DISK |
+NO_REAPPLY, {version-id})`, which keeps secrets and refuses a concurrent edit (retried once). It
+drops each legacy twin (`dns`, `addresses`, `routes`) whose replacement is present: the daemon
+prefers it, and on 1.58.1 legacy `dns` lost a DNS-over-TLS server and legacy `routes` a route's
+`table`. Below NetworkManager 1.44 edits fail. Rejected: `UpdateUnsaved` + `Save` (no conflict
+check); raw keys in Lua (untyped `au`/`aay` encodings).

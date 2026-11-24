@@ -1,26 +1,27 @@
 //! Saved VPN and WireGuard profiles: listing, `connect_vpn`/`disconnect_vpn` and the verdict.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt;
 use shared::state::network::{VpnError, VpnInfo, VpnKind};
+use shared::state::network_profiles::{ProfileInfo, ProfileKind};
 use tokio::sync::mpsc::UnboundedSender;
 use zbus::names::OwnedUniqueName;
-use zbus::zvariant::{OwnedObjectPath, OwnedValue};
+use zbus::zvariant::OwnedObjectPath;
 
 use super::connect::{ACTIVATION_CEILING, ActiveConnectionProxy};
-use super::devices::forward;
-use super::proxies::{ACTIVE_STATE_ACTIVATED, ACTIVE_STATE_ACTIVATING, ACTIVE_STATE_DEACTIVATED};
+use super::profile_actions::refusal;
+use super::proxies::{ACTIVE_STATE_ACTIVATED, ACTIVE_STATE_DEACTIVATED};
 use super::secret_agent::PendingSecret;
 use super::{NetworkController, NetworkSignal, NetworkState, root_object_path};
-use shared::warn;
+use crate::capabilities::{bind_uncached, get_property};
+use shared::{error, warn};
 
-/// Profile cache, last failure, secret request and `connect_vpn` waits behind one lock; the agent shares it.
+/// Last failure, secret request and `connect_vpn` waits behind one lock; the agent shares it.
 #[derive(Default)]
 pub(super) struct VpnState {
-    /// Saved profiles by path, `active` and `activating` unset.
-    pub(super) profiles: Vec<(OwnedObjectPath, VpnInfo)>,
     pub(super) error: Option<VpnError>,
     pub(super) secret: Option<PendingSecret>,
     /// The `connect_vpn` attempt waiting on each profile. A user stop removes it, so its verdict sets no error.
@@ -34,15 +35,12 @@ impl VpnState {
     }
 }
 
-/// A saved profile with `connection.type` `vpn` or `wireguard`.
-pub(super) fn profile_of(settings: &HashMap<String, HashMap<String, OwnedValue>>) -> Option<VpnInfo> {
-    let text = |key: &str| String::try_from(settings.get("connection")?.get(key)?.clone()).ok();
-    let kind = match text("type")?.as_str() {
-        "vpn" => VpnKind::Vpn,
-        "wireguard" => VpnKind::Wireguard,
-        _ => return None,
-    };
-    Some(VpnInfo { id: text("id")?, kind, uuid: text("uuid")?, active: false, activating: false })
+/// Whether NetworkManager, as `owner` last named it, sent `message`. The bus applies a `sender`
+/// rule to broadcasts only, and zbus cannot match a well-known name, so a signal sent to the
+/// Supervisor directly lands on a match-rule stream too.
+fn sent_by_nm(owner: &Mutex<Option<OwnedUniqueName>>, message: &zbus::Message) -> bool {
+    let owner = owner.lock().expect("mutex poisoned");
+    matches!((owner.as_deref(), message.header().sender()), (Some(owner), Some(sender)) if owner == sender)
 }
 
 /// Display text for an `ActiveConnection.StateChanged` reason.
@@ -56,106 +54,126 @@ fn failure_text(reason: u32) -> &'static str {
     }
 }
 
-/// Every active connection's StateChanged, which `ActiveConnections` does not report.
+/// Every active connection's StateChanged, which `ActiveConnections` does not report. Each also
+/// sets `activity`, so the next rebuild re-reads which profiles are active.
 pub(super) async fn forward_active_changes(
     connection: &zbus::Connection,
     nm_owner: Arc<Mutex<Option<OwnedUniqueName>>>,
     events: UnboundedSender<NetworkSignal>,
+    activity: Arc<AtomicBool>,
 ) {
     let rule = "type='signal',sender='org.freedesktop.NetworkManager',interface='org.freedesktop.NetworkManager.Connection.Active',member='StateChanged'";
-    let rule = zbus::MatchRule::try_from(rule).expect("a valid match rule");
-    // The bus applies `sender` to broadcasts only, and zbus cannot match a well-known name: a
-    // signal sent to the Supervisor directly still lands here, so check it against NM's owner. A bus
-    // call here would stall the connection's reader once a flood fills the stream's queue.
-    let subscribed = zbus::MessageStream::for_match_rule(rule, connection, None).await.map(|stream| {
-        Box::pin(stream.filter(move |message| {
-            let header = message.as_ref().ok().map(zbus::Message::header);
-            let owner = nm_owner.lock().expect("mutex poisoned");
-            let sender = header.as_ref().and_then(zbus::message::Header::sender);
-            std::future::ready(matches!((owner.as_deref(), sender), (Some(owner), Some(sender)) if owner == sender))
-        }))
+    forward_nm_signal(connection, nm_owner, rule, events, move |_| {
+        activity.store(true, Ordering::Relaxed);
+        Some(NetworkSignal::Changed)
+    })
+    .await;
+}
+
+/// Forwards each broadcast `rule` matches as `signal(message)`, when NetworkManager sent it.
+pub(super) async fn forward_nm_signal(
+    connection: &zbus::Connection,
+    nm_owner: Arc<Mutex<Option<OwnedUniqueName>>>,
+    rule: &'static str,
+    events: UnboundedSender<NetworkSignal>,
+    signal: impl Fn(&zbus::Message) -> Option<NetworkSignal> + Send + 'static,
+) {
+    let match_rule = zbus::MatchRule::try_from(rule).expect("a valid match rule");
+    // A bus call here would stall the connection's reader once a flood fills the stream's queue.
+    let stream = match zbus::MessageStream::for_match_rule(match_rule, connection, None).await {
+        Ok(stream) => stream,
+        Err(err) => return error!("failed to subscribe to {rule}; those changes need a restart: {err}"),
+    };
+    let mut signals = Box::pin(stream.filter_map(move |message| {
+        let message = message.ok().filter(|message| sent_by_nm(&nm_owner, message));
+        std::future::ready(message.and_then(|message| signal(&message)))
+    }));
+    tokio::spawn(async move {
+        while let Some(signal) = signals.next().await
+            && events.send(signal).is_ok()
+        {}
     });
-    let subscribed = subscribed.map(|stream| (stream, futures_util::stream::empty::<()>()));
-    forward(subscribed, NetworkSignal::Changed, events);
 }
 
 impl NetworkController {
-    /// Active connections as `(path, uuid, state)`, read uncached: a cached proxy per rebuild costs a `GetAll` and a match rule.
-    async fn active_connections(&self) -> Vec<(OwnedObjectPath, String, u32)> {
+    /// Active connections as `(path, uuid, state)`, read uncached: `nm`'s cache outlives a restarted
+    /// NetworkManager, and a cached proxy per rebuild costs a `GetAll` and a match rule.
+    pub(super) async fn active_connections(&self) -> zbus::Result<Vec<(OwnedObjectPath, String, u32)>> {
         let mut active = Vec::new();
-        for path in self.nm.active_connections().await.unwrap_or_default() {
-            let proxy = match ActiveConnectionProxy::builder(&self.connection).path(path.clone()) {
-                Ok(builder) => builder.cache_properties(zbus::proxy::CacheProperties::No).build().await,
-                Err(err) => Err(err),
+        let paths = get_property::<Vec<OwnedObjectPath>>(self.nm.inner(), "ActiveConnections").await?;
+        for path in paths.unwrap_or_default() {
+            let Ok(proxy) = bind_uncached::<ActiveConnectionProxy>(&self.connection, path.clone()).await else {
+                continue;
             };
-            let Ok(proxy) = proxy else { continue };
             if let (Ok(uuid), Ok(state)) = tokio::join!(proxy.uuid(), proxy.state()) {
                 active.push((path, uuid, state));
             }
         }
-        active
+        Ok(active)
     }
 
-    pub(super) async fn build_vpns(&self) -> Vec<VpnInfo> {
-        let mut vpns: Vec<_> =
-            self.vpn.lock().expect("mutex poisoned").profiles.iter().map(|(_, vpn)| vpn.clone()).collect();
-        if vpns.is_empty() {
-            return vpns;
-        }
-        let active = self.active_connections().await;
-        for vpn in &mut vpns {
-            let state = |wanted| active.iter().any(|(_, uuid, state)| *uuid == vpn.uuid && *state == wanted);
-            (vpn.active, vpn.activating) = (state(ACTIVE_STATE_ACTIVATED), state(ACTIVE_STATE_ACTIVATING));
-        }
-        vpns
-    }
-
-    /// `ActivateConnection`, then the verdict into `vpn_error`. A second call while one waits is a no-op.
-    pub async fn connect_vpn(&self, uuid: &str) {
-        let ((path, profile), attempt) = {
-            let mut vpn = self.vpn.lock().expect("mutex poisoned");
-            let Some(profile) = vpn.profiles.iter().find(|(_, p)| p.uuid == uuid).cloned() else {
-                return warn!("connect_vpn({uuid:?}): no such VPN profile");
+    /// The VPN and WireGuard profiles `network_profiles` lists, with the activations it last read.
+    pub(super) fn build_vpns(&self) -> Vec<VpnInfo> {
+        let vpn = |profile: ProfileInfo| {
+            let kind = match profile.kind {
+                ProfileKind::Vpn => VpnKind::Vpn,
+                ProfileKind::Wireguard => VpnKind::Wireguard,
+                _ => return None,
             };
+            let (id, uuid, active, activating) = (profile.id, profile.uuid, profile.active, profile.activating);
+            Some(VpnInfo { id, kind, uuid, active, activating })
+        };
+        self.profiles.lock().expect("mutex poisoned").snapshot().profiles.into_iter().filter_map(vpn).collect()
+    }
+
+    /// `ActivateConnection`, dropping `accepted` once NetworkManager replies, then the verdict into
+    /// `vpn_error`. A second call while one waits is a no-op.
+    pub async fn connect_vpn(&self, uuid: &str, accepted: tokio::sync::oneshot::Sender<()>) {
+        let Some(id) = self.build_vpns().into_iter().find(|vpn| vpn.uuid == uuid).map(|vpn| vpn.id) else {
+            return warn!("connect_vpn({uuid:?}): no such VPN profile");
+        };
+        let attempt = {
+            let mut vpn = self.vpn.lock().expect("mutex poisoned");
             if vpn.waiting.contains_key(uuid) {
                 return;
             }
             let Some(attempt) = crate::capabilities::next_request_id() else { return };
             vpn.waiting.insert(uuid.into(), attempt.clone());
             vpn.error = None;
-            (profile, attempt)
+            attempt
         };
         let root = root_object_path();
-        let outcome = match self.nm.activate_connection(&path, &root, &root).await {
-            Ok(active) => self.vpn_outcome(&active, uuid).await,
-            Err(err) => {
-                warn!("connect_vpn({:?}): ActivateConnection failed: {err}", profile.id);
-                Err(match err {
-                    zbus::Error::MethodError(name, ..) if name.ends_with(".PermissionDenied") => "not authorized",
-                    _ => "connection failed",
-                })
-            }
+        let activate = async {
+            self.nm.activate_connection(&self.path_of(uuid).await?.as_ref(), &root, &root).await.map_err(refusal)
+        };
+        let activated = activate.await;
+        drop(accepted);
+        let outcome = match activated {
+            Ok(active) => self.vpn_outcome(&active, uuid).await.map_err(String::from),
+            Err(err) => Err(err),
         };
         {
             let mut vpn = self.vpn.lock().expect("mutex poisoned");
             if vpn.waiting.get(uuid) == Some(&attempt) {
                 vpn.waiting.remove(uuid);
                 if let Err(message) = outcome {
-                    warn!("connect_vpn({:?}) failed: {message}", profile.id);
-                    vpn.error = Some(VpnError { uuid: uuid.into(), message: message.into() });
+                    warn!("connect_vpn({id:?}) failed: {message}");
+                    vpn.error = Some(VpnError { uuid: uuid.into(), message });
                 }
             }
         }
         let _ = self.events.send(NetworkSignal::Changed);
     }
 
-    pub async fn disconnect_vpn(&self, uuid: &str) {
+    /// Deactivates every activation of `uuid`, reporting the first refusal; a waiting `connect_vpn`
+    /// then reports no error.
+    pub async fn disconnect_vpn(&self, uuid: &str) -> zbus::Result<()> {
         self.vpn.lock().expect("mutex poisoned").waiting.remove(uuid);
-        for (path, _, _) in self.active_connections().await.into_iter().filter(|(_, active, _)| active == uuid) {
-            if let Err(err) = self.nm.deactivate_connection(&path).await {
-                warn!("failed to deactivate VPN {uuid}: {err}");
-            }
+        let mut stopped = Ok(());
+        for (path, _, _) in self.active_connections().await?.into_iter().filter(|(_, active, _)| active == uuid) {
+            stopped = stopped.and(self.nm.deactivate_connection(&path).await);
         }
+        stopped
     }
 
     /// Waits for `active` to settle. The ceiling pauses while this profile's secret prompt is up,
@@ -201,32 +219,36 @@ pub(super) mod tests {
     use std::time::Duration;
 
     use tokio::sync::mpsc::UnboundedReceiver;
-    use zbus::zvariant::Value;
+    use zbus::zvariant::OwnedValue;
 
     use super::*;
     use crate::capabilities::network::connect::tests::{ListedProfiles, attempting};
-    use crate::capabilities::network::tests::{Nm, SavedProfile};
+    use crate::capabilities::network::tests::{Nm, SavedProfile, owned};
     use crate::capabilities::test_support::within;
 
     pub(crate) const ACTIVE: &str = "/org/freedesktop/NetworkManager/ActiveConnection/3";
     const PROFILE: &str = "/org/freedesktop/NetworkManager/Settings/5";
 
     pub(crate) fn settings(kind: &str) -> HashMap<String, HashMap<String, OwnedValue>> {
-        let field = |value: &str| OwnedValue::try_from(Value::from(value)).unwrap();
         HashMap::from([(
             "connection".to_string(),
-            HashMap::from([("type".into(), field(kind)), ("id".into(), field("work")), ("uuid".into(), field("u-1"))]),
+            HashMap::from([("type".into(), owned(kind)), ("id".into(), owned("work")), ("uuid".into(), owned("u-1"))]),
         )])
     }
 
-    #[test]
-    fn only_vpn_and_wireguard_profiles_are_listed() {
-        assert_eq!(profile_of(&settings("vpn")).unwrap().kind, VpnKind::Vpn);
-        assert_eq!(profile_of(&settings("wireguard")).unwrap().kind, VpnKind::Wireguard);
-        assert_eq!(profile_of(&settings("802-11-wireless")), None);
+    #[tokio::test]
+    async fn only_vpn_and_wireguard_profiles_are_listed() {
+        let (controller, _events, _peer) = attempting(Ok).await;
+        for kind in ["vpn", "wireguard", "802-11-wireless"] {
+            let listed =
+                (OwnedObjectPath::try_from(PROFILE).unwrap(), super::super::edit::project(&settings(kind)).unwrap());
+            controller.profiles.lock().unwrap().list.push(listed);
+        }
+        let kinds: Vec<_> = controller.build_vpns().into_iter().map(|vpn| vpn.kind).collect();
+        assert_eq!(kinds, [VpnKind::Vpn, VpnKind::Wireguard]);
     }
 
-    /// An activation reading `state`, whose `State` read first queues `then`, as NM does.
+    /// An activation on wlan0 reading `state`, whose `State` read first queues `then`, as NM does.
     pub(crate) struct FakeActive {
         pub(crate) state: u32,
         pub(crate) then: Option<(u32, u32)>,
@@ -247,18 +269,24 @@ pub(super) mod tests {
         fn uuid(&self) -> String {
             "u-1".into()
         }
+
+        /// wlan0 in `network::tests`.
+        #[zbus(property)]
+        fn devices(&self) -> Vec<OwnedObjectPath> {
+            vec![OwnedObjectPath::try_from("/org/freedesktop/NetworkManager/Devices/1").unwrap()]
+        }
     }
 
     /// The controller, and every call its NetworkManager answers.
     async fn controller(active: FakeActive) -> (NetworkController, UnboundedReceiver<String>, zbus::Connection) {
         let (calls, asked) = tokio::sync::mpsc::unbounded_channel();
         let (controller, _events, peer) = attempting(|peer| {
-            peer.serve_at("/org/freedesktop/NetworkManager", Nm(calls.clone()))?
+            peer.serve_at("/org/freedesktop/NetworkManager", Nm(calls.clone(), None))?
                 .serve_at(
                     "/org/freedesktop/NetworkManager/Settings",
                     ListedProfiles(vec![PROFILE.try_into().unwrap()]),
                 )?
-                .serve_at(PROFILE, SavedProfile(calls, settings("vpn")))?
+                .serve_at(PROFILE, SavedProfile(calls, settings("vpn"), 0, Vec::new()))?
                 .serve_at(ACTIVE, active)
         })
         .await;
@@ -274,10 +302,15 @@ pub(super) mod tests {
     async fn a_listed_profile_reads_activating_and_its_activation_succeeds() {
         let (controller, _, _peer) = controller(FakeActive { state: 1, then: Some((2, 0)) }).await;
         assert_eq!(
-            controller.build_vpns().await,
+            {
+                controller.read_profile_activity().await;
+                controller.build_vpns()
+            },
             [VpnInfo { id: "work".into(), kind: VpnKind::Vpn, uuid: "u-1".into(), active: false, activating: true }]
         );
-        tokio::time::timeout(Duration::from_secs(1), controller.connect_vpn("u-1")).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), controller.connect_vpn("u-1", tokio::sync::oneshot::channel().0))
+            .await
+            .unwrap();
         assert_eq!(vpn_error(&controller), None);
         assert!(controller.vpn.lock().unwrap().waiting.is_empty());
     }
@@ -285,7 +318,9 @@ pub(super) mod tests {
     #[tokio::test]
     async fn a_failure_queued_ahead_of_the_state_read_keeps_its_reason() {
         let (controller, _, _peer) = controller(FakeActive { state: 4, then: Some((4, 10)) }).await;
-        tokio::time::timeout(Duration::from_secs(1), controller.connect_vpn("u-1")).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), controller.connect_vpn("u-1", tokio::sync::oneshot::channel().0))
+            .await
+            .unwrap();
         assert_eq!(vpn_error(&controller).as_deref(), Some("login failed"));
     }
 
@@ -296,7 +331,7 @@ pub(super) mod tests {
         let (ours, impostor) = (bus.connection().await, bus.connection().await);
         let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
         let owner = Some(nm.unique_name().unwrap().to_owned());
-        forward_active_changes(&ours, Arc::new(Mutex::new(owner)), events).await;
+        forward_active_changes(&ours, Arc::new(Mutex::new(owner)), events, Arc::default()).await;
         let interface = "org.freedesktop.NetworkManager.Connection.Active";
 
         let direct = ours.unique_name().unwrap().to_string();
@@ -319,7 +354,7 @@ pub(super) mod tests {
         let (ours, impostor) = (bus.connection().await, bus.connection().await);
         let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
         let owner = Some(nm.unique_name().unwrap().to_owned());
-        forward_active_changes(&ours, Arc::new(Mutex::new(owner)), events).await;
+        forward_active_changes(&ours, Arc::new(Mutex::new(owner)), events, Arc::default()).await;
         let interface = "org.freedesktop.NetworkManager.Connection.Active";
 
         let direct = ours.unique_name().unwrap().to_string();
@@ -348,10 +383,14 @@ pub(super) mod tests {
     async fn the_ceiling_stops_a_stuck_activation_and_a_user_disconnect_is_no_error() {
         let (controller, mut asked, _peer) = controller(FakeActive { state: 1, then: None }).await;
         tokio::time::pause();
-        tokio::join!(controller.connect_vpn("u-1"), controller.disconnect_vpn("u-1"));
+        let (_, stopped) = tokio::join!(
+            controller.connect_vpn("u-1", tokio::sync::oneshot::channel().0),
+            controller.disconnect_vpn("u-1")
+        );
+        stopped.unwrap();
         assert_eq!(vpn_error(&controller), None, "the user stopped it");
 
-        controller.connect_vpn("u-1").await;
+        controller.connect_vpn("u-1", tokio::sync::oneshot::channel().0).await;
         assert_eq!(vpn_error(&controller).as_deref(), Some("connection timed out"));
         let deactivated =
             std::iter::from_fn(|| asked.try_recv().ok()).filter(|call| call.contains("DeactivateConnection"));

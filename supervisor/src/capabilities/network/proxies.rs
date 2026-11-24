@@ -17,6 +17,10 @@ pub(super) const ACTIVE_STATE_ACTIVATED: u32 = 2;
 pub(super) const ACTIVE_STATE_DEACTIVATED: u32 = 4;
 pub(super) const ACTIVE_STATE_ACTIVATING: u32 = 1;
 pub(super) const AP_FLAGS_PRIVACY: u32 = 0x1;
+pub(super) const SETTINGS_FLAG_UNSAVED: u32 = 0x1;
+pub(super) const SETTINGS_FLAG_NM_GENERATED: u32 = 0x2;
+pub(super) const UPDATE2_FLAG_TO_DISK: u32 = 0x1;
+pub(super) const UPDATE2_FLAG_NO_REAPPLY: u32 = 0x40;
 
 #[zbus::proxy(
     interface = "org.freedesktop.NetworkManager",
@@ -40,6 +44,7 @@ pub(super) trait NetworkManager {
     fn deactivate_connection(&self, active_connection: &ObjectPath<'_>) -> zbus::Result<()>;
     fn enable(&self, enable: bool) -> zbus::Result<()>;
     fn get_all_devices(&self) -> zbus::Result<Vec<OwnedObjectPath>>;
+    fn get_device_by_ip_iface(&self, iface: &str) -> zbus::Result<OwnedObjectPath>;
     #[zbus(signal)]
     fn device_added(&self, device_path: ObjectPath<'_>) -> zbus::Result<()>;
     #[zbus(signal)]
@@ -56,6 +61,8 @@ pub(super) trait NetworkManager {
     fn wireless_enabled(&self) -> zbus::Result<bool>;
     #[zbus(property)]
     fn set_wireless_enabled(&self, value: bool) -> zbus::Result<()>;
+    #[zbus(property)]
+    fn version(&self) -> zbus::Result<String>;
 }
 
 #[zbus::proxy(
@@ -75,6 +82,7 @@ pub(super) trait AgentManager {
 )]
 pub(super) trait Settings {
     fn list_connections(&self) -> zbus::Result<Vec<OwnedObjectPath>>;
+    fn get_connection_by_uuid(&self, uuid: &str) -> zbus::Result<OwnedObjectPath>;
     #[zbus(signal)]
     fn new_connection(&self, connection: ObjectPath<'_>) -> zbus::Result<()>;
     #[zbus(signal)]
@@ -90,14 +98,29 @@ pub(super) trait SettingsConnection {
     fn get_settings(&self) -> zbus::Result<HashMap<String, HashMap<String, OwnedValue>>>;
     fn save(&self) -> zbus::Result<()>;
     fn update_unsaved(&self, properties: HashMap<&str, HashMap<&str, Value<'_>>>) -> zbus::Result<()>;
+    fn update2(
+        &self,
+        settings: HashMap<&str, HashMap<&str, Value<'_>>>,
+        flags: u32,
+        args: HashMap<&str, Value<'_>>,
+    ) -> zbus::Result<HashMap<String, OwnedValue>>;
+    #[zbus(property)]
+    fn flags(&self) -> zbus::Result<u32>;
+    #[zbus(property)]
+    fn version_id(&self) -> zbus::Result<u64>;
 }
 
 #[zbus::proxy(interface = "org.freedesktop.NetworkManager.Device", default_service = "org.freedesktop.NetworkManager")]
 pub(super) trait Device {
     fn disconnect(&self) -> zbus::Result<()>;
-    /// Renamed so it does not collide with the `state` property's `receive_state_changed`.
-    #[zbus(signal, name = "StateChanged")]
-    fn device_state_changed(&self, new_state: u32, old_state: u32, reason: u32) -> zbus::Result<()>;
+    #[allow(clippy::type_complexity)]
+    fn get_applied_connection(&self, flags: u32) -> zbus::Result<(HashMap<String, HashMap<String, OwnedValue>>, u64)>;
+    fn reapply(
+        &self,
+        connection: HashMap<&str, HashMap<&str, Value<'_>>>,
+        version_id: u64,
+        flags: u32,
+    ) -> zbus::Result<()>;
     #[zbus(property)]
     fn available_connections(&self) -> zbus::Result<Vec<OwnedObjectPath>>;
     #[zbus(property)]

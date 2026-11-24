@@ -18,7 +18,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::de::{IgnoredAny, MapAccess};
 use tokio::sync::mpsc::UnboundedSender;
-use zbus::zvariant::{Signature, Type};
+use zbus::zvariant::{OwnedObjectPath, Signature, Type};
 
 pub use latest_writes::{LatestWrites, Writer};
 pub use lifecycle::Capabilities;
@@ -177,11 +177,19 @@ pub(crate) async fn name_departures(
 /// Binds a macro-generated zbus proxy at `path`. A generated `<Proxy>::new` ties the proxy to
 /// `&Connection` even though its builder clones the connection, so stored proxies go through the
 /// builder to stay `'static`.
-pub(crate) async fn bind<T>(connection: &zbus::Connection, path: zbus::zvariant::OwnedObjectPath) -> zbus::Result<T>
+pub(crate) async fn bind<T>(connection: &zbus::Connection, path: OwnedObjectPath) -> zbus::Result<T>
 where
     T: zbus::proxy::Defaults + From<zbus::Proxy<'static>>,
 {
     zbus::proxy::Builder::new(connection).path(path)?.build().await
+}
+
+/// [`bind`] without the property cache and its `GetAll`, match rules and `GetNameOwner`.
+pub(crate) async fn bind_uncached<T>(connection: &zbus::Connection, path: OwnedObjectPath) -> zbus::Result<T>
+where
+    T: zbus::proxy::Defaults + From<zbus::Proxy<'static>>,
+{
+    zbus::proxy::Builder::new(connection).path(path)?.cache_properties(zbus::proxy::CacheProperties::No).build().await
 }
 
 /// An uncached `org.freedesktop.DBus.Properties` proxy for `destination`'s object at `path`; it has no

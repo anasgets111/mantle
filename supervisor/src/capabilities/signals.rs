@@ -5,6 +5,7 @@ use shared::state::bluetooth::BluetoothState;
 use shared::state::idle::IdleState;
 use shared::state::keyboard::KeyboardState;
 use shared::state::network::NetworkState;
+use shared::state::network_profiles::NetworkProfilesState;
 use shared::state::secrets::SecretsState;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -19,6 +20,8 @@ pub enum Signal {
     AudioLevels(AudioLevelsState),
     /// Worker capabilities send finished state, like `Audio`.
     Network(NetworkState),
+    /// The network worker's profile list, beside `Network` so a strength tick does not resend it.
+    NetworkProfiles(NetworkProfilesState),
     Bluetooth(BluetoothState),
     Tray,
     Mpris,
@@ -122,6 +125,7 @@ capability_channels! {
         AudioLevels => audio_levels: AudioLevelsState, Some(state) => Signal::AudioLevels(state);
         // Workers send finished state (see `spawn_worker`).
         Network => network: NetworkState, Some(state) => Signal::Network(state);
+        NetworkProfiles => network_profiles: NetworkProfilesState, Some(state) => Signal::NetworkProfiles(state);
         Bluetooth => bluetooth: BluetoothState, Some(state) => Signal::Bluetooth(state);
         // Unit channels only wake a push: each push reads current state.
         Tray => tray: (), Some(()) => Signal::Tray;

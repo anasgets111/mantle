@@ -98,6 +98,7 @@ roster! {
     Processes => "processes", processes::ProcessesState, ProcessesAction, "Programs declared with `session_process`: running state, start time and last exit.",
     Appearance => "appearance", appearance::AppearanceState, "Portal appearance settings: colour scheme, accent colour, contrast and reduced motion.",
     Windows => "windows", windows::WindowsState, WindowsAction, "Open toplevel windows with title, app ID, workspace, output and state flags.",
+    NetworkProfiles => "network_profiles", network_profiles::NetworkProfilesState, "Saved NetworkManager profiles and their IP and DNS settings; `mantle.network`'s `_profile` actions edit them.",
     AudioLevels => "audio_levels", audio_levels::AudioLevelsState, "Peak levels of the sinks and sources `mantle.audio:set_level_meters` names; `nil` before the first call this session.",
 }
 

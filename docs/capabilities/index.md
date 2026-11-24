@@ -57,7 +57,7 @@ There is no `:set` on the state; `mantle.brightness:set` and `mantle.storage:set
 | First read of `mantle.<name>` | The Supervisor starts that backend, once. `mantle.idle` starts on its first method call, `:get`, `:map` and `:on_change` included |
 | Before the first push | Every read is `nil`. A missing backend may keep it `nil` for good |
 | Running | A started backend runs for the Supervisor's lifetime. Its state survives reloads and Renderer replacement: a new generation gets every last snapshot replayed ([hydration](../glossary.md#capabilities)) |
-| Shared readers | `audio`, `audio_levels` and `privacy` share one PipeWire thread; `workspaces` and `windows` share one compositor reader. Whichever is read first starts it |
+| Shared readers | `audio`, `audio_levels` and `privacy` share one PipeWire thread; `network` and `network_profiles` share one NetworkManager connection; `workspaces` and `windows` share one compositor reader. Whichever is read first starts it |
 | Buses | One system-bus connection for all. `tray`, `notifications`, `mpris`, `idle` and `appearance` each open their own session bus. Every D-Bus method call times out after 25 s |
 | Pushes | On backend events. `clock`, `sysinfo`, `updates`, notification expiry, mpris's position recheck and the `brightness` fallback also run timers |
 | Renderer replaced | The departed generation's Bluetooth discovery stops, its pending Wi-Fi prompt is cancelled, its `folders` watches, idle thresholds and inhibits are dropped, and its `process.run` children are reaped ([processes](../guide/processes.md#processrun)). An in-place reload keeps the generation |
@@ -77,7 +77,7 @@ still exists.
 | A state field read off the capability (`mantle.audio.sinks`) | Raises at the read: ``did you mean `mantle.audio:get().sinks`?`` |
 | A misspelled action (`mantle.audio:set_volum(1)`) | Raises at the read: ``did you mean `mantle.audio:set_volume(...)`?`` |
 | Any other unknown name | Raises at the read, listing the actions the capability takes |
-| Any other method but `get`, `map` and `on_change` on `appearance`, `audio_levels`, `battery`, `privacy` or `clock` | Raises: they have no actions |
+| Any other method but `get`, `map` and `on_change` on `appearance`, `audio_levels`, `battery`, `network_profiles`, `privacy` or `clock` | Raises: they have no actions |
 | A function or userdata argument | Raises at the call, naming its slot |
 | Wrong type, range or argument count | Raises at the call: `mantle.audio:set_volume: bad argument #2: expected a number, got string`, or `mantle.audio:set_volume: expects 2 arguments, got 3` |
 | A value the type rules out | Raises at the call: an empty name, a relative `folders:watch` path, a negative `hold_expiry` |
@@ -115,6 +115,7 @@ pages. On the LuaLS library path, `mantle.audio:get().` completes fields and
 | [`lock`](lock.md) | Lock held, authentication progress, last failure | No `unlock`: only a correct password unlocks |
 | [`mpris`](mpris.md) | Media players, metadata, position | |
 | [`network`](network.md) | Connectivity, Wi-Fi scan, join progress | Secured joins take the key through `secure_submit` |
+| [`network_profiles`](network_profiles.md) | Saved NetworkManager profiles with IP and DNS settings | Edited through `network`'s `_profile` actions |
 | [`notifications`](notifications.md) | The newest 200 notifications, do-not-disturb | Mantle is the notification daemon |
 | [`polkit`](polkit.md) | The pending authentication request | Mantle is the polkit agent; the password goes through `secure_submit` |
 | [`power`](power.md) | Power profiles, on battery, power draw | |

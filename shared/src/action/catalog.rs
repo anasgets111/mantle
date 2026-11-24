@@ -416,6 +416,99 @@ pub enum NetworkAction {
     DisconnectVpn { uuid: String },
     /// Declines the pending `vpn_secret` request, failing that activation.
     CancelVpnSecret,
+    /// Edits the saved profile with this UUID and writes it to disk; keys `edit` leaves out keep their value.
+    /// Needs NetworkManager 1.44+. An active profile's device keeps the old settings until
+    /// `reapply_profile` or its next activation.
+    UpdateProfile {
+        #[serde(deserialize_with = "super::non_empty")]
+        uuid: String,
+        edit: ProfileEdit,
+    },
+    /// Deletes the saved profile with this UUID.
+    DeleteProfile {
+        #[serde(deserialize_with = "super::non_empty")]
+        uuid: String,
+    },
+    /// Applies the saved settings of the profile with this UUID, without reconnecting, on
+    /// `interface` or on every device it is active on. When NetworkManager refuses a change,
+    /// `error` says so and `activate_profile` applies it by reconnecting.
+    ReapplyProfile {
+        #[serde(deserialize_with = "super::non_empty")]
+        uuid: String,
+        #[serde(default, deserialize_with = "super::some_non_empty")]
+        interface: Option<String>,
+    },
+    /// Activates the profile with this UUID on `interface`, or on a device NetworkManager picks. A
+    /// VPN or WireGuard profile goes through `connect_vpn`. A Wi-Fi profile without a saved key
+    /// fails; join with `connect` instead.
+    ActivateProfile {
+        #[serde(deserialize_with = "super::non_empty")]
+        uuid: String,
+        #[serde(default, deserialize_with = "super::some_non_empty")]
+        interface: Option<String>,
+    },
+    /// Deactivates the profile with this UUID wherever it is active.
+    DeactivateProfile {
+        #[serde(deserialize_with = "super::non_empty")]
+        uuid: String,
+    },
+}
+
+/// `network:update_profile`'s table. Absent keys keep their value; one invalid key raises at the call.
+#[derive(Debug, Default, PartialEq, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ProfileEdit {
+    pub autoconnect: Option<bool>,
+    /// `-999` to `999`; higher wins among profiles that can autoconnect on one device.
+    #[serde(default, deserialize_with = "super::priority")]
+    pub autoconnect_priority: Option<i32>,
+    pub metered: Option<crate::state::network_profiles::Metered>,
+    /// IPv4 addresses only.
+    #[serde(default, deserialize_with = "super::ipv4")]
+    pub ipv4: Option<IpEdit>,
+    /// IPv6 addresses only.
+    #[serde(default, deserialize_with = "super::ipv6")]
+    pub ipv6: Option<IpEdit>,
+}
+
+/// `ProfileEdit.ipv4` and `.ipv6`. A list replaces the saved one and `{}` clears it.
+#[derive(Debug, Default, PartialEq, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct IpEdit {
+    /// `"manual"` needs `addresses`.
+    pub method: Option<IpMethod>,
+    /// `"address/prefix"` strings.
+    #[serde(default, deserialize_with = "super::replacing_list")]
+    pub addresses: Option<Vec<String>>,
+    /// An address, or `""` to remove it; needs `addresses`.
+    pub gateway: Option<String>,
+    /// DNS server addresses, in order. Replaces DNS-over-TLS entries too.
+    #[serde(default, deserialize_with = "super::replacing_list")]
+    pub dns: Option<Vec<String>>,
+    /// Search domains.
+    #[serde(default, deserialize_with = "super::replacing_list")]
+    pub dns_search: Option<Vec<String>>,
+    /// Use only `dns`, ignoring servers from DHCP or router advertisements.
+    pub ignore_auto_dns: Option<bool>,
+}
+
+/// NetworkManager's IP method, spelled as `IpSettings.method` reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum IpMethod {
+    Auto,
+    /// IPv6 only: DHCPv6 without router advertisements.
+    Dhcp,
+    Manual,
+    LinkLocal,
+    /// Shares this connection with other devices.
+    Shared,
+    /// IPv6 only: leaves IPv6 to the kernel.
+    Ignore,
+    Disabled,
 }
 
 #[derive(Debug, serde::Deserialize)]

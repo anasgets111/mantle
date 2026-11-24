@@ -245,6 +245,34 @@
 ---@field who string Free-text holder name, e.g. `"mpv"`; draw it, never match it. Cut at 256 bytes, like `why`.
 ---@field why string Free-text reason, e.g. `"Playing video"`; often empty.
 
+---@class IpEdit
+---`ProfileEdit.ipv4` and `.ipv6`. A list replaces the saved one and `{}` clears it.
+---@field addresses? string[] `"address/prefix"` strings.
+---@field dns? string[] DNS server addresses, in order. Replaces DNS-over-TLS entries too.
+---@field dns_search? string[] Search domains.
+---@field gateway? string An address, or `""` to remove it; needs `addresses`.
+---@field ignore_auto_dns? boolean Use only `dns`, ignoring servers from DHCP or router advertisements.
+---@field method? IpMethod `"manual"` needs `addresses`.
+
+---@alias IpMethod
+---| "auto"
+---| "manual"
+---| "link-local"
+---| "disabled"
+---| "dhcp" # IPv6 only: DHCPv6 without router advertisements.
+---| "shared" # Shares this connection with other devices.
+---| "ignore" # IPv6 only: leaves IPv6 to the kernel.
+---NetworkManager's IP method, spelled as `IpSettings.method` reads.
+
+---@class IpSettings
+---A profile's `ipv4` or `ipv6` settings.
+---@field addresses string[] Static addresses as `"address/prefix"`.
+---@field dns string[] Static DNS servers, in order. A DNS-over-TLS server reads as NetworkManager writes it, such as `"dns+tls://1.1.1.1#one.one.one.one"`.
+---@field dns_search string[] Search domains.
+---@field gateway? string Static gateway, or `nil`.
+---@field ignore_auto_dns boolean Ignore DNS servers from DHCP or router advertisements and use only `dns`.
+---@field method string NetworkManager's method: `"auto"`, `"manual"`, `"link-local"`, `"shared"`, `"disabled"`, and for IPv6 also `"dhcp"` and `"ignore"`.
+
 ---@class JoinError
 ---A failed join, as `connect_error`.
 ---@field message string Display text, such as `"wrong password"` or `"network not found"`.
@@ -275,6 +303,12 @@
 ---| "standard" # An ordinary entry; also any type outside the spec.
 ---| "separator" # A divider line; it has no label and does nothing.
 ---`tray.items[].menu[].menu_type`.
+
+---@alias Metered
+---| "yes"
+---| "no"
+---| "unknown" # NetworkManager guesses from the device.
+---`connection.metered`, also `update_profile`'s `metered`.
 
 ---@class Notification
 ---One `notifications.feed` entry (ADR-0033).
@@ -425,6 +459,46 @@
 ---@class PrivacyUser
 ---One app using a camera, microphone or screen capture.
 ---@field app_name string PipeWire `application.name`, else `/proc/<pid>/comm`, else `"pid 1234"` (or `"node 56"`); never empty.
+
+---@alias ProfileAction "update"|"delete"|"reapply"|"activate"|"deactivate"
+---`error.action`: the `_profile` action that failed.
+
+---@class ProfileEdit
+---`network:update_profile`'s table. Absent keys keep their value; one invalid key raises at the call.
+---@field autoconnect? boolean
+---@field autoconnect_priority? integer `-999` to `999`; higher wins among profiles that can autoconnect on one device.
+---@field ipv4? IpEdit IPv4 addresses only.
+---@field ipv6? IpEdit IPv6 addresses only.
+---@field metered? Metered
+
+---@class ProfileError
+---A failed `_profile` action, as `error`.
+---@field action ProfileAction
+---@field message string Display text, such as `"not authorized"`.
+---@field uuid string The profile the action was for.
+
+---@class ProfileInfo
+---One saved NetworkManager profile in `profiles`. Secrets never appear.
+---@field activating boolean The profile is being activated.
+---@field active boolean The profile is activated on some device.
+---@field autoconnect boolean
+---@field autoconnect_priority integer Higher wins among profiles that can autoconnect on one device.
+---@field id string Profile name.
+---@field interface? string The interface the profile is bound to, or `nil` for any.
+---@field ipv4? IpSettings `nil` when the profile has no IPv4 settings, as a VPN may not.
+---@field ipv6? IpSettings
+---@field kind ProfileKind
+---@field metered Metered
+---@field ssid? string The Wi-Fi network name, or `nil`; `�` stands for bytes that are not UTF-8.
+---@field uuid string Profile UUID; pass it to the `_profile` actions.
+
+---@alias ProfileKind
+---| "ethernet"
+---| "wifi"
+---| "wireguard"
+---| "vpn" # A plugin VPN.
+---| "other" # Any other type, such as a bridge or a mobile broadband profile.
+---`profiles[].kind`.
 
 ---@class Radio
 ---One radio class and the rfkill block state of its devices.
@@ -812,6 +886,12 @@
 ---@field source string `"niri"`, `"hyprland"`, `"sway"`, `"mango"`, or `"wlr_foreign_toplevel"`.
 ---@field windows WindowEntry[] Sorted by numeric `workspace_id`, then Hyprland named ones. Windows with a non-numeric id (sway names such as `1:web`, mango's `DP-1:3`) or none come last, in backend order.
 
+---@class NetworkProfilesState
+---`mantle.network_profiles`' payload: saved NetworkManager profiles, pushed apart from `network` so a
+---signal-strength change does not resend them. `mantle.network`'s `_profile` actions edit them.
+---@field error? ProfileError The last failed `_profile` action, or `nil`; a later success of the same action on the same profile clears it. VPN activation failures land in `network`'s `vpn_error` instead.
+---@field profiles ProfileInfo[] Every saved profile except loopback, ordered by name.
+
 ---@class AudioLevelsState
 ---`mantle.audio_levels`' payload: the peaks of the devices `mantle.audio:set_level_meters` names,
 ---pushed at most 30 times a second and only when one moves by 1 % or more.
@@ -872,6 +952,11 @@
 ---@field connect_vpn fun(self: NetworkCapability, uuid: string) Activates the saved VPN or WireGuard profile with this UUID. A missing secret raises `vpn_secret`.
 ---@field disconnect_vpn fun(self: NetworkCapability, uuid: string) Deactivates the VPN or WireGuard profile with this UUID.
 ---@field cancel_vpn_secret fun(self: NetworkCapability) Declines the pending `vpn_secret` request, failing that activation.
+---@field update_profile fun(self: NetworkCapability, uuid: string, edit: ProfileEdit) Edits the saved profile with this UUID and writes it to disk; keys `edit` leaves out keep their value. Needs NetworkManager 1.44+. An active profile's device keeps the old settings until `reapply_profile` or its next activation.
+---@field delete_profile fun(self: NetworkCapability, uuid: string) Deletes the saved profile with this UUID.
+---@field reapply_profile fun(self: NetworkCapability, uuid: string, interface?: string) Applies the saved settings of the profile with this UUID, without reconnecting, on `interface` or on every device it is active on. When NetworkManager refuses a change, `error` says so and `activate_profile` applies it by reconnecting.
+---@field activate_profile fun(self: NetworkCapability, uuid: string, interface?: string) Activates the profile with this UUID on `interface`, or on a device NetworkManager picks. A VPN or WireGuard profile goes through `connect_vpn`. A Wi-Fi profile without a saved key fails; join with `connect` instead.
+---@field deactivate_profile fun(self: NetworkCapability, uuid: string) Deactivates the profile with this UUID wherever it is active.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/secrets.html)
 ---@class SecretsCapability: ReadOnlyCapability<SecretsState>, userdata
@@ -1028,6 +1113,10 @@ local AppearanceCapability = {}
 ---@field set_maximized fun(self: WindowsCapability, id: string, maximized: boolean) Sets maximized on or off; no-op on niri, sway and mango.
 ---@field move_to_workspace fun(self: WindowsCapability, id: string, workspace_id: string) Moves a window to a workspace.
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/network_profiles.html)
+---@class NetworkProfilesCapability: ReadOnlyCapability<NetworkProfilesState>, userdata
+local NetworkProfilesCapability = {}
+
 ---[docs](https://anasgets111.github.io/mantle/capabilities/audio_levels.html)
 ---@class AudioLevelsCapability: ReadOnlyCapability<AudioLevelsState>, userdata
 local AudioLevelsCapability = {}
@@ -1095,6 +1184,7 @@ local AudioLevelsCapability = {}
 ---@field processes ProcessesCapability Programs declared with `session_process`: running state, start time and last exit.
 ---@field appearance AppearanceCapability Portal appearance settings: colour scheme, accent colour, contrast and reduced motion.
 ---@field windows WindowsCapability Open toplevel windows with title, app ID, workspace, output and state flags.
+---@field network_profiles NetworkProfilesCapability Saved NetworkManager profiles and their IP and DNS settings; `mantle.network`'s `_profile` actions edit them.
 ---@field audio_levels AudioLevelsCapability Peak levels of the sinks and sources `mantle.audio:set_level_meters` names; `nil` before the first call this session.
 ---@field screens WatchedSignal<Screen[]> Connected outputs from the Renderer. `{}` rather than `nil` at first evaluation (ADR-0041). [docs](https://anasgets111.github.io/mantle/capabilities/index.html#renderer-members)
 ---@field rescue WatchedSignal<RescueState> Whether the last evaluation, apply, live update or the session lock failed; the previous scene stays up (ADR-0046). [docs](https://anasgets111.github.io/mantle/capabilities/index.html#renderer-members)

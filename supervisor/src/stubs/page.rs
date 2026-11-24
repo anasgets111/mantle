@@ -66,6 +66,9 @@ pub(super) fn render_page(capability: &str, payload: &Schema, actions: Option<&S
     let source = if capability == "audio_levels" {
         // The audio mixer's thread runs the meters; the capability has no module of its own.
         "supervisor/src/capabilities/audio/mixer/meters.rs".to_string()
+    } else if capability == "network_profiles" {
+        // The network worker reads the profiles.
+        "supervisor/src/capabilities/network/profiles.rs".to_string()
     } else if std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(&module).is_dir() {
         format!("{module}/")
     } else {

@@ -2,7 +2,8 @@
 //! `intent.rs` shapes a join intent into NetworkManager's dict.
 use std::collections::HashMap;
 
-use futures_util::StreamExt;
+use futures_util::stream::BoxStream;
+use futures_util::{FutureExt, StreamExt};
 use shared::{Zeroize, debug, warn};
 use zbus::zvariant::OwnedObjectPath;
 
@@ -12,7 +13,7 @@ use super::join::InFlight;
 use super::profiles::merge_psk;
 use super::proxies::{ACTIVE_STATE_ACTIVATED, ACTIVE_STATE_DEACTIVATED, SettingsConnectionProxy};
 use super::{NetworkController, NetworkSignal, PendingNetworkConnect, root_object_path};
-use crate::capabilities::bind;
+use crate::capabilities::{bind, bind_uncached};
 
 /// Backstop for an activation that stops answering without a verdict.
 /// ponytail: 90 s for Wi-Fi joins and VPNs alike, past NetworkManager's own defaults (45 s DHCP
@@ -34,6 +35,25 @@ pub(super) trait ActiveConnection {
 
     #[zbus(property)]
     fn uuid(&self) -> zbus::Result<String>;
+
+    #[zbus(property)]
+    fn devices(&self) -> zbus::Result<Vec<OwnedObjectPath>>;
+}
+
+/// The failure reasons in `changes` that one of `devices` sent.
+pub(super) fn reasons_on(
+    changes: BoxStream<'static, zbus::Message>,
+    devices: Vec<OwnedObjectPath>,
+) -> BoxStream<'static, u32> {
+    let on_device = move |message: &zbus::Message| devices.iter().any(|device| message.header().path() == Some(device));
+    changes
+        .filter_map(move |message| {
+            let body = Some(message)
+                .filter(&on_device)
+                .and_then(|message| message.body().deserialize::<(u32, u32, u32)>().ok());
+            std::future::ready(body.map(|(_, _, reason)| reason))
+        })
+        .boxed()
 }
 
 impl NetworkController {
@@ -141,10 +161,23 @@ impl NetworkController {
     ) -> tokio::task::JoinHandle<()> {
         let controller = self.clone();
         tokio::spawn(async move {
-            let outcome =
-                tokio::time::timeout(ACTIVATION_CEILING, controller.activation_outcome(&in_flight.active, &pending))
-                    .await
-                    .ok();
+            let wifi = controller.pending_wifi(&pending);
+            // ponytail: subscribed after `ActivateConnection`, so a failure before it loses its reason.
+            // Upgrade path: subscribe in `connect_inner`, as `activate_profile` does.
+            let outcome = async {
+                match (&wifi, controller.device_changes().await) {
+                    (Some(wifi), Ok(changes)) => {
+                        let reasons = reasons_on(changes, vec![wifi.device_path.clone()]);
+                        controller.activation_outcome(&in_flight.active, reasons).await
+                    }
+                    (Some(_), Err(err)) => {
+                        warn!("failed to watch the join {}: {err}", in_flight.active);
+                        Err(None)
+                    }
+                    (None, _) => Err(None),
+                }
+            };
+            let outcome = tokio::time::timeout(ACTIVATION_CEILING, outcome).await.ok();
             let (activated, timed_out) = (matches!(outcome, Some(Ok(()))), outcome.is_none());
             let (error, rejected_key) = activation_verdict(outcome);
             let ask_password = rejected_key
@@ -169,41 +202,55 @@ impl NetworkController {
         })
     }
 
-    /// Returns the device's failure reason; the active connection reports only disconnection.
-    /// NM emits the device signal first, so `biased` reads it before the verdict.
-    async fn activation_outcome(
+    /// Every device's `StateChanged` from NetworkManager, subscribed before an activation so a
+    /// failure ahead of its watch keeps its reason; [`reasons_on`] narrows it to the activation's device.
+    pub(super) async fn device_changes(&self) -> zbus::Result<BoxStream<'static, zbus::Message>> {
+        let mut rule = zbus::MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .interface("org.freedesktop.NetworkManager.Device")?
+            .member("StateChanged")?;
+        // zbus takes a well-known `sender` for any sender, so a signal another client sends to the
+        // Supervisor directly would queue below; NetworkManager's unique name drops it first. Without
+        // one NetworkManager is gone, and with it any verdict. Off-bus, no one else sends.
+        if self.connection.unique_name().is_some() {
+            let owner = self.nm_owner.lock().expect("mutex poisoned").clone();
+            let owner = owner.ok_or_else(|| zbus::Error::Failure("NetworkManager is not running".into()))?;
+            rule = rule.sender(owner.into_inner())?;
+        }
+        // Unread while the activation's calls run, and a full queue stalls the connection's reader,
+        // their replies included. ponytail: past 1024 of NetworkManager's device state changes during
+        // one activation's calls; it sends about ten a device. Upgrade path: buffer the stream while
+        // the calls run, in the task that reads it, so a failure queued ahead of `State` stays ahead.
+        let changes = zbus::MessageStream::for_match_rule(rule.build(), &self.connection, Some(1024)).await?;
+        Ok(changes.filter_map(|message| std::future::ready(message.ok())).boxed())
+    }
+
+    /// Returns the device's failure reason from `reasons`; the active connection reports only
+    /// disconnection. NM emits the device signal first, so `biased` reads it before the verdict.
+    pub(super) async fn activation_outcome(
         &self,
         active: &OwnedObjectPath,
-        pending: &PendingNetworkConnect,
+        mut reasons: BoxStream<'static, u32>,
     ) -> Result<(), Option<u32>> {
-        let Some(wifi) = self.pending_wifi(pending) else {
-            return Err(None);
-        };
         // Use the signals, not `receive_state_changed()`: the property stream gives no reason.
-        let watched = async {
-            zbus::Result::Ok((wifi.device.receive_device_state_changed().await?, self.watch_active(active).await?))
-        };
-        let (mut device_changes, (mut changes, settled)) = watched.await.map_err(|err| {
+        let (mut changes, settled) = self.watch_active(active).await.map_err(|err| {
             warn!("failed to watch the activation {active}: {err}");
             None
         })?;
-        // ponytail: an early failure loses its reason. Upgrade path: subscribe before activation.
-        if let Some(activated) = settled {
-            return activated.then_some(()).ok_or(None);
-        }
-
         let mut reason = None;
+        // NM follows FAILED with DISCONNECTED(NONE); keep the failure reason.
+        let keep = |reason: Option<u32>, next: u32| if next == 0 { reason } else { Some(next) };
+        if let Some(activated) = settled {
+            // A failure before the watch queued its device signal ahead of the `State` reply.
+            while let Some(Some(next)) = reasons.next().now_or_never() {
+                reason = keep(reason, next);
+            }
+            return activated.then_some(()).ok_or(reason);
+        }
         loop {
             tokio::select! {
                 biased;
-                Some(change) = device_changes.next() => {
-                    // NM follows FAILED with DISCONNECTED(NONE); keep the failure reason.
-                    if let Ok(args) = change.args()
-                        && args.reason != 0
-                    {
-                        reason = Some(args.reason);
-                    }
-                }
+                Some(next) = reasons.next() => reason = keep(reason, next),
                 change = changes.next() => {
                     // `None`: the object disappeared without a terminal state.
                     let Some(change) = change else { return Err(reason) };
@@ -224,12 +271,14 @@ impl NetworkController {
         &self,
         active: &OwnedObjectPath,
     ) -> zbus::Result<(StateChangedStream, Option<bool>)> {
-        let proxy = bind::<ActiveConnectionProxy>(&self.connection, active.clone()).await?;
+        let proxy = bind_uncached::<ActiveConnectionProxy>(&self.connection, active.clone()).await?;
         let changes = proxy.receive_active_state_changed().await?;
         let settled = match proxy.state().await {
             Ok(ACTIVE_STATE_ACTIVATED) => Some(true),
-            Ok(ACTIVE_STATE_DEACTIVATED) => Some(false),
-            _ => None,
+            // NetworkManager unexports an activation once it ends, which a fast failure does first;
+            // GDBus names that error UnknownMethod (GLib 2.90), not UnknownObject.
+            Ok(ACTIVE_STATE_DEACTIVATED) | Err(_) => Some(false),
+            Ok(_) => None,
         };
         Ok((changes, settled))
     }
@@ -265,6 +314,9 @@ impl NetworkController {
         };
 
         // Keep a corrected key in memory until activation succeeds.
+        // ponytail: this stages the profile as read above, so an `update_profile` landing between the
+        // read and this write is reverted; the user applies the edit again. Upgrade path: send the
+        // read's `version-id` with an in-memory `Update2`, or take a `profile_turn` around both.
         let unsaved = match intent.psk.as_ref().and_then(|psk| merge_psk(&saved.settings, psk)) {
             Some(merged) => {
                 saved.connection.update_unsaved(merged).await?;
@@ -290,6 +342,7 @@ pub(super) mod tests {
     use crate::capabilities::network::proxies::{
         ACTIVE_STATE_ACTIVATING, DeviceProxy, NetworkManagerProxy, SettingsProxy, WirelessProxy,
     };
+    use crate::capabilities::network::tests::{Refused, SavedProfile};
     use crate::capabilities::test_support::{p2p_pair_serving, poll_until, within};
 
     /// A controller bound to a peer serving what `serve` installs.
@@ -311,6 +364,11 @@ pub(super) mod tests {
             state: Arc::new(Mutex::new(NetworkState::default())),
             join: Arc::default(),
             vpn: Arc::default(),
+            profiles: Arc::default(),
+            profile_writes: Arc::default(),
+            nm_owner: Arc::default(),
+            activity: Arc::default(),
+            profile_states: tokio::sync::mpsc::unbounded_channel().0,
             events,
         };
         (controller, receiver, peer)
@@ -332,10 +390,7 @@ pub(super) mod tests {
         fn get_settings(&self) -> HashMap<String, HashMap<String, zbus::zvariant::OwnedValue>> {
             HashMap::from([(
                 "802-11-wireless".into(),
-                HashMap::from([(
-                    "ssid".into(),
-                    zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from(self.0.to_vec())).unwrap(),
-                )]),
+                HashMap::from([("ssid".into(), crate::capabilities::network::tests::owned(self.0.to_vec()))]),
             )])
         }
     }
@@ -356,6 +411,22 @@ pub(super) mod tests {
     impl ListedProfiles {
         fn list_connections(&self) -> Vec<OwnedObjectPath> {
             self.0.clone()
+        }
+
+        /// Looks among the listed paths a `SavedProfile` serves.
+        async fn get_connection_by_uuid(
+            &self,
+            #[zbus(object_server)] server: &zbus::ObjectServer,
+            uuid: &str,
+        ) -> Result<OwnedObjectPath, Refused> {
+            for path in &self.0 {
+                let Ok(profile) = server.interface::<_, SavedProfile>(path.as_ref()).await else { continue };
+                let listed = profile.get().await.1.get("connection").and_then(|section| section.get("uuid")).cloned();
+                if listed.and_then(|value| String::try_from(value).ok()).as_deref() == Some(uuid) {
+                    return Ok(path.clone());
+                }
+            }
+            Err(Refused::InvalidConnection(format!("no connection {uuid}")))
         }
     }
 
@@ -719,6 +790,29 @@ pub(super) mod tests {
         }
     }
 
+    /// A device's `StateChanged` that another client sends straight to the Supervisor is not NM's.
+    #[tokio::test]
+    async fn only_networkmanager_reports_a_device_failure() {
+        let bus = crate::capabilities::test_support::private_bus().await;
+        let nm = bus.builder().name("org.freedesktop.NetworkManager").unwrap().build().await.unwrap();
+        let (ours, impostor) = (bus.connection().await, bus.connection().await);
+        let (mut controller, _events, _peer) = attempting(Ok).await;
+        controller.connection = ours.clone();
+        assert!(controller.device_changes().await.is_err(), "no NetworkManager, no verdict to watch");
+        *controller.nm_owner.lock().unwrap() = nm.unique_name().cloned();
+        let changes = controller.device_changes().await.unwrap();
+        let mut reasons = reasons_on(changes, vec![OwnedObjectPath::try_from(DEVICE).unwrap()]);
+        let (device, direct) = ("org.freedesktop.NetworkManager.Device", ours.unique_name().unwrap().to_string());
+        impostor
+            .emit_signal(Some(direct.as_str()), DEVICE, device, "StateChanged", &(120u32, 50u32, 7u32))
+            .await
+            .unwrap();
+        // Answered only once the bus has routed the impostor's signal, so it reaches `ours` first.
+        zbus::fdo::DBusProxy::new(&impostor).await.unwrap().get_id().await.unwrap();
+        nm.emit_signal(None::<&str>, DEVICE, device, "StateChanged", &(120u32, 50u32, 9u32)).await.unwrap();
+        assert_eq!(within(reasons.next()).await, Some(9));
+    }
+
     #[tokio::test]
     async fn a_rejected_key_keeps_its_reason_past_the_disconnect_nm_queues_after_it() {
         let (controller, _receiver, _peer) = attempting(|peer| peer.serve_at(ACTIVE, RejectedKey)).await;
@@ -730,9 +824,13 @@ pub(super) mod tests {
         }
 
         let mut pending = home_on(DEVICE);
+        let wifi = controller.pending_wifi(&pending).unwrap();
         let outcome = tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            controller.activation_outcome(&OwnedObjectPath::try_from(ACTIVE).unwrap(), &pending),
+            controller.activation_outcome(
+                &OwnedObjectPath::try_from(ACTIVE).unwrap(),
+                reasons_on(controller.device_changes().await.unwrap(), vec![wifi.device_path.clone()]),
+            ),
         )
         .await
         .unwrap();
