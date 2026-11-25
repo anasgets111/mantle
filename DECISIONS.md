@@ -9568,3 +9568,18 @@ border or inset shadow wider than the gap beside a hole is cut to the shape. `ma
 loops with `(1e9, 1e9)` break points; the SDF keeps the 42 biggest loops by area, so at most 41
 holes parse. `catch_unwind` around linesweeper was rejected: release builds abort on panic, and the
 Supervisor restarts the Renderer (ADR-0058).
+
+## 0419. Dashed borders cut their gaps out of the solid border, offscreen
+
+`stroke_dash` on `path` uses the renderer's own dasher: `kurbo::dash` came out about net 0 lines once
+zero gaps merge and a dash across a closed subpath's start stays one dash. Over about 65536 dashes,
+or with a pattern summing to 0, the stroke is solid. `border_dash` paints the ordinary solid border
+offscreen and erases each gap with destination-out, so radius, corner shapes, `shape`, voids,
+per-edge widths, colours and gradients stay the solid painter's. Each gap is built from that
+painter's geometry (snapped box and widths, its corner split, a `shape`'s outline and inset), sliced
+into convex pieces and summed into a mask, since femtovg antialiases exactly only a single convex
+fill. The pattern is measured once from the top-left corner, so colours never move dashes. Cost: two
+scratch targets per dashed border until the frame flushes, about 640 MiB for ten 4K-sized borders
+(`ponytail:`). Rejected: stroking the border's centre line at each edge's width, which spilled past
+the silhouette at unequal corners and painted translucent corners twice. With `taper_*`, each dash
+tapers on its own until #176.
