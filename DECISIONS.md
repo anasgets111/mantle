@@ -9530,3 +9530,41 @@ drops each legacy twin (`dns`, `addresses`, `routes`) whose replacement is prese
 prefers it, and on 1.58.1 legacy `dns` lost a DNS-over-TLS server and legacy `routes` a route's
 `table`. Below NetworkManager 1.44 edits fail. Rejected: `UpdateUnsaved` + `Save` (no conflict
 check); raw keys in Lua (untyped `au`/`aay` encodings).
+
+## 0416. `taper_start`/`taper_end` build their own variable-width outline, filled
+
+kurbo's stroker and femtovg's both take one width per stroke, so a taper can't reach them. A tapered
+run is offset on both sides at a width that rises linearly with arc length from a 1-device-px tip,
+joined per `stroke_join` and capped per `stroke_cap`, and the closed outline is filled with NonZero.
+Width follows arc length, not vertices, so an extra collinear point changes nothing. The inside of a
+bend meets at the edges' offset intersection when both edges are long enough, using half-angle norms
+(`|a − b|`, `|a + b|`) so an exact or rounded 180° reversal never takes the miter shortcut. The ramp
+starts at 1 device px, not 0: femtovg's fill fringe insets half a pixel and smears a thinner sliver
+past the tip. Tolerances and the tip follow the canvas transform up to 64× (`ponytail:`), which bounds
+flattening under nested `scale`. Runs that end where they began keep femtovg's stroker. Rejected: an
+outline computed in Lua, which loses `trim_*` and stroke animation.
+
+## 0417. `fit = "tile"` repeats from the box's top-left at one image pixel per logical px
+
+Reverses ADR-0055 item 3 ("no tile without a caller"); #174 is the caller. A tiled image gets its own
+texture slot, keyed at a fixed edge and uploaded with repeat flags, instead of a box-sized one; its
+stored edge is capped at 2048 px (16 MiB, as `MAX_SAMPLER_EDGE`), animation frames included.
+`source_blur` is in logical px and wraps at the tile's edges: three box passes that read modulo the
+tile, with `fast_blur`'s box widths, so a tile blurs as a fitted picture does and memory stays one
+tile plus one line. A cross-fade between tiled pictures runs in the image shader with `u_tiled`, so
+opacity stays monotonic. `capture.fit` refuses `"tile"` (CaptureFit is its own type). Rejected: a
+background-image layer on boxes (a tiled `image` as a rect's first child, with its radius, already
+is one) and nine-slice (no caller). An SVG tiles at its document size.
+
+## 0418. A box `shape` takes holes; their union is subtracted with `linesweeper`
+
+Amends ADR-0348 item 1: after the outline, closed contours whose `M` sets `hole = true` are cut
+from it. Fill, border, shadows, clip, hit testing, the blur region and `mantle_sdf` follow the cut.
+Opposite winding alone failed where holes overlap or cross the outline (winding −1 still fills under
+NonZero), so each hole is first resolved by its own nonzero rule, then their union is subtracted
+with the `linesweeper` crate (0.5, pre-1.0; user approved). The result is cached per shape for the
+last two logical sizes and shared by scaled copies (26 µs a miss, 0.33 µs a cached `contains`). A
+border or inset shadow wider than the gap beside a hole is cut to the shape. `mantle_shape` separates
+loops with `(1e9, 1e9)` break points; the SDF keeps the 42 biggest loops by area, so at most 41
+holes parse. `catch_unwind` around linesweeper was rejected: release builds abort on panic, and the
+Supervisor restarts the Renderer (ADR-0058).
