@@ -402,7 +402,7 @@ const SURFACES_HEADER: &str = r##"---@meta
 ---@class Surface
 ---@field [string] any
 
----@alias Rect {Rect}
+{Rect}
 
 ---The modifier keys held on the seat's keyboard, as `on_key` and the pointer handlers receive them.
 ---@class Modifiers

@@ -466,8 +466,12 @@ impl App {
     /// pass one on our other surfaces (a bar, a full-screen modal, the desktop) through, so the
     /// Renderer dismisses on such a press as an outside click would. Opening a grab does the same:
     /// a seat holds one grab chain, and a grab whose parent is not its topmost popup ends the
-    /// client (`not_the_topmost_popup`).
-    pub(in crate::wayland) fn dismiss_grabs_outside(&mut self, inside: usize, cause: std::fmt::Arguments<'_>) {
+    /// client (`not_the_topmost_popup`). Returns each dismissed popup's parent instance and anchor.
+    pub(in crate::wayland) fn dismiss_grabs_outside(
+        &mut self,
+        inside: usize,
+        cause: std::fmt::Arguments<'_>,
+    ) -> Vec<(String, LogicalRect)> {
         let mut ancestry = Vec::new();
         let mut at = Some(inside);
         while let Some(index) = at {
@@ -487,12 +491,19 @@ impl App {
             self.shown_popups_under(index, &mut deepest_first);
             deepest_first.push(index);
         }
+        let mut dismissed = Vec::new();
         for index in deepest_first {
             if outside.contains(&index) && grabbing(self, index) {
+                if let TrackedRole::Popup { parent_id: Some(parent), positioned: Some(placement), .. } =
+                    &self.surfaces[index].role
+                {
+                    dismissed.push((parent.clone(), placement.anchor_rect));
+                }
                 debug!("{}: dismissed by {cause}", self.surfaces[index].surface_id);
                 self.dismiss_popup(index);
             }
         }
+        dismissed
     }
 
     /// Returns shown descendants deepest-first and destroys their objects. Every surface teardown
@@ -589,10 +600,10 @@ mod tests {
             // next re-resolve creates a second popup for the same click-outside to dismiss, forever.
             // With no `on_dismiss` and no further pointer input, the latch prevents that livelock.
             (true, false, Some(4), 4, Nothing),
-            // ADR-0051's first amendment. Under a grab niri delivers the closing click to the
-            // parent bar too, so `popup_done` and the opener's `on_click` land in one batch and
-            // `visible` alone cannot separate the two cases -- but `popup_done` dispatches before the
-            // pointer events that follow it, so the counter has already moved.
+            // ADR-0051's first amendment. When the compositor's `popup_done` and a click on the
+            // shell land in one batch, `visible` alone cannot separate the two cases -- but
+            // `popup_done` dispatches before the pointer events that follow it, so the counter has
+            // already moved.
             (true, false, Some(9), 10, Create),
             // Not a degenerate case: `apply_resolved_surface_state` visits every surface after any
             // changed scene, so an open popup passes through here several times a second.
@@ -775,23 +786,25 @@ mod tests {
 
     /// niri ends a client whose grab is not on the topmost popup, so a new grab first dismisses the
     /// other chain, deepest first and through `on_dismiss`, and keeps its own ancestors. A press on
-    /// another of our surfaces dismisses a chain the same way and still reaches its target.
+    /// another of our surfaces dismisses a chain the same way and still reaches its target, unless
+    /// it lands on the dismissed popup's anchor, its opener; a popup without a grab stays.
     #[test]
     fn a_new_grab_or_a_press_dismisses_every_grabbing_popup_outside_its_ancestry() {
         let (mut app, _dir, _queue, _mock) = App::test_app_with_wire(
             r#"log = {}
-            local function p(id, parent)
+            local function p(id, parent, grab)
                 return popup { id = id, parent = parent, anchor_rect = { x = 0, y = 0, width = 10, height = 10 },
-                    width = 50, height = 50, visible = false, on_dismiss = function() log[#log + 1] = id end,
-                    child = rect { width = 50, height = 50 } }
+                    width = 50, height = 50, visible = false, grab = grab ~= false,
+                    on_dismiss = function() log[#log + 1] = id end, child = rect { width = 50, height = 50 } }
             end
             return { panel { id = "bar", layer = "top", output = "TEST", width = 200, height = 40,
                     child = rect { width = 200, height = 40, on_click = function() log[#log + 1] = "bar" end } },
-                p("a", "bar"), p("a_sub", "a"), p("b", "bar"), p("b_sub", "b") }"#,
+                p("a", "bar"), p("a_sub", "a"), p("b", "bar"), p("b_sub", "b"), p("tip", "bar", false) }"#,
         );
         let bar = idx(&app, "bar@TEST");
         app.set_surface_size(bar, (200, 40));
         app.map_on_configure(bar);
+        open_popup_on(&mut app, "tip", None);
         open_popup_on(&mut app, "a", Some("bar@TEST"));
         open_popup_on(&mut app, "a_sub", Some("a"));
         open_popup_on(&mut app, "b", Some("bar@TEST"));
@@ -799,20 +812,24 @@ mod tests {
         assert!(popup_state(&app, "a").2.is_some(), "latched, so it waits for a click to reopen");
         open_popup_on(&mut app, "b_sub", Some("b"));
         assert!(popup_state(&app, "b").0 && popup_state(&app, "b_sub").0, "its own parent stays");
-        let click = |app: &mut App, surface: &str| {
+        let click = |app: &mut App, surface: &str, x: f64| {
             let steps = vec![
-                shared::InputStep::Move { x: 5.0, y: 5.0 },
+                shared::InputStep::Move { x, y: 5.0 },
                 shared::InputStep::Press(shared::InputButton::Left),
                 shared::InputStep::Release(shared::InputButton::Left),
             ];
             app.inject_input(&shared::Inject { surface: surface.into(), steps }).unwrap();
         };
-        click(&mut app, "b_sub");
+        click(&mut app, "b_sub", 5.0);
         assert!(popup_state(&app, "b").0 && popup_state(&app, "b_sub").0, "a press on the top keeps the chain");
-        click(&mut app, "b");
+        click(&mut app, "b", 30.0);
         assert_eq!(app.lua_log(), ["a_sub", "a", "b_sub"], "as in a menu, a press on the parent closes its submenu");
-        click(&mut app, "bar@TEST");
-        assert_eq!(app.lua_log(), ["a_sub", "a", "b_sub", "b", "bar"]);
+        click(&mut app, "bar@TEST", 100.0);
+        assert_eq!(app.lua_log(), ["a_sub", "a", "b_sub", "b", "bar"], "away from the anchor the click goes on");
+        open_popup_on(&mut app, "b", Some("bar@TEST"));
+        click(&mut app, "bar@TEST", 5.0);
+        assert_eq!(app.lua_log(), ["a_sub", "a", "b_sub", "b", "bar", "b"], "the opener's click is not repeated");
+        assert!(popup_state(&app, "tip").0, "a popup without a grab is left open");
     }
 
     #[test]

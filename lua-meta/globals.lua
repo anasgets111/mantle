@@ -8,9 +8,10 @@
 ---@class oslib
 os = {}
 
----@param format? string `strftime` directives, default `"%c"`; `"*t"` returns a table. A leading `!` reads UTC.
+---@overload fun(format: "*t"|"!*t", time?: integer): table
+---@param format? string `strftime` directives, default `"%c"`; `"*t"` returns a table instead. A leading `!` reads UTC.
 ---@param time? integer Unix seconds, default now.
----@return string|table
+---@return string
 function os.date(format, time) end
 
 ---@param t? table An `os.date("*t")`-shaped table, default now.

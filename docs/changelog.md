@@ -7,7 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
-- Fixed: a press on another of the shell's surfaces, such as a full-screen modal or the desktop, now closes a grabbing popup on niri, which closed it only for a press on another app. Its `on_dismiss` runs before the press reaches its target.
+- Fixed: the type stubs read a `Rect`'s fields as numbers, accept a `geometry` rect as `anchor_rect`, and give `os.date` a string result except for `"*t"` and `"!*t"`, so lua-language-server no longer flags `rect.width` arithmetic or `os.date("%H:%M"):gsub(...)`.
+- Fixed: a press on another of the shell's surfaces, such as the bar, a full-screen modal or the desktop, now closes a grabbing popup on niri and Hyprland, which closed it only for a press on another app. Its `on_dismiss` runs, then the press reaches its target, except a press on the popup's own opener (inside its `anchor_rect`), which only closes it.
 - Fixed: opening a grabbing popup while another is shown, such as a second panel opened from a click on the bar, no longer ends the shell on niri with "xdg_popup was not created on the topmost popup". The other popup closes first and its `on_dismiss` runs.
 - Added: `mantle.network_profiles` lists saved NetworkManager profiles with their IP method, addresses, gateway, DNS servers and search domains, autoconnect and metered settings, and whether each is active. `mantle.network:update_profile(uuid, edit)` changes only the fields `edit` names, such as `{ ipv4 = { dns = { "1.1.1.1" }, ignore_auto_dns = true } }`, and saves the profile (NetworkManager 1.44+); `reapply_profile`, `activate_profile`, `deactivate_profile` and `delete_profile` act on a profile by UUID. A failure lands in `network_profiles.error`.
 - Fixed: `vpns` and the saved mark on `available_networks` follow a profile edited after startup, such as one renamed with `nmcli`; they kept the old values until another profile was added or removed.

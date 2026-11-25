@@ -75,12 +75,13 @@ fn restrict_os(lua: &Lua) -> mlua::Result<()> {
     )?;
     luacats::lua_fn!(
         lua,
+        /// @overload fun(format: "*t"|"!*t", time?: integer): table
         fn os.date(
-            /// `strftime` directives, default `"%c"`; `"*t"` returns a table. A leading `!` reads UTC.
+            /// `strftime` directives, default `"%c"`; `"*t"` returns a table instead. A leading `!` reads UTC.
             format: Option<String>,
             /// Unix seconds, default now.
             time: Option<i64>,
-        ) -> luacats::Or<String, Table> = full.get::<Value>("date")?
+        ) -> String = full.get::<Value>("date")?
     )?;
     luacats::lua_fn!(
         lua,

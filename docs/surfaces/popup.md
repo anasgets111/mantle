@@ -117,9 +117,11 @@ would: each one's `on_dismiss` runs, deepest first.
 
 A press on another of the shell's surfaces, such as the bar, a full-screen modal or the desktop,
 dismisses the same way: every grabbing popup that is not that surface or one of its ancestors
-closes, so a press on a menu closes its open submenu. Some compositors, niri among them, dismiss
-only for a press on another app. The press still reaches its target after `on_dismiss`, so an
-opener that toggles its popup on `on_click` should skip reopening right after its own dismissal.
+closes, so a press on a menu closes its open submenu. The compositor does not: niri leaves the popup
+open for a press on any of the shell's surfaces, Hyprland for one on its parent. The press still
+reaches its target after `on_dismiss`, so one click on another panel's button switches panels. A
+press inside a dismissed popup's `anchor_rect` on its parent goes no further: that is the button
+that opened it, and its `on_click` would open the popup again.
 
 ## Dismissal
 

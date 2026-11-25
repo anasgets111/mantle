@@ -10,7 +10,12 @@
 ---@class Surface
 ---@field [string] any
 
----@alias Rect { x: number, y: number, width: number, height: number, [string]: "no such property" } A rectangle in logical pixels.
+---A rectangle in logical pixels.
+---@class Rect
+---@field x number
+---@field y number
+---@field width number
+---@field height number
 
 ---The modifier keys held on the seat's keyboard, as `on_key` and the pointer handlers receive them.
 ---@class Modifiers

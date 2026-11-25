@@ -206,15 +206,6 @@ impl<T, S: FromLua> FromLua for SignalOf<T, S> {
     }
 }
 
-/// `A|B`: what a function the Lua runtime implements returns.
-pub(crate) struct Or<A, B>(PhantomData<(A, B)>);
-
-impl<A: LuaType, B: LuaType> LuaType for Or<A, B> {
-    fn lua() -> String {
-        format!("{}|{}", spelling::<A>(), spelling::<B>())
-    }
-}
-
 /// A value read or handed back as `R` and declared as `S`: a parameter's own parser checks what the
 /// Rust type `R` cannot say, with messages of its own.
 pub(crate) struct As<R, S>(pub R, pub PhantomData<S>);
@@ -535,8 +526,10 @@ pub(crate) use lua_class;
 /// any table, and it has no place for a field's words. `#[class = "Name"]` is one read as a
 /// `---@class` whose fields carry their words. Both refuse an unknown key, and `KEYS` is what the
 /// parser's `only_keys` accepts. Alias and class fields are read through `Input`, and each also
-/// takes a signal, which `resolve_declared` reads. `#[shared = "Name"]` is an alias also handed
-/// to Lua, so its fields are spelled without one. `#[record = "Name"]` is a class handed to Lua.
+/// takes a signal, which `resolve_declared` reads. `#[shared = "Name"]` is one also handed to Lua:
+/// a `---@class` without the unknown-key index, since LuaLS unions an index into every field read
+/// (`rect.width`) and refuses an indexed table where an indexed alias is wanted; the parser's
+/// `only_keys` still refuses an unknown key. `#[record = "Name"]` is a class handed to Lua.
 /// `key: T as S` changes only the Lua spelling.
 macro_rules! lua_shape {
     ($(#[doc = $doc:literal])* #[alias = $name:literal] $($rest:tt)*) => {
@@ -678,7 +671,7 @@ fn paragraphs(doc: &str) -> (String, String) {
 pub(crate) fn shape_stub(form: &str, name: &str, doc: &str, keys: &[(&str, bool, String, &str)]) -> String {
     const UNKNOWN: &str = r#""no such property""#;
     let (words, more) = paragraphs(doc);
-    if matches!(form, "alias" | "shared") {
+    if form == "alias" {
         let keys: String = keys
             .iter()
             .map(|(key, nil, ty, doc)| {
