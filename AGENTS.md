@@ -172,6 +172,10 @@ Any agent may coordinate others. The coordinator owns the result: it reviews, la
   ceiling, helpers that duplicate existing code, a feature quietly narrowed, or tests that assert
   nothing new. Grep for an existing equivalent of every new function, type and fixture. Audit the
   commit (`git show wt/<name>`), so new files are included.
+- **Plausibility bar.** A finding blocks only if a plausible config reaches it: ordinary sizes,
+  border widths under half the box, lengths of at least 0.1 px. Reviewers list anything rarer
+  apart, and it never goes back to the delegate. Once a branch's findings are all below the bar,
+  stop the fix rounds and land it, naming the leftovers in a `ponytail:` comment.
 - **Sandbox.** A delegate's sandbox may block sockets, D-Bus and Wayland. Rerun failures it reports
   outside the sandbox before believing them.
 - **Checks.** A delegate iterates on the tests it touched (`cargo test -p <crate> <filter>`), runs
