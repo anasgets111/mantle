@@ -91,7 +91,7 @@ Beyond the [shared properties](index.md#properties-every-role-takes). Every fiel
 | `width` | `number\|Bound` | Content | Pixels in `(0, 8192]`; no `"fill"` or `%`. Omitted sizes to the content, capped at the first output's size and the root's `max_width`/`max_height`; an open popup follows it through `xdg_popup.reposition` (xdg-shell v3+) |
 | `height` | `number\|Bound` | Content | As `width`; each axis is independent |
 | `grab` | `boolean\|Bound` | `true` | Takes an input grab so an outside click dismisses it ([grab](#grab)). `false` for a tooltip |
-| `on_dismiss` | `fun()` | None | The compositor closed it (click outside, denied grab, parent gone); not called when the config hides it. Set `visible = false` here, or it reopens on the next click |
+| `on_dismiss` | `fun()` | None | Closed by a click outside it (on another app or another shell surface), a denied grab, or its parent going away; not called when the config hides it. Set `visible = false` here, or it reopens on the next click |
 | `visible` | `boolean\|Bound` | `true` | Opens and closes the popup; state and `id` survive |
 | `on_escape` | `fun()` | None | Escape pressed while this surface or a popup under it has the keyboard and no focused field took it: a field with text to clear or an `on_cancel` keeps its own Escape. Once per press; the innermost shown popup declaring it wins, with no order promised among sibling popups. Never on a surface without `keyboard_interactivity` |
 | `reset_on_close` | `(StateSignal<any>\|ScrollSignal)[]` | `{}` | `state` and `scroll` handles written back when the surface stops being shown: a state to its `initial`, a scroll to the top ([reset on close](index.md#reset-on-close)) |
@@ -114,6 +114,12 @@ A seat holds one chain of grabbing popups. Opening a grabbing popup while anothe
 as a second panel opened from a click on the bar or one still `visible` through an exit fade,
 first dismisses every grabbing popup that is not its parent or an ancestor, as an outside click
 would: each one's `on_dismiss` runs, deepest first.
+
+A press on another of the shell's surfaces, such as the bar, a full-screen modal or the desktop,
+dismisses the same way: every grabbing popup that is not that surface or one of its ancestors
+closes, so a press on a menu closes its open submenu. Some compositors, niri among them, dismiss
+only for a press on another app. The press still reaches its target after `on_dismiss`, so an
+opener that toggles its popup on `on_click` should skip reopening right after its own dismissal.
 
 ## Dismissal
 

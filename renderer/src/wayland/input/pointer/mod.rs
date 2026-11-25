@@ -113,6 +113,8 @@ impl App {
                 self.input_serial = (!injected).then(|| ArmedSerial { serial, instance_id: instance_id.clone() });
                 // ADR-0051 amendment: preserve the "user asked again" stamp past disarm.
                 self.pointer_input_count += 1;
+                // The press still reaches its target, as the compositor's own outside click does.
+                self.dismiss_grabs_outside(index, format_args!("a press on {instance_id}"));
                 self.cancel_text_input_composition();
                 self.stop_glide_under(index, position);
                 let hit = self.hit_under(index, position);

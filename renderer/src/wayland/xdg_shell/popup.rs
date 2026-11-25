@@ -305,7 +305,7 @@ impl App {
         if grab.is_some()
             && let Some(parent) = parent_index
         {
-            self.dismiss_grabs_outside(parent, &surface_id);
+            self.dismiss_grabs_outside(parent, format_args!("{surface_id}'s grab"));
         }
 
         let Some(positioner) = self.positioner_for(&surface_id, &placement) else {
@@ -461,14 +461,15 @@ impl App {
         }
     }
 
-    /// A seat holds one chain of grabbing popups, and a grab whose parent is not the chain's topmost
-    /// popup ends the client (`not_the_topmost_popup`). The compositor passes a click on another of
-    /// our surfaces through without dismissing, so a config that opens a second panel from it, or
-    /// whose closed one is still fading out, would kill the Renderer. Dismiss every other shown
-    /// grabbing popup first, deepest first, as an outside click would.
-    fn dismiss_grabs_outside(&mut self, parent: usize, opening: &str) {
+    /// Dismiss, deepest first, every shown grabbing popup outside `inside` and its popup ancestry.
+    /// Smithay compositors (niri, COSMIC) dismiss a grab only for a press on another client, and
+    /// pass one on our other surfaces (a bar, a full-screen modal, the desktop) through, so the
+    /// Renderer dismisses on such a press as an outside click would. Opening a grab does the same:
+    /// a seat holds one grab chain, and a grab whose parent is not its topmost popup ends the
+    /// client (`not_the_topmost_popup`).
+    pub(in crate::wayland) fn dismiss_grabs_outside(&mut self, inside: usize, cause: std::fmt::Arguments<'_>) {
         let mut ancestry = Vec::new();
-        let mut at = Some(parent);
+        let mut at = Some(inside);
         while let Some(index) = at {
             ancestry.push(index);
             at = match &self.surfaces[index].role {
@@ -488,7 +489,7 @@ impl App {
         }
         for index in deepest_first {
             if outside.contains(&index) && grabbing(self, index) {
-                debug!("{}: dismissed for {opening}'s grab", self.surfaces[index].surface_id);
+                debug!("{}: dismissed by {cause}", self.surfaces[index].surface_id);
                 self.dismiss_popup(index);
             }
         }
@@ -773,16 +774,19 @@ mod tests {
     }
 
     /// niri ends a client whose grab is not on the topmost popup, so a new grab first dismisses the
-    /// other chain, deepest first and through `on_dismiss`, and keeps its own ancestors.
+    /// other chain, deepest first and through `on_dismiss`, and keeps its own ancestors. A press on
+    /// another of our surfaces dismisses a chain the same way and still reaches its target.
     #[test]
-    fn a_new_grab_dismisses_every_grabbing_popup_outside_its_ancestry() {
+    fn a_new_grab_or_a_press_dismisses_every_grabbing_popup_outside_its_ancestry() {
         let (mut app, _dir, _queue, _mock) = App::test_app_with_wire(
             r#"log = {}
             local function p(id, parent)
                 return popup { id = id, parent = parent, anchor_rect = { x = 0, y = 0, width = 10, height = 10 },
-                    width = 50, height = 50, visible = false, on_dismiss = function() log[#log + 1] = id end }
+                    width = 50, height = 50, visible = false, on_dismiss = function() log[#log + 1] = id end,
+                    child = rect { width = 50, height = 50 } }
             end
-            return { panel { id = "bar", layer = "top", output = "TEST", width = 200, height = 40 },
+            return { panel { id = "bar", layer = "top", output = "TEST", width = 200, height = 40,
+                    child = rect { width = 200, height = 40, on_click = function() log[#log + 1] = "bar" end } },
                 p("a", "bar"), p("a_sub", "a"), p("b", "bar"), p("b_sub", "b") }"#,
         );
         let bar = idx(&app, "bar@TEST");
@@ -795,7 +799,20 @@ mod tests {
         assert!(popup_state(&app, "a").2.is_some(), "latched, so it waits for a click to reopen");
         open_popup_on(&mut app, "b_sub", Some("b"));
         assert!(popup_state(&app, "b").0 && popup_state(&app, "b_sub").0, "its own parent stays");
-        assert_eq!(app.lua_log(), ["a_sub", "a"]);
+        let click = |app: &mut App, surface: &str| {
+            let steps = vec![
+                shared::InputStep::Move { x: 5.0, y: 5.0 },
+                shared::InputStep::Press(shared::InputButton::Left),
+                shared::InputStep::Release(shared::InputButton::Left),
+            ];
+            app.inject_input(&shared::Inject { surface: surface.into(), steps }).unwrap();
+        };
+        click(&mut app, "b_sub");
+        assert!(popup_state(&app, "b").0 && popup_state(&app, "b_sub").0, "a press on the top keeps the chain");
+        click(&mut app, "b");
+        assert_eq!(app.lua_log(), ["a_sub", "a", "b_sub"], "as in a menu, a press on the parent closes its submenu");
+        click(&mut app, "bar@TEST");
+        assert_eq!(app.lua_log(), ["a_sub", "a", "b_sub", "b", "bar"]);
     }
 
     #[test]

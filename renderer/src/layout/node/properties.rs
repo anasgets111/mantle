@@ -743,7 +743,7 @@ props! {
         ///
         /// Book: Takes an input grab so an outside click dismisses it ([grab](#grab)). `false` for a tooltip
         grab: Bound<Flag> = absent(Bool(true));
-        /// The compositor closed it (click outside, denied grab, parent gone); not called when the config hides it. Set `visible = false` here, or it reopens on the next click (ADR-0051).
+        /// Closed by a click outside it (on another app or another shell surface), a denied grab, or its parent going away; not called when the config hides it. Set `visible = false` here, or it reopens on the next click (ADR-0051).
         on_dismiss();
         /// Opens and closes the popup; state and `id` survive (ADR-0049).
         visible: Bound<Flag> = absent(Bool(true));
