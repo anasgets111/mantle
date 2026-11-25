@@ -110,6 +110,11 @@ A grab needs a mouse button press or release on one of the shell's surfaces in t
 turn, so open a grabbing popup from `on_click`. Without one the popup stays closed and a warning
 is logged. A compositor that denies the grab dismisses the popup, and `on_dismiss` runs.
 
+A seat holds one chain of grabbing popups. Opening a grabbing popup while another is shown, such
+as a second panel opened from a click on the bar or one still `visible` through an exit fade,
+first dismisses every grabbing popup that is not its parent or an ancestor, as an outside click
+would: each one's `on_dismiss` runs, deepest first.
+
 ## Dismissal
 
 A compositor dismissal destroys the popup but leaves your `visible` signal `true`. The engine

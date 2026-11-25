@@ -219,10 +219,10 @@ impl App {
     /// undismissable popup (ADR-0049 amendment, ADR-0051 decision 3).
     fn show_popup(&mut self, qh: &QueueHandle<App>, index: usize) {
         let surface_id = self.surfaces[index].surface_id.clone();
-        let Some(xdg_shell) = self.xdg_shell.as_ref() else {
+        if self.xdg_shell.is_none() {
             error!("{surface_id}: this compositor advertises no xdg_wm_base, so no popup can be created for it");
             return;
-        };
+        }
         let TrackedRole::Popup { spec, requested, .. } = &self.surfaces[index].role else {
             return;
         };
@@ -302,6 +302,12 @@ impl App {
             return;
         }
 
+        if grab.is_some()
+            && let Some(parent) = parent_index
+        {
+            self.dismiss_grabs_outside(parent, &surface_id);
+        }
+
         let Some(positioner) = self.positioner_for(&surface_id, &placement) else {
             return;
         };
@@ -312,6 +318,7 @@ impl App {
             PopupParent::Xdg(xdg_surface) => Some(xdg_surface),
             PopupParent::Layer(_) => None,
         };
+        let xdg_shell = self.xdg_shell.as_ref().expect("checked at the top of show_popup");
         let popup = match Popup::from_surface(rooted_at_creation, &positioner, qh, surface, xdg_shell) {
             Ok(popup) => popup,
             Err(err) => {
@@ -436,6 +443,57 @@ impl App {
         self.drop_role_object(index);
     }
 
+    /// Destroy children and the object, latch ADR-0051 decision 2, and call `on_dismiss` against
+    /// the already-gone popup; clone callbacks and swallow raises. The latch, not the callback,
+    /// prevents the re-resolve livelock.
+    fn dismiss_popup(&mut self, index: usize) {
+        self.hide_popup(index);
+        self.latch_popup(index);
+        let surface_id = &self.surfaces[index].surface_id;
+        let on_dismiss = self
+            .client
+            .scene()
+            .surface(surface_id)
+            .and_then(|tree| crate::layout::node::fields::popup::on_dismiss.read(&tree.properties).ok().flatten());
+        // No handler is fine; the latch still prevents a livelock.
+        if let Some(on_dismiss) = on_dismiss {
+            call_logged(&on_dismiss, (), format_args!("{surface_id}: on_dismiss"));
+        }
+    }
+
+    /// A seat holds one chain of grabbing popups, and a grab whose parent is not the chain's topmost
+    /// popup ends the client (`not_the_topmost_popup`). The compositor passes a click on another of
+    /// our surfaces through without dismissing, so a config that opens a second panel from it, or
+    /// whose closed one is still fading out, would kill the Renderer. Dismiss every other shown
+    /// grabbing popup first, deepest first, as an outside click would.
+    fn dismiss_grabs_outside(&mut self, parent: usize, opening: &str) {
+        let mut ancestry = Vec::new();
+        let mut at = Some(parent);
+        while let Some(index) = at {
+            ancestry.push(index);
+            at = match &self.surfaces[index].role {
+                TrackedRole::Popup { parent_id: Some(up), .. } => {
+                    self.surfaces.iter().position(|s| &s.surface_id == up)
+                }
+                _ => None,
+            };
+        }
+        let grabbing = |app: &Self, index: usize| matches!(&app.surfaces[index].role, TrackedRole::Popup { popup: Some(_), spec, .. } if spec.grab);
+        let outside: Vec<usize> =
+            (0..self.surfaces.len()).filter(|&i| !ancestry.contains(&i) && grabbing(self, i)).collect();
+        let mut deepest_first = Vec::new();
+        for &index in &outside {
+            self.shown_popups_under(index, &mut deepest_first);
+            deepest_first.push(index);
+        }
+        for index in deepest_first {
+            if outside.contains(&index) && grabbing(self, index) {
+                debug!("{}: dismissed for {opening}'s grab", self.surfaces[index].surface_id);
+                self.dismiss_popup(index);
+            }
+        }
+    }
+
     /// Returns shown descendants deepest-first and destroys their objects. Every surface teardown
     /// needs this because wlroots rejects a parent xdg-surface with live popups. Do not latch here:
     /// parent teardown is not compositor dismissal, and a child should return when its parent does,
@@ -505,29 +563,14 @@ impl PopupHandler for App {
 
     /// `popup_done` is compositor dismissal, not a request. It is why ADR-0040 uses a real
     /// `xdg_popup` instead of a second `panel`: layer-shell has no compositor-agnostic
-    /// click-outside dismissal. Then destroy children/object, latch ADR-0051 decision 2, and call
-    /// `on_dismiss` against the already-gone popup. A denied grab arrives here as normal
-    /// `popup_done` (ADR-0051 decision 3); clone callbacks and swallow raises. The latch, not this
-    /// callback, prevents the re-resolve livelock.
+    /// click-outside dismissal. A denied grab arrives here as normal `popup_done` (ADR-0051
+    /// decision 3).
     fn done(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, popup: &Popup) {
         let Some(index) = self.index_of_surface(popup.wl_surface()) else {
             return;
         };
-        let surface_id = self.surfaces[index].surface_id.clone();
-        debug!("{surface_id}: dismissed by the compositor");
-        self.hide_popup(index);
-        self.latch_popup(index);
-
-        let on_dismiss = self
-            .client
-            .scene()
-            .surface(&surface_id)
-            .and_then(|tree| crate::layout::node::fields::popup::on_dismiss.read(&tree.properties).ok().flatten());
-        let Some(on_dismiss) = on_dismiss else {
-            // No handler is fine; the latch still prevents a livelock.
-            return;
-        };
-        call_logged(&on_dismiss, (), format_args!("{surface_id}: on_dismiss"));
+        debug!("{}: dismissed by the compositor", self.surfaces[index].surface_id);
+        self.dismiss_popup(index);
     }
 }
 
@@ -727,6 +770,32 @@ mod tests {
         app.input_serial = armed_on.map(|id| ArmedSerial { serial: 1, instance_id: id.into() });
         let index = idx(app, popup_id);
         app.apply_popup_visibility(index, true);
+    }
+
+    /// niri ends a client whose grab is not on the topmost popup, so a new grab first dismisses the
+    /// other chain, deepest first and through `on_dismiss`, and keeps its own ancestors.
+    #[test]
+    fn a_new_grab_dismisses_every_grabbing_popup_outside_its_ancestry() {
+        let (mut app, _dir, _queue, _mock) = App::test_app_with_wire(
+            r#"log = {}
+            local function p(id, parent)
+                return popup { id = id, parent = parent, anchor_rect = { x = 0, y = 0, width = 10, height = 10 },
+                    width = 50, height = 50, visible = false, on_dismiss = function() log[#log + 1] = id end }
+            end
+            return { panel { id = "bar", layer = "top", output = "TEST", width = 200, height = 40 },
+                p("a", "bar"), p("a_sub", "a"), p("b", "bar"), p("b_sub", "b") }"#,
+        );
+        let bar = idx(&app, "bar@TEST");
+        app.set_surface_size(bar, (200, 40));
+        app.map_on_configure(bar);
+        open_popup_on(&mut app, "a", Some("bar@TEST"));
+        open_popup_on(&mut app, "a_sub", Some("a"));
+        open_popup_on(&mut app, "b", Some("bar@TEST"));
+        assert_eq!(app.lua_log(), ["a_sub", "a"]);
+        assert!(popup_state(&app, "a").2.is_some(), "latched, so it waits for a click to reopen");
+        open_popup_on(&mut app, "b_sub", Some("b"));
+        assert!(popup_state(&app, "b").0 && popup_state(&app, "b_sub").0, "its own parent stays");
+        assert_eq!(app.lua_log(), ["a_sub", "a"]);
     }
 
     #[test]
