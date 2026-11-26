@@ -1,14 +1,14 @@
 //! The applications-directory scan (ADR-0061): which directories, in what precedence, and
 //! how an `app_id` finds its entry.
 
-pub use shared::state::applications::AppSummary;
+pub use shared::state::applications::{AppAction, AppSummary};
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use shared::debug;
 
-use super::entry::{desktop_file_id, flag, parse_group, tokenize_exec};
+use super::entry::{desktop_file_id, flag, locale_chain, localized, parse_entry, tokenize_exec};
 
 /// Walk depth under an applications directory. Subdirectories are allowed and real trees use one
 /// level (`kde4/`); the cap bounds symlink loops without canonicalizing every directory as
@@ -34,6 +34,8 @@ pub struct ScanResult {
     /// `workspaces.active_client.app_id` or a tray item with no icon of its own rather than a desktop id.
     pub by_app_id: BTreeMap<String, usize>,
     pub launch: HashMap<String, LaunchTarget>,
+    /// `(entry_id, action_key)` to its launch target, kept Supervisor-side beside `launch`.
+    pub launch_actions: HashMap<(String, String), LaunchTarget>,
 }
 
 /// Applications directories in XDG precedence order.
@@ -51,10 +53,12 @@ pub fn application_dirs(data_home: Option<PathBuf>, data_dirs: Option<String>) -
 ///
 /// First-wins is the specification's rule, so `~/.local/share/applications` comes first: a same-
 /// named home file overrides a system name, icon, or command. Last-wins would ignore the override.
-pub fn scan(dirs: &[PathBuf]) -> ScanResult {
+pub fn scan(dirs: &[PathBuf], locale: Option<&str>) -> ScanResult {
+    let locales = locale_chain(locale);
     let mut seen: HashSet<String> = HashSet::new();
     let mut entries: Vec<AppSummary> = Vec::new();
     let mut launch: HashMap<String, LaunchTarget> = HashMap::new();
+    let mut launch_actions: HashMap<(String, String), LaunchTarget> = HashMap::new();
     // Keep beside the summary until the map is built; `StartupWMClass` is only a matching key.
     let mut wm_classes: Vec<(String, Option<String>)> = Vec::new();
 
@@ -74,18 +78,19 @@ pub fn scan(dirs: &[PathBuf]) -> ScanResult {
                 debug!(2; "{}: unreadable, skipping this entry", path.display());
                 continue; // unreadable entry: one missing app, never a failed scan.
             };
-            let Some(group) = parse_group(&contents) else {
+            let Some(entry) = parse_entry(&contents, &locales) else {
                 debug!(2; "{}: no [Desktop Entry] group, skipping this entry", path.display());
                 continue; // no `[Desktop Entry]` group at all.
             };
+            let group = &entry.main;
             // `Type` has no `Application` default; a `Link` or `Directory` is not launchable.
             if group.get("Type").map(String::as_str) != Some("Application") {
                 continue;
             }
-            if flag(&group, "Hidden") {
+            if flag(group, "Hidden") {
                 continue;
             }
-            let (Some(name), Some(exec)) = (group.get("Name"), group.get("Exec")) else {
+            let (Some(name), Some(exec)) = (localized(group, "Name", &locales), group.get("Exec")) else {
                 debug!(2; "{id}: missing Name or Exec, skipping this entry");
                 continue;
             };
@@ -93,31 +98,59 @@ pub fn scan(dirs: &[PathBuf]) -> ScanResult {
                 debug!(2; "{id}: Exec={exec:?} has no command left after field-code removal, skipping this entry");
                 continue;
             };
+            let terminal = flag(group, "Terminal");
             let dir = group.get("Path").filter(|dir| !dir.is_empty()).map(PathBuf::from);
-            launch.insert(id.clone(), LaunchTarget { command, args, terminal: flag(&group, "Terminal"), dir });
+            let mut actions = Vec::new();
+            if let Some(declared) = group.get("Actions") {
+                let mut seen_actions: HashSet<&str> = HashSet::new();
+                for key in declared.split(';').map(str::trim).filter(|key| !key.is_empty()) {
+                    if !seen_actions.insert(key) {
+                        continue;
+                    }
+                    let Some(action_group) = entry.actions.get(key) else { continue };
+                    let (Some(action_name), Some(action_exec)) =
+                        (localized(action_group, "Name", &locales), action_group.get("Exec"))
+                    else {
+                        continue;
+                    };
+                    let Some((action_command, action_args)) = tokenize_exec(action_exec) else {
+                        continue;
+                    };
+                    launch_actions.insert(
+                        (id.clone(), key.to_string()),
+                        LaunchTarget { command: action_command, args: action_args, terminal, dir: dir.clone() },
+                    );
+                    actions.push(AppAction {
+                        key: key.to_string(),
+                        name: action_name.to_string(),
+                        icon: localized(action_group, "Icon", &locales).map(str::to_string),
+                    });
+                }
+            }
+            launch.insert(id.clone(), LaunchTarget { command, args, terminal, dir });
             wm_classes.push((id.clone(), group.get("StartupWMClass").cloned()));
             entries.push(AppSummary {
                 id,
-                name: name.clone(),
-                icon: group.get("Icon").cloned(),
-                no_display: flag(&group, "NoDisplay"),
-                comment: group.get("Comment").cloned(),
-                generic_name: group.get("GenericName").cloned(),
+                name: name.to_string(),
+                icon: localized(group, "Icon", &locales).map(str::to_string),
+                no_display: flag(group, "NoDisplay"),
+                comment: localized(group, "Comment", &locales).map(str::to_string),
+                generic_name: localized(group, "GenericName", &locales).map(str::to_string),
                 // The specification's trailing `;` leaves an empty last field. `\;` is not
                 // unescaped: no shipped entry uses it, and a stray backslash costs one keyword.
-                keywords: group
-                    .get("Keywords")
+                keywords: localized(group, "Keywords", &locales)
                     .map(|value| {
                         value.split(';').map(str::trim).filter(|word| !word.is_empty()).map(String::from).collect()
                     })
                     .unwrap_or_default(),
+                actions,
             });
         }
     }
 
     entries.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
     let by_app_id = build_app_id_map(&entries, &wm_classes);
-    ScanResult { entries, by_app_id, launch }
+    ScanResult { entries, by_app_id, launch, launch_actions }
 }
 
 /// Ways an `app_id` finds an entry, strongest first.
@@ -224,7 +257,7 @@ mod tests {
         write_entry(home.path(), "editor.desktop", &application("Mine", ""));
         write_entry(system.path(), "editor.desktop", &application("Theirs", ""));
 
-        let result = scan(&[home.path().to_path_buf(), system.path().to_path_buf()]);
+        let result = scan(&[home.path().to_path_buf(), system.path().to_path_buf()], None);
 
         assert_eq!(result.entries.len(), 1, "one id is one entry however many directories carry it");
         assert_eq!(result.entries[0].name, "Mine");
@@ -243,7 +276,7 @@ mod tests {
         write_entry(dir.path(), "link.desktop", "[Desktop Entry]\nType=Link\nName=Link\nURL=http://x\n");
         write_entry(dir.path(), "noexec.desktop", "[Desktop Entry]\nType=Application\nName=NoExec\n");
 
-        let result = scan(&[dir.path().to_path_buf()]);
+        let result = scan(&[dir.path().to_path_buf()], None);
 
         for app_id in ["org.example.Helper", "org.example.helper", "helper", "HelperWindow", "helperwindow"] {
             let index = result.by_app_id[app_id];
@@ -264,7 +297,7 @@ mod tests {
         write_entry(home.path(), "org.example.Helper.desktop", &application("Helper", "Hidden=true\n"));
         write_entry(system.path(), "org.example.Helper.desktop", &application("Helper", "Icon=helper\n"));
 
-        let result = scan(&[home.path().to_path_buf(), system.path().to_path_buf()]);
+        let result = scan(&[home.path().to_path_buf(), system.path().to_path_buf()], None);
 
         assert!(result.entries.is_empty());
         assert!(result.by_app_id.is_empty());
@@ -278,7 +311,7 @@ mod tests {
         write_entry(dir.path(), "a.desktop", &application("Apple", ""));
         write_entry(dir.path(), "b.desktop", &application("Banana", ""));
 
-        let names: Vec<String> = scan(&[dir.path().to_path_buf()]).entries.into_iter().map(|e| e.name).collect();
+        let names: Vec<String> = scan(&[dir.path().to_path_buf()], None).entries.into_iter().map(|e| e.name).collect();
 
         assert_eq!(names, vec!["Apple", "Banana", "Cherry"]);
     }
@@ -291,7 +324,7 @@ mod tests {
         write_entry(dir.path(), "zed.desktop", &application("Zed", "GenericName=Text Editor\n"));
         write_entry(dir.path(), "gimp.desktop", &application("GIMP", "Keywords=GNU;Image Manipulation Program;\n"));
 
-        let entries = scan(&[dir.path().to_path_buf()]).entries;
+        let entries = scan(&[dir.path().to_path_buf()], None).entries;
 
         assert_eq!(entries[0].name, "GIMP");
         assert_eq!(entries[0].keywords, vec!["GNU".to_string(), "Image Manipulation Program".to_string()]);
@@ -308,7 +341,7 @@ mod tests {
             "[Desktop Entry]\nType=Application\nName=Browser\nExec=firefox --new-tab %u\n",
         );
 
-        let result = scan(&[dir.path().to_path_buf()]);
+        let result = scan(&[dir.path().to_path_buf()], None);
 
         let target = result.launch.get("browser").expect("the launch map carries the argv");
         assert_eq!(target.command, "firefox");
@@ -328,7 +361,7 @@ mod tests {
         write_entry(dir.path(), "org.gnome.Nautilus.desktop", &application("Files", ""));
         write_entry(dir.path(), "tg.desktop", &application("Telegram", "StartupWMClass=TelegramDesktop\n"));
 
-        let result = scan(&[dir.path().to_path_buf()]);
+        let result = scan(&[dir.path().to_path_buf()], None);
         let name = |key: &str| result.by_app_id.get(key).map(|&index| result.entries[index - 1].name.as_str());
 
         assert_eq!(name("org.gnome.Nautilus"), Some("Files"));
@@ -345,7 +378,7 @@ mod tests {
         write_entry(dir.path(), "aaa.desktop", &application("Impostor", "StartupWMClass=Zed\n"));
         write_entry(dir.path(), "zed.desktop", &application("Zed Editor", ""));
 
-        let result = scan(&[dir.path().to_path_buf()]);
+        let result = scan(&[dir.path().to_path_buf()], None);
         let name = |key: &str| result.by_app_id.get(key).map(|&index| result.entries[index - 1].name.as_str());
 
         assert_eq!(name("zed"), Some("Zed Editor"), "an exact desktop file id outranks a lowercased WM class");
@@ -371,7 +404,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_entry(dir.path(), "real.desktop", &application("Real", ""));
 
-        let result = scan(&[PathBuf::from("/nonexistent/applications"), dir.path().to_path_buf()]);
+        let result = scan(&[PathBuf::from("/nonexistent/applications"), dir.path().to_path_buf()], None);
 
         assert_eq!(
             result.entries.len(),
@@ -385,10 +418,86 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_entry(dir.path(), "kde4/konsole.desktop", &application("Konsole", ""));
 
-        let result = scan(&[dir.path().to_path_buf()]);
+        let result = scan(&[dir.path().to_path_buf()], None);
 
         assert_eq!(result.entries.len(), 1);
         assert_eq!(result.entries[0].id, "kde4-konsole");
+    }
+
+    #[test]
+    fn scan_resolves_localized_fields_and_publishes_declared_desktop_actions() {
+        let dir = tempfile::tempdir().unwrap();
+        write_entry(
+            dir.path(),
+            "firefox.desktop",
+            "\
+[Desktop Entry]
+Type=Application
+Name=Firefox
+Name[ar]=فايرفوكس
+GenericName=Web Browser
+GenericName[ar]=متصفح ويب
+Comment=Browse the Web
+Comment[ar]=تصفح الويب
+Keywords=Internet;Browser;
+Keywords[ar]=إنترنت;متصفح;
+Exec=firefox %u
+Path=/tmp
+Terminal=true
+Actions=new-private-window;new-window;new-window;missing;no-exec;
+
+[Desktop Action new-window]
+Name=Open a New Window
+Name[ar]=افتح نافذة جديدة
+Exec=firefox --new-window %u
+Icon=window-new
+
+[Desktop Action new-private-window]
+Name=New Private Window
+Name[ar]=نافذة خاصة جديدة
+Exec=firefox --private-window
+
+[Desktop Action no-exec]
+Name=Unlaunchable
+
+[Desktop Action orphan]
+Name=Not Listed
+Exec=firefox --orphan
+",
+        );
+
+        let result = scan(&[dir.path().to_path_buf()], Some("ar_EG.UTF-8"));
+        assert_eq!(result.entries.len(), 1);
+        let entry = &result.entries[0];
+        assert_eq!(entry.name, "فايرفوكس");
+        assert_eq!(entry.generic_name.as_deref(), Some("متصفح ويب"));
+        assert_eq!(entry.comment.as_deref(), Some("تصفح الويب"));
+        assert_eq!(entry.keywords, vec!["إنترنت".to_string(), "متصفح".to_string()]);
+        assert_eq!(
+            entry.actions,
+            vec![
+                AppAction {
+                    key: "new-private-window".into(), name: "نافذة خاصة جديدة".into(), icon: None
+                },
+                AppAction {
+                    key: "new-window".into(),
+                    name: "افتح نافذة جديدة".into(),
+                    icon: Some("window-new".into())
+                },
+            ],
+            "declared order preserved, duplicates/missing/unlaunchable/orphan actions dropped"
+        );
+        let target = result
+            .launch_actions
+            .get(&("firefox".into(), "new-window".into()))
+            .expect("launch target stored for valid action");
+        assert_eq!(target.command, "firefox");
+        assert_eq!(target.args, vec!["--new-window".to_string()]);
+        assert!(target.terminal, "actions inherit Terminal=true from [Desktop Entry]");
+        assert_eq!(target.dir.as_deref(), Some(Path::new("/tmp")));
+        assert!(!result.launch_actions.contains_key(&("firefox".into(), "orphan".into())));
+        let serialized = serde_json::to_value(&entry.actions[0]).unwrap();
+        assert!(serialized.get("exec").is_none() && serialized.get("command").is_none());
     }
 
     #[test]

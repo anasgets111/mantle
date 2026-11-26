@@ -10,47 +10,127 @@ use std::path::Path;
 /// config, and passing a second value could make argv and displayed metadata disagree.
 const FIELD_CODES: [char; 13] = ['f', 'F', 'u', 'U', 'd', 'D', 'n', 'N', 'i', 'c', 'k', 'v', 'm'];
 
-/// `[Desktop Entry]` values with the file format's `\s \n \t \r \\` escapes decoded. `Exec`'s own
-/// quoting is a second layer, applied by [`tokenize_exec`].
+/// One `[Desktop Entry]` or `[Desktop Action ...]` group with the file format's `\s \n \t \r \\`
+/// escapes decoded. `Exec`'s own quoting is a second layer, applied by [`tokenize_exec`].
 pub type Group = HashMap<String, String>;
 
-/// Reads the `[Desktop Entry]` group out of a `.desktop` file's contents.
+/// A parsed `.desktop` file: its `[Desktop Entry]` group plus any `[Desktop Action <id>]` groups,
+/// keeping bare keys and localized keys that match the active locale chain.
+#[derive(Debug, Default)]
+pub struct DesktopEntry {
+    pub main: Group,
+    pub actions: HashMap<String, Group>,
+}
+
+/// Active message locale from the environment, in POSIX precedence (`LC_ALL`, `LC_MESSAGES`, `LANG`).
+pub fn current_locale() -> Option<String> {
+    ["LC_ALL", "LC_MESSAGES", "LANG"].into_iter().find_map(|var| std::env::var(var).ok().filter(|v| !v.is_empty()))
+}
+
+/// Locale fallback tags (`ll_CC@mod`, `ll_CC`, `ll@mod`, `ll`) for a POSIX locale string such as
+/// `ar_EG.UTF-8` or `sr_RS.UTF-8@latin`. Returns an empty list for unset, empty, `C`, or `POSIX`,
+/// so only bare unlocalized keys match.
+pub fn locale_chain(locale: Option<&str>) -> Vec<String> {
+    let Some(raw) = locale.map(str::trim).filter(|raw| !raw.is_empty()) else {
+        return Vec::new();
+    };
+    let (base, modifier) = match raw.split_once('@') {
+        Some((base, modifier)) => (base, Some(modifier).filter(|m| !m.is_empty())),
+        None => (raw, None),
+    };
+    let base = base.split_once('.').map_or(base, |(before, _)| before);
+    let (lang, country) = match base.split_once('_') {
+        Some((lang, country)) => (lang, Some(country).filter(|c| !c.is_empty())),
+        None => (base, None),
+    };
+    if lang.is_empty() || lang == "C" || lang == "POSIX" {
+        return Vec::new();
+    }
+    let mut tags = Vec::with_capacity(4);
+    if let (Some(country), Some(modifier)) = (country, modifier) {
+        tags.push(format!("{lang}_{country}@{modifier}"));
+    }
+    if let Some(country) = country {
+        tags.push(format!("{lang}_{country}"));
+    }
+    if let Some(modifier) = modifier {
+        tags.push(format!("{lang}@{modifier}"));
+    }
+    tags.push(lang.to_string());
+    tags
+}
+
+/// Resolves a localizable key (`Name`, `GenericName`, `Comment`, `Keywords`, `Icon`) through
+/// `locales` in specificity order, falling back to the bare key. Empty values are ignored so a
+/// blank translation never hides a fallback.
+pub fn localized<'a>(group: &'a Group, key: &str, locales: &[String]) -> Option<&'a str> {
+    for tag in locales {
+        if let Some(value) = group.get(&format!("{key}[{tag}]")).filter(|value| !value.is_empty()) {
+            return Some(value.as_str());
+        }
+    }
+    group.get(key).filter(|value| !value.is_empty()).map(String::as_str)
+}
+
+/// Reads `[Desktop Entry]` and every `[Desktop Action <id>]` group out of a `.desktop` file.
 ///
-/// Stops at the next group header. `[Desktop Action new-window]` groups commonly follow the main
-/// group; flattening them could let an action's `Exec` replace the application's and launch a new
-/// window instead of the app.
-///
-/// Skips localized keys (`Name[de]`), so `Name` stays the unlocalized value, English on a
-/// localized system. ponytail: locale lookup is the upgrade, using `$LC_MESSAGES`/`$LANG` with
-/// `ll_CC`, then `ll`, then bare. A partial lookup could silently choose the wrong region.
-pub fn parse_group(contents: &str) -> Option<Group> {
-    let mut group = Group::new();
-    let mut inside = false;
+/// Unrecognized groups, duplicate group headers, and localized keys outside `locales` are skipped
+/// so irrelevant translations allocate nothing and later groups never overwrite `[Desktop Entry]`.
+pub fn parse_entry(contents: &str, locales: &[String]) -> Option<DesktopEntry> {
+    enum Section {
+        Ignore,
+        Main,
+        Action(String),
+    }
+
+    let mut main: Option<Group> = None;
+    let mut actions: HashMap<String, Group> = HashMap::new();
+    let mut section = Section::Ignore;
+
     for line in contents.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
         if line.starts_with('[') {
-            if inside {
-                break; // the next group starts here -- see this function's doc comment.
-            }
-            inside = line.eq_ignore_ascii_case("[Desktop Entry]");
+            let header = line.strip_prefix('[').and_then(|s| s.strip_suffix(']'));
+            section = match header {
+                Some(h) if h.eq_ignore_ascii_case("Desktop Entry") && main.is_none() => {
+                    main = Some(Group::new());
+                    Section::Main
+                }
+                Some(h) => match h.strip_prefix("Desktop Action ") {
+                    Some(id) if !id.is_empty() && !actions.contains_key(id) => {
+                        actions.insert(id.to_string(), Group::new());
+                        Section::Action(id.to_string())
+                    }
+                    _ => Section::Ignore,
+                },
+                None => Section::Ignore,
+            };
             continue;
         }
-        if !inside {
-            continue;
-        }
+        let target = match &section {
+            Section::Ignore => continue,
+            Section::Main => main.as_mut()?,
+            Section::Action(id) => actions.get_mut(id)?,
+        };
         let Some((key, value)) = line.split_once('=') else {
             continue; // not a key/value line; the specification has no other line shape.
         };
         let key = key.trim();
-        if key.contains('[') {
-            continue; // a localized key, skipped deliberately.
+        if let Some(rest) = key.strip_suffix(']')
+            && let Some((_, tag)) = rest.split_once('[')
+        {
+            if !locales.iter().any(|wanted| wanted == tag) {
+                continue;
+            }
+        } else if key.contains('[') {
+            continue;
         }
-        group.insert(key.to_string(), unescape(value.trim()));
+        target.insert(key.to_string(), unescape(value.trim()));
     }
-    inside.then_some(group)
+    main.map(|main| DesktopEntry { main, actions })
 }
 
 /// Decodes the value escapes; an unknown `\x` stays as written. Splitting on `\\` first keeps an
@@ -106,12 +186,15 @@ pub fn tokenize_exec(exec: &str) -> Option<(String, Vec<String>)> {
             }
         }
     }
+    if quoted {
+        return None;
+    }
     if started {
         tokens.push(current);
     }
 
     let mut expanded = tokens.into_iter().filter_map(|token| expand_field_codes(&token));
-    let command = expanded.next()?;
+    let command = expanded.next().filter(|command| !command.is_empty())?;
     Some((command, expanded.collect()))
 }
 
@@ -161,54 +244,119 @@ pub fn desktop_file_id(path: &Path, base: &Path) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// `[Desktop Action ...]` has its own `Name`/`Exec`; flattening the file lets the last group
-    /// win and opens an app window instead of starting the app.
+    /// `[Desktop Action ...]` has its own `Name`/`Exec`; keeping groups separate lets actions be
+    /// exposed without overwriting the application's own `Name`/`Exec`.
     #[test]
-    fn parse_group_stops_at_the_next_group_header() {
+    fn parse_entry_keeps_desktop_actions_separate_from_the_main_group() {
         let contents = "\
 [Desktop Entry]
 Name=Firefox
 Exec=firefox %u
 
+[X-Extra]
+Exec=should-be-ignored
+
+[desktop action new-window]
+Name=Wrong Case
+Exec=wrong-cmd
+
 [Desktop Action new-window]
 Name=New Window
+Name[ar]=نافذة جديدة
 Exec=firefox --new-window
+Icon=window-new
+
+[Desktop Entry]
+Name=Duplicate
+
+[Desktop Action new-window]
+Name=Duplicate Action
 ";
-        let group = parse_group(contents).expect("the file has a [Desktop Entry] group");
-        assert_eq!(group.get("Name").map(String::as_str), Some("Firefox"));
+        let locales = locale_chain(Some("ar_EG.UTF-8"));
+        let entry = parse_entry(contents, &locales).expect("the file has a [Desktop Entry] group");
+        assert_eq!(localized(&entry.main, "Name", &locales), Some("Firefox"));
         assert_eq!(
-            group.get("Exec").map(String::as_str),
+            entry.main.get("Exec").map(String::as_str),
             Some("firefox %u"),
             "the action's Exec must not overwrite the application's"
         );
+        let action = entry.actions.get("new-window").expect("action group parsed");
+        assert_eq!(localized(action, "Name", &locales), Some("نافذة جديدة"));
+        assert_eq!(action.get("Exec").map(String::as_str), Some("firefox --new-window"));
+        assert_eq!(action.get("Icon").map(String::as_str), Some("window-new"));
+        assert_eq!(entry.actions.len(), 1);
     }
 
     #[test]
-    fn parse_group_skips_localized_keys_comments_and_blank_lines_and_needs_a_desktop_entry_group() {
-        let group = parse_group("[Desktop Entry]\n# a comment\n\nName=Thing\nName[de]=Ding\n").unwrap();
-        assert_eq!(group.get("Name").map(String::as_str), Some("Thing"), "always the unlocalized value");
-        assert_eq!(group.len(), 1);
-        assert!(parse_group("[Desktop Action foo]\nName=x\n").is_none());
+    fn locale_chain_follows_the_desktop_entry_fallback_order() {
+        assert_eq!(locale_chain(Some("sr_RS.UTF-8@latin")), ["sr_RS@latin", "sr_RS", "sr@latin", "sr"]);
+        assert_eq!(locale_chain(Some("ar_EG.UTF-8")), ["ar_EG", "ar"]);
+        assert_eq!(locale_chain(Some("ca@valencia")), ["ca@valencia", "ca"]);
+        assert_eq!(locale_chain(Some("de")), ["de"]);
+        for neutral in [None, Some(""), Some("C"), Some("C.UTF-8"), Some("POSIX"), Some(".UTF-8")] {
+            assert!(locale_chain(neutral).is_empty(), "{neutral:?}");
+        }
+    }
+
+    #[test]
+    fn parse_entry_resolves_localized_keys_skips_other_locales_and_needs_a_desktop_entry_group() {
+        let contents = "\
+[Desktop Entry]
+# a comment
+
+Name=Thing
+Name[sr]=Sr
+Name[sr@latin]=SrLatin
+Name[sr_RS]=SrRS
+Name[sr_RS@latin]=SrRSLatin
+Name[de]=Ding
+Comment=Fallback
+Comment[sr_RS@latin]=
+";
+        let full = locale_chain(Some("sr_RS.UTF-8@latin"));
+        let entry = parse_entry(contents, &full).unwrap();
+        assert_eq!(localized(&entry.main, "Name", &full), Some("SrRSLatin"));
+        assert_eq!(localized(&entry.main, "Comment", &full), Some("Fallback"), "empty translation falls back");
+        assert!(!entry.main.contains_key("Name[de]"), "unrelated locales are skipped");
+
+        let country = locale_chain(Some("sr_RS.UTF-8"));
+        let entry = parse_entry(contents, &country).unwrap();
+        assert_eq!(localized(&entry.main, "Name", &country), Some("SrRS"));
+
+        let modifier = locale_chain(Some("sr@latin"));
+        let entry = parse_entry(contents, &modifier).unwrap();
+        assert_eq!(localized(&entry.main, "Name", &modifier), Some("SrLatin"));
+
+        let lang = locale_chain(Some("sr_BA.UTF-8"));
+        let entry = parse_entry(contents, &lang).unwrap();
+        assert_eq!(localized(&entry.main, "Name", &lang), Some("Sr"));
+
+        let neutral = locale_chain(Some("C.UTF-8"));
+        let entry = parse_entry(contents, &neutral).unwrap();
+        assert_eq!(localized(&entry.main, "Name", &neutral), Some("Thing"));
+        assert_eq!(entry.main.len(), 2);
+
+        assert!(parse_entry("[Desktop Action foo]\nName=x\n", &[]).is_none());
     }
 
     /// A Wine launcher writes `\\\\` for each backslash of its Windows path: the value layer
     /// halves it, then `Exec`'s quoting halves it again.
     #[test]
-    fn parse_group_decodes_value_escapes_before_exec_quoting() {
-        let group = parse_group("[Desktop Entry]\nName=a\\sb\\\\n\nExec=wine \"C:\\\\\\\\x\" \\q\n").unwrap();
-        assert_eq!(group.get("Name").map(String::as_str), Some("a b\\n"));
+    fn parse_entry_decodes_value_escapes_before_exec_quoting() {
+        let entry = parse_entry("[Desktop Entry]\nName=a\\sb\\\\n\nExec=wine \"C:\\\\\\\\x\" \\q\n", &[]).unwrap();
+        assert_eq!(entry.main.get("Name").map(String::as_str), Some("a b\\n"));
         assert_eq!(
-            tokenize_exec(&group["Exec"]),
+            tokenize_exec(&entry.main["Exec"]),
             Some(("wine".to_string(), vec![r"C:\x".to_string(), r"\q".to_string()]))
         );
     }
 
     #[test]
     fn flag_reads_the_specifications_true_and_treats_an_absent_key_as_false() {
-        let group = parse_group("[Desktop Entry]\nNoDisplay=true\nHidden=false\n").unwrap();
-        assert!(flag(&group, "NoDisplay"));
-        assert!(!flag(&group, "Hidden"));
-        assert!(!flag(&group, "Terminal"), "an absent boolean key is false, not an error");
+        let entry = parse_entry("[Desktop Entry]\nNoDisplay=true\nHidden=false\n", &[]).unwrap();
+        assert!(flag(&entry.main, "NoDisplay"));
+        assert!(!flag(&entry.main, "Hidden"));
+        assert!(!flag(&entry.main, "Terminal"), "an absent boolean key is false, not an error");
     }
 
     #[test]
@@ -228,6 +376,8 @@ Exec=firefox --new-window
             ("prog --file=%f", argv("prog", &["--file="])),
             ("%f", None),
             ("   ", None),
+            (r#""""#, None),
+            (r#"prog "unterminated"#, None),
         ] {
             assert_eq!(tokenize_exec(exec), expected, "{exec:?}");
         }

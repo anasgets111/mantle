@@ -28,18 +28,29 @@ text {
 | `by_app_id` | `table<string, integer>` | Window `app_id` to its 1-based index: `entries[by_app_id[app_id]]`. Keys are exact `StartupWMClass` and desktop ids, then lowercased and last-dot-segment guesses. |
 | `entries` | `AppSummary[]` | Installed entries, sorted by `name` (byte order), including `NoDisplay` entries for window lookup. Launchers omit entries with `no_display = true`. `Hidden` entries are excluded. A change under an applications directory rescans 250 ms after the last event. |
 
+### `AppAction`
+
+One `[Desktop Action <key>]` declared by an application entry (e.g. "New private window").
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `icon?` | `string` | Optional localized `Icon=` for this action, a theme name or absolute path; `nil` without the key. |
+| `key` | `string` | Action identifier from `Actions=`, e.g. `"new-private-window"`; passed to `launch_action`. |
+| `name` | `string` | Localized `Name=` for this action. |
+
 ### `AppSummary`
 
 One `Type=Application` desktop entry; display data only, argv stays private.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `comment?` | `string` | `Comment=`, unlocalized, e.g. `"Web Browser"`; `nil` without the key. |
-| `generic_name?` | `string` | `GenericName=`, unlocalized, e.g. `"Text Editor"`; `nil` without the key. |
-| `icon?` | `string` | `Icon=` as written, a theme name or absolute path, both accepted by `icon { name }`; `nil` without the key. |
+| `actions` | `AppAction[]` | Additional actions declared in `Actions=`, in declared order; empty without the key or any launchable `[Desktop Action ...]` group. |
+| `comment?` | `string` | Localized `Comment=`, e.g. `"Web Browser"`; `nil` without the key. |
+| `generic_name?` | `string` | Localized `GenericName=`, e.g. `"Text Editor"`; `nil` without the key. |
+| `icon?` | `string` | Localized `Icon=` as written, a theme name or absolute path, both accepted by `icon { name }`; `nil` without the key. |
 | `id` | `string` | Desktop file id, e.g. `"org.telegram.desktop"`; the argument of `"launch"`. |
-| `keywords` | `string[]` | `Keywords=` split on `;`, for search; empty without the key. |
-| `name` | `string` | `Name=`, unlocalized: `Name[xx]` is not read. |
+| `keywords` | `string[]` | Localized `Keywords=` split on `;`, for search; empty without the key. |
+| `name` | `string` | Localized `Name=`, following `LC_ALL`/`LC_MESSAGES`/`LANG` (`ll_CC@mod`, `ll_CC`, `ll@mod`, `ll`, bare). |
 | `no_display` | `boolean` | `NoDisplay=true`: omit from launchers, but keep its name and icon for window lookup. |
 
 ## Actions
@@ -50,11 +61,13 @@ Call each as `mantle.applications:<action>(arguments...)`; `?` marks an argument
 | --- | --- | --- |
 | `refresh` |  | Rescans installed desktop entries. The directories are watched, so only a failed watch (logged) needs this. |
 | `launch` | `id: string, opts?: LaunchOpts` | Launches `entries[].id`, detached; `Terminal=true` entries run in `$TERMINAL`. `opts.env` sets a variable to a string or unsets it with `false`. |
+| `launch_action` | `id: string, action: string, opts?: LaunchOpts` | Launches an `entries[].actions[].key` on `entries[].id`, detached; inherits the entry's `Terminal` and `Path`. `opts.env` sets a variable to a string or unsets it with `false`. |
 | `open_url` | `url: string` | Opens an `http`, `https` or `mailto` URL with `xdg-open`. One over 2048 bytes or holding whitespace or a control character is refused. |
 
 ### `LaunchOpts`
 
-Options of a detached launch: `process.detach`'s third argument and `launch`'s second.
+Options of a detached launch: `process.detach`'s third argument, `launch`'s second and
+`launch_action`'s third.
 
 | Field | Type | Description |
 | --- | --- | --- |
@@ -67,10 +80,15 @@ entry (default `/usr/local/share:/usr/share`), subdirectories included, four lev
 copy under `~/.local/share/applications` overrides the system one. `Type=Application` entries with
 `Name` and a non-empty `Exec` are listed, including `NoDisplay=true` entries so windows can resolve
 their names and icons. Launchers filter out entries with `no_display = true`; `Hidden=true` entries
-are excluded entirely. inotify watches every
+are excluded entirely. `Name`, `GenericName`, `Comment`, `Keywords` and `Icon` resolve through the active locale (`$LC_ALL`,
+else `$LC_MESSAGES`, else `$LANG`), trying `ll_CC@mod`, `ll_CC`, `ll@mod`, `ll` and then the bare key.
+Each entry's `Actions=` list is published as `entry.actions` (each with `key`, localized `name` and
+optional `icon`) for `[Desktop Action <key>]` groups that declare a `Name` and valid `Exec`;
+`launch_action(id, action, opts?)` runs one detached, inheriting the entry's `Terminal` and `Path`.
+inotify watches every
 directory, including ones created later. `launch` spawns the `Exec` command detached, dropping field
 codes such as `%u`; a `Terminal=true` entry runs as `$TERMINAL -e command args`. The program starts in the entry's `Path`
-directory when that exists. `launch(id, { env = { NAME = "value", OTHER = false } })`
+directory when that exists. `launch(id, { env = { NAME = "value", OTHER = false } })` (and `launch_action(id, action, { env = ... })`)
 sets or unsets variables for that launch (a string sets, `false` unsets; for a `Terminal=true` entry they apply to the `$TERMINAL` process); a single-instance app that is already running passes the launch to
 its existing process, which keeps its old environment. `open_url` takes no options: use
 `process.detach("xdg-open", { url }, { env = ... })`.

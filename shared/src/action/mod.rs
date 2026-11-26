@@ -290,6 +290,16 @@ mod tests {
             (decode::<ApplicationsAction>("launch", json!(["a", {"env": {"A": true}}])), Err("expected a string")),
             (decode::<ApplicationsAction>("launch", json!(["a", {"env": {"A": 1}}])), Err("expected a string")),
             (decode::<ApplicationsAction>("launch", json!(["a", {"envs": {}}])), Err("unknown field")),
+            (
+                decode::<ApplicationsAction>("launch_action", json!(["a", "new-window"])),
+                Ok(r#"LaunchAction { id: "a", action: "new-window", opts: LaunchOpts { env: [] } }"#),
+            ),
+            (
+                decode::<ApplicationsAction>("launch_action", json!(["a", "new-window", {"env": {"X": "1"}}])),
+                Ok(r#"LaunchAction { id: "a", action: "new-window", opts: LaunchOpts { env: [("X", Some("1"))] } }"#),
+            ),
+            (decode::<ApplicationsAction>("launch_action", json!(["", "new-window"])), Err("non-empty")),
+            (decode::<ApplicationsAction>("launch_action", json!(["a", ""])), Err("non-empty")),
             // A Lua `nil` value arrives as a missing argument and means delete.
             (
                 decode::<StorageAction>("set", json!(["/s.json", "theme"])),

@@ -66,6 +66,12 @@
 ---@field reconnecting boolean Whether the device is reconnecting to apply a plugin switch. Clears when it connects again, or after 30 s.
 ---@field signal_strength? integer Cellular network signal strength (0 to 4 bars), or `nil` if not reported. With two devices connected, the daemon can report one's value as the other's.
 
+---@class AppAction
+---One `[Desktop Action <key>]` declared by an application entry (e.g. "New private window").
+---@field icon? string Optional localized `Icon=` for this action, a theme name or absolute path; `nil` without the key.
+---@field key string Action identifier from `Actions=`, e.g. `"new-private-window"`; passed to `launch_action`.
+---@field name string Localized `Name=` for this action.
+
 ---@class AppStream
 ---One app's playback or recording stream (ADR-0053). Streams without a pid are left out.
 ---@field binary? string `application.process.binary`, e.g. `"firefox"`.
@@ -83,12 +89,13 @@
 
 ---@class AppSummary
 ---One `Type=Application` desktop entry; display data only, argv stays private (ADR-0061).
----@field comment? string `Comment=`, unlocalized, e.g. `"Web Browser"` (ADR-0112); `nil` without the key.
----@field generic_name? string `GenericName=`, unlocalized, e.g. `"Text Editor"`; `nil` without the key.
----@field icon? string `Icon=` as written, a theme name or absolute path, both accepted by `icon { name }`; `nil` without the key.
+---@field actions AppAction[] Additional actions declared in `Actions=`, in declared order; empty without the key or any launchable `[Desktop Action ...]` group.
+---@field comment? string Localized `Comment=`, e.g. `"Web Browser"` (ADR-0112); `nil` without the key.
+---@field generic_name? string Localized `GenericName=`, e.g. `"Text Editor"`; `nil` without the key.
+---@field icon? string Localized `Icon=` as written, a theme name or absolute path, both accepted by `icon { name }`; `nil` without the key.
 ---@field id string Desktop file id, e.g. `"org.telegram.desktop"`; the argument of `"launch"`.
----@field keywords string[] `Keywords=` split on `;`, for search; empty without the key.
----@field name string `Name=`, unlocalized: `Name[xx]` is not read (ADR-0061).
+---@field keywords string[] Localized `Keywords=` split on `;`, for search; empty without the key.
+---@field name string Localized `Name=`, following `LC_ALL`/`LC_MESSAGES`/`LANG` (`ll_CC@mod`, `ll_CC`, `ll@mod`, `ll`, bare).
 ---@field no_display boolean `NoDisplay=true`: omit from launchers, but keep its name and icon for window lookup.
 
 ---@class AudioCard
@@ -279,7 +286,8 @@
 ---@field ssid string The network the join was for.
 
 ---@class LaunchOpts
----Options of a detached launch: `process.detach`'s third argument and `launch`'s second.
+---Options of a detached launch: `process.detach`'s third argument, `launch`'s second and
+---`launch_action`'s third.
 ---@field env? table<string, string|false> Changes to the Supervisor's environment: `NAME = "value"` sets, `NAME = false` unsets.
 
 ---@alias LoopStatus
@@ -1073,6 +1081,7 @@ local BatteryCapability = {}
 ---@class ApplicationsCapability: Capability<ApplicationsState>, userdata
 ---@field refresh fun(self: ApplicationsCapability) Rescans installed desktop entries. The directories are watched, so only a failed watch (logged) needs this.
 ---@field launch fun(self: ApplicationsCapability, id: string, opts?: LaunchOpts) Launches `entries[].id`, detached; `Terminal=true` entries run in `$TERMINAL`. `opts.env` sets a variable to a string or unsets it with `false`.
+---@field launch_action fun(self: ApplicationsCapability, id: string, action: string, opts?: LaunchOpts) Launches an `entries[].actions[].key` on `entries[].id`, detached; inherits the entry's `Terminal` and `Path`. `opts.env` sets a variable to a string or unsets it with `false`.
 ---@field open_url fun(self: ApplicationsCapability, url: string) Opens an `http`, `https` or `mailto` URL with `xdg-open` (ADR-0103). One over 2048 bytes or holding whitespace or a control character is refused.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/folders.html)

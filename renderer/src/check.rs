@@ -1205,6 +1205,31 @@ mod tests {
         let err = super::run(dir.path()).unwrap_err();
         assert!(err.contains("with alternate sample data"), "{err}");
         assert!(err.contains("contnet"), "{err}");
+
+        // Sample data also populates `entry.actions` and the Renderer validates `launch_action`.
+        std::fs::write(
+            dir.path().join("shell.lua"),
+            r#"return panel { id = "launcher", layer = "top", child = list {
+    items = mantle.applications:map(function(s)
+        local actions = {}
+        for _, app in ipairs(s and s.entries or {}) do
+            for _, act in ipairs(app.actions) do
+                actions[#actions + 1] = { id = app.id, key = act.key, name = act.name, icon = act.icon }
+            end
+        end
+        return actions
+    end),
+    each = function(act)
+        return text {
+            content = act.name,
+            on_click = function() mantle.applications:launch_action(act.id, act.key) end,
+        }
+    end,
+} }
+"#,
+        )
+        .unwrap();
+        assert!(super::run(dir.path()).is_ok());
     }
 
     /// The first set reads `muted = true` and battery `"unknown"`, and lists one entry long, so

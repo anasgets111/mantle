@@ -20,10 +20,15 @@ entry (default `/usr/local/share:/usr/share`), subdirectories included, four lev
 copy under `~/.local/share/applications` overrides the system one. `Type=Application` entries with
 `Name` and a non-empty `Exec` are listed, including `NoDisplay=true` entries so windows can resolve
 their names and icons. Launchers filter out entries with `no_display = true`; `Hidden=true` entries
-are excluded entirely. inotify watches every
+are excluded entirely. `Name`, `GenericName`, `Comment`, `Keywords` and `Icon` resolve through the active locale (`$LC_ALL`,
+else `$LC_MESSAGES`, else `$LANG`), trying `ll_CC@mod`, `ll_CC`, `ll@mod`, `ll` and then the bare key.
+Each entry's `Actions=` list is published as `entry.actions` (each with `key`, localized `name` and
+optional `icon`) for `[Desktop Action <key>]` groups that declare a `Name` and valid `Exec`;
+`launch_action(id, action, opts?)` runs one detached, inheriting the entry's `Terminal` and `Path`.
+inotify watches every
 directory, including ones created later. `launch` spawns the `Exec` command detached, dropping field
 codes such as `%u`; a `Terminal=true` entry runs as `$TERMINAL -e command args`. The program starts in the entry's `Path`
-directory when that exists. `launch(id, { env = { NAME = "value", OTHER = false } })`
+directory when that exists. `launch(id, { env = { NAME = "value", OTHER = false } })` (and `launch_action(id, action, { env = ... })`)
 sets or unsets variables for that launch (a string sets, `false` unsets; for a `Terminal=true` entry they apply to the `$TERMINAL` process); a single-instance app that is already running passes the launch to
 its existing process, which keeps its old environment. `open_url` takes no options: use
 `process.detach("xdg-open", { url }, { env = ... })`.

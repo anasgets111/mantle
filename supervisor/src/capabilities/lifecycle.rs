@@ -464,6 +464,7 @@ impl Capabilities {
                             shared::xdg_dir("XDG_DATA_HOME", ".local/share"),
                             std::env::var("XDG_DATA_DIRS").ok(),
                         ),
+                        applications::current_locale(),
                         self.senders.applications.clone(),
                     ));
                 }

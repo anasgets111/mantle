@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Added: `mantle.applications` now resolves localized `Name`, `GenericName`, `Comment`, `Keywords` and `Icon` from `LC_ALL`/`LC_MESSAGES`/`LANG` (`ll_CC@mod`, `ll_CC`, `ll@mod`, `ll`, bare), exposes each entry's `Exec`-backed `[Desktop Action ...]` items on `entries[].actions` (`key`, `name`, `icon`), and adds `mantle.applications:launch_action(id, action, opts?)`.
+
 - Fixed: a transparent container (a `rect`, `row`, `column` or `list` with no `background`, `border_width`, `effect.backdrop`, explicit `hittable = true` or input property), an unpainted `path`, or a bare `shader` over a sibling such as a click-outside catcher no longer swallows pointer events where none of its children sit; clicks pass through to the sibling beneath it.
 - Fixed: a node with `effect` (blur, shader, colour filter, `blend` or content shadow) under a `scale`, `rotate` or `translate` ancestor is no longer cut to the surface's untransformed bounds, so content scaled down or shifted into view is not clipped early.
 - Added: `column_span` and `row_span` (integers `[1, 256]`, default `1`) let a child of a `homogeneous` `row` or `column` span multiple slots across columns, rows, or both when wrapped.

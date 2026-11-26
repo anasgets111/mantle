@@ -15,27 +15,35 @@ mod watch;
 use shared::warn;
 
 pub use controller::{ApplicationsController, LaunchError, OpenUrlError};
+pub use entry::current_locale;
 pub use scan::application_dirs;
 use shared::action::ApplicationsAction;
 
-/// `mantle.applications` action dispatch (ADR-0037). `refresh` calls `spawn_blocking`; `launch`
-/// and `open_url` spawn detached children without waiting.
+fn log_launch_error(verb: &str, target: &str, err: LaunchError) {
+    let reason = match err {
+        LaunchError::Unknown => format!("no application target {target}"),
+        LaunchError::NoTerminal => {
+            format!("{target} declares Terminal=true and $TERMINAL is unset, so there is no emulator to run it in")
+        }
+        LaunchError::Spawn(message) => format!("spawning {target} failed: {message}"),
+    };
+    warn!("{verb}: {reason}");
+}
+
+/// `mantle.applications` action dispatch (ADR-0037). `refresh` calls `spawn_blocking`; `launch`,
+/// `launch_action` and `open_url` spawn detached children without waiting.
 pub fn dispatch(controller: &ApplicationsController, envelope: &shared::CommandEnvelope) {
     let Some(action) = crate::parse_action::<ApplicationsAction>(&envelope.params) else { return };
     match action {
         ApplicationsAction::Refresh => controller.refresh(),
         ApplicationsAction::Launch { id, opts } => {
             if let Err(err) = controller.launch(&id, &opts.env) {
-                let reason = match err {
-                    LaunchError::Unknown => format!("no application entry with id {id:?}"),
-                    LaunchError::NoTerminal => {
-                        format!(
-                            "{id:?} declares Terminal=true and $TERMINAL is unset, so there is no emulator to run it in"
-                        )
-                    }
-                    LaunchError::Spawn(message) => format!("spawning {id:?} failed: {message}"),
-                };
-                warn!("launch: {reason}");
+                log_launch_error("launch", &format!("{id:?}"), err);
+            }
+        }
+        ApplicationsAction::LaunchAction { id, action, opts } => {
+            if let Err(err) = controller.launch_action(&id, &action, &opts.env) {
+                log_launch_error("launch_action", &format!("{id:?} action {action:?}"), err);
             }
         }
         ApplicationsAction::OpenUrl { url } => {

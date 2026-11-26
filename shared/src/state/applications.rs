@@ -22,17 +22,34 @@ pub struct ApplicationsState {
 pub struct AppSummary {
     /// Desktop file id, e.g. `"org.telegram.desktop"`; the argument of `"launch"`.
     pub id: String,
-    /// `Name=`, unlocalized: `Name[xx]` is not read (ADR-0061).
+    /// Localized `Name=`, following `LC_ALL`/`LC_MESSAGES`/`LANG` (`ll_CC@mod`, `ll_CC`, `ll@mod`,
+    /// `ll`, bare).
     pub name: String,
-    /// `Icon=` as written, a theme name or absolute path, both accepted by `icon { name }`; `nil`
-    /// without the key.
+    /// Localized `Icon=` as written, a theme name or absolute path, both accepted by `icon { name }`;
+    /// `nil` without the key.
     pub icon: Option<String>,
     /// `NoDisplay=true`: omit from launchers, but keep its name and icon for window lookup.
     pub no_display: bool,
-    /// `Comment=`, unlocalized, e.g. `"Web Browser"` (ADR-0112); `nil` without the key.
+    /// Localized `Comment=`, e.g. `"Web Browser"` (ADR-0112); `nil` without the key.
     pub comment: Option<String>,
-    /// `GenericName=`, unlocalized, e.g. `"Text Editor"`; `nil` without the key.
+    /// Localized `GenericName=`, e.g. `"Text Editor"`; `nil` without the key.
     pub generic_name: Option<String>,
-    /// `Keywords=` split on `;`, for search; empty without the key.
+    /// Localized `Keywords=` split on `;`, for search; empty without the key.
     pub keywords: Vec<String>,
+    /// Additional actions declared in `Actions=`, in declared order; empty without the key or any
+    /// launchable `[Desktop Action ...]` group.
+    pub actions: Vec<AppAction>,
+}
+
+/// One `[Desktop Action <key>]` declared by an application entry (e.g. "New private window").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct AppAction {
+    /// Action identifier from `Actions=`, e.g. `"new-private-window"`; passed to `launch_action`.
+    pub key: String,
+    /// Localized `Name=` for this action.
+    pub name: String,
+    /// Optional localized `Icon=` for this action, a theme name or absolute path; `nil` without the
+    /// key.
+    pub icon: Option<String>,
 }

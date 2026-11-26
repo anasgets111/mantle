@@ -61,11 +61,17 @@ pub enum LaunchError {
     Spawn(String),
 }
 
+#[derive(Default)]
+struct LaunchTargets {
+    entries: HashMap<String, LaunchTarget>,
+    actions: HashMap<(String, String), LaunchTarget>,
+}
+
 pub struct ApplicationsController {
     state: Arc<Mutex<ApplicationsState>>,
     /// Not in the snapshot: exposing argv would let config rewrite it before `launch` (ADR-0061
     /// decision 3).
-    launch_targets: Arc<Mutex<HashMap<String, LaunchTarget>>>,
+    launch_targets: Arc<Mutex<LaunchTargets>>,
     /// The blocking scan behind `refresh` and the directory watch. Pushes only on change: every
     /// `StateSnapshot` dirties the Renderer and triggers a full re-resolve/repaint (ADR-0044), and
     /// a launcher-open `refresh` would otherwise repaint an identical list.
@@ -102,9 +108,9 @@ impl ApplicationsController {
     /// The scan stays off `main`'s startup path: reading a few hundred `.desktop` files from a
     /// cold page cache costs real milliseconds before the first surface. Lua reads `nil` until it
     /// lands, as every capability does (`shared::Capability::ALL`), so no extra branch is needed.
-    pub fn new(dirs: Vec<PathBuf>, events: UnboundedSender<()>) -> Self {
+    pub fn new(dirs: Vec<PathBuf>, locale: Option<String>, events: UnboundedSender<()>) -> Self {
         let state = Arc::new(Mutex::new(ApplicationsState::default()));
-        let launch_targets = Arc::new(Mutex::new(HashMap::new()));
+        let launch_targets = Arc::new(Mutex::new(LaunchTargets::default()));
         let dirs: Arc<[PathBuf]> = dirs.into();
         // One scan at a time, so state and launch map always come from the same scan.
         let scanning = Mutex::new(());
@@ -112,9 +118,10 @@ impl ApplicationsController {
             let (state, launch_targets, dirs) = (Arc::clone(&state), Arc::clone(&launch_targets), Arc::clone(&dirs));
             Arc::new(move || {
                 let _scanning = scanning.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                let result = scan(&dirs);
+                let result = scan(&dirs, locale.as_deref());
                 let next = ApplicationsState { entries: result.entries, by_app_id: result.by_app_id };
-                *launch_targets.lock().expect("applications launch map mutex poisoned") = result.launch;
+                *launch_targets.lock().expect("applications launch map mutex poisoned") =
+                    LaunchTargets { entries: result.launch, actions: result.launch_actions };
                 publish(&state, &events, next);
             })
         };
@@ -150,11 +157,31 @@ impl ApplicationsController {
     /// known emulators is the upgrade; a set variable gets exactly that terminal, while guessing
     /// wrong is worse than naming the missing variable.
     pub fn launch(&self, id: &str, env: &[(String, Option<String>)]) -> Result<(), LaunchError> {
-        let target = self.launch_targets.lock().expect("applications launch map mutex poisoned").get(id).cloned();
-        let mut target = target.ok_or(LaunchError::Unknown)?;
+        let target =
+            self.launch_targets.lock().expect("applications launch map mutex poisoned").entries.get(id).cloned();
+        Self::spawn_target(id, target.ok_or(LaunchError::Unknown)?, env)
+    }
+
+    /// Runs `action` on the application named by `id`, detached, inheriting its `Terminal` and `Path`.
+    pub fn launch_action(&self, id: &str, action: &str, env: &[(String, Option<String>)]) -> Result<(), LaunchError> {
+        let target = self
+            .launch_targets
+            .lock()
+            .expect("applications launch map mutex poisoned")
+            .actions
+            .get(&(id.to_string(), action.to_string()))
+            .cloned();
+        Self::spawn_target(&format!("{id}:{action}"), target.ok_or(LaunchError::Unknown)?, env)
+    }
+
+    fn spawn_target(
+        label: &str,
+        mut target: LaunchTarget,
+        env: &[(String, Option<String>)],
+    ) -> Result<(), LaunchError> {
         let dir = target.dir.take().filter(|dir| {
             dir.is_dir() || {
-                warn!("{id}: Path={} is not a directory; launching in the shell's own", dir.display());
+                warn!("{label}: Path={} is not a directory; launching in the shell's own", dir.display());
                 false
             }
         });
@@ -243,7 +270,7 @@ mod tests {
             std::fs::write(dir.path().join(file), body).unwrap();
         }
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let controller = ApplicationsController::new(vec![dir.path().to_path_buf()], tx);
+        let controller = ApplicationsController::new(vec![dir.path().to_path_buf()], None, tx);
         within(rx.recv()).await.unwrap();
         (controller, dir)
     }
@@ -349,7 +376,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.desktop"), runnable("A", "/bin/true")).unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let controller = ApplicationsController::new(vec![dir.path().to_path_buf()], tx);
+        let controller = ApplicationsController::new(vec![dir.path().to_path_buf()], None, tx);
         within(rx.recv()).await.unwrap();
 
         // Run the unchanged rescan to completion first, so the write below cannot mask a push.
@@ -380,12 +407,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_routes_refresh_launch_and_open_url_and_drops_the_rest() {
+    async fn dispatch_routes_refresh_launch_launch_action_and_open_url_and_drops_the_rest() {
         static OPENED: Mutex<Vec<String>> = Mutex::new(Vec::new());
         let marker = tempfile::tempdir().unwrap();
         let touched = marker.path().join("ran");
-        let (mut controller, dir) =
-            controller_over(&[("t.desktop", &runnable("Toucher", &format!("touch {}", touched.display())))]).await;
+        let acted = marker.path().join("acted");
+        let desktop = format!(
+            "{}Actions=act;\n\n[Desktop Action act]\nName=Act\nExec=touch {}\n",
+            runnable("Toucher", &format!("touch {}", touched.display())),
+            acted.display()
+        );
+        let (mut controller, dir) = controller_over(&[("t.desktop", &desktop)]).await;
         controller.watch.abort(); // only `refresh` may rescan
         controller.spawn_url = |_, args| {
             OPENED.lock().unwrap().extend_from_slice(args);
@@ -401,6 +433,11 @@ mod tests {
         dispatch("launch", vec!["t".into()]);
         crate::capabilities::test_support::poll_until(|| touched.exists().then_some(())).await;
 
+        dispatch("launch_action", vec!["t".into(), "act".into()]);
+        crate::capabilities::test_support::poll_until(|| acted.exists().then_some(())).await;
+        assert_eq!(controller.launch_action("t", "missing", &[]), Err(LaunchError::Unknown));
+        assert_eq!(controller.launch_action("missing", "act", &[]), Err(LaunchError::Unknown));
+
         std::fs::write(dir.path().join("b.desktop"), runnable("B", "/bin/true")).unwrap();
         dispatch("refresh", vec![]);
         crate::capabilities::test_support::poll_until(|| (controller.snapshot().entries.len() == 2).then_some(()))
@@ -412,7 +449,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.desktop"), runnable("A", "/bin/true")).unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let controller = ApplicationsController::new(vec![dir.path().to_path_buf()], tx);
+        let controller = ApplicationsController::new(vec![dir.path().to_path_buf()], None, tx);
         wait_for_entry(&controller, &mut rx, "A").await;
 
         std::fs::create_dir(dir.path().join("sub")).unwrap();
@@ -430,7 +467,7 @@ mod tests {
         std::fs::create_dir(&early).unwrap();
         std::fs::write(early.join("a.desktop"), runnable("A", "/bin/true")).unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let controller = ApplicationsController::new(vec![late.clone(), early], tx);
+        let controller = ApplicationsController::new(vec![late.clone(), early], None, tx);
         wait_for_entry(&controller, &mut rx, "A").await; // the watches are in place before this scan.
 
         std::fs::create_dir_all(&late).unwrap();

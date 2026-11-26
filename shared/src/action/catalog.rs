@@ -68,12 +68,23 @@ pub enum ApplicationsAction {
         #[serde(default)]
         opts: LaunchOpts,
     },
+    /// Launches an `entries[].actions[].key` on `entries[].id`, detached; inherits the entry's
+    /// `Terminal` and `Path`. `opts.env` sets a variable to a string or unsets it with `false`.
+    LaunchAction {
+        #[serde(deserialize_with = "super::non_empty")]
+        id: String,
+        #[serde(deserialize_with = "super::non_empty")]
+        action: String,
+        #[serde(default)]
+        opts: LaunchOpts,
+    },
     /// Opens an `http`, `https` or `mailto` URL with `xdg-open` (ADR-0103). One over 2048 bytes or
     /// holding whitespace or a control character is refused.
     OpenUrl { url: String },
 }
 
-/// Options of a detached launch: `process.detach`'s third argument and `launch`'s second.
+/// Options of a detached launch: `process.detach`'s third argument, `launch`'s second and
+/// `launch_action`'s third.
 #[derive(Debug, Default, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
