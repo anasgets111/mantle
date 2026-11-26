@@ -6,12 +6,13 @@ use mlua::{Lua, Value};
 
 use crate::layout::node::prop::{Keyword, Prop};
 use crate::layout::node::style::{
-    BackgroundLayer, MAX_BACKGROUNDS, SHADOW_BLUR, SHADOW_REACH, TONE, axis_default, parse_percent, range_of,
+    BackgroundLayer, MAX_BACKGROUNDS, SHADOW_BLUR, SHADOW_REACH, ShaderInput, TONE, axis_default, parse_percent,
+    range_of,
 };
 use crate::layout::node::{
-    Axes, Blend, CornersInput, EdgeInsets, EdgesInput, EffectKeys, Effects, LayoutError, PathCommands, PathData, Rgba,
-    Ring, Shadow, Shadows, Shape, fields, input, invalid, is_layer_list, layer_fill, lua_hex_color, parse_hex_color,
-    tweened, value_as_f32,
+    Axes, Blend, CornersInput, EdgeInsets, EdgesInput, EffectKeys, EffectShader, Effects, LayoutError, PathCommands,
+    PathData, Rgba, Ring, Shadow, Shadows, Shape, fields, input, invalid, is_layer_list, layer_fill, lua_hex_color,
+    parse_hex_color, tweened, value_as_f32,
 };
 use crate::lua::luacats::spelled;
 
@@ -74,19 +75,35 @@ pub enum Animatable {
     Effect([f32; 9], Kept),
 }
 
+/// A parsed `effect.shader` beside its Lua table: `input` and `parsed` decide whether two targets
+/// or keyframes name the same shader (`progress` sits in `Effect`'s float array), while `raw` is
+/// copied back in `to_value` with the tweened `progress`.
+#[derive(Debug)]
+struct KeptShader {
+    raw: Value,
+    input: ShaderInput,
+    parsed: EffectShader,
+}
+
+impl PartialEq for KeptShader {
+    fn eq(&self, other: &Self) -> bool {
+        self.input == other.input && self.parsed == other.parsed
+    }
+}
+
 /// What an `effect` holds that no tween moves. Equal when the shaders are: a mask table the config
 /// builds anew each pass must not restart the tween.
 #[derive(Debug, Clone, Default)]
 pub struct Kept {
-    shader: Option<Value>,
+    shader: Option<Rc<KeptShader>>,
     mask: Option<Value>,
 }
 
 impl PartialEq for Kept {
     fn eq(&self, other: &Self) -> bool {
         match (&self.shader, &other.shader) {
-            (Some(a), Some(b)) => a == b || crate::lua::signal::same_value(a, b),
-            (a, b) => a == b,
+            (Some(a), Some(b)) => Rc::ptr_eq(a, b) || a == b,
+            (a, b) => a.is_none() && b.is_none(),
         }
     }
 }
@@ -167,8 +184,16 @@ impl Animatable {
             ];
             let get = |table: &mlua::Table, key| table.get::<Value>(key).ok().filter(|v| !v.is_nil());
             let table = value.as_table();
+            let shader = match keys.shader {
+                Some(shader) => {
+                    let (input, mut parsed) = shader.parse()?;
+                    parsed.progress = 0.0;
+                    table.and_then(|table| get(table, "shader")).map(|raw| Rc::new(KeptShader { raw, input, parsed }))
+                }
+                None => None,
+            };
             let kept = Kept {
-                shader: table.and_then(|table| get(table, "shader")),
+                shader,
                 mask: table
                     .and_then(|table| get(table, "backdrop"))
                     .and_then(|backdrop| backdrop.as_table().and_then(|table| get(table, "mask"))),
@@ -384,7 +409,7 @@ impl Animatable {
                     backdrop.set("mask", mask.clone())?;
                 }
                 table.set("backdrop", backdrop)?;
-                if let Some(Value::Table(shader)) = &kept.shader {
+                if let Some(Value::Table(shader)) = kept.shader.as_deref().map(|s| &s.raw) {
                     // A copy: the config's own table is not ours to write.
                     let tweened =
                         lua.create_table_from(shader.pairs::<Value, Value>().collect::<mlua::Result<Vec<_>>>()?)?;
@@ -541,6 +566,75 @@ mod tests {
         assert_ne!(shader("/s.frag"), shader("/t.frag"));
         assert_eq!(effect("return { blur = 4 }"), effect("return { blur = 4 }"));
         assert_ne!(effect("return { blur = 4 }"), shader("/s.frag"), "a shader against none");
+
+        // Shared nested tables (`params`, a vector inside `params`, `images`) stay equal across passes (#187).
+        lua.load(r#"SHARED = { k = 1, tint = { 1, 0, 0, 1 } } SHARED_IMGS = { map = "/m.png" }"#).exec().unwrap();
+        let shared = || {
+            effect(r#"return { shader = { source = "/s.frag", progress = 0, params = SHARED, images = SHARED_IMGS } }"#)
+        };
+        assert_eq!(shared(), shared(), "shared params and images tables do not break equality");
+        assert_eq!(
+            shared(),
+            effect(
+                r#"return { shader = { source = "/s.frag", progress = 0.0, params = { k = 1.0, tint = { 1, 0, 0, 1 } }, images = { map = "/m.png" } } }"#
+            ),
+            "equal values match regardless of table identity or int/float distinction"
+        );
+        assert_ne!(
+            shared(),
+            effect(
+                r#"return { shader = { source = "/s.frag", progress = 0, params = { k = 2 }, images = SHARED_IMGS } }"#
+            ),
+            "changed params still differ"
+        );
+        assert_ne!(
+            shared(),
+            effect(
+                r#"return { shader = { source = "/s.frag", progress = 0, params = SHARED, images = { map = "/n.png" } } }"#
+            ),
+            "changed images still differ"
+        );
+        assert_ne!(
+            shader("/s.frag"),
+            effect(r#"return { blur = 4, shader = { source = "/s.frag", input = "backdrop" } }"#),
+            "changed input still differs"
+        );
+        assert_ne!(
+            shader("/s.frag"),
+            effect(r#"return { blur = 4, shader = { source = "/s.frag", padding = 4 } }"#),
+            "changed padding still differs"
+        );
+
+        // `to_value` writes `progress` as a float even when the config omitted it or wrote an integer,
+        // and a mid-tween sample carries the target's `Kept` with a different progress than the target.
+        let bare = shader("/s.frag");
+        let written = bare.to_value(&lua).unwrap();
+        assert_eq!(
+            Animatable::from_value("effect", Some(&written)).unwrap().unwrap(),
+            bare,
+            "round-tripping through to_value keeps equality"
+        );
+        let to = effect(
+            r#"return { shader = { source = "/s.frag", progress = 1, params = SHARED, images = SHARED_IMGS } }"#,
+        );
+        let mid = shared().lerp(&to, 0.5, "effect");
+        let mid_written = mid.to_value(&lua).unwrap();
+        assert_eq!(
+            Animatable::from_value("effect", Some(&mid_written)).unwrap().unwrap(),
+            mid,
+            "a mid-tween sample with non-zero progress round-trips equal"
+        );
+
+        assert!(
+            Animatable::from_value(
+                "effect",
+                Some(
+                    &lua.load(r#"return { shader = { source = "/s.frag", params = { a = "bad" } } }"#).eval().unwrap()
+                )
+            )
+            .is_err(),
+            "bad shader params are refused when parsing an animated effect"
+        );
     }
 
     #[test]

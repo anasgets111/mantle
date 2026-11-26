@@ -17,7 +17,7 @@ mod effect;
 #[cfg(test)]
 pub(crate) use effect::{BackdropKeys, ShaderKeys, ShadowLayer};
 pub use effect::{Blend, Effect, EffectShader, Shadow, Tone, parse_effect};
-pub(crate) use effect::{EffectKeys, Effects, ShadowMode, Shadows};
+pub(crate) use effect::{EffectKeys, Effects, ShaderInput, ShadowMode, Shadows};
 pub(super) use effect::{SHADOW_BLUR, SHADOW_REACH, TONE};
 
 mod transform;

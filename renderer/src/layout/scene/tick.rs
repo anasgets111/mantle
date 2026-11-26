@@ -1939,6 +1939,56 @@ mod tests {
         assert!((shader.progress - 0.25).abs() < 0.01, "and wraps, got {}", shader.progress);
     }
 
+    /// #187: a keyframe run on `effect` whose frames share a `params` table keeps running across
+    /// unrelated re-resolves instead of restarting from its first frame.
+    #[test]
+    fn an_effect_keyframe_run_with_shared_params_does_not_restart_on_unrelated_passes() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r##"local tick = state("tick", 0)
+            local run = state("run", 0)
+            local SHARED = { k = 1 }
+            local function fx(p)
+                return { shader = { source = "/s.frag", progress = p, params = SHARED } }
+            end
+            return panel {
+                id = "bar",
+                child = rect {
+                    width = 200,
+                    height = 100,
+                    children = tick:map(function(n) return { rect { width = 10 + n, height = 10, background = "#ffffff" } } end),
+                    effect = fx(0),
+                    animate = run:map(function(r)
+                        return { effect = { keyframes = { fx(0), fx(10) }, duration = 10000, easing = "linear", run = r } }
+                    end),
+                },
+            }"##,
+        );
+        let apply = |scene: &mut Scene, now: Instant| {
+            lua.set_app_data(crate::lua::timer::SimClock(now));
+            apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        };
+        let t0 = Instant::now();
+        apply(&mut scene, t0);
+        lua.load(r#"state("run", 0):set(1)"#).exec().unwrap();
+        let run_start = t0 + Duration::from_secs(1);
+        apply(&mut scene, run_start);
+        assert_eq!(scene.surface("bar@TEST").unwrap().children[0].tweens[0].started, run_start);
+
+        for step in 1..=3u64 {
+            lua.load(format!(r#"state("tick", 0):set({step})"#)).exec().unwrap();
+            apply(&mut scene, run_start + Duration::from_secs(step));
+            let node = &scene.surface("bar@TEST").unwrap().children[0];
+            assert_eq!(node.tweens[0].started, run_start, "unrelated tick {step} must not restart the run");
+        }
+
+        let instances = [instance_at(&surface, full())];
+        scene.tick(&instances, &shaping, &lua, run_start + Duration::from_secs(4));
+        let shader = scene.surface("bar@TEST").unwrap().children[0].layout_style.effect.shader.as_ref().unwrap();
+        assert!((shader.progress - 4.0).abs() < 0.01, "expected progress 4.0 after 4 s, got {}", shader.progress);
+    }
+
     /// ADR-0261. A `translate` and `scale` loop ticks without a relayout, and the input region
     /// follows it.
     #[test]

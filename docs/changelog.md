@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: a keyframe run or tween on `effect` no longer restarts on unrelated passes when `effect.shader` shares a `params` or `images` table across frames or passes, or after a tween finishes without an explicit `progress`.
 - Fixed: the polkit authentication agent now registers when Mantle starts without `$XDG_SESSION_ID` (such as from a terminal, script or `systemd-run`), via logind's `auto` session lookup; `pkexec` used to fail with no authentication agent.
 - Fixed: `mantle.notifications:set_sound(urgency, "")` clears the configured sound for that urgency tier (a sender's own `sound-file` still plays); an empty path used to raise as a relative path.
 - Fixed: content-sized popups opened from a panel use that panel's output size as their layout bound.

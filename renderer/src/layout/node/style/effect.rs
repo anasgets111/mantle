@@ -249,6 +249,22 @@ lua_shape! {
     }
 }
 
+impl ShaderKeys {
+    /// Parses `params`, `images`, and defaults into the typed shader and its target input.
+    pub(crate) fn parse(self) -> Result<(ShaderInput, EffectShader), LayoutError> {
+        Ok((
+            self.input.unwrap_or_default(),
+            EffectShader {
+                source: self.source,
+                params: parse_shader_params("effect.shader.params", &self.params)?,
+                images: parse_shader_images("effect.shader.images", &self.images)?,
+                padding: self.padding.unwrap_or(0.0),
+                progress: self.progress.unwrap_or(0.0),
+            },
+        ))
+    }
+}
+
 lua_shape! {
     /// `effect`: CSS `filter` for a node.
     #[alias = "Effect"]
@@ -374,14 +390,9 @@ pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
     let backdrop = filters.backdrop.unwrap_or_default();
     let (mut shader, mut backdrop_shader, mut desktop) = (None, None, false);
     if let Some(keys) = filters.shader {
-        let program = Box::new(EffectShader {
-            source: keys.source,
-            params: parse_shader_params("effect.shader.params", &keys.params)?,
-            images: parse_shader_images("effect.shader.images", &keys.images)?,
-            padding: keys.padding.unwrap_or(0.0),
-            progress: keys.progress.unwrap_or(0.0),
-        });
-        match keys.input.unwrap_or_default() {
+        let (input, program) = keys.parse()?;
+        let program = Box::new(program);
+        match input {
             ShaderInput::Content => shader = Some(program),
             ShaderInput::Backdrop => backdrop_shader = Some(program),
             ShaderInput::Desktop => (backdrop_shader, desktop) = (Some(program), true),

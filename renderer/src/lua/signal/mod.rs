@@ -29,7 +29,7 @@ use crate::lua::marshal;
 
 pub(crate) use budget::{CpuBudget, LayoutPassBudget, anchor_cpu_budget, thread_cpu_time};
 pub use dirty::{DirtyFlag, DirtyScope, LiveSignalHandle};
-pub(crate) use equality::same_value;
+use equality::same_value;
 #[cfg(test)]
 pub(crate) use globals::selection_names;
 pub use globals::{

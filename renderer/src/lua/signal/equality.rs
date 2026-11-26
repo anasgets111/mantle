@@ -27,7 +27,7 @@ pub(super) const SAME_TABLE_ENTRIES: usize = 256;
 /// [`same_scalar`], plus two different plain tables (no metatable, scalar keys; scalar or
 /// plain-table values, or the very same function, userdata or thread) equal entry for entry. The same table, anywhere in either, is a change: a
 /// writer that mutated it in place and wrote it again is signalling one.
-pub(crate) fn same_value(a: &Value, b: &Value) -> bool {
+pub(super) fn same_value(a: &Value, b: &Value) -> bool {
     compare(a, b) == Some(true)
 }
 
