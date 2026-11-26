@@ -221,7 +221,7 @@ fn build_node(
     };
     // Outside the node's own offscreen, which holds nothing to read (ADR-0256).
     if let Some(PaintStyle::Box { radius, .. }) = &node.paint
-        && (effect.backdrop > 0.0 || !effect.backdrop_tone.is_identity() || effect.backdrop_shader.is_some())
+        && effect.paints_backdrop()
         && opacity > 0.0
         && (!clip.is_empty() || padded_read)
     {

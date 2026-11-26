@@ -94,6 +94,11 @@ impl Effect {
             || !self.tone.is_identity()
             || self.blend != Blend::Normal
     }
+
+    /// Whether the box paints a visible backdrop pass (blur, colour filter or backdrop shader).
+    pub fn paints_backdrop(&self) -> bool {
+        self.backdrop > 0.0 || !self.backdrop_tone.is_identity() || self.backdrop_shader.is_some()
+    }
 }
 
 /// `effect.shader`: an absolute `.frag` path, its `params`, and `padding` logical px around the box

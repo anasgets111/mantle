@@ -699,4 +699,91 @@ mod tests {
         assert!(app.surfaces[0].last_hover.is_empty());
         assert_eq!(app.lua_log(), ["first:true", "second:false", "x:true", "first:true", "x:false", "second:false"]);
     }
+
+    /// #189. A transparent container over a click-outside catcher passes misses through to the
+    /// sibling beneath it, while a painted card (including `#00000000` or a border) still blocks.
+    #[test]
+    fn a_transparent_container_passes_clicks_outside_its_children_to_lower_siblings() {
+        let click = |app: &mut App, x: f64, y: f64| {
+            app.inject_input(&shared::Inject {
+                surface: "stage".into(),
+                steps: vec![
+                    shared::InputStep::Move { x, y },
+                    shared::InputStep::Press(shared::InputButton::Left),
+                    shared::InputStep::Release(shared::InputButton::Left),
+                ],
+            })
+            .unwrap();
+        };
+        let counts = |app: &App| -> (i64, i64) {
+            app.client.lua().load(r#"return state("outside", 0):get(), state("inside", 0):get()"#).eval().unwrap()
+        };
+
+        // Wrapped hit area (plain and with `hover` on the hit child), plus nested transparent wrapper.
+        for extra_hit in ["", r#"hover = hover("dot"),"#] {
+            let src = format!(
+                r##"
+                local outside, inside = state("outside", 0), state("inside", 0)
+                local hit = rect {{ width = 80, height = 80, translate = {{ x = 100, y = 50 }}, {extra_hit}
+                    on_click = function() inside:set(inside:get() + 1) end }}
+                return panel {{
+                    id = "stage", layer = "overlay", output = "active", width = 400, height = 200,
+                    child = rect {{
+                        width = "fill", height = "fill",
+                        children = {{
+                            rect {{ width = "fill", height = "fill",
+                                on_click = function() outside:set(outside:get() + 1) end }},
+                            rect {{ width = 400, height = 200, children = {{
+                                rect {{ width = 400, height = 200, children = {{ hit }} }},
+                            }} }},
+                        }},
+                    }},
+                }}
+                "##
+            );
+            let (mut app, _dir) = App::test_app(&src);
+            click(&mut app, 140.0, 90.0);
+            click(&mut app, 20.0, 30.0);
+            assert_eq!(counts(&app), (1, 1), "extra_hit={extra_hit:?}");
+        }
+
+        // Solid cards (`background`, `#00000000`, `border_width > 0`, `effect.backdrop`) and explicit
+        // `hittable = true` still block the catcher beneath; a bare `shader` without a handler
+        // passes through like a transparent container.
+        for (over, want_outside, want_inside) in [
+            (r##"rect { width = 100, height = 100, background = "#1e1e2e" }"##, 0, 0),
+            (r##"rect { width = 100, height = 100, background = "#00000000" }"##, 0, 0),
+            (r##"rect { width = 100, height = 100, border_width = 2 }"##, 0, 0),
+            (r##"rect { width = 100, height = 100, effect = { backdrop = { blur = 8 } } }"##, 0, 0),
+            (r##"rect { width = 100, height = 100, effect = { backdrop = { brightness = 0.8 } } }"##, 0, 0),
+            (
+                r##"rect { width = 100, height = 100, hittable = false,
+                    on_click = function() inside:set(inside:get() + 1) end,
+                    children = { rect { width = 100, height = 100, hittable = true } } }"##,
+                0,
+                1,
+            ),
+            (r##"shader { width = 100, height = 100, source = "/tmp/fx.frag" }"##, 1, 0),
+        ] {
+            let src = format!(
+                r##"
+                local outside, inside = state("outside", 0), state("inside", 0)
+                return panel {{
+                    id = "stage", layer = "overlay", output = "active", width = 200, height = 200,
+                    child = rect {{
+                        width = "fill", height = "fill",
+                        children = {{
+                            rect {{ width = "fill", height = "fill",
+                                on_click = function() outside:set(outside:get() + 1) end }},
+                            {over},
+                        }},
+                    }},
+                }}
+                "##
+            );
+            let (mut app, _dir) = App::test_app(&src);
+            click(&mut app, 50.0, 50.0);
+            assert_eq!(counts(&app), (want_outside, want_inside), "{over}");
+        }
+    }
 }

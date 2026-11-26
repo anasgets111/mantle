@@ -249,6 +249,23 @@ pub fn node_local(path: &[&ResolvedNode], point: LogicalPoint) -> Option<Logical
     Some(LogicalPoint { x: x - rect.x, y: y - rect.y })
 }
 
+/// Whether `node` claims the pointer on its own box rather than passing through to lower siblings
+/// when no child hits. Shares [`ResolvedNode::paints_solid`] and [`ResolvedNode::takes_input`] with
+/// `layout::region::overlay_input_regions`, and also keeps explicit `hittable = true`, textfields,
+/// hover/pointer/drop_hover/scroll/cursor targets and named keyboard controls.
+fn claims_hit(node: &ResolvedNode) -> bool {
+    matches!(node.properties.get("hittable"), Some(mlua::Value::Boolean(true)))
+        || node.paints_solid()
+        || node.takes_input()
+        || node.kind == "textfield"
+        || fields::common::hover.read(&node.properties).ok().flatten().is_some()
+        || fields::common::pointer.read(&node.properties).ok().flatten().is_some()
+        || fields::common::drop_hover.read(&node.properties).ok().flatten().is_some()
+        || fields::common::cursor.read(&node.properties).ok().flatten().is_some()
+        || crate::layout::node::signal_at(&node.properties, "scroll").is_some()
+        || crate::layout::scene::is_named_control(node)
+}
+
 fn descend<'a>(
     node: &'a ResolvedNode,
     point: LogicalPoint,
@@ -280,7 +297,7 @@ fn descend<'a>(
         Some(PaintStyle::Box { radius, .. }) => radius.contains(rect, point),
         _ => rect.contains(point),
     };
-    let inside = hittable && contains;
+    let inside = hittable && contains && (path.is_empty() || claims_hit(node));
     // Children are cut where paint cuts them: to the box under `clip = "box"`, else to the shape.
     let cuts_to_box = matches!(&node.paint, Some(PaintStyle::Box { clip: ClipShape::Box, .. }));
     let reach = !node.clips_children() || if cuts_to_box { rect.contains(point) } else { contains };
@@ -305,6 +322,17 @@ pub(crate) mod tests {
 
     // ---- cursor_under (ADR-0107) ----
 
+    fn solid(kind: &'static str, rect: (f32, f32, f32, f32), children: Vec<ResolvedNode>) -> ResolvedNode {
+        let mut node = ResolvedNode::test(kind, rect, children).with_clip(ClipShape::None);
+        if let Some(PaintStyle::Box { background, .. }) = &mut node.paint {
+            background.push((
+                crate::layout::node::Fill::Color(crate::layout::node::Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }),
+                crate::layout::node::Blend::Normal,
+            ));
+        }
+        node
+    }
+
     fn with(mut node: ResolvedNode, key: &'static str, value: Value) -> ResolvedNode {
         std::rc::Rc::make_mut(&mut node.properties).insert(key, value);
         node
@@ -319,11 +347,8 @@ pub(crate) mod tests {
     /// through the same inverse.
     #[test]
     fn a_scaled_node_takes_the_pointer_where_it_is_painted() {
-        let mut scaled = ResolvedNode::test(
-            "column",
-            (100.0, 100.0, 20.0, 20.0),
-            vec![ResolvedNode::test("rect", (0.0, 0.0, 10.0, 20.0), vec![])],
-        );
+        let mut scaled =
+            solid("column", (100.0, 100.0, 20.0, 20.0), vec![solid("rect", (0.0, 0.0, 10.0, 20.0), vec![])]);
         scaled.transform.scale = (2.0, 2.0);
         let tree = ResolvedNode::test("panel", (0.0, 0.0, 400.0, 400.0), vec![scaled]);
         // Inside the painted box (90..130), outside the laid-out one (100..120).
@@ -332,7 +357,7 @@ pub(crate) mod tests {
         assert_eq!(path[2].kind, "rect");
         assert_eq!(hit_path(&tree, LogicalPoint { x: 125.0, y: 105.0 }).len(), 2, "the right half has no child");
         assert_eq!(hit_path(&tree, LogicalPoint { x: 135.0, y: 105.0 }).len(), 1, "past the painted box");
-        let mut flat = ResolvedNode::test("column", (100.0, 100.0, 20.0, 20.0), vec![]);
+        let mut flat = solid("column", (100.0, 100.0, 20.0, 20.0), vec![]);
         flat.transform.scale = (0.0, 1.0);
         let tree = ResolvedNode::test("panel", (0.0, 0.0, 400.0, 400.0), vec![flat]);
         assert_eq!(hit_path(&tree, LogicalPoint { x: 110.0, y: 110.0 }).len(), 1, "a zero scale takes nothing");
@@ -341,9 +366,9 @@ pub(crate) mod tests {
     /// A translated child is hit only inside its clipping parent's own box, as paint cuts it there.
     #[test]
     fn a_translated_child_is_not_hit_past_its_clipping_parent() {
-        let mut child = ResolvedNode::test("rect", (0.0, 0.0, 100.0, 20.0), vec![]);
+        let mut child = solid("rect", (0.0, 0.0, 100.0, 20.0), vec![]);
         child.transform.translate = (50.0, 0.0);
-        let parent = ResolvedNode::test("column", (0.0, 0.0, 100.0, 20.0), vec![child]).with_clip(ClipShape::Box);
+        let parent = solid("column", (0.0, 0.0, 100.0, 20.0), vec![child]).with_clip(ClipShape::Box);
         let root = ResolvedNode::test("panel", (0.0, 0.0, 300.0, 20.0), vec![parent]);
         assert_eq!(hit_path(&root, LogicalPoint { x: 80.0, y: 10.0 }).len(), 3);
         assert_eq!(hit_path(&root, LogicalPoint { x: 120.0, y: 10.0 }).len(), 1);
@@ -354,7 +379,7 @@ pub(crate) mod tests {
     #[test]
     fn a_shape_is_hit_inside_its_contour_and_its_tail() {
         let bubble = |clip, shape| {
-            let mut bubble = ResolvedNode::test("rect", (16.0, 16.0, 32.0, 32.0), vec![]).with_clip(clip);
+            let mut bubble = solid("rect", (16.0, 16.0, 32.0, 32.0), vec![]).with_clip(clip);
             if let Some(PaintStyle::Box { radius, .. }) = &mut bubble.paint {
                 radius.2 = Some(shape);
             }
@@ -381,8 +406,8 @@ pub(crate) mod tests {
     #[test]
     fn a_child_in_a_shapes_tail_is_hit_only_where_paint_draws_it() {
         let bubble = |clip| {
-            let child = ResolvedNode::test("rect", (0.0, 0.0, 32.0, 40.0), vec![]);
-            let mut bubble = ResolvedNode::test("rect", (16.0, 16.0, 32.0, 32.0), vec![child]).with_clip(clip);
+            let child = solid("rect", (0.0, 0.0, 32.0, 40.0), vec![]);
+            let mut bubble = solid("rect", (16.0, 16.0, 32.0, 32.0), vec![child]).with_clip(clip);
             if let Some(PaintStyle::Box { radius, .. }) = &mut bubble.paint {
                 radius.2 = Some(crate::layout::node::shape::tail());
             }
@@ -397,11 +422,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_moving_parent_takes_the_pointer_with_its_child() {
-        let mut parent = ResolvedNode::test(
-            "column",
-            (10.0, 10.0, 30.0, 20.0),
-            vec![ResolvedNode::test("rect", (5.0, 2.0, 10.0, 10.0), vec![])],
-        );
+        let mut parent = solid("column", (10.0, 10.0, 30.0, 20.0), vec![solid("rect", (5.0, 2.0, 10.0, 10.0), vec![])]);
         parent.movement = Some(Box::new(MoveTween::test((20.0, 0.0))));
         let root = ResolvedNode::test("panel", (0.0, 0.0, 100.0, 50.0), vec![parent]);
         assert_eq!(hit_path(&root, LogicalPoint { x: 36.0, y: 15.0 }).len(), 3);
@@ -412,9 +433,9 @@ pub(crate) mod tests {
     #[test]
     fn the_higher_z_sibling_takes_the_pointer_where_siblings_overlap() {
         let tree = |z: f32| {
-            let mut first = ResolvedNode::test("column", (0.0, 0.0, 20.0, 20.0), vec![]);
+            let mut first = solid("column", (0.0, 0.0, 20.0, 20.0), vec![]);
             first.z = z;
-            let second = ResolvedNode::test("rect", (10.0, 0.0, 20.0, 20.0), vec![]);
+            let second = solid("rect", (10.0, 0.0, 20.0, 20.0), vec![]);
             ResolvedNode::test("panel", (0.0, 0.0, 400.0, 400.0), vec![first, second])
         };
         let top = |tree: &ResolvedNode| hit_path(tree, LogicalPoint { x: 15.0, y: 5.0 }).last().unwrap().kind;
@@ -427,8 +448,8 @@ pub(crate) mod tests {
     #[test]
     fn a_child_overflowing_an_unclipped_parent_is_hit_where_it_paints() {
         let parent = |clip| {
-            let child = ResolvedNode::test("rect", (30.0, 0.0, 10.0, 10.0), vec![]);
-            let column = ResolvedNode::test("column", (0.0, 0.0, 20.0, 20.0), vec![child]).with_clip(clip);
+            let child = solid("rect", (30.0, 0.0, 10.0, 10.0), vec![]);
+            let column = solid("column", (0.0, 0.0, 20.0, 20.0), vec![child]).with_clip(clip);
             ResolvedNode::test("panel", (0.0, 0.0, 400.0, 400.0), vec![column])
         };
         let tree = parent(ClipShape::None);
@@ -876,11 +897,7 @@ pub(crate) mod tests {
         let root = ResolvedNode::test(
             "panel",
             (0.0, 0.0, 100.0, 32.0),
-            vec![ResolvedNode::test(
-                "row",
-                (40.0, 0.0, 60.0, 32.0),
-                vec![ResolvedNode::test("column", (10.0, 4.0, 20.0, 24.0), vec![])],
-            )],
+            vec![solid("row", (40.0, 0.0, 60.0, 32.0), vec![solid("column", (10.0, 4.0, 20.0, 24.0), vec![])])],
         );
         assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 55.0, y: 10.0 })), ["panel", "row", "column"]);
         assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 15.0, y: 10.0 })), ["panel"]);
@@ -891,11 +908,7 @@ pub(crate) mod tests {
         let root = ResolvedNode::test(
             "panel",
             (0.0, 0.0, 100.0, 32.0),
-            vec![ResolvedNode::test(
-                "row",
-                (40.0, 2.0, 60.0, 30.0),
-                vec![ResolvedNode::test("column", (10.0, 4.0, 20.0, 24.0), vec![])],
-            )],
+            vec![solid("row", (40.0, 2.0, 60.0, 30.0), vec![solid("column", (10.0, 4.0, 20.0, 24.0), vec![])])],
         );
         let path = hit_path(&root, LogicalPoint { x: 55.0, y: 10.0 });
         assert_eq!(absolute_rect(&path), Some(LogicalRect { x: 50.0, y: 6.0, width: 20.0, height: 24.0 }));
@@ -905,11 +918,7 @@ pub(crate) mod tests {
 
     #[test]
     fn an_invisible_node_takes_its_whole_visible_subtree_out_of_the_path() {
-        let mut hidden = ResolvedNode::test(
-            "row",
-            (0.0, 0.0, 100.0, 32.0),
-            vec![ResolvedNode::test("column", (10.0, 4.0, 20.0, 24.0), vec![])],
-        );
+        let mut hidden = solid("row", (0.0, 0.0, 100.0, 32.0), vec![solid("column", (10.0, 4.0, 20.0, 24.0), vec![])]);
         hidden.visible = false;
         let root = ResolvedNode::test("panel", (0.0, 0.0, 100.0, 32.0), vec![hidden]);
         assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 15.0, y: 10.0 })), ["panel"]);
@@ -922,16 +931,23 @@ pub(crate) mod tests {
             node
         };
         let tree = |over: ResolvedNode| {
-            let under = ResolvedNode::test("under", (0.0, 0.0, 50.0, 32.0), vec![]);
+            let under = solid("under", (0.0, 0.0, 50.0, 32.0), vec![]);
             ResolvedNode::test("panel", (0.0, 0.0, 100.0, 32.0), vec![under, over])
         };
         let at = LogicalPoint { x: 25.0, y: 16.0 };
-        let child = || ResolvedNode::test("child", (0.0, 0.0, 50.0, 32.0), vec![]);
-        let layer = ResolvedNode::test("over", (0.0, 0.0, 50.0, 32.0), vec![child()]);
+        let child = || solid("child", (0.0, 0.0, 50.0, 32.0), vec![]);
+        let layer = solid("over", (0.0, 0.0, 50.0, 32.0), vec![child()]);
         assert_eq!(kinds(&hit_path(&tree(layer.clone()), at)), ["panel", "over", "child"], "default");
         assert_eq!(kinds(&hit_path(&tree(set(layer.clone(), false)), at)), ["panel", "under"], "subtree skipped");
-        let revived = ResolvedNode::test("over", (0.0, 0.0, 50.0, 32.0), vec![set(child(), true)]);
+        let revived = solid("over", (0.0, 0.0, 50.0, 32.0), vec![set(child(), true)]);
         assert_eq!(kinds(&hit_path(&tree(set(revived, false)), at)), ["panel", "over", "child"], "child re-enables");
+        let bare = ResolvedNode::test("child", (0.0, 0.0, 50.0, 32.0), vec![]);
+        let bare_revived = solid("over", (0.0, 0.0, 50.0, 32.0), vec![set(bare, true)]);
+        assert_eq!(
+            kinds(&hit_path(&tree(set(bare_revived, false)), at)),
+            ["panel", "over", "child"],
+            "unpainted child with explicit hittable = true re-enables"
+        );
         assert!(hit_path(&set(tree(layer), false), at).is_empty(), "a root opts the surface out");
     }
 
@@ -940,10 +956,7 @@ pub(crate) mod tests {
         let root = ResolvedNode::test(
             "panel",
             (0.0, 0.0, 100.0, 32.0),
-            vec![
-                ResolvedNode::test("left", (0.0, 0.0, 50.0, 32.0), vec![]),
-                ResolvedNode::test("right", (50.0, 0.0, 50.0, 32.0), vec![]),
-            ],
+            vec![solid("left", (0.0, 0.0, 50.0, 32.0), vec![]), solid("right", (50.0, 0.0, 50.0, 32.0), vec![])],
         );
         assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 49.9, y: 16.0 })), ["panel", "left"]);
         assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 50.0, y: 16.0 })), ["panel", "right"]);
@@ -954,12 +967,47 @@ pub(crate) mod tests {
         let root = ResolvedNode::test(
             "panel",
             (0.0, 0.0, 100.0, 32.0),
-            vec![
-                ResolvedNode::test("empty", (10.0, 10.0, 0.0, 12.0), vec![]),
-                ResolvedNode::test("flat", (30.0, 10.0, 12.0, 0.0), vec![]),
-            ],
+            vec![solid("empty", (10.0, 10.0, 0.0, 12.0), vec![]), solid("flat", (30.0, 10.0, 12.0, 0.0), vec![])],
         );
         assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 10.0, y: 10.0 })), ["panel"]);
         assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 30.0, y: 10.0 })), ["panel"]);
+    }
+
+    /// #189. A bare transparent container passes misses through to siblings underneath, while
+    /// keeping itself on the path when a child hits; a transparent container with an input, hover,
+    /// pointer, drop_hover, scroll, cursor or named-control property still claims its box.
+    #[test]
+    fn a_transparent_container_only_blocks_siblings_where_its_children_or_own_properties_claim_input() {
+        let lua = mlua::Lua::new();
+        let child = with(ResolvedNode::test("hit", (80.0, 0.0, 20.0, 20.0), vec![]), "on_click", function(&lua));
+        let wrapper = ResolvedNode::test("wrap", (0.0, 0.0, 100.0, 20.0), vec![child]);
+        let under = with(ResolvedNode::test("under", (0.0, 0.0, 100.0, 20.0), vec![]), "on_click", function(&lua));
+        let root = ResolvedNode::test("panel", (0.0, 0.0, 100.0, 20.0), vec![under.clone(), wrapper]);
+        assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 90.0, y: 10.0 })), ["panel", "wrap", "hit"]);
+        assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 10.0, y: 10.0 })), ["panel", "under"]);
+
+        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let (scroll, ptr, drop_h): (Value, Value, Value) =
+            lua.load(r#"return scroll("s"), pointer("p"), drop_hover("d")"#).eval().unwrap();
+        let control = with(
+            with(ResolvedNode::test("ctrl", (0.0, 0.0, 100.0, 20.0), vec![]), "on_key", function(&lua)),
+            "accessible_name",
+            Value::String(lua.create_string("Grid").unwrap()),
+        );
+        for over in [
+            with(ResolvedNode::test("scroll", (0.0, 0.0, 100.0, 20.0), vec![]), "scroll", scroll),
+            with(ResolvedNode::test("ptr", (0.0, 0.0, 100.0, 20.0), vec![]), "pointer", ptr),
+            with(ResolvedNode::test("drop", (0.0, 0.0, 100.0, 20.0), vec![]), "drop_hover", drop_h),
+            with(
+                ResolvedNode::test("cur", (0.0, 0.0, 100.0, 20.0), vec![]),
+                "cursor",
+                Value::String(lua.create_string("grab").unwrap()),
+            ),
+            control,
+        ] {
+            let want = over.kind;
+            let root = ResolvedNode::test("panel", (0.0, 0.0, 100.0, 20.0), vec![under.clone(), over]);
+            assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 10.0, y: 10.0 })), ["panel", want]);
+        }
     }
 }

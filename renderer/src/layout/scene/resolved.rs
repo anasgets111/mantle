@@ -382,6 +382,37 @@ impl ResolvedNode {
         self.takes_pointer() || matches!(self.properties.get("on_drop"), Some(Value::Function(_)))
     }
 
+    /// Whether this node draws solid content that claims its box for input regions and hit testing:
+    /// a box with a `background` (`#00000000` included), non-zero `border_width` or backdrop effect,
+    /// a filled or stroked `path` with a drawing segment, or any painted leaf (`text`, `icon`,
+    /// `image`, `capture`, `textfield`). A transparent container and a `shader` (ADR-0253) claim
+    /// nothing without an input property.
+    pub fn paints_solid(&self) -> bool {
+        match &self.paint {
+            Some(PaintStyle::Box { background, widths, .. }) => {
+                !background.is_empty()
+                    || [widths.top, widths.right, widths.bottom, widths.left].iter().any(|w| *w > 0.0)
+                    || self.layout_style.effect.paints_backdrop()
+            }
+            Some(PaintStyle::Path(path)) => {
+                (path.fill.is_some() || path.stroke.is_some() && path.stroke_width > 0.0)
+                    && path.commands.segments.iter().any(|segment| {
+                        matches!(
+                            segment.op,
+                            node::PathOp::L
+                                | node::PathOp::Q
+                                | node::PathOp::C
+                                | node::PathOp::A
+                                | node::PathOp::Corner
+                        )
+                    })
+            }
+            // Its alpha is the GPU's to know; a config gives it a pointer handler for a hit area (ADR-0253).
+            Some(PaintStyle::Shader { .. }) | None => false,
+            Some(_) => true,
+        }
+    }
+
     /// Whether this node's own `animate` tweens or `move` are running, not its children's.
     pub(in crate::layout) fn tweening(&self) -> bool {
         self.tweens.iter().any(|tween| !tween.resting) || self.movement.is_some()

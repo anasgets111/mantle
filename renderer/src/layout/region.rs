@@ -370,30 +370,7 @@ fn collect_input_regions(
 /// draws a transparent rectangle where an absent one draws nothing, and a config that wrote it
 /// asked for a box.
 fn takes_input_as_a_box(node: &ResolvedNode, paint_claims: bool) -> bool {
-    let paints = paint_claims
-        && match &node.paint {
-            Some(PaintStyle::Box { background, widths, .. }) => {
-                !background.is_empty()
-                    || [widths.top, widths.right, widths.bottom, widths.left].iter().any(|w| *w > 0.0)
-            }
-            Some(PaintStyle::Path(path)) => {
-                (path.fill.is_some() || path.stroke.is_some() && path.stroke_width > 0.0)
-                    && path.commands.segments.iter().any(|segment| {
-                        matches!(
-                            segment.op,
-                            node::PathOp::L
-                                | node::PathOp::Q
-                                | node::PathOp::C
-                                | node::PathOp::A
-                                | node::PathOp::Corner
-                        )
-                    })
-            }
-            // Its alpha is the GPU's to know; a config gives it a pointer handler for a hit area (ADR-0253).
-            Some(PaintStyle::Shader { .. }) | None => false,
-            Some(_) => true,
-        };
-    paints || node.takes_input()
+    (paint_claims && node.paints_solid()) || node.takes_input()
 }
 
 #[cfg(test)]
