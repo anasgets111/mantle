@@ -89,7 +89,7 @@
 ---@field gravity? PopupAnchor|Bound Default `"center"`. The direction it extends from that point: `"bottom"` hangs it below, `"bottom_right"` below and to the right.
 ---@field constraint_adjustment? ("slide_x"|"slide_y"|"flip_x"|"flip_y"|"resize_x"|"resize_y")[]|Bound Default `{ "flip_y", "slide_x" }`. How the compositor may keep it on screen; `{}` for none, order is ignored.
 ---@field offset? { x?: number, y?: number, [string]: "no such property" }|Bound Default `{ x = 0, y = 0 }`. Pixel nudge after `anchor` and `gravity`; an absent axis is `0`, negative moves up or left.
----@field width? number|Bound Default: content. Pixels in `(0, 8192]`; no `"fill"` or `%`. Omitted sizes to the content, capped at the first output's size and the root's `max_width`/`max_height`; an open popup follows it through `xdg_popup.reposition` (xdg-shell v3+).
+---@field width? number|Bound Default: content. Pixels in `(0, 8192]`; no `"fill"` or `%`. Omitted sizes to the content, bounded by the parent panel's output (the first output if unknown) and the root's `max_width`/`max_height`; an open popup follows it through `xdg_popup.reposition` (xdg-shell v3+).
 ---@field height? number|Bound Default: content. As `width`; each axis is independent.
 ---@field grab? boolean|Bound Default `true`. Takes an input grab so an outside click dismisses it; it needs a click to grab from, and a denied grab dismisses the popup. `false` for a hover tooltip.
 ---@field on_dismiss? fun() Closed by a click outside it (on another app or another shell surface), a denied grab, or its parent going away; not called when the config hides it. Set `visible = false` here, or it reopens on the next click (ADR-0051).

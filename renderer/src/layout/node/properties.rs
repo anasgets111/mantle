@@ -735,7 +735,7 @@ props! {
         constraint_adjustment: Bound<ConstraintAdjustment> = absent(Lua(r#"{ "flip_y", "slide_x" }"#));
         /// Pixel nudge after `anchor` and `gravity`; an absent axis is `0`, negative moves up or left.
         offset: Bound<PopupOffset> = absent(Lua("{ x = 0, y = 0 }"));
-        /// Pixels in `(0, 8192]`; no `"fill"` or `%`. Omitted sizes to the content, capped at the first output's size and the root's `max_width`/`max_height`; an open popup follows it through `xdg_popup.reposition` (xdg-shell v3+).
+        /// Pixels in `(0, 8192]`; no `"fill"` or `%`. Omitted sizes to the content, bounded by the parent panel's output (the first output if unknown) and the root's `max_width`/`max_height`; an open popup follows it through `xdg_popup.reposition` (xdg-shell v3+).
         width: Bound<PopupExtent> = absent(Prose("content"));
         /// As `width`; each axis is independent.
         height: Bound<PopupExtent> = absent(Prose("content"));

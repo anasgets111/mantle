@@ -141,6 +141,52 @@ impl RendererClient {
         passed
     }
 
+    /// A popup's parent is known only at open. Resolve just that instance so a grab can use the
+    /// arming serial in the same turn, without consuming other surfaces' pending work.
+    pub fn resolve_popup_bounds(&mut self, id: &str, axes: (bool, bool), ceiling: crate::layout::LogicalSize) -> bool {
+        let Some(instance) = self.instances.iter_mut().find(|instance| instance.instance_id == id) else {
+            return false;
+        };
+        let mut bounded = instance.clone();
+        if axes.0 {
+            bounded.available.width = ceiling.width;
+        }
+        if axes.1 {
+            bounded.available.height = ceiling.height;
+        }
+        if bounded.available == instance.available {
+            return true;
+        }
+        let Some(output) = self.state.applied_output.as_ref() else {
+            return false;
+        };
+        let lua = self.loader.lua();
+        let memo = lua::signal::EvaluationMemo::resume(lua);
+        let result = self.scene.apply_locked(
+            &output.surfaces,
+            std::slice::from_ref(&bounded),
+            &self.shaping,
+            lua,
+            self.holds_session_lock,
+            false,
+        );
+        drop(memo);
+        match result {
+            Ok(warning) => {
+                if let Some(warning) = warning {
+                    warn!("{id}: {warning}");
+                }
+                *instance = bounded;
+                self.mark_layout_readers();
+                true
+            }
+            Err(err) => {
+                warn!("{id}: could not measure popup for its parent: {err}");
+                false
+            }
+        }
+    }
+
     fn pass_if_dirty(&mut self) -> bool {
         // Every writer of this turn has returned, so no handler runs inside one (ADR-0288).
         lua::signal::run_state_handlers(self.loader.lua());

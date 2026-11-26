@@ -88,7 +88,7 @@ Beyond the [shared properties](index.md#properties-every-role-takes). Every fiel
 | `gravity` | `"top"\|"bottom"\|"left"\|"right"\|"top_left"\|"top_right"\|"bottom_left"\|"bottom_right"\|"center"\|Bound` | `"center"` | The direction it extends from that point: `"bottom"` hangs it below, `"bottom_right"` below and to the right |
 | `constraint_adjustment` | `("slide_x"\|"slide_y"\|"flip_x"\|"flip_y"\|"resize_x"\|"resize_y")[]\|Bound` | `{ "flip_y", "slide_x" }` | How the compositor may keep it on screen; `{}` for none, order is ignored |
 | `offset` | `{ x?: number, y?: number }\|Bound` | `{ x = 0, y = 0 }` | Pixel nudge after `anchor` and `gravity`; an absent axis is `0`, negative moves up or left |
-| `width` | `number\|Bound` | Content | Pixels in `(0, 8192]`; no `"fill"` or `%`. Omitted sizes to the content, capped at the first output's size and the root's `max_width`/`max_height`; an open popup follows it through `xdg_popup.reposition` (xdg-shell v3+) |
+| `width` | `number\|Bound` | Content | Pixels in `(0, 8192]`; no `"fill"` or `%`. Omitted sizes to the content, bounded by the parent panel's output (the first output if unknown) and the root's `max_width`/`max_height`; an open popup follows it through `xdg_popup.reposition` (xdg-shell v3+) |
 | `height` | `number\|Bound` | Content | As `width`; each axis is independent |
 | `grab` | `boolean\|Bound` | `true` | Takes an input grab so an outside click dismisses it ([grab](#grab)). `false` for a tooltip |
 | `on_dismiss` | `fun()` | None | Closed by a click outside it (on another app or another shell surface), a denied grab, or its parent going away; not called when the config hides it. Set `visible = false` here, or it reopens on the next click |

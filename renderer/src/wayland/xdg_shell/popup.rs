@@ -227,21 +227,7 @@ impl App {
             return;
         };
         let spec = spec.clone();
-        let placement = Placement::of(&spec, *requested).within_geometry_of(self.parent_origin(&spec.parent));
-
-        // Nothing measured on a `Content` axis yet, so there is no size to ask for. Decline and
-        // let the next pass open it, rather than inventing one the surface would then cut.
-        if !placement.is_measured() {
-            if self.refusal_is_new(index, PopupRefusal::Unmeasured) {
-                warn!(
-                    "{surface_id}: sized {:?}, so it is not opened yet. An omitted `width`/`height` \
-                     is measured off the resolved tree, and this one has measured nothing on that axis. \
-                     Logged once until it opens or `visible` resolves false.",
-                    placement.size
-                );
-            }
-            return;
-        }
+        let mut requested = *requested;
 
         // Refuse before creating protocol objects.
         let grab = if spec.grab {
@@ -302,6 +288,34 @@ impl App {
             return;
         }
 
+        let axes = (spec.width == node::SizeMode::Content, spec.height == node::SizeMode::Content);
+        if (axes.0 || axes.1)
+            && let Some(ceiling) = self.popup_parent_output_size(&parent_id).or_else(|| {
+                super::super::output::geometries_from(&self.screens(None)).first().map(|output| output.size)
+            })
+        {
+            if !self.client.resolve_popup_bounds(&surface_id, axes, ceiling) {
+                return;
+            }
+            if let Some(tree) = self.client.scene().surface(&surface_id) {
+                requested = crate::wayland::surface::popup_requested_size(&spec, tree.rect);
+            }
+        }
+        let placement = Placement::of(&spec, requested).within_geometry_of(self.parent_origin(&spec.parent));
+        // Nothing measured on a `Content` axis yet, so there is no size to ask for. Decline and
+        // let the next pass open it, rather than inventing one the surface would then cut.
+        if !placement.is_measured() {
+            if self.refusal_is_new(index, PopupRefusal::Unmeasured) {
+                warn!(
+                    "{surface_id}: sized {:?}, so it is not opened yet. An omitted `width`/`height` \
+                     is measured off the resolved tree, and this one has measured nothing on that axis. \
+                     Logged once until it opens or `visible` resolves false.",
+                    placement.size
+                );
+            }
+            return;
+        }
+
         if grab.is_some()
             && let Some(parent) = parent_index
         {
@@ -342,17 +356,36 @@ impl App {
             "{surface_id} creating: visible = true, anchored to {parent_id}, grab {}",
             if grab.is_some() { "taken" } else { "not requested" }
         );
-        if let TrackedRole::Popup { popup: slot, parent_id: parent_slot, refusal_logged, positioned, .. } =
-            &mut self.surfaces[index].role
+        if let TrackedRole::Popup {
+            popup: slot,
+            parent_id: parent_slot,
+            requested: requested_slot,
+            refusal_logged,
+            positioned,
+            ..
+        } = &mut self.surfaces[index].role
         {
             *slot = Some(popup);
             *parent_slot = Some(parent_id);
+            *requested_slot = requested;
             *refusal_logged = None;
             // What this popup's positioner now holds. Every later pass compares against it.
             *positioned = Some(placement);
         }
         self.surfaces[index].scale = scale;
         self.surfaces[index].map_state = MapState::AwaitingConfigure;
+    }
+
+    /// Nested popups inherit the output of the panel their chain opened on.
+    fn popup_parent_output_size<'a>(&'a self, mut parent_id: &'a str) -> Option<layout::LogicalSize> {
+        while let Some(parent) = self.surfaces.iter().find(|surface| surface.surface_id == parent_id) {
+            match &parent.role {
+                TrackedRole::Panel { output_size, .. } => return Some(*output_size),
+                TrackedRole::Popup { parent_id: Some(id), .. } => parent_id = id,
+                _ => break,
+            }
+        }
+        None
     }
 
     /// Where `parent`'s window geometry starts in its buffer: a `geometry_inset` window's (left, top), else zero.
@@ -739,7 +772,7 @@ mod tests {
         let (mut app, dir) = App::test_app(source);
         let outputs = [
             OutputGeometry { name: "eDP-1".into(), size: layout::LogicalSize { width: 1920.0, height: 1080.0 } },
-            OutputGeometry { name: "DP-1".into(), size: layout::LogicalSize { width: 1920.0, height: 1080.0 } },
+            OutputGeometry { name: "DP-1".into(), size: layout::LogicalSize { width: 960.0, height: 540.0 } },
         ];
         let specs = app.client.applied_surface_specs();
         let instances = expand_instances(&specs, &outputs);
@@ -868,6 +901,39 @@ mod tests {
         app.drop_role_object(idx(&app, "bar@DP-1"));
         for id in ["menu", "submenu", "tip"] {
             assert_eq!(popup_state(&app, id), (false, None, None, None), "{id} closed without latching");
+        }
+    }
+
+    #[test]
+    fn content_popup_measures_against_the_selected_panels_output_on_each_open() {
+        let (mut app, _dir) = two_output_app(
+            r#"open = state("open", false)
+            return {
+                panel { id = "bar", layer = "top", output = "all", height = 32 },
+                popup { id = "menu", parent = "bar", anchor_rect = { x = 0, y = 0, width = 10, height = 10 },
+                    height = 120, grab = false, visible = open,
+                    child = text { wrap = "word", content = string.rep("wide menu label ", 80) } },
+            }"#,
+        );
+        for (parent, min_width, max_width) in [("bar@DP-1", 900.0, 960.0), ("bar@eDP-1", 1800.0, 1920.0)] {
+            let panel = idx(&app, parent);
+            app.set_surface_size(panel, (800, 32));
+            app.map_on_configure(panel);
+            app.input_serial = Some(ArmedSerial { serial: 1, instance_id: parent.into() });
+            app.client.lua().load("open:set(true)").exec().unwrap();
+            assert!(app.client.re_resolve_if_dirty());
+            app.apply_resolved_surface_state();
+
+            assert_eq!(popup_state(&app, "menu").1.as_deref(), Some(parent));
+            let menu = idx(&app, "menu");
+            let TrackedRole::Popup { positioned: Some(placement), .. } = &app.surfaces[menu].role else {
+                panic!("menu has no positioner");
+            };
+            assert!((min_width..=max_width).contains(&placement.size.0), "{parent}: {:?}", placement.size);
+            assert_eq!(placement.size.1, 120.0);
+            app.client.lua().load("open:set(false)").exec().unwrap();
+            assert!(app.client.re_resolve_if_dirty());
+            app.apply_resolved_surface_state();
         }
     }
 
