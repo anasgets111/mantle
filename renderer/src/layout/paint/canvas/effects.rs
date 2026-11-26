@@ -1762,6 +1762,16 @@ mod tests {
             return;
         };
         assert_eq!(px.iter().copied().map(inside).collect::<Vec<_>>(), [true, false, false, false], "holes: {px:?}");
+        // #182: melted islands and voids both reach `mantle_sdf`.
+        let (red, black) = ((255, 0, 0, 255), (0, 0, 0, 255));
+        let ring = format!("width = 48, height = 48, shape = {}", crate::layout::node::melt::RING);
+        let Some(px) = paint_shader(frag, "padding = 4", &ring, &[(20, 40), (40, 40), (60, 40)]) else { return };
+        assert_eq!(px, [red, black, red], "melt ring");
+        let blobs = "width = 48, height = 48, shape = { melt = 4, parts = { \
+            { left = 0, top = 16, right = 16, bottom = 32, radius = 8 }, \
+            { left = 32, top = 16, right = 48, bottom = 32, radius = 8 } } }";
+        let Some(px) = paint_shader(frag, "padding = 4", blobs, &[(24, 40), (40, 40), (56, 40)]) else { return };
+        assert_eq!(px, [red, black, red], "melt blobs");
     }
 
     /// ADR-0336. A shader that does not build leaves the node as painted.

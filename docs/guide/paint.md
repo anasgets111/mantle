@@ -280,8 +280,8 @@ their regions as two. In the frame where two blobs first touch, the neck between
 a point, as in any metaball. Parts that ring a hole leave it empty: the fill, clicks and an inset
 shadow skip it, and a border bands its edge from the parts' side. A part shows from a quarter pixel
 across and grows from there, so a 2 px divider draws. The outline is cut 1024 px outside the box.
-`mantle_sdf` measures only the biggest outline, so a hole reads as inside and the other blobs
-as outside.
+`mantle_sdf` follows every island and hole of a melt, as it does a shape with holes, within the
+same 256-point and 42-loop budget.
 
 <!-- shot-alt: Left, a dark panel whose top-left corner swells into a blue-bordered circle tab, then shrinks into the tab and grows back. Right, two lilac bubbles drift together, fuse through a smooth neck and part again. -->
 <!-- shot: frames=0..1500/100 -->

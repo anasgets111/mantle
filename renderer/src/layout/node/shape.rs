@@ -172,7 +172,7 @@ pub const SDF_POINTS: usize = 256;
 const SDF_BREAK: Point = Point::new(1e9, 1e9);
 
 /// The loops `mantle_shape` holds: four vertices, a closing one and a break each.
-const SDF_LOOPS: usize = SDF_POINTS / 6;
+pub(super) const SDF_LOOPS: usize = SDF_POINTS / 6;
 
 impl Shape {
     /// The outline of a box at `rect`, each placed coordinate held to [`COORD_MAX`]. Holes subtract
@@ -246,10 +246,8 @@ impl Shape {
 
     /// At most [`SDF_POINTS`] vertices, all `mantle_shape` holds, whatever the kind: one loop as is,
     /// or each of several closed and ended by [`SDF_BREAK`].
-    /// ponytail: a melt gives its biggest loop, so blobs past it and voids read as outside and inside;
-    /// more needs its loops passed here.
     pub fn sdf_polygon(&self, rect: LogicalRect) -> Vec<Point> {
-        let loops = if let Self::Melt(melt) = self { vec![melt.sdf_loop(rect)] } else { self.contour_sdf(rect) };
+        let loops = if let Self::Melt(melt) = self { melt.sdf_loops(rect) } else { self.contour_sdf(rect) };
         if loops.is_empty() {
             // Holes over the whole outline: a lone break, every edge skipped, so nothing is inside.
             return vec![SDF_BREAK];

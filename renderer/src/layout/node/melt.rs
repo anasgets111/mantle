@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use kurbo::{Affine, BezPath, Line, ParamCurveNearest, Point, Rect, Shape as _, Vec2};
 
-use super::shape::{Coord, SDF_POINTS, closed, place, winding};
+use super::shape::{Coord, SDF_LOOPS, SDF_POINTS, closed, place, winding};
 use super::vector_path::COORD_MAX;
 use super::{LayoutError, invalid};
 use crate::lua::luacats::lua_shape;
@@ -141,17 +141,33 @@ impl Melt {
         traced
     }
 
-    /// The biggest loop at `rect`, its tolerance doubled until [`SDF_POINTS`] vertices fit.
-    pub(super) fn sdf_loop(&self, rect: LogicalRect) -> Vec<Point> {
+    /// Every traced loop at `rect` (up to [`SDF_LOOPS`] biggest by area), simplified together until
+    /// they fit within [`SDF_POINTS`] beside each loop's closing vertex and break.
+    pub(super) fn sdf_loops(&self, rect: LogicalRect) -> Vec<Vec<Point>> {
         let traced = self.traced(rect);
-        let area = |l: &&Vec<Point>| closed(l.iter().copied()).area().abs();
-        let Some(biggest) = traced.loops.iter().max_by(|a, b| area(a).total_cmp(&area(b))) else { return Vec::new() };
-        let (mut out, mut tolerance) = (biggest.clone(), TOLERANCE);
-        while out.len() > SDF_POINTS && tolerance < 1e3 {
-            tolerance *= 2.0;
-            out = simplify(biggest, tolerance);
+        let mut loops: Vec<&Vec<Point>> = traced.loops.iter().filter(|l| l.len() >= 3).collect();
+        if loops.len() > SDF_LOOPS {
+            let area = |l: &&Vec<Point>| closed(l.iter().copied()).area().abs();
+            loops.sort_by(|a, b| area(b).total_cmp(&area(a)));
+            loops.truncate(SDF_LOOPS);
         }
-        out.into_iter().map(|p| self.placed(rect) * p).collect()
+        let room = if loops.len() > 1 { SDF_POINTS - 2 * loops.len() } else { SDF_POINTS };
+        let mut out: Vec<Vec<Point>> = loops.iter().map(|l| (*l).clone()).collect();
+        let mut tolerance = TOLERANCE;
+        while out.iter().map(Vec::len).sum::<usize>() > room && tolerance < 1e3 {
+            tolerance *= 2.0;
+            for (dst, src) in out.iter_mut().zip(&loops) {
+                if dst.len() > 4 {
+                    let next = simplify(src, tolerance);
+                    // Never collapse a small island or hole below four corners while thinning a larger loop.
+                    if next.len() >= 4 {
+                        *dst = next;
+                    }
+                }
+            }
+        }
+        let placed = self.placed(rect);
+        out.into_iter().map(|l| l.into_iter().map(|p| placed * p).collect()).collect()
     }
 
     /// Each part as centre, half size and corner radius, placed on a box of `size` at the origin.
@@ -520,6 +536,38 @@ mod tests {
         let loops = comb.polygon(rect, TOLERANCE);
         assert!(loops.len() == 1 && loops[0].len() > SDF_POINTS, "{}", loops[0].len());
         assert!(comb.sdf_polygon(rect).len() <= SDF_POINTS);
+
+        // #182: islands and voids all reach `mantle_sdf`, even when another loop exceeds the budget.
+        let distance = super::super::shape::distance;
+        let blobs = bubbles(20.0);
+        let blob_rect = LogicalRect { x: 0.0, y: 0.0, width: 100.0, height: 40.0 };
+        let blob_sdf = blobs.sdf_polygon(blob_rect);
+        assert!(blob_sdf.len() <= SDF_POINTS);
+        assert!(distance(&blob_sdf, Point::new(20.0, 20.0)) < 0.0, "inside left blob");
+        assert!(distance(&blob_sdf, Point::new(50.0, 20.0)) > 0.0, "outside in the gap");
+        assert!(distance(&blob_sdf, Point::new(80.0, 20.0)) < 0.0, "inside right blob");
+
+        let ring = shape(RING);
+        let ring_rect = LogicalRect { x: 0.0, y: 0.0, width: 60.0, height: 60.0 };
+        let ring_sdf = ring.sdf_polygon(ring_rect);
+        assert!(ring_sdf.len() <= SDF_POINTS);
+        assert!(distance(&ring_sdf, Point::new(4.0, 30.0)) < 0.0, "inside left bar");
+        assert!(distance(&ring_sdf, Point::new(56.0, 30.0)) < 0.0, "inside right bar");
+        assert!(distance(&ring_sdf, Point::new(30.0, 30.0)) > 0.0, "outside inside the hole");
+
+        // An empty melt (part thinner than 2 * FINEST) marks nothing as inside.
+        let empty = shape("{ parts = { { left = 0, top = 0, right = 0.2, bottom = 9 } } }");
+        assert!(distance(&empty.sdf_polygon(ring_rect), Point::new(0.1, 4.0)) > 0.0);
+
+        // Simplifying a huge loop must not collapse a tiny separate island below a closed quad.
+        let comb_plus_dot = shape(&format!(
+            "{{ melt = 16, parts = {{ {{ left = 0, top = 0, right = 8192, bottom = 100 }}, {}, \
+             {{ left = 400, top = 400, right = 400.5, bottom = 400.5, radius = 0.1 }} }} }}",
+            teeth[..6].join(", ")
+        ));
+        let dot_sdf = comb_plus_dot.sdf_polygon(rect);
+        assert!(dot_sdf.len() <= SDF_POINTS);
+        assert!(distance(&dot_sdf, Point::new(400.1, 400.1)) < 0.0, "small island kept under simplification");
     }
 
     /// A ring of four bars bounds a void: a second loop, wound the other way, that the pointer
