@@ -28,6 +28,9 @@ const LOG_TAIL_LINES: usize = 200;
 /// Bytes kept of each `install_log` line, so a full tail of escaped binary output fits one frame;
 /// `install.log` keeps the whole line.
 const MAX_LOG_LINE_BYTES: usize = 4096;
+/// Minimum gap between `install_log` pushes during an output burst (#186); start, exit, and an
+/// early stdout close flush immediately so no line is lost or held past the end.
+const LOG_PUSH_INTERVAL: Duration = Duration::from_millis(100);
 
 /// How often a scheduled check asks whether it is due; also the first retry delay after a failure,
 /// doubled per further consecutive failure up to the interval.
@@ -330,8 +333,9 @@ fn still_running(why: impl std::fmt::Display) -> std::io::Error {
     std::io::Error::other(format!("an update started before the shell restarted is still running ({why})"))
 }
 
-/// Testable loop over the followed log for [`run_install`]. Wakes `main.rs` on every parsed line
-/// (ADR-0034), not only at completion.
+/// Testable loop over the followed log for [`run_install`]. Coalesces output bursts to at most one
+/// wake per [`LOG_PUSH_INTERVAL`] (#186) while flushing immediately on the leading line, an early
+/// EOF while the installer still runs, and at completion.
 async fn run_install_with_child(
     backend: Arc<dyn Backend>,
     state: Arc<Mutex<UpdatesState>>,
@@ -340,28 +344,67 @@ async fn run_install_with_child(
     output: Option<ChildStdout>,
     lock: std::fs::File,
 ) {
+    let child_done = std::sync::atomic::AtomicBool::new(false);
+    let wait = async {
+        let status = child.wait().await;
+        child_done.store(true, std::sync::atomic::Ordering::Release);
+        status
+    };
     let read = async {
         let Some(output) = output else { return };
         let mut lines = BoundedLines::new(output, "install log".into());
-        while let Ok(Some(line)) = lines.next_line().await {
-            let step = backend.parse_install_step(&line);
-            let mut guard = state.lock().expect("mutex poisoned");
-            push_log_line(&mut guard.install_log, line);
-            if let Some(step) = step {
-                guard.install_current_step = step.current;
-                guard.install_total_steps = step.total;
-                guard.install_current_package = step.package;
+        let mut last_push: Option<Instant> = None;
+        let mut dirty = false;
+        let flush = tokio::time::sleep(Duration::ZERO);
+        tokio::pin!(flush);
+        loop {
+            tokio::select! {
+                biased;
+                next = lines.next_line() => match next {
+                    Ok(Some(line)) => {
+                        let step = backend.parse_install_step(&line);
+                        let mut guard = state.lock().expect("mutex poisoned");
+                        push_log_line(&mut guard.install_log, line);
+                        if let Some(step) = step {
+                            guard.install_current_step = step.current;
+                            guard.install_total_steps = step.total;
+                            guard.install_current_package = step.package;
+                        }
+                        drop(guard);
+                        // Every line (not only progress) marks dirty so non-progress phases such as
+                        // download headers still reach config, coalesced to `LOG_PUSH_INTERVAL`.
+                        let now = Instant::now();
+                        match last_push {
+                            Some(at) if now.saturating_duration_since(at) < LOG_PUSH_INTERVAL => {
+                                if !dirty {
+                                    flush.as_mut().reset(at + LOG_PUSH_INTERVAL);
+                                    dirty = true;
+                                }
+                            }
+                            _ => {
+                                last_push = Some(now);
+                                dirty = false;
+                                let _ = events.send(());
+                            }
+                        }
+                    }
+                    Ok(None) | Err(_) => break,
+                },
+                () = &mut flush, if dirty => {
+                    last_push = Some(Instant::now());
+                    dirty = false;
+                    let _ = events.send(());
+                }
             }
-            drop(guard);
-            // Every line, not only progress: gating left the log frozen until the first package operation.
-            // Pacman prints nothing per package during a download without a tty (a pty would cost
-            // ANSI and `\r` handling), so that phase stays silent
-            // (its `wchar` does not move); `#updates.packages` and `download_size` cover the gap in config.
+        }
+        // If stdout closed while the installer is still running, flush buffered lines now instead of
+        // holding them until exit; when the installer already exited, the completion push sends them.
+        if dirty && !child_done.load(std::sync::atomic::Ordering::Acquire) {
             let _ = events.send(());
         }
     };
     // Reap while reading: `tail --pid` takes an unreaped installer for a live one.
-    let (status, ()) = tokio::join!(child.wait(), read);
+    let (status, ()) = tokio::join!(wait, read);
     // Before `installing` falls, so an install asked for on that push is not refused.
     if status.is_ok()
         && let Err(err) = crate::instance::release_lock(&lock)
@@ -834,13 +877,15 @@ mod tests {
         assert_eq!(snapshot.install_current_package, "gnome-autoar");
         assert_eq!(snapshot.install_error, None);
 
-        // Every line rides the signal, not only the two that parse as progress: the `::` line is
-        // the shape the whole download phase prints, and gating on progress froze the log there.
+        // Non-progress lines still push (not gated on progress steps), coalesced within the window.
         let mut signal_count = 0;
         while events_rx.try_recv().is_ok() {
             signal_count += 1;
         }
-        assert_eq!(signal_count, 4, "one signal per output line plus one completion signal");
+        assert!(
+            (2..=4).contains(&signal_count),
+            "at least one log push plus completion, bounded by the burst: {signal_count}"
+        );
 
         let state = Arc::new(Mutex::new(UpdatesState::default()));
         let (child, output, lock) = installer("exit 1");
@@ -936,8 +981,125 @@ exit {exit_code}"
             while events_rx.try_recv().is_ok() {
                 signals += 1;
             }
-            assert_eq!(signals, transcript.lines().count() + 1);
+            let lines = transcript.lines().count();
+            if lines == 0 {
+                assert_eq!(signals, 1, "empty output still pushes completion");
+            } else {
+                assert!((2..=lines + 1).contains(&signals), "lines={lines} signals={signals}");
+            }
         }
+    }
+
+    /// #186: a burst of install output coalesces to bounded pushes while preserving the whole tail,
+    /// and buffered lines flush within `LOG_PUSH_INTERVAL` even while the installer stays silent.
+    #[tokio::test]
+    async fn a_burst_of_install_log_lines_coalesces_pushes_and_flushes_the_tail() {
+        let state = Arc::new(Mutex::new(UpdatesState { installing: true, ..UpdatesState::default() }));
+        let (child, output, lock) =
+            installer("i=1; while [ $i -le 400 ]; do echo \"line-$i\"; i=$((i+1)); done; exit 0");
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+        within(run_install_with_child(Arc::new(StubBackend), Arc::clone(&state), events_tx, child, output, lock)).await;
+
+        let snapshot = state.lock().unwrap().clone();
+        assert!(!snapshot.installing);
+        assert_eq!(snapshot.install_exit_code, Some(0));
+        assert_eq!(snapshot.install_log.len(), LOG_TAIL_LINES);
+        assert_eq!(snapshot.install_log.first().map(String::as_str), Some("line-201"));
+        assert_eq!(snapshot.install_log.last().map(String::as_str), Some("line-400"));
+        let mut signals = 0;
+        while events_rx.try_recv().is_ok() {
+            signals += 1;
+        }
+        assert!((2..=10).contains(&signals), "400-line burst should coalesce to bounded pushes, got {signals}");
+
+        // Lines buffered after the leading push flush while the installer is still running and quiet.
+        // Gate `second` until after the leading wake is received so this can only pass if the
+        // `LOG_PUSH_INTERVAL` timer itself fires a fresh wake.
+        let dir = tempfile::tempdir().unwrap();
+        let (go_second, go_exit) = (dir.path().join("go_second"), dir.path().join("go_exit"));
+        let wait_file = |path: &Path| {
+            format!("i=0; while [ ! -e '{}' ] && [ $i -lt 500 ]; do sleep 0.01; i=$((i+1)); done", path.display())
+        };
+        let script = format!("echo first; {}; echo second; {}; echo third", wait_file(&go_second), wait_file(&go_exit));
+        let state = Arc::new(Mutex::new(UpdatesState { installing: true, ..UpdatesState::default() }));
+        let (child, output, lock) = installer(&script);
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(run_install_with_child(
+            Arc::new(StubBackend),
+            Arc::clone(&state),
+            events_tx,
+            child,
+            output,
+            lock,
+        ));
+
+        within(events_rx.recv()).await.expect("leading line wakes immediately");
+        assert_eq!(state.lock().unwrap().install_log, ["first"]);
+        assert!(events_rx.try_recv().is_err(), "no extra wake before second line");
+
+        std::fs::write(&go_second, "").unwrap();
+        within(async {
+            loop {
+                events_rx.recv().await.expect("timer flushed buffered line");
+                let snap = state.lock().unwrap().clone();
+                if snap.install_log.as_slice() == ["first", "second"] {
+                    assert!(snap.installing, "buffered line flushed before installer exited");
+                    break;
+                }
+            }
+        })
+        .await;
+
+        std::fs::write(&go_exit, "").unwrap();
+        within(task).await.unwrap();
+        let final_snap = state.lock().unwrap().clone();
+        assert!(!final_snap.installing);
+        assert_eq!(final_snap.install_log, ["first", "second", "third"]);
+        assert!(events_rx.try_recv().is_ok(), "completion flushed the final tail");
+
+        // Early stdout EOF while the installer still runs flushes buffered lines immediately without
+        // waiting for the installer to exit.
+        let go_eof = dir.path().join("go_eof");
+        let child = Command::new("sh")
+            .args(process::sh_args(&wait_file(&go_eof)))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut reader = Command::new("sh")
+            .args(process::sh_args("echo a; echo b"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let output = reader.stdout.take();
+        let lock = std::fs::File::create(dir.path().join("early.lock")).unwrap();
+        let state = Arc::new(Mutex::new(UpdatesState { installing: true, ..UpdatesState::default() }));
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(run_install_with_child(
+            Arc::new(StubBackend),
+            Arc::clone(&state),
+            events_tx,
+            child,
+            output,
+            lock,
+        ));
+        within(async {
+            loop {
+                events_rx.recv().await.expect("early EOF flushed buffered line");
+                let snap = state.lock().unwrap().clone();
+                if snap.install_log.as_slice() == ["a", "b"] {
+                    assert!(snap.installing, "flushed while installer still waits on go_eof");
+                    break;
+                }
+            }
+        })
+        .await;
+        std::fs::write(&go_eof, "").unwrap();
+        within(task).await.unwrap();
+        let _ = reader.wait().await;
+        assert!(!state.lock().unwrap().installing);
     }
 
     #[tokio::test]
