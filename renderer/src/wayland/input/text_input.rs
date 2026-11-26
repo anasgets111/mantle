@@ -179,8 +179,8 @@ fn cursor_rect(
     } else {
         let shaped = layout::hit::field_line(text, face, shaping);
         let line = shaped.as_ref().and_then(|shaped| shaped.shaped.first());
-        let left = layout::hit::field_line_left(line, *align, rect.x, rect.x + rect.width, caret, bar.width, 1.0);
-        let cx = line.map_or(0.0, |line| shaping::caret_x(line, caret));
+        let left = layout::hit::field_line_left(text, line, *align, rect.x, rect.x + rect.width, caret, bar.width, 1.0);
+        let cx = line.map_or(0.0, |line| shaping::caret_x(text, line, caret));
         (left + cx, rect.y + ((rect.height - face.line_height) / 2.0).max(0.0))
     };
     let bar_height = bar.bar_height(face.line_height);
@@ -501,7 +501,7 @@ mod tests {
         let shaping = ShapingHandle::spawn();
         let node::PaintStyle::TextField { face, .. } = root.children[0].paint.as_ref().unwrap() else { unreachable!() };
         let line = layout::hit::field_line("ab", face, &shaping).unwrap();
-        let cx = shaping::caret_x(&line.shaped[0], 2);
+        let cx = shaping::caret_x("ab", &line.shaped[0], 2);
         // A 40px line in a 60px box starts 10 down, and the 20px bar centres in it: 10 + 10 + 10.
         assert_eq!(cursor_rect(&root, id, "ab", (2, false), &shaping), Some(((10.0 + cx).round() as i32, 30, 3, 20)));
     }

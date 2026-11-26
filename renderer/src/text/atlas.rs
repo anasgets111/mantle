@@ -497,6 +497,7 @@ impl TextPainter {
                 // or the end of a long draft is drawn outside the field it belongs to (ADR-0236).
                 let left = match selection.filter(|_| wrap.is_none()) {
                     Some((_, at)) => crate::layout::hit::field_line_left(
+                        paragraph,
                         Some(laid),
                         align,
                         physical.x0 as f32,
@@ -543,7 +544,7 @@ impl TextPainter {
                 if let Some((.., at)) = selection.filter(|_| caret_on && bar_here) {
                     let height = caret_style.bar_height(line_height) * scale;
                     self.fill(
-                        left + caret_x(laid, at) * scale,
+                        left + caret_x(paragraph, laid, at) * scale,
                         top + (step - height) / 2.0,
                         bar_width,
                         height,

@@ -1,3 +1,5 @@
+use unicode_segmentation::UnicodeSegmentation;
+
 use super::{Glyph, ShapedLine};
 
 /// How thick a caret draws at `font_size`. Shared, because paint and hit-testing slide a line by
@@ -17,23 +19,37 @@ pub fn caret_visible_left(left: f32, x0: f32, x1: f32, cx: f32, thickness: f32) 
 
 /// The byte a caret takes when the pointer lands at `x`, line-relative.
 ///
-/// The half of a cluster's box nearer its own leading edge takes its `start`, and a right-to-left
+/// The half of a grapheme's box nearer its own leading edge takes its start, and a right-to-left
 /// cluster leads on the right. Per cluster, never per line: Latin embedded in an Arabic line runs
 /// the other way, and reading the line's direction there puts the caret one cluster off at exactly
 /// the boundary where the two meet -- which every single-direction test still passes.
-pub fn caret_at(line: &ShapedLine, x: f32, text_len: usize) -> usize {
+///
+/// A ligature spanning several graphemes divides its advance evenly across them (matching
+/// `text::atlas::x_spans`), so clicks stop between joined letters such as `f` and `i` in `fi` or
+/// `ل` and `ا` in `لا`. `text` is the paragraph that `line.glyphs`'s byte offsets index.
+pub fn caret_at(text: &str, line: &ShapedLine, x: f32, text_len: usize) -> usize {
     // By cluster, not by glyph: one cluster can shape to several glyphs, each carrying its whole
     // byte range, and halving them one at a time answers the right half of a letter with the byte
     // belonging to its left.
     for cluster in clusters(&line.glyphs) {
         let (lo, hi) = cluster_span(cluster);
-        if x < lo || x >= hi {
+        if !(lo <= x && x < hi) {
             continue;
         }
-        return match (x < (lo + hi) / 2.0) != cluster[0].rtl {
-            true => cluster[0].start as usize,
-            false => cluster[0].end as usize,
+        let (start, end) = (cluster[0].start as usize, cluster[0].end as usize);
+        let progress = match cluster[0].rtl {
+            false => (x - lo) / (hi - lo),
+            true => (hi - x) / (hi - lo),
         };
+        let Some(slice) = text.get(start..end) else {
+            return match progress < 0.5 {
+                true => start,
+                false => end,
+            };
+        };
+        let count = slice.graphemes(true).count().max(1);
+        let slot = ((progress * count as f32).round() as usize).min(count);
+        return slice.grapheme_indices(true).nth(slot).map_or(end, |(at, _)| start + at);
     }
     // Past every box, so the line's own direction says which byte each side is.
     match line.glyphs.iter().all(|glyph| x < glyph.x) != line.rtl {
@@ -42,14 +58,14 @@ pub fn caret_at(line: &ShapedLine, x: f32, text_len: usize) -> usize {
     }
 }
 
-/// Where a caret at `offset` draws, line-relative: the inverse of [`caret_at`], whose every answer
-/// is some glyph's `start` or `end`.
+/// Where a caret at `offset` draws, line-relative: the inverse of [`caret_at`].
 ///
 /// An offset where two runs meet ends one glyph and starts another, and both edges are valid: the
-/// first in visual order wins, so the caret stays on the run the text before it belongs to.
-///
-/// ponytail: no caret stops inside a ligature; keeping Parley clusters and affinity would add them.
-pub fn caret_x(line: &ShapedLine, offset: usize) -> f32 {
+/// first in visual order wins, so the caret stays on the run the text before it belongs to. An
+/// offset inside a multi-grapheme cluster (a ligature such as `fi` or `لا`) sits at that grapheme's
+/// share of the cluster's width, matching `text::atlas::x_spans`. `text` is the paragraph that
+/// `line.glyphs`'s byte offsets index.
+pub fn caret_x(text: &str, line: &ShapedLine, offset: usize) -> f32 {
     // Parley yields visual runs left to right. At a direction boundary, the preceding text's
     // trailing edge wins even if its visual run follows the next one.
     let Some(cluster) = clusters(&line.glyphs)
@@ -64,12 +80,21 @@ pub fn caret_x(line: &ShapedLine, offset: usize) -> f32 {
     // Across every glyph of it, never just the first: `س` shapes to two in some faces, and where
     // they meet is the middle of the letter.
     let (lo, hi) = cluster_span(cluster);
-    // Only the cluster's first byte sits on its leading edge; its end, or a byte inside a ligature,
-    // draws on the trailing one.
-    match (offset != cluster[0].start as usize) != cluster[0].rtl {
-        true => hi,
-        false => lo,
+    let (start, end, rtl) = (cluster[0].start as usize, cluster[0].end as usize, cluster[0].rtl);
+    if offset == start {
+        return if rtl { hi } else { lo };
     }
+    if offset < end
+        && let (Some(slice), Some(prefix)) = (text.get(start..end), text.get(start..offset))
+    {
+        let total = slice.graphemes(true).count();
+        if total > 1 {
+            let before = prefix.graphemes(true).count().min(total);
+            let share = before as f32 / total as f32 * (hi - lo);
+            return if rtl { hi - share } else { lo + share };
+        }
+    }
+    if rtl { lo } else { hi }
 }
 
 /// One cluster's glyphs at a time. A cluster can shape to several, each carrying its whole byte
@@ -110,10 +135,75 @@ mod tests {
         };
         let line = ShapedLine { rtl: true, width: 23.44, baseline: 0.0, glyphs: vec![half(11.72), half(0.0)].into() };
 
-        assert_eq!(caret_x(&line, 2), 0.0, "after the letter is its left edge, not between its halves");
-        assert_eq!(caret_x(&line, 0), 23.44, "and before it is its right");
-        assert_eq!(caret_at(&line, 18.0, 2), 0, "a press in the right half of a right-to-left letter precedes it");
-        assert_eq!(caret_at(&line, 5.0, 2), 2, "and one in the left half follows it");
+        assert_eq!(caret_x("س", &line, 2), 0.0, "after the letter is its left edge, not between its halves");
+        assert_eq!(caret_x("س", &line, 0), 23.44, "and before it is its right");
+        assert_eq!(caret_at("س", &line, 18.0, 2), 0, "a press in the right half of a right-to-left letter precedes it");
+        assert_eq!(caret_at("س", &line, 5.0, 2), 2, "and one in the left half follows it");
+    }
+
+    /// #10: a ligature's advance splits evenly across its graphemes for both caret placement and
+    /// click hit-testing (LTR, RTL, 3-letter ligatures, and combining marks inside a ligature).
+    #[test]
+    fn a_caret_stops_between_the_graphemes_of_a_ligature() {
+        let cluster = |end: u32, advance: f32, rtl: bool| ShapedLine {
+            rtl,
+            width: advance,
+            baseline: 0.0,
+            glyphs: vec![Glyph {
+                face: fontdb::ID::dummy(),
+                coords: 0,
+                id: 0,
+                x: 0.0,
+                y: 0.0,
+                advance,
+                start: 0,
+                end,
+                rtl,
+            }]
+            .into(),
+        };
+
+        // LTR 2-grapheme ligature `fi`: stops at 0, 1, 2 across [0, 12].
+        let fi = cluster(2, 12.0, false);
+        assert_eq!((caret_x("fi", &fi, 0), caret_x("fi", &fi, 1), caret_x("fi", &fi, 2)), (0.0, 6.0, 12.0));
+        assert_eq!(caret_at("fi", &fi, 1.0, 2), 0);
+        assert_eq!(caret_at("fi", &fi, 4.0, 2), 1);
+        assert_eq!(caret_at("fi", &fi, 6.0, 2), 1);
+        assert_eq!(caret_at("fi", &fi, 8.0, 2), 1);
+        assert_eq!(caret_at("fi", &fi, 10.0, 2), 2);
+
+        // LTR 3-grapheme ligature `ffi`: stops at 0, 1, 2, 3 across [0, 18].
+        let ffi = cluster(3, 18.0, false);
+        assert_eq!(
+            (caret_x("ffi", &ffi, 0), caret_x("ffi", &ffi, 1), caret_x("ffi", &ffi, 2), caret_x("ffi", &ffi, 3)),
+            (0.0, 6.0, 12.0, 18.0)
+        );
+        assert_eq!(caret_at("ffi", &ffi, 6.0, 3), 1);
+        assert_eq!(caret_at("ffi", &ffi, 12.0, 3), 2);
+
+        // Combining mark stays joined to its base grapheme: `f\u{0329}` (0..3) and `i` (3..4).
+        let combined = "f\u{0329}i";
+        let f_mark_i = cluster(4, 12.0, false);
+        assert_eq!(caret_x(combined, &f_mark_i, 3), 6.0);
+        assert_eq!(caret_at(combined, &f_mark_i, 6.0, 4), 3);
+
+        // RTL 2-grapheme ligature `لا` (ل 0..2, ا 2..4): leads on the right (12 -> 6 -> 0).
+        let la = cluster(4, 12.0, true);
+        assert_eq!((caret_x("لا", &la, 0), caret_x("لا", &la, 2), caret_x("لا", &la, 4)), (12.0, 6.0, 0.0));
+        assert_eq!(caret_at("لا", &la, 11.0, 4), 0);
+        assert_eq!(caret_at("لا", &la, 6.0, 4), 2);
+        assert_eq!(caret_at("لا", &la, 1.0, 4), 4);
+
+        // Round-trip against the bundled Noto Sans fixture for `find` (`fi` ligature).
+        if let Some(handle) = super::super::tests::shots_fixture() {
+            let shaped = handle.shape_glyphs(req("find", 20.0));
+            let line = &shaped.shaped[0];
+            let lig = line.glyphs.iter().find(|g| g.start == 0).unwrap();
+            assert_eq!(lig.end, 2, "Noto Sans joins `fi` into one cluster");
+            let mid = lig.x + lig.advance / 2.0;
+            assert!((caret_x("find", line, 1) - mid).abs() < 1e-3, "caret at byte 1 splits `fi`");
+            assert_eq!(caret_at("find", line, mid, 4), 1, "clicking the middle of `fi` lands between `f` and `i`");
+        }
     }
 
     /// A draft too wide for its field follows the caret instead of its alignment. Paint and the
@@ -137,10 +227,10 @@ mod tests {
         let shaped = handle.shape_glyphs(req(text, 20.0));
         let line = &shaped.shaped[0];
 
-        assert!((caret_x(line, 0) - line.width).abs() < 1e-3, "the first byte draws at the right edge");
-        assert_eq!(caret_x(line, text.len()), 0.0, "and the last at the left");
-        assert_eq!(caret_at(line, line.width - 1.0, text.len()), 0, "a press at the right edge is byte 0");
-        assert_eq!(caret_at(line, 1.0, text.len()), text.len(), "and one at the left is the end");
+        assert!((caret_x(text, line, 0) - line.width).abs() < 1e-3, "the first byte draws at the right edge");
+        assert_eq!(caret_x(text, line, text.len()), 0.0, "and the last at the left");
+        assert_eq!(caret_at(text, line, line.width - 1.0, text.len()), 0, "a press at the right edge is byte 0");
+        assert_eq!(caret_at(text, line, 1.0, text.len()), text.len(), "and one at the left is the end");
     }
 
     /// An embedded Latin run runs the other way inside a right-to-left line, so which side of a
@@ -156,12 +246,12 @@ mod tests {
         let a = line.glyphs.iter().find(|glyph| glyph.start == 11).expect("a glyph for 'a'");
         assert!(!a.rtl, "but the letter 'a' in it is not");
 
-        assert_eq!(caret_at(line, a.x + a.advance * 0.75, text.len()), 12, "past 'a' is before 'b'");
-        assert_eq!(caret_at(line, a.x + a.advance * 0.25, text.len()), 11, "and short of it is before 'a'");
+        assert_eq!(caret_at(text, line, a.x + a.advance * 0.75, text.len()), 12, "past 'a' is before 'b'");
+        assert_eq!(caret_at(text, line, a.x + a.advance * 0.25, text.len()), 11, "and short of it is before 'a'");
         // Byte 11 ends the space and starts 'a': two valid carets at a direction change. The
         // first in visual order wins, which keeps it on the Arabic the text before it belongs to.
         let space = line.glyphs.iter().find(|glyph| glyph.end == 11).expect("a glyph for the space");
-        assert_eq!(caret_x(line, 11), space.x, "the earlier run's trailing edge, not 'a' s leading one");
-        assert_eq!(caret_x(line, 12), a.x + a.advance, "and past 'a' is its own trailing edge");
+        assert_eq!(caret_x(text, line, 11), space.x, "the earlier run's trailing edge, not 'a' s leading one");
+        assert_eq!(caret_x(text, line, 12), a.x + a.advance, "and past 'a' is its own trailing edge");
     }
 }

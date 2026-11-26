@@ -32,19 +32,22 @@ pub(crate) struct Row<'a> {
     pub start: usize,
     pub end: usize,
     para: usize,
+    /// Paragraph slice that `line.glyphs`'s byte offsets index.
+    text: &'a str,
     line: &'a ShapedLine,
 }
 
 /// The rows of paragraphs `shape_lines` wrapped. A soft-wrapped row ends before the spaces at its
 /// break; a paragraph's last row ends at its newline, so End there keeps trailing spaces.
-pub(crate) fn rows<'a>(text: &str, paragraphs: &'a [(usize, ShapeResult)]) -> Vec<Row<'a>> {
+pub(crate) fn rows<'a>(text: &'a str, paragraphs: &'a [(usize, ShapeResult)]) -> Vec<Row<'a>> {
     let mut rows = Vec::new();
     for &(para, ref shaped) in paragraphs {
         let para_end = text[para..].find('\n').map_or(text.len(), |len| para + len);
+        let paragraph = &text[para..para_end];
         let last = shaped.shaped.len().saturating_sub(1);
         for (index, (range, line)) in shaped.line_ranges.iter().zip(shaped.shaped.iter()).enumerate() {
             let end = if index == last { para_end } else { para + range.end };
-            rows.push(Row { start: para + range.start, end, para, line });
+            rows.push(Row { start: para + range.start, end, para, text: paragraph, line });
         }
     }
     rows
@@ -65,12 +68,13 @@ impl Row<'_> {
 
     /// A caret at `at`, row-relative.
     pub(crate) fn caret_x(&self, at: usize) -> f32 {
-        shaping::caret_x(self.line, at - self.para)
+        shaping::caret_x(self.text, self.line, at - self.para)
     }
 
     /// The byte on this row nearest row-relative `x`, and whether it ends the row: [`row_of`]'s `upstream`.
     pub(crate) fn caret_at(&self, x: f32) -> (usize, bool) {
-        let at = (self.para + shaping::caret_at(self.line, x, self.end - self.para)).clamp(self.start, self.end);
+        let at =
+            (self.para + shaping::caret_at(self.text, self.line, x, self.end - self.para)).clamp(self.start, self.end);
         (at, at == self.end)
     }
 }
@@ -148,6 +152,25 @@ mod tests {
         assert_eq!((past, upstream), (second.start, true), "a click past the first row's edge keeps to it");
         assert_eq!((row_of(&rows, past, true), row_of(&rows, past, false)), (0, 1));
         assert_eq!(rows[0].caret_x(past), rows[0].line.width, "at the first row's right edge");
+
+        // #10: a ligature on a wrapped row in a later paragraph stops between its graphemes.
+        if let Some(lig_shaping) = crate::text::shaping::tests::shots_fixture() {
+            let text = "first\nalpha find";
+            let style = crate::layout::hit::tests::face(20.0, 0.0);
+            let paragraphs = lig_shaping.shape_lines(text, &[], style.shaping_style(), None, Some(60.0));
+            let lig_rows = super::rows(text, &paragraphs);
+            let find_at = text.find("find").unwrap();
+            let row = lig_rows.iter().find(|r| r.start == find_at).expect("`find` wraps onto its own row");
+            let lig = row.line.glyphs.iter().find(|g| g.start as usize == find_at - row.para).unwrap();
+            assert_eq!(lig.end - lig.start, 2, "bundled Noto Sans joins `fi` into one cluster");
+            let mid = lig.x + lig.advance / 2.0;
+            assert!((row.caret_x(find_at + 1) - mid).abs() < 1e-3, "caret inside wrapped ligature splits its advance");
+            assert_eq!(
+                row.caret_at(mid),
+                (find_at + 1, false),
+                "click inside wrapped ligature lands between `f` and `i`"
+            );
+        }
     }
 
     #[test]

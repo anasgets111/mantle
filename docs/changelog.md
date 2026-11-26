@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: a `textfield` caret now stops inside ligatures (such as `f` and `i` in `fi`, or `ل` and `ا` in `لا`) when stepping or clicking to place the caret, aligning with its selection highlight instead of jumping past the ligature.
+
 - Added: `mantle.applications` now resolves localized `Name`, `GenericName`, `Comment`, `Keywords` and `Icon` from `LC_ALL`/`LC_MESSAGES`/`LANG` (`ll_CC@mod`, `ll_CC`, `ll@mod`, `ll`, bare), exposes each entry's `Exec`-backed `[Desktop Action ...]` items on `entries[].actions` (`key`, `name`, `icon`), and adds `mantle.applications:launch_action(id, action, opts?)`.
 
 - Fixed: a transparent container (a `rect`, `row`, `column` or `list` with no `background`, `border_width`, `effect.backdrop`, explicit `hittable = true` or input property), an unpainted `path`, or a bare `shader` over a sibling such as a click-outside catcher no longer swallows pointer events where none of its children sit; clicks pass through to the sibling beneath it.

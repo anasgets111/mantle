@@ -433,8 +433,8 @@ mod tests {
         let n = glyphs.iter().find(|glyph| glyph.start == 2).unwrap();
         assert!((n.x - (fi.x + fi.advance)).abs() < 1.0, "a ligature's zero-glyph continuation adds no pen advance");
         assert_eq!(fi.end, 2, "the ligature's glyph carries the `i` it joins");
-        let after = caret_x(&result.shaped[0], 1);
-        assert_eq!(after, fi.x + fi.advance, "a caret inside the ligature still draws after it");
+        let mid = caret_x("find", &result.shaped[0], 1);
+        assert!((mid - (fi.x + fi.advance / 2.0)).abs() < 1e-3, "a caret inside the ligature splits its advance");
         // Noto Sans's OS/2 strikeout: top 322 and thickness 50 per 1000 units above the baseline.
         let [(face, _, centre)] = *result.strikes else { panic!("one face: {:?}", result.strikes) };
         assert_eq!(face, fi.face);

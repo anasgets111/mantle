@@ -131,8 +131,8 @@ pub fn caret_at(
     let shaped = field_line(text, face, shaping)?;
     let laid = shaped.shaped.first()?;
     // The same slide paint applies, or a scrolled draft answers every press with the wrong byte.
-    let left = field_line_left(Some(laid), *align, rect.x, rect.x + rect.width, caret, bar.width, 1.0);
-    Some((shaping::caret_at(laid, x - left, text.len()), false))
+    let left = field_line_left(text, Some(laid), *align, rect.x, rect.x + rect.width, caret, bar.width, 1.0);
+    Some((shaping::caret_at(text, laid, x - left, text.len()), false))
 }
 
 pub(crate) fn field_line(text: &str, face: &Typeface, shaping: &ShapingHandle) -> Option<ShapeResult> {
@@ -144,7 +144,9 @@ pub(crate) fn field_line(text: &str, face: &Typeface, shaping: &ShapingHandle) -
 }
 
 /// `x0`/`x1` are in the output's units, the line and `thickness` logical, `scale` taking them there.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn field_line_left(
+    text: &str,
     line: Option<&ShapedLine>,
     align: TextAlign,
     x0: f32,
@@ -158,7 +160,7 @@ pub(crate) fn field_line_left(
         left,
         x0,
         x1,
-        line.map_or(0.0, |line| shaping::caret_x(line, caret) * scale),
+        line.map_or(0.0, |line| shaping::caret_x(text, line, caret) * scale),
         thickness * scale,
     )
 }
@@ -686,8 +688,8 @@ pub(crate) mod tests {
         let text = "a draft much wider than the field";
         let shaped = field_line(text, &face(14.0, 0.0), &shaping).unwrap();
         let line = shaped.shaped.first();
-        let left = field_line_left(line, TextAlign::Start, 0.0, 40.0, text.len(), 3.0, 2.0);
-        let bar = left + shaping::caret_x(line.unwrap(), text.len()) * 2.0;
+        let left = field_line_left(text, line, TextAlign::Start, 0.0, 40.0, text.len(), 3.0, 2.0);
+        let bar = left + shaping::caret_x(text, line.unwrap(), text.len()) * 2.0;
         assert!((bar + 3.0 * 2.0 - 40.0).abs() < 0.01, "the bar's right edge meets the field's: {bar}");
     }
 
@@ -716,14 +718,32 @@ pub(crate) mod tests {
         assert!(line.width > plain.width + 6.0 * 10.0, "ten gaps of 6 px wider than the default");
 
         let laid = &line.shaped[0];
-        assert!((shaping::caret_x(laid, 2) - laid.glyphs[2].x).abs() < 1e-3, "the caret sits on the glyph boundary");
+        assert!(
+            (shaping::caret_x(text, laid, 2) - laid.glyphs[2].x).abs() < 1e-3,
+            "the caret sits on the glyph boundary"
+        );
         let mut field = ResolvedNode::test("textfield", (10.0, 0.0, 300.0, 28.0), Vec::new());
         field.paint = Some(field_paint("", spaced));
-        let boundary = shaping::caret_x(laid, 4);
+        let boundary = shaping::caret_x(text, laid, 4);
         assert!(boundary > plain.shaped[0].glyphs[4].x + 20.0, "the default metrics would put it far left");
         let press = |x: f32| caret_at(&[&field], LogicalPoint { x: 10.0 + x, y: 5.0 }, text, 0, &shaping);
         assert_eq!(press(boundary + 1.0), Some((4, false)), "just past the fourth boundary");
         assert_eq!(press(boundary - 1.0), Some((4, false)), "and just short of it");
+
+        // #10: clicking the middle of a Noto Sans `fi` ligature places the caret between `f` and `i`.
+        if let Some(lig_shaping) = crate::text::shaping::tests::shots_fixture() {
+            let lig_text = "find";
+            let lig_line = field_line(lig_text, &face(20.0, 0.0), &lig_shaping).unwrap();
+            let lig = lig_line.shaped[0].glyphs.iter().find(|g| g.start == 0).unwrap();
+            assert_eq!(lig.end, 2, "bundled Noto Sans joins `fi` into one cluster");
+            let lig_mid = lig.x + lig.advance / 2.0;
+            let mut lig_field = ResolvedNode::test("textfield", (10.0, 0.0, 200.0, 28.0), Vec::new());
+            lig_field.paint = Some(field_paint("", face(20.0, 0.0)));
+            assert_eq!(
+                caret_at(&[&lig_field], LogicalPoint { x: 10.0 + lig_mid, y: 5.0 }, lig_text, 0, &lig_shaping),
+                Some((1, false))
+            );
+        }
     }
 
     #[test]
