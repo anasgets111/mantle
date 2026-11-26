@@ -29,6 +29,9 @@ use crate::capabilities::idle::inhibit::Login1ManagerProxy;
     default_path = "/org/freedesktop/login1/session/auto"
 )]
 pub(crate) trait Login1Session {
+    #[zbus(property, name = "Id")]
+    fn id(&self) -> zbus::Result<String>;
+
     #[zbus(name = "SetBrightness")]
     fn set_brightness(&self, subsystem: &str, name: &str, brightness: u32) -> zbus::Result<()>;
 
@@ -43,13 +46,20 @@ pub(crate) trait Login1Session {
     fn unlock(&self) -> zbus::Result<()>;
 }
 
-/// This process's logind session path. Prefer `$XDG_SESSION_ID`, then `"auto"`; they differ only
-/// when the variable was inherited from elsewhere, and there the explicit session name wins.
-async fn resolve_session_path(connection: &zbus::Connection) -> Result<zbus::zvariant::OwnedObjectPath, String> {
+/// This process's logind session path. Prefer `env_session_id` (`$XDG_SESSION_ID`), then `"auto"`;
+/// they differ only when the variable was inherited from elsewhere, and there the explicit session
+/// name wins.
+///
+/// Takes the env value as a parameter so tests avoid `set_var`, which races concurrent env readers
+/// and is `unsafe` in Rust 2024.
+pub(crate) async fn resolve_session_path(
+    connection: &zbus::Connection,
+    env_session_id: Option<&str>,
+) -> Result<zbus::zvariant::OwnedObjectPath, String> {
     let manager = Login1ManagerProxy::new(connection).await.map_err(|err| format!("logind is unreachable: {err}"))?;
     let mut tried = String::new();
-    if let Some(id) = std::env::var("XDG_SESSION_ID").ok().filter(|id| !id.is_empty()) {
-        match manager.get_session(&id).await {
+    if let Some(id) = env_session_id.filter(|id| !id.is_empty()) {
+        match manager.get_session(id).await {
             Ok(path) => return Ok(path),
             Err(err) => tried = format!("XDG_SESSION_ID={id}: {err}; "),
         }
@@ -67,7 +77,8 @@ impl SessionBridge {
     /// Resolves the session, spawns the `Lock`/`Unlock` listener and `SetLockedHint` writer, then
     /// returns. `()` on `lock_requests` means logind requested a lock; `main.rs` decides.
     pub async fn new(connection: zbus::Connection, lock_requests: UnboundedSender<()>) -> Self {
-        let path = match resolve_session_path(&connection).await {
+        let env_id = std::env::var("XDG_SESSION_ID").ok();
+        let path = match resolve_session_path(&connection, env_id.as_deref()).await {
             Ok(path) => path,
             Err(why) => {
                 warn!(

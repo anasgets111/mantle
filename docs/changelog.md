@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: the polkit authentication agent now registers when Mantle starts without `$XDG_SESSION_ID` (such as from a terminal, script or `systemd-run`), via logind's `auto` session lookup; `pkexec` used to fail with no authentication agent.
 - Fixed: `mantle.notifications:set_sound(urgency, "")` clears the configured sound for that urgency tier (a sender's own `sound-file` still plays); an empty path used to raise as a relative path.
 - Fixed: content-sized popups opened from a panel use that panel's output size as their layout bound.
 - Fixed: the type stubs read a `Rect`'s fields as numbers, accept a `geometry` rect as `anchor_rect`, and give `os.date` a string result except for `"*t"` and `"!*t"`, so lua-language-server no longer flags `rect.width` arithmetic or `os.date("%H:%M"):gsub(...)`.

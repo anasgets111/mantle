@@ -22,6 +22,9 @@ use zbus::message::Header;
 use zbus::zvariant::{OwnedValue, Value};
 pub use zbus_polkit::policykit1::{AuthorityProxy, Subject};
 
+use crate::capabilities::bind_uncached;
+use crate::capabilities::lock::logind::{Login1SessionProxy, resolve_session_path};
+
 /// Agent-side protocol error. Dismissing the dialog returns
 /// `org.freedesktop.PolicyKit1.Error.Cancelled`.
 #[derive(Debug, zbus::DBusError)]
@@ -53,22 +56,28 @@ pub enum AgentRequest {
 /// caller.
 pub const AGENT_OBJECT_PATH: &str = "/org/mantle/PolicyKit1/AuthenticationAgent";
 
-/// Builds the `unix-session` `Subject` for this process's session.
-///
-/// ponytail: reads `$XDG_SESSION_ID`, not logind's `Manager.GetSessionByPID`. Upgrade to that
-/// round trip if pam_systemd stops setting it or a logind client arrives here (ADR-0010 covers
-/// Wayland idle/lock, not logind sessions).
-pub fn current_session_subject() -> Result<Subject, std::env::VarError> {
-    Ok(session_subject(std::env::var("XDG_SESSION_ID")?))
+/// Resolves this process's session ID: non-empty `env_session_id` (`$XDG_SESSION_ID`) directly,
+/// else logind's `GetSession("auto")` and its `Id` property.
+async fn resolve_session_id(connection: &zbus::Connection, env_session_id: Option<&str>) -> Result<String, String> {
+    if let Some(id) = env_session_id.filter(|id| !id.is_empty()) {
+        return Ok(id.to_string());
+    }
+    let path = resolve_session_path(connection, None).await?;
+    let session = bind_uncached::<Login1SessionProxy>(connection, path.clone())
+        .await
+        .map_err(|err| format!("failed to bind logind session at {path}: {err}"))?;
+    let id = session.id().await.map_err(|err| format!("failed to read logind session Id at {path}: {err}"))?;
+    if id.is_empty() {
+        return Err(format!("logind session at {path} reported an empty Id"));
+    }
+    Ok(id)
 }
 
-/// `Subject` construction split from `$XDG_SESSION_ID` lookup so tests avoid `set_var`, which
-/// races every environment reader in the test binary and is `unsafe` in Rust 2024.
-fn session_subject(session_id: String) -> Subject {
+fn session_subject(session_id: &str) -> Subject {
     let mut subject_details = HashMap::new();
     subject_details.insert(
         "session-id".to_string(),
-        OwnedValue::try_from(Value::from(session_id)).expect("String -> OwnedValue conversion is infallible"),
+        OwnedValue::try_from(Value::from(session_id)).expect("str -> OwnedValue conversion is infallible"),
     );
     Subject { subject_kind: "unix-session".to_string(), subject_details }
 }
@@ -162,29 +171,32 @@ impl PolkitAgent {
         PolkitAgent { agent: Some(AuthenticationAgent::new(requests)) }
     }
 
-    /// Registers once, in a spawned task so a slow polkitd cannot hold the Supervisor loop, and
-    /// again whenever polkitd restarts, since it forgets its agents.
+    /// Registers once, in a spawned task so a slow logind or polkitd cannot hold the Supervisor
+    /// loop, and again whenever polkitd restarts, since it forgets its agents.
     pub fn register(&mut self, connection: &zbus::Connection) {
-        match current_session_subject() {
-            Ok(subject) => self.register_for(connection, subject),
-            Err(err) => {
-                error!("$XDG_SESSION_ID names no session to register an agent for; agent disabled for this run: {err}");
-                // Do not retry: `$XDG_SESSION_ID` will not appear mid-run.
-                self.agent = None;
-            }
-        }
+        self.register_with_env(connection, std::env::var("XDG_SESSION_ID").ok());
     }
 
-    /// [`Self::register`] once the subject is known, preserving the take-once rule. Separate so
-    /// tests can call it twice without `set_var`, whose process-wide `environ` rewrite races any
+    /// [`Self::register`] with an explicit `$XDG_SESSION_ID` value, preserving the take-once rule.
+    /// Separate so tests avoid `set_var`, whose process-wide `environ` rewrite races any
     /// concurrent `getenv`.
-    fn register_for(&mut self, connection: &zbus::Connection, subject: Subject) {
+    fn register_with_env(&mut self, connection: &zbus::Connection, env_session_id: Option<String>) {
         let Some(agent) = self.agent.take() else {
             return;
         };
         let connection = connection.clone();
         tokio::spawn(async move {
-            if let Err(err) = serve_agent(&connection, agent, &subject).await {
+            let session_id = match resolve_session_id(&connection, env_session_id.as_deref()).await {
+                Ok(id) => id,
+                Err(why) => {
+                    error!(
+                        "could not resolve a session to register an authentication agent for; \
+                         agent disabled for this run: {why}"
+                    );
+                    return;
+                }
+            };
+            if let Err(err) = serve_agent(&connection, agent, &session_id).await {
                 warn!("cannot export the authentication agent, so another agent answers this session: {err}");
             }
         });
@@ -197,18 +209,19 @@ impl PolkitAgent {
 /// ponytail: a caller reaching a restarted polkitd before the re-registration finds no agent, the
 /// same window libpolkitagent leaves. Closing it would need polkitd to announce its agents, which it
 /// does not.
-async fn serve_agent(connection: &zbus::Connection, agent: AuthenticationAgent, subject: &Subject) -> zbus::Result<()> {
+async fn serve_agent(connection: &zbus::Connection, agent: AuthenticationAgent, session_id: &str) -> zbus::Result<()> {
     let requests = agent.requests.clone();
     connection.object_server().at(AGENT_OBJECT_PATH, agent).await?;
     let authority = AuthorityProxy::new(connection).await?;
     // Subscribed before the first registration, so a restart in between is not missed.
     let mut owners = authority.inner().receive_owner_changed().await?;
-    register_with(&authority, subject).await;
+    let subject = session_subject(session_id);
+    register_with(&authority, &subject, session_id).await;
     while let Some(owner) = owners.next().await {
         // A challenge the old polkitd held died with it, and a held one refuses every new one.
         let _ = requests.send(AgentRequest::Cancel { cookie: None });
         if owner.is_some() {
-            register_with(&authority, subject).await;
+            register_with(&authority, &subject, session_id).await;
         }
     }
     Ok(())
@@ -216,20 +229,22 @@ async fn serve_agent(connection: &zbus::Connection, agent: AuthenticationAgent, 
 
 /// Logs a failure rather than propagating it: another agent for the subject is normal elsewhere
 /// and must not stop the shell.
-async fn register_with(authority: &AuthorityProxy<'_>, subject: &Subject) {
+async fn register_with(authority: &AuthorityProxy<'_>, subject: &Subject, session_id: &str) {
     match authority.register_authentication_agent(subject, "en_US.UTF-8", AGENT_OBJECT_PATH).await {
-        Ok(()) => debug!("registered as this session's authentication agent"),
-        Err(err) => warn!("RegisterAuthenticationAgent failed, so another agent answers this session: {err}"),
+        Ok(()) => debug!("registered as authentication agent for session {session_id}"),
+        Err(err) => warn!("RegisterAuthenticationAgent failed for session {session_id}: {err}"),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capabilities::test_support::{p2p_pair_serving, private_bus, within};
+    use crate::capabilities::test_support::{PrivateBus, p2p_pair_serving, private_bus, within};
     use tokio::sync::mpsc;
+    use zbus::zvariant::OwnedObjectPath;
 
-    /// Stand-in Authority on the p2p peer, exercising the real wire call without a system bus.
+    /// Stand-in Authority on the p2p peer or private bus, exercising the real wire call without a
+    /// system bus.
     struct MockAuthority {
         calls: mpsc::UnboundedSender<(Subject, String, String)>,
     }
@@ -239,6 +254,55 @@ mod tests {
         async fn register_authentication_agent(&self, subject: Subject, locale: String, object_path: String) {
             let _ = self.calls.send((subject, locale, object_path));
         }
+    }
+
+    /// Stand-in logind `Manager` mapping explicit session keys (including `"auto"`) to paths.
+    struct FakeLogindManager {
+        sessions: HashMap<&'static str, &'static str>,
+    }
+
+    #[interface(name = "org.freedesktop.login1.Manager")]
+    impl FakeLogindManager {
+        fn get_session(&self, id: &str) -> zbus::fdo::Result<OwnedObjectPath> {
+            self.sessions
+                .get(id)
+                .map(|path| OwnedObjectPath::try_from(*path).unwrap())
+                .ok_or_else(|| zbus::fdo::Error::Failed(format!("no session {id}")))
+        }
+    }
+
+    struct FakeLogindSession {
+        id: &'static str,
+    }
+
+    #[interface(name = "org.freedesktop.login1.Session")]
+    impl FakeLogindSession {
+        #[zbus(property, name = "Id")]
+        fn id(&self) -> String {
+            self.id.to_string()
+        }
+    }
+
+    /// Serves a fake logind on `bus` with `(lookup_key, path, reported_id)` entries.
+    async fn serve_logind(
+        bus: &PrivateBus,
+        entries: &[(&'static str, &'static str, &'static str)],
+    ) -> zbus::Connection {
+        let sessions = entries.iter().map(|&(key, path, _)| (key, path)).collect();
+        let mut builder = bus
+            .builder()
+            .serve_at("/org/freedesktop/login1", FakeLogindManager { sessions })
+            .unwrap()
+            .name("org.freedesktop.login1")
+            .unwrap();
+        for &(_, path, id) in entries {
+            builder = builder.serve_at(path, FakeLogindSession { id }).unwrap();
+        }
+        builder.build().await.unwrap()
+    }
+
+    fn subject_session_id(subject: &Subject) -> Option<String> {
+        subject.subject_details.get("session-id").cloned().and_then(|v| String::try_from(v).ok())
     }
 
     /// A second registration would ask polkitd for another agent on one subject. Every generation
@@ -253,17 +317,74 @@ mod tests {
         let (challenges_tx, _challenges_rx) = mpsc::unbounded_channel();
         let mut agent = PolkitAgent::new(challenges_tx);
 
-        agent.register_for(&agent_side, session_subject("c1".into()));
-        agent.register_for(&agent_side, session_subject("c1".into()));
+        agent.register_with_env(&agent_side, Some("c1".into()));
+        agent.register_with_env(&agent_side, Some("c1".into()));
 
-        calls_rx.recv().await.expect("the first register must reach the Authority");
+        within(calls_rx.recv()).await.expect("the first register must reach the Authority");
         assert!(calls_rx.try_recv().is_err(), "the second register must be a no-op");
+    }
+
+    /// Uses `$XDG_SESSION_ID` directly (even without logind on the bus), and falls back to
+    /// logind's `GetSession("auto")` and its `Id` property when the variable is unset or empty.
+    #[tokio::test]
+    async fn registers_using_xdg_session_id_without_logind_and_falls_back_to_logind_auto() {
+        let bus = private_bus().await;
+        let (calls_tx, mut calls_rx) = mpsc::unbounded_channel();
+        let _authority = bus
+            .builder()
+            .serve_at("/org/freedesktop/PolicyKit1/Authority", MockAuthority { calls: calls_tx })
+            .unwrap()
+            .name("org.freedesktop.PolicyKit1")
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+
+        // Explicit `$XDG_SESSION_ID` registers without contacting logind.
+        let agent_side = bus.connection().await;
+        let (requests_tx, _requests) = mpsc::unbounded_channel();
+        PolkitAgent::new(requests_tx).register_with_env(&agent_side, Some("c1".into()));
+        let (subject, locale, object_path) = within(calls_rx.recv()).await.unwrap();
+        assert_eq!(subject.subject_kind, "unix-session");
+        assert_eq!(subject_session_id(&subject).as_deref(), Some("c1"));
+        assert_eq!((locale.as_str(), object_path.as_str()), ("en_US.UTF-8", AGENT_OBJECT_PATH));
+
+        // Escaped numeric path (`_32` -> `"2"`) proves the `Id` property is read, not the path suffix.
+        let _logind = serve_logind(&bus, &[("auto", "/org/freedesktop/login1/session/_32", "2")]).await;
+        let cases = [
+            ("explicit XDG_SESSION_ID wins over auto", Some("c1"), "c1"),
+            ("missing XDG_SESSION_ID resolves through auto", None, "2"),
+            ("empty XDG_SESSION_ID resolves through auto", Some(""), "2"),
+        ];
+        for (case, env_id, want) in cases {
+            let agent_side = bus.connection().await;
+            let (requests_tx, _requests) = mpsc::unbounded_channel();
+            PolkitAgent::new(requests_tx).register_with_env(&agent_side, env_id.map(str::to_string));
+
+            let (subject, locale, object_path) = within(calls_rx.recv()).await.unwrap();
+            assert_eq!(subject.subject_kind, "unix-session", "{case}");
+            assert_eq!(subject_session_id(&subject).as_deref(), Some(want), "{case}");
+            assert_eq!((locale.as_str(), object_path.as_str()), ("en_US.UTF-8", AGENT_OBJECT_PATH), "{case}");
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_session_id_fails_when_logind_has_no_session_or_empty_id() {
+        let bus = private_bus().await;
+        let conn = bus.connection().await;
+        let err = resolve_session_id(&conn, None).await.expect_err("absent logind must fail");
+        assert!(err.contains("auto"), "error must name the auto lookup: {err}");
+
+        let _logind = serve_logind(&bus, &[("auto", "/org/freedesktop/login1/session/empty", "")]).await;
+        let err = resolve_session_id(&conn, None).await.expect_err("empty Id property must fail");
+        assert!(err.contains("empty Id"), "error must name the empty Id: {err}");
     }
 
     /// polkitd forgets its agents when it restarts, and a challenge it held died with it.
     #[tokio::test]
     async fn a_restarted_polkitd_gets_the_agent_again_and_the_held_challenge_is_cancelled() {
         let bus = private_bus().await;
+        let _logind = serve_logind(&bus, &[("auto", "/org/freedesktop/login1/session/c1", "c1")]).await;
         let (calls_tx, mut calls_rx) = mpsc::unbounded_channel();
         let authority = |calls: mpsc::UnboundedSender<(Subject, String, String)>| {
             bus.builder()
@@ -276,14 +397,11 @@ mod tests {
         let first = authority(calls_tx.clone()).await.unwrap();
         let agent_side = bus.connection().await;
         let (requests_tx, mut requests) = mpsc::unbounded_channel();
-        PolkitAgent::new(requests_tx).register_for(&agent_side, session_subject("c1".into()));
+        PolkitAgent::new(requests_tx).register_with_env(&agent_side, None);
 
         let (subject, locale, object_path) = within(calls_rx.recv()).await.unwrap();
         assert_eq!(subject.subject_kind, "unix-session");
-        assert_eq!(
-            subject.subject_details.get("session-id").cloned().and_then(|v| String::try_from(v).ok()),
-            Some("c1".to_string())
-        );
+        assert_eq!(subject_session_id(&subject).as_deref(), Some("c1"));
         assert_eq!((locale.as_str(), object_path.as_str()), ("en_US.UTF-8", AGENT_OBJECT_PATH));
         let identities: Vec<(String, HashMap<String, OwnedValue>)> = vec![];
         let caller = first.clone();

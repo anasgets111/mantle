@@ -94,7 +94,7 @@ capabilities your config uses. Each capability page says what happens when its b
 | [`windows`](../capabilities/windows.md#backend) | niri, Hyprland, sway or mango, else `wlr-foreign-toplevel-management-v1` |
 | [`idle`](../capabilities/idle.md#backend) | `ext-idle-notify-v1`, logind |
 | [`lock`](../capabilities/lock.md#backend) | `ext-session-lock-v1`, logind, the Mantle PAM stack ([system files](#system-files)) |
-| [`polkit`](../capabilities/polkit.md#backend) | polkitd with its helper socket `/run/polkit/agent-helper.socket`, `$XDG_SESSION_ID`, no other polkit agent running |
+| [`polkit`](../capabilities/polkit.md#backend) | polkitd with its helper socket `/run/polkit/agent-helper.socket`, `$XDG_SESSION_ID` or logind, no other polkit agent running |
 | [`sysinfo`](../capabilities/sysinfo.md#backend) | hwmon `k10temp`, `coretemp` or `acpitz` for CPU temperature; `amdgpu`, `nouveau`, `nvidia`, `i915` or `xe` for GPU temperature; `lsblk` for disks; `nvidia-smi`, `nvtop` or DRM sysfs for GPU telemetry; `/proc/net/dev` for network throughput |
 | [`updates`](../capabilities/updates.md#backend) | `pacman` and its `curl`, `dnf` or `apt-get`; `pkexec`, answered by the polkit agent; paru or yay for AUR |
 | [`applications`](../capabilities/applications.md#backend) | `$TERMINAL` for `Terminal=true` entries, `xdg-open` for `open_url` |
