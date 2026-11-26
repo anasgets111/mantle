@@ -72,6 +72,7 @@ How the container packs its children:
 | Scroll overflowing content | Bound the axis (`height` or `max_height` on a column), then `scroll = scroll("name")` ([scroll](../guide/input.md#scroll)) |
 | Overlap items, like stacked avatars | Negative `spacing` |
 | Flow chips or tiles onto lines | `wrap = true`, [below](#wrapping) |
+| Span columns or rows in a grid | `column_span` / `row_span` on a child of a `homogeneous` container, [below](#spanning-slots) |
 
 ### Equal slots
 
@@ -140,6 +141,54 @@ return row { wrap = true, width = 180, spacing = 6, line_spacing = 6, children =
 ```
 
 With `homogeneous = true` the same chips become a grid of equal tiles, each the widest chip.
+
+### Spanning slots
+
+A child of a `homogeneous` container can span more than one slot with `column_span` and `row_span`
+(integers in `[1, 256]`, default `1`).
+
+| Container | `column_span` | `row_span` |
+| :--- | :--- | :--- |
+| `row { homogeneous = true }` | Spans slots along the row | Ignored |
+| `column { homogeneous = true }` | Ignored | Spans slots along the column |
+| `row` or `column` with `homogeneous = true, wrap = true` | Spans columns | Spans rows |
+| Any other parent | Ignored | Ignored |
+
+A spanning child covers its tracks and the gaps between them. When the container sizes its own slot,
+it divides a spanning child's margin box across those tracks after subtracting the gaps, so a wide
+tile does not widen single-slot siblings. Omit the main-axis size or set `"fill"` so the child
+stretches across its spanned slots; a pixel size keeps that size at the area's start. On the cross
+axis, set `height = "fill"` (or `align_v = "stretch"`) in a wrapped `row` so a `row_span` child
+fills all spanned rows; swap the axes in a wrapped `column`.
+
+```lua
+local function tile(label, extra)
+    local props = {
+        width = 76,
+        height = 36,
+        padding = 8,
+        radius = 8,
+        background = "#313244",
+        children = { text { content = label, foreground = "#CDD6F4", align_h = "center", align_v = "center" } },
+    }
+    for k, v in pairs(extra or {}) do props[k] = v end
+    return rect(props)
+end
+
+return row {
+    wrap = true,
+    homogeneous = true,
+    width = 240,
+    spacing = 6,
+    line_spacing = 6,
+    children = {
+        tile("Wi-Fi", { width = "fill", column_span = 2 }),
+        tile("Media", { height = "fill", row_span = 2 }),
+        tile("BT"),
+        tile("DND"),
+    },
+}
+```
 
 ### Push items apart
 

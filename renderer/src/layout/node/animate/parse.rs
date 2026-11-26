@@ -23,13 +23,14 @@ use crate::lua::marshal::number_word;
 /// The name an `animate` entry eases, refused if `kind` does not have it. `animate` itself is not
 /// one: a block cannot ease the block.
 pub(crate) fn animatable_name(kind: &str, property: &str, field: &str) -> Result<&'static str, LayoutError> {
-    if property == "z" {
-        return Err(invalid(field, "`z` snaps; it cannot animate"));
-    }
-    fields::accepted(kind, property)
+    let name = fields::accepted(kind, property)
         .map(|row| row.name)
         .filter(|name| *name != "animate" && !fields::refused(kind, name))
-        .ok_or_else(|| invalid(field, format!("`{property}` is not a property of a `{kind}` node")))
+        .ok_or_else(|| invalid(field, format!("`{property}` is not a property of a `{kind}` node")))?;
+    if matches!(name, "z" | "column_span" | "row_span") {
+        return Err(invalid(field, format!("`{name}` snaps; it cannot animate")));
+    }
+    Ok(name)
 }
 
 /// `animate`'s table, resolved: which properties ease and how. Absent means none. The table

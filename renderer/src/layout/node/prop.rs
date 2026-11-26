@@ -202,6 +202,32 @@ impl Prop for Pixels {
     }
 }
 
+/// Positive integer track span (`column_span`, `row_span`), defaulting to `1` within `row.range`.
+pub(crate) struct Span;
+
+spelled!(Span => i64::lua());
+
+impl Prop for Span {
+    type Out = u16;
+    fn read(row: &Property, value: Option<&Value>) -> Result<u16, LayoutError> {
+        let Some(value) = value else {
+            return Ok(1);
+        };
+        let n = match value {
+            Value::Integer(i) => *i as f64,
+            Value::Number(n) if n.is_finite() && n.fract() == 0.0 => *n,
+            other => {
+                return Err(invalid(row.name, format!("expected an integer, got {}", preview_for_error(other))));
+            }
+        };
+        let (low, high) = row.range.unwrap_or((1.0, f32::from(u16::MAX)));
+        if n < f64::from(low) || n > f64::from(high) {
+            return Err(invalid(row.name, out_of_range(low, high, preview_for_error(value))));
+        }
+        Ok(n as u16)
+    }
+}
+
 /// `n` inside `row`'s closed range, if it has one.
 pub(crate) fn within(row: &Property, n: f32) -> Result<f32, LayoutError> {
     row.range.map_or(Ok(n), |range| within_range(row.name, range, n))

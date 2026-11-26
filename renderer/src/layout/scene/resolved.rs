@@ -91,6 +91,8 @@ pub(crate) struct LayoutStyle {
     pub(super) min_height: Option<f32>,
     pub(super) align_h: Align,
     pub(super) align_v: Align,
+    pub(super) column_span: u16,
+    pub(super) row_span: u16,
     pub(super) spacing: f32,
     pub(super) homogeneous: bool,
     pub(super) line_spacing: f32,
@@ -130,6 +132,8 @@ impl LayoutStyle {
             min_height: common::min_height.read(properties)?,
             align_h: common::align_h.read(properties)?,
             align_v: common::align_v.read(properties)?,
+            column_span: common::column_span.read(properties)?,
+            row_span: common::row_span.read(properties)?,
             // `row`/`column`'s row; a `list`'s agrees, and no other kind has one.
             spacing: flow::spacing.read(properties)?,
             homogeneous: flow_layout::homogeneous.read(properties)?,

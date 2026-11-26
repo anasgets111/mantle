@@ -264,16 +264,35 @@ fn scroll_retained(node: &mut ResolvedNode, cell: CellId) -> bool {
     moved
 }
 
-/// How far content of `children` scrolls in a viewport `content_main` long: what an offset clamps to.
-fn room(children: &[ResolvedNode], axis: MainAxis, spacing: f32, content_main: f32) -> f32 {
-    (extent_along(children, axis, spacing) - content_main).max(0.0)
+/// How far `children` scroll in a viewport `content_main` long: what an offset clamps to.
+/// A `homogeneous` container places children in slots that can exceed their own pixel size, so its
+/// extent is the farthest placed margin edge rather than the sum of child sizes.
+fn room(
+    style: &LayoutStyle,
+    children: &[ResolvedNode],
+    axis: MainAxis,
+    (padding_start, content_main): (f32, f32),
+    from: f32,
+) -> f32 {
+    let extent = if style.homogeneous {
+        children.iter().filter(|c| c.in_flow()).fold(0.0_f32, |max, c| {
+            let end = match axis {
+                MainAxis::Horizontal => c.rect.x + from - padding_start + c.rect.width + c.margin.right,
+                MainAxis::Vertical => c.rect.y + from - padding_start + c.rect.height + c.margin.bottom,
+            };
+            max.max(end)
+        })
+    } else {
+        extent_along(children, axis, style.spacing)
+    };
+    (extent - content_main).max(0.0)
 }
 
 /// How far `node` can scroll along `axis` with the children it laid out last.
 fn room_of(node: &ResolvedNode, axis: MainAxis) -> f32 {
     let size = LogicalSize { width: node.rect.width, height: node.rect.height };
-    let (content_main, _) = viewport(&node.layout_style, size, axis);
-    room(&node.children, axis, node.layout_style.spacing, content_main)
+    let (content_main, padding_start) = viewport(&node.layout_style, size, axis);
+    room(&node.layout_style, &node.children, axis, (padding_start, content_main), node.scrolled)
 }
 
 fn advance_runs(node: &mut ResolvedNode, now: Instant, out: &mut Vec<(Signal, f32)>) {
@@ -330,7 +349,7 @@ pub(super) fn scroll_children(
 ) -> f32 {
     let (content_main, padding_start) = viewport(style, size, axis);
     place_request(properties, children, axis, (padding_start - from, content_main), memo);
-    let offset = scroll_offset(properties, room(children, axis, style.spacing, content_main));
+    let offset = scroll_offset(properties, room(style, children, axis, (padding_start, content_main), from));
     let by = offset - from;
     if by != 0.0 {
         // A leaver keeps the offset it was dropped at (`finish`).
@@ -436,7 +455,7 @@ pub(super) fn ease_request(
     };
     signal.take_scroll();
     let (content_main, padding_start) = viewport(style, size, axis);
-    let room = room(children, axis, style.spacing, content_main);
+    let room = room(style, children, axis, (padding_start, content_main), 0.0);
     let shown = signal.scroll_offset().unwrap_or(0.0);
     let aimed = node::scroll_target(tweens).unwrap_or(shown).clamp(0.0, room);
     if let Some(wanted) = requested(request, children, axis, (padding_start, content_main), aimed, memo) {

@@ -72,7 +72,7 @@ suggestion.
 | `textfield` | [textfield](textfield.md) | | Leaf |
 
 The four surface roles (`panel`, `window`, `popup`, `lock`) are node kinds too: they take the common
-and box properties but `margin`, `align_h` and `align_v`, and stack their one `child` ([surfaces](../surfaces/index.md)).
+and box properties but `margin`, `align_h`, `align_v`, `column_span` and `row_span`, and stack their one `child` ([surfaces](../surfaces/index.md)).
 
 ### Values
 
@@ -184,6 +184,8 @@ one lets the event through to the node around it ([pointer](../guide/input.md#po
 | `padding` | `number\|Edges\|Bound`, `[0, 8192]` | `0` | Inside the box, around its children or text. A number sets all four edges; each edge is within `[0, 8192]` ([spacing](#spacing-padding-and-margin)) |
 | `align_h` | `"start"\|"center"\|"end"\|"stretch"\|Bound` | `"start"` | See [alignment](#alignment) |
 | `align_v` | `"start"\|"center"\|"end"\|"stretch"\|Bound` | `"start"` | See [alignment](#alignment) |
+| `column_span` | `integer\|Bound`, `[1, 256]` | `1` | Columns this node spans in a `homogeneous` `row` or wrapped `column` ([spanning slots](row-column.md#spanning-slots)). Ignored elsewhere; `animate` refuses it |
+| `row_span` | `integer\|Bound`, `[1, 256]` | `1` | Rows this node spans in a `homogeneous` `column` or wrapped `row` ([spanning slots](row-column.md#spanning-slots)). Ignored elsewhere; `animate` refuses it |
 | `visible` | `boolean\|Bound` | `true` | `false` removes the node from layout, paint and spacing and freezes its subtree ([showing and hiding](#showing-hiding-and-switching)) |
 | `opacity` | `number\|Bound`, `[0, 1]` | `1` | Multiplied down the tree. At `0` the node still takes space and input |
 | `z` | `number\|Bound` | `0` | Sibling paint and hit order. Higher paints later and hits first; ties keep declaration order. Layout and focus ignore it; `animate` refuses it |

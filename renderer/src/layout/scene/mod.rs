@@ -439,8 +439,18 @@ impl Scene {
         // of it, so the next pass starts a new one.
         let mut tree = Self::take_solver_tree(&mut self.solver_trees, &key, existing.iter_mut());
         let held = tree.total_node_count();
-        let prepared =
-            prepare(self, &mut tree, existing, fresh.kind, resolved, (None, 0.0), (false, false, true), lua, now, 0)?;
+        let prepared = prepare(
+            self,
+            &mut tree,
+            existing,
+            fresh.kind,
+            resolved,
+            (solver::ParentFlow::Stack, 0.0),
+            (false, false, true),
+            lua,
+            now,
+            0,
+        )?;
         close(&mut at, &mut self.resolve_split.resolve);
         let fonts = (shaping, &self.field_drafts, (self.font_generation, self.restyles));
         let solved =

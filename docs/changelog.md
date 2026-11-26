@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Added: `column_span` and `row_span` (integers `[1, 256]`, default `1`) let a child of a `homogeneous` `row` or `column` span multiple slots across columns, rows, or both when wrapped.
+- Fixed: a `homogeneous` `column` now applies each child's `align_h` horizontally and lets `height = "fill"` fill its vertical slot instead of treating `align_h` as vertical alignment.
 - Fixed: a keyframe run or tween on `effect` no longer restarts on unrelated passes when `effect.shader` shares a `params` or `images` table across frames or passes, or after a tween finishes without an explicit `progress`.
 - Fixed: the polkit authentication agent now registers when Mantle starts without `$XDG_SESSION_ID` (such as from a terminal, script or `systemd-run`), via logind's `auto` session lookup; `pkexec` used to fail with no authentication agent.
 - Fixed: `mantle.notifications:set_sound(urgency, "")` clears the configured sound for that urgency tier (a sender's own `sound-file` still plays); an empty path used to raise as a relative path.

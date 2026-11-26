@@ -22,6 +22,32 @@ pub(crate) enum MainAxis {
     Vertical,
 }
 
+/// How a node's parent places its children: stacking in one cell, a flex flow along an axis,
+/// or a `homogeneous` grid along an axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ParentFlow {
+    Stack,
+    Flow(MainAxis),
+    Grid { axis: MainAxis, wrap: bool },
+}
+
+impl ParentFlow {
+    pub(super) fn of(kind: &str, properties: &PropMap, style: &LayoutStyle) -> Result<Self, LayoutError> {
+        Ok(match main_axis_of(kind, properties)? {
+            Some(axis) if style.homogeneous => Self::Grid { axis, wrap: wraps(properties)? },
+            Some(axis) => Self::Flow(axis),
+            None => Self::Stack,
+        })
+    }
+
+    pub(super) fn axis(self) -> Option<MainAxis> {
+        match self {
+            Self::Stack => None,
+            Self::Flow(axis) | Self::Grid { axis, .. } => Some(axis),
+        }
+    }
+}
+
 /// Which axis `kind` flows along, or `None` when it does not flow at all; a `list` borrows its
 /// `direction` from [`flow_kind`], so a horizontal `list` takes a horizontal wheel.
 ///
@@ -112,7 +138,8 @@ fn set_slot(out: &mut taffy::Style, axis: MainAxis, slot: f32, content: bool, wr
     let track = || {
         if content { minmax(length(slot), fr(1.0)) } else { minmax(length(0.0), fr(1.0)) }
     };
-    let cells = || vec![repeat(taffy::RepetitionCount::AutoFill, vec![minmax(length(slot), length(slot))])];
+    let fixed = || minmax(length(slot), length(slot));
+    let cells = || vec![repeat(taffy::RepetitionCount::AutoFill, vec![fixed()])];
     // Items fill along the main axis first: columns for a row, rows for a column.
     (out.grid_auto_flow, (out.grid_template_columns, out.grid_template_rows)) = match (axis, wrap) {
         (MainAxis::Horizontal, true) => (taffy::GridAutoFlow::Row, (cells(), Vec::new())),
@@ -120,21 +147,22 @@ fn set_slot(out: &mut taffy::Style, axis: MainAxis, slot: f32, content: bool, wr
         (MainAxis::Horizontal, false) => (taffy::GridAutoFlow::Column, (Vec::new(), Vec::new())),
         (MainAxis::Vertical, false) => (taffy::GridAutoFlow::Row, (Vec::new(), Vec::new())),
     };
-    match axis {
-        MainAxis::Horizontal if !wrap => out.grid_auto_columns = vec![track()],
-        MainAxis::Vertical if !wrap => out.grid_auto_rows = vec![track()],
-        _ => {}
-    }
+    let auto = if wrap { fixed() } else { track() };
+    (out.grid_auto_columns, out.grid_auto_rows) = match axis {
+        MainAxis::Horizontal => (vec![auto], Vec::new()),
+        MainAxis::Vertical => (Vec::new(), vec![auto]),
+    };
 }
 
-/// One node's taffy style, combining its container and item roles. `parent_axis` decides whether a
-/// `Fill` shares a flow remainder or takes the whole slot; `None` means stacking or surface root.
+/// One node's taffy style, combining its container and item roles. `parent_flow` decides whether a
+/// `Fill` shares a flow remainder or takes the whole slot, and whether spans apply.
 pub(super) fn taffy_style(
     kind: &str,
     properties: &PropMap,
     style: &LayoutStyle,
-    parent_axis: Option<MainAxis>,
+    parent_flow: ParentFlow,
 ) -> Result<taffy::Style, LayoutError> {
+    let parent_axis = parent_flow.axis();
     // Invisible nodes get no size, position, or spacing gap; all readers filter on `visible`.
     if !style.visible {
         return Ok(taffy::Style { display: taffy::Display::None, ..taffy::Style::DEFAULT });
@@ -254,7 +282,7 @@ pub(super) fn taffy_style(
     let align_h = if fills_h { taffy::AlignItems::STRETCH } else { item_align(style.align_h) };
     let align_v = if fills_v { taffy::AlignItems::STRETCH } else { item_align(style.align_v) };
 
-    // Flex parents govern the main axis with `justify_content`; grid items state both axes.
+    // Flow and homogeneous parents govern the main axis; stacking items state both axes.
     let (governed_h, governed_v) = match parent_axis {
         Some(MainAxis::Horizontal) => (None, Some(align_v)),
         Some(MainAxis::Vertical) => (Some(align_h), None),
@@ -271,26 +299,40 @@ pub(super) fn taffy_style(
         out.size.height = taffy::Dimension::auto();
     }
 
-    match parent_axis {
+    match parent_flow {
         // Flex item: parent packs the main axis; cross alignment is local. A zero basis makes
         // main-axis `Fill` share the whole remainder
         // (`two_fill_siblings_split_the_remainder_equally`).
-        Some(MainAxis::Horizontal) => {
+        ParentFlow::Flow(MainAxis::Horizontal) => {
             out.align_self = Some(align_v);
             if style.width_mode == SizeMode::Fill {
                 out.flex_grow = 1.0;
                 out.flex_basis = taffy::Dimension::length(0.0);
             }
         }
-        Some(MainAxis::Vertical) => {
+        ParentFlow::Flow(MainAxis::Vertical) => {
             out.align_self = Some(align_h);
             if style.height_mode == SizeMode::Fill {
                 out.flex_grow = 1.0;
                 out.flex_basis = taffy::Dimension::length(0.0);
             }
         }
+        // Homogeneous grid item: cross alignment is local (grid's `justify_self` is horizontal,
+        // `align_self` vertical); the main axis stretches by default unless given a pixel size.
+        ParentFlow::Grid { axis, wrap } => {
+            match axis {
+                MainAxis::Horizontal => out.align_self = Some(align_v),
+                MainAxis::Vertical => out.justify_self = Some(align_h),
+            }
+            if (wrap || axis == MainAxis::Horizontal) && style.column_span > 1 {
+                out.grid_column = taffy::Line { start: taffy::GridPlacement::Auto, end: span(style.column_span) };
+            }
+            if (wrap || axis == MainAxis::Vertical) && style.row_span > 1 {
+                out.grid_row = taffy::Line { start: taffy::GridPlacement::Auto, end: span(style.row_span) };
+            }
+        }
         // Grid item in the shared cell; both alignments are local.
-        None => {
+        ParentFlow::Stack => {
             out.justify_self = Some(align_h);
             out.align_self = Some(align_v);
             out.grid_row = taffy::Line { start: line(1), end: span(1) };
@@ -315,10 +357,10 @@ pub(super) fn new_solver_node(
     kind: &str,
     properties: &PropMap,
     style: &LayoutStyle,
-    parent_axis: Option<MainAxis>,
+    parent_flow: ParentFlow,
     measure: Option<Measure>,
 ) -> Result<taffy::NodeId, LayoutError> {
-    let solver_style = taffy_style(kind, properties, style, parent_axis)?;
+    let solver_style = taffy_style(kind, properties, style, parent_flow)?;
     match measure {
         Some(measure) => tree.new_leaf_with_context(solver_style, measure),
         None => tree.new_leaf(solver_style),
@@ -341,28 +383,28 @@ pub(super) fn update_solver_node(
     kind: &str,
     properties: &PropMap,
     style: &LayoutStyle,
-    parent_axis: Option<MainAxis>,
+    parent_flow: ParentFlow,
     mut measure: Option<Measure>,
 ) -> Result<(), LayoutError> {
     #[cfg(test)]
     tests::SOLVER_UPDATES.with(|count| count.set(count.get() + 1));
-    let mut solver_style = taffy_style(kind, properties, style, parent_axis)?;
+    let mut solver_style = taffy_style(kind, properties, style, parent_flow)?;
     let current = tree.style(id).map_err(taffy_failed)?;
     if tree.parent(id).is_none() {
         (solver_style.size, solver_style.margin) = (current.size, current.margin);
     }
     // The slot [`fit_slots`] wrote is not rebuilt here; taking it back would dirty the node every pass.
-    // It writes none for a sized, unwrapped one, whose tracks are rebuilt.
+    // It writes none for a sized, unwrapped one, whose tracks are rebuilt, or when the slot mode changed.
     if let Some(Measure::Slots { wrap, content, .. }) = measure
         && (wrap || content)
+        && tree.get_node_context(id) == measure.as_ref()
     {
         if wrap {
             solver_style.grid_template_columns.clone_from(&current.grid_template_columns);
             solver_style.grid_template_rows.clone_from(&current.grid_template_rows);
-        } else {
-            solver_style.grid_auto_columns.clone_from(&current.grid_auto_columns);
-            solver_style.grid_auto_rows.clone_from(&current.grid_auto_rows);
         }
+        solver_style.grid_auto_columns.clone_from(&current.grid_auto_columns);
+        solver_style.grid_auto_rows.clone_from(&current.grid_auto_rows);
     }
     if *current != solver_style {
         tree.set_style(id, solver_style).map_err(taffy_failed)?;
@@ -637,6 +679,11 @@ fn fit_slots(
     if !content && !wrap {
         return Ok(());
     }
+    let parent_gap = tree.style(node).map_err(taffy_failed)?.gap;
+    let gap = match axis {
+        MainAxis::Horizontal => parent_gap.width.into_raw().value(),
+        MainAxis::Vertical => parent_gap.height.into_raw().value(),
+    };
     let mut slot = 0.0_f32;
     for child in tree.children(node).map_err(taffy_failed)? {
         if tree.style(child).map_err(taffy_failed)?.display == taffy::Display::None {
@@ -650,12 +697,25 @@ fn fit_slots(
         let size = tree.layout(child).map_err(taffy_failed)?.size;
         // Measuring as a root left it at the origin and cached; dirty so the real solve re-places it.
         tree.mark_dirty(child).map_err(taffy_failed)?;
-        let margin = tree.style(child).map_err(taffy_failed)?.margin;
-        let (extent, margin) = match axis {
-            MainAxis::Horizontal => (size.width, margin.left.into_raw().value() + margin.right.into_raw().value()),
-            MainAxis::Vertical => (size.height, margin.top.into_raw().value() + margin.bottom.into_raw().value()),
+        let style = tree.style(child).map_err(taffy_failed)?;
+        let (extent, margin, placement) = match axis {
+            MainAxis::Horizontal => (
+                size.width,
+                style.margin.left.into_raw().value() + style.margin.right.into_raw().value(),
+                &style.grid_column.end,
+            ),
+            MainAxis::Vertical => (
+                size.height,
+                style.margin.top.into_raw().value() + style.margin.bottom.into_raw().value(),
+                &style.grid_row.end,
+            ),
         };
-        slot = slot.max(extent + margin);
+        let span = match *placement {
+            taffy::GridPlacement::Span(n) => f32::from(n.max(1)),
+            _ => 1.0,
+        };
+        // A spanning child shares its margin box across `span` tracks plus `span - 1` gaps.
+        slot = slot.max((extent + margin - (span - 1.0) * gap) / span);
     }
     write_slot(tree, node, (axis, content, wrap), slot)
 }
@@ -1384,6 +1444,269 @@ pub(super) mod tests {
                              rect { width = 10, height = 30 } } } }",
         );
         assert_eq!(corners(flow_of(&scene)), [(0.0, 0.0), (0.0, 45.0), (28.0, 0.0)]);
+    }
+
+    fn boxes(node: &ResolvedNode) -> Vec<(f32, f32, f32, f32)> {
+        node.children.iter().map(|c| (c.rect.x, c.rect.y, c.rect.width, c.rect.height)).collect()
+    }
+
+    /// Issue #185: children of wrapped `homogeneous` rows and columns span columns and rows.
+    #[test]
+    fn homogeneous_wrapping_children_span_columns_and_rows() {
+        let (scene, ..) = applied(
+            "panel { id = 'bar', child = row { wrap = true, homogeneous = true, width = 160, spacing = 5, line_spacing = 7,
+                children = {
+                    rect { width = 'fill', height = 20, column_span = 2 },
+                    rect { width = 50, height = 'fill', row_span = 2 },
+                    rect { width = 50, height = 20 },
+                    rect { width = 50, height = 20 },
+                    rect { width = 50, height = 20 },
+                } } }",
+        );
+        let row = flow_of(&scene);
+        assert_eq!(
+            boxes(row),
+            [
+                (0.0, 0.0, 105.0, 20.0),
+                (110.0, 0.0, 50.0, 47.0),
+                (0.0, 27.0, 50.0, 20.0),
+                (55.0, 27.0, 50.0, 20.0),
+                (0.0, 54.0, 50.0, 20.0),
+            ]
+        );
+        assert_eq!(row.rect.height, 74.0);
+
+        // Transposed: wrapped homogeneous column of 3 rows.
+        let (scene, ..) = applied(
+            "panel { id = 'bar', child = column { wrap = true, homogeneous = true, height = 160, spacing = 5, line_spacing = 7,
+                children = {
+                    rect { width = 20, height = 'fill', row_span = 2 },
+                    rect { width = 'fill', height = 50, column_span = 2 },
+                    rect { width = 20, height = 50 },
+                    rect { width = 20, height = 50 },
+                    rect { width = 20, height = 50 },
+                } } }",
+        );
+        let column = flow_of(&scene);
+        assert_eq!(
+            boxes(column),
+            [
+                (0.0, 0.0, 20.0, 105.0),
+                (0.0, 110.0, 47.0, 50.0),
+                (27.0, 0.0, 20.0, 50.0),
+                (27.0, 55.0, 20.0, 50.0),
+                (54.0, 0.0, 20.0, 50.0),
+            ]
+        );
+        assert_eq!(column.rect.width, 74.0);
+
+        // One child spanning both axes (2x2) in a 3-column wrapped row.
+        let (scene, ..) = applied(
+            "panel { id = 'bar', child = row { wrap = true, homogeneous = true, width = 160, spacing = 5, line_spacing = 7,
+                children = {
+                    rect { width = 'fill', height = 'fill', column_span = 2, row_span = 2 },
+                    rect { width = 50, height = 20 },
+                    rect { width = 50, height = 20 },
+                    rect { width = 50, height = 20 },
+                } } }",
+        );
+        assert_eq!(
+            boxes(flow_of(&scene)),
+            [(0.0, 0.0, 105.0, 47.0), (110.0, 0.0, 50.0, 20.0), (110.0, 27.0, 50.0, 20.0), (0.0, 54.0, 50.0, 20.0)]
+        );
+    }
+
+    /// A spanning child divides its footprint across its tracks and gaps, works unwrapped, and keeps
+    /// slot-sized implicit tracks if its span exceeds the explicit columns.
+    #[test]
+    fn homogeneous_slot_sizing_divides_a_spanning_child_across_its_tracks_and_gaps() {
+        // Wrapped: a 95 px child with 5 px left/right margin spanning 2 columns (105 px margin box)
+        // with 5 px spacing needs 50 px per slot, leaving 3 columns.
+        let (scene, ..) = applied(
+            "panel { id = 'bar', child = row { wrap = true, homogeneous = true, width = 160, spacing = 5,
+                children = {
+                    rect { width = 95, height = 20, margin = { left = 5, right = 5 }, column_span = 2 },
+                    rect { width = 50, height = 20 },
+                    rect { width = 50, height = 20 },
+                } } }",
+        );
+        assert_eq!(boxes(flow_of(&scene)), [(5.0, 0.0, 95.0, 20.0), (110.0, 0.0, 50.0, 20.0), (0.0, 20.0, 50.0, 20.0)]);
+
+        // Content-sized unwrapped row: 130 px across 2 slots with 10 px gap -> 60 px slots.
+        let (scene, ..) = applied(
+            "panel { id = 'bar', child = row { homogeneous = true, spacing = 10, children = {
+                rect { width = 130, height = 20, column_span = 2 },
+                rect { height = 20 },
+            } } }",
+        );
+        let row = flow_of(&scene);
+        assert_eq!(row.rect.width, 200.0);
+        assert_eq!(boxes(row), [(0.0, 0.0, 130.0, 20.0), (140.0, 0.0, 60.0, 20.0)]);
+
+        // Sized unwrapped row: column_span takes 2 shares, while row_span is ignored (one row).
+        let (scene, ..) = applied(
+            "panel { id = 'bar', child = row { homogeneous = true, width = 310, spacing = 5, children = {
+                rect { width = 'fill', height = 40, column_span = 2, row_span = 2 },
+                rect { width = 'fill', height = 'fill' },
+            } } }",
+        );
+        assert_eq!(boxes(flow_of(&scene)), [(0.0, 0.0, 205.0, 40.0), (210.0, 0.0, 100.0, 40.0)]);
+
+        // Span past the explicit column count: implicit column still gets the slot width.
+        let (scene, ..) = applied(
+            "panel { id = 'bar', child = row { wrap = true, homogeneous = true, width = 100, spacing = 5,
+                children = {
+                    rect { width = 45, height = 10 },
+                    rect { width = 'fill', height = 10, column_span = 3 },
+                } } }",
+        );
+        assert_eq!(boxes(flow_of(&scene)), [(0.0, 0.0, 45.0, 10.0), (0.0, 10.0, 145.0, 10.0)]);
+    }
+
+    /// A `homogeneous` column aligns its children horizontally via `justify_self` and stretches them vertically.
+    #[test]
+    fn homogeneous_column_aligns_children_horizontally_and_fills_vertically() {
+        let (scene, ..) = applied(
+            "panel { id = 'bar', child = column { homogeneous = true, width = 100, height = 100, spacing = 5,
+                children = {
+                    rect { width = 20, height = 'fill', align_h = 'center', row_span = 2, column_span = 2 },
+                    rect { width = 20, height = 'fill', align_h = 'end' },
+                } } }",
+        );
+        assert_eq!(boxes(flow_of(&scene)), [(40.0, 0.0, 20.0, 65.0), (80.0, 70.0, 20.0, 30.0)]);
+    }
+
+    /// Signal-driven spans re-solve, flipping `homogeneous`/`wrap` refreshes children, and non-homogeneous parents ignore spans.
+    #[test]
+    fn spans_follow_signals_and_are_ignored_outside_homogeneous_containers() {
+        let (mut scene, lua, shaping, surface) = applied(
+            "span = state('span', 1) same = state('same', false) wrap = state('wrap', false)
+            return panel { id = 'bar', child = row { homogeneous = same, wrap = wrap, width = 160, spacing = 5,
+                children = {
+                    rect { width = 'fill', height = 20, column_span = span },
+                    rect { width = 50, height = 'fill', row_span = 2 },
+                    rect { width = 50, height = 20 },
+                } } }",
+        );
+        // Non-homogeneous flex row ignores both spans: first child takes 160 - 50 - 50 - 10 = 50.
+        assert_eq!(boxes(flow_of(&scene)), [(0.0, 0.0, 50.0, 20.0), (55.0, 0.0, 50.0, 20.0), (110.0, 0.0, 50.0, 20.0)]);
+
+        lua.load("same:set(true) wrap:set(true) span:set(2)").exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(
+            boxes(flow_of(&scene)),
+            [(0.0, 0.0, 105.0, 20.0), (110.0, 0.0, 50.0, 40.0), (0.0, 20.0, 50.0, 20.0)]
+        );
+
+        lua.load("span:set(1)").exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(boxes(flow_of(&scene)), [(0.0, 0.0, 50.0, 20.0), (55.0, 0.0, 50.0, 20.0), (110.0, 0.0, 50.0, 20.0)]);
+
+        // A no-op pass on a wrapped homogeneous grid reuses the cached tracks without solving.
+        SOLVES.set(0);
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(SOLVES.get(), 0);
+
+        // Flipping `wrap` alone while `homogeneous` stays true refreshes children's spans and tracks.
+        lua.load("span:set(2.0)").exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(
+            boxes(flow_of(&scene)),
+            [(0.0, 0.0, 105.0, 20.0), (110.0, 0.0, 50.0, 40.0), (0.0, 20.0, 50.0, 20.0)]
+        );
+        lua.load("wrap:set(false)").exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(flow_of(&scene).children[2].rect.y, 0.0, "unwrapped row puts all children on one line");
+        assert_eq!(flow_of(&scene).children[1].rect.height, 20.0, "unwrapped row ignores row_span");
+
+        // A signal resolving to `nil` defaults the span to 1.
+        lua.load("wrap:set(true) span:set(nil)").exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(boxes(flow_of(&scene)), [(0.0, 0.0, 50.0, 20.0), (55.0, 0.0, 50.0, 20.0), (110.0, 0.0, 50.0, 20.0)]);
+
+        // Stacking rect ignores spans and keeps all children in the one shared cell.
+        let (scene, ..) = applied(
+            "panel { id = 'bar', child = rect { width = 100, height = 50, children = {
+                rect { width = 20, height = 20, column_span = 3, row_span = 3 },
+                rect { width = 20, height = 20, align_h = 'end', align_v = 'end' },
+            } } }",
+        );
+        assert_eq!(boxes(flow_of(&scene)), [(0.0, 0.0, 20.0, 20.0), (80.0, 30.0, 20.0, 20.0)]);
+    }
+
+    /// Flipping `homogeneous` or `wrap` while hidden must still refresh children's solver styles on thaw.
+    #[test]
+    fn flipping_homogeneous_or_wrap_while_hidden_refreshes_children_on_thaw() {
+        let (mut scene, lua, shaping, surface) = applied(
+            "open = state('open', true) same = state('same', false) wrap = state('wrap', false)
+            return panel { id = 'bar', child = row { visible = open, homogeneous = same, wrap = wrap, width = 160, spacing = 5,
+                children = {
+                    rect { width = 'fill', height = 20, column_span = 2 },
+                    rect { width = 50, height = 'fill', row_span = 2 },
+                    rect { width = 50, height = 20 },
+                } } }",
+        );
+        assert_eq!(boxes(flow_of(&scene)), [(0.0, 0.0, 50.0, 20.0), (55.0, 0.0, 50.0, 20.0), (110.0, 0.0, 50.0, 20.0)]);
+
+        lua.load("open:set(false) same:set(true) wrap:set(true)").exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        lua.load("open:set(true)").exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(
+            boxes(flow_of(&scene)),
+            [(0.0, 0.0, 105.0, 20.0), (110.0, 0.0, 50.0, 40.0), (0.0, 20.0, 50.0, 20.0)]
+        );
+    }
+
+    /// A scrolling unwrapped `homogeneous` row with fixed-size spanning children computes scroll room
+    /// from the placed slot positions so trailing children remain reachable.
+    #[test]
+    fn scrolling_a_homogeneous_row_with_fixed_size_spanning_children_reaches_the_end() {
+        let (mut scene, lua, shaping, surface) = applied(
+            "s = scroll('s')
+            return panel { id = 'bar', child = row { homogeneous = true, max_width = 100, spacing = 10, scroll = s,
+                children = {
+                    rect { width = 60, height = 20, column_span = 2 },
+                    rect { width = 60, height = 20 },
+                } } }",
+        );
+        assert_eq!(boxes(flow_of(&scene)), [(0.0, 0.0, 60.0, 20.0), (140.0, 0.0, 60.0, 20.0)]);
+        lua.load("s:scroll_to(200)").exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(boxes(flow_of(&scene)), [(-100.0, 0.0, 60.0, 20.0), (40.0, 0.0, 60.0, 20.0)]);
+    }
+
+    #[test]
+    fn span_properties_validate_integer_range_animate_and_surface_refusal() {
+        let shaping = ShapingHandle::spawn();
+        for prop in ["column_span", "row_span"] {
+            for bad in ["0", "-1", "257", "1.5", "0/0", "1/0", "'2'"] {
+                let (lua, surface) = surface_from(&format!(
+                    "panel {{ id = 'bar', child = rect {{ width = 10, height = 10, {prop} = {bad} }} }}"
+                ));
+                let err = apply_at(&mut Scene::new(), &[surface], full(), &shaping, &lua).unwrap_err();
+                assert!(err.to_string().contains(prop), "{prop} = {bad}: {err}");
+            }
+            for anim in [format!("{{ {prop} = 100 }}"), format!("{{ exit = {{ duration = 100, {prop} = 2 }} }}")] {
+                let (lua, surface) = surface_from(&format!(
+                    "panel {{ id = 'bar', child = rect {{ width = 10, height = 10, animate = {anim} }} }}"
+                ));
+                let err = apply_at(&mut Scene::new(), &[surface], full(), &shaping, &lua).unwrap_err();
+                assert!(err.to_string().contains(prop), "animate {prop}: {err}");
+            }
+            let (lua, surface) = surface_from(&format!(
+                "panel {{ id = 'bar', animate = {{ {prop} = 100 }}, child = rect {{ width = 10, height = 10 }} }}"
+            ));
+            let err = apply_at(&mut Scene::new(), &[surface], full(), &shaping, &lua).unwrap_err();
+            assert!(err.to_string().contains("not a property of a `panel`"), "panel animate {prop}: {err}");
+            let lua = crate::layout::node::scene_lua();
+            let table: mlua::Table = lua
+                .load(format!("panel {{ id = 'bar', {prop} = 2, child = rect {{ width = 10, height = 10 }} }}"))
+                .eval()
+                .unwrap();
+            let err = crate::lua::nodes::deserialize_lua_table(&table).unwrap_err();
+            assert!(err.to_string().contains(prop), "panel {prop}: {err}");
+        }
     }
 
     #[test]

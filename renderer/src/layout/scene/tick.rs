@@ -7,8 +7,8 @@ use super::geometry::publish_geometry;
 use super::pass::{prior_position, solve_instance};
 use super::resolve::drop_injected_sizes;
 use super::solver::{
-    MainAxis, Measure, hold_leavers, main_axis_of, measure_for, new_solver_node, set_solver_children, taffy_failed,
-    taffy_style, update_solver_node,
+    Measure, ParentFlow, hold_leavers, measure_for, new_solver_node, set_solver_children, taffy_failed, taffy_style,
+    update_solver_node,
 };
 use super::{LayoutStyle, LogicalSize, PreparedNode, ResolvedNode, Scene, close, open_span};
 use crate::layout::instance::SurfaceInstance;
@@ -165,7 +165,7 @@ fn relayout_retained(
     at: &mut Option<Instant>,
     split: &mut TickSplit,
 ) -> Result<ResolvedNode, LayoutError> {
-    let prepared = prepare_retained(tree, root, (None, 0.0), lua, now, false, false)?;
+    let prepared = prepare_retained(tree, root, (ParentFlow::Stack, 0.0), lua, now, false, false)?;
     close(at, &mut split.prepare);
     let solved = solve_instance(tree, prepared, available, fonts, now, None);
     close(at, &mut split.solve);
@@ -181,13 +181,13 @@ fn relayout_retained(
 pub(super) fn prepare_retained(
     tree: &mut taffy::TaffyTree<Measure>,
     mut node: ResolvedNode,
-    parent_flow: (Option<MainAxis>, f32),
+    parent_flow: (ParentFlow, f32),
     lua: &Lua,
     now: Instant,
     move_on_solve: bool,
     thawing: bool,
 ) -> Result<PreparedNode, LayoutError> {
-    let (parent_axis, _) = parent_flow;
+    let (parent_layout, _) = parent_flow;
     let prior_position = (move_on_solve && !thawing).then(|| prior_position(&node, tree, parent_flow)).flatten();
     let prior_size = (move_on_solve && !thawing).then_some((node.rect.width, node.rect.height));
     let old_scroll = node.scrolled;
@@ -253,13 +253,13 @@ pub(super) fn prepare_retained(
         Some(taffy_id) => {
             if relayout {
                 let measure = measure_for(id, kind, paint.as_ref(), &properties, &style)?;
-                update_solver_node(tree, taffy_id, kind, &properties, &style, parent_axis, measure)?;
+                update_solver_node(tree, taffy_id, kind, &properties, &style, parent_layout, measure)?;
             }
             taffy_id
         }
         None => {
             let measure = measure_for(id, kind, paint.as_ref(), &properties, &style)?;
-            new_solver_node(tree, kind, &properties, &style, parent_axis, measure)?
+            new_solver_node(tree, kind, &properties, &style, parent_layout, measure)?
         }
     };
     let node = PreparedNode {
@@ -290,21 +290,21 @@ pub(super) fn prepare_retained(
     if !node.style.visible {
         return Ok(node);
     }
-    prepare_retained_children(tree, node, (parent_axis, old_scroll), lua, now, move_on_solve, thawing)
+    prepare_retained_children(tree, node, (parent_layout, old_scroll), lua, now, move_on_solve, thawing)
 }
 
 /// `node`'s retained children, in `frozen`, laid out again as they are.
 fn prepare_retained_children(
     tree: &mut taffy::TaffyTree<Measure>,
     mut node: PreparedNode,
-    parent_flow: (Option<MainAxis>, f32),
+    parent_flow: (ParentFlow, f32),
     lua: &Lua,
     now: Instant,
     move_on_solve: bool,
     thawing: bool,
 ) -> Result<PreparedNode, LayoutError> {
-    let (parent_axis, old_scroll) = parent_flow;
-    let own_axis = main_axis_of(node.kind, &node.properties)?;
+    let (parent_layout, old_scroll) = parent_flow;
+    let own_flow = ParentFlow::of(node.kind, &node.properties, &node.style)?;
     let had_leavers = node.frozen.iter().any(|child| child.leaving);
     for child in std::mem::take(&mut node.frozen) {
         if child.leaving {
@@ -315,7 +315,7 @@ fn prepare_retained_children(
             node.children.push(super::PreparedChild::Built(prepare_retained(
                 tree,
                 child,
-                (own_axis, old_scroll),
+                (own_flow, old_scroll),
                 lua,
                 now,
                 move_on_solve,
@@ -324,7 +324,7 @@ fn prepare_retained_children(
         }
     }
     if had_leavers {
-        tree.set_style(node.taffy, taffy_style(node.kind, &node.properties, &node.style, parent_axis)?)
+        tree.set_style(node.taffy, taffy_style(node.kind, &node.properties, &node.style, parent_layout)?)
             .map_err(taffy_failed)?;
     }
     hold_leavers(tree, node.taffy, &node.style, node.allocated_axes, &node.leaving)?;

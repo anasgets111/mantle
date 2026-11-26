@@ -90,7 +90,7 @@ inside one. An entry's timing read from a signal applies to the run already unde
 | Target changes mid-flight | An eased tween returning to its prior endpoint shortens the run according to the progress already covered. Other eased targets and keyframe entries start over from the value on screen. A spring keeps its velocity ([spring](#spring)) |
 | Property removed from `animate` | Its tween stops and the property snaps to the resolved value |
 | Hidden subtree (`visible = false`) | Tweens freeze and request no frames; they settle when it shows again. Showing the subtree cancels its moves |
-| `z`, `animate`, or a name the node kind does not accept | Refused: the pass fails with an error naming the entry. `move`, `exit` and `scroll` are special entries |
+| `z`, `column_span`, `row_span`, `animate`, or a name the node kind does not accept | Refused: the pass fails with an error naming the entry. `move`, `exit` and `scroll` are special entries |
 
 ### What can animate
 

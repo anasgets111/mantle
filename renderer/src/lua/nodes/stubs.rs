@@ -363,7 +363,7 @@ const NODES_HEADER: &str = r##"---@meta
 --- - `keyframes`: at least 2 values, no holes, at least one segment with time; walks instead of easing to the resolved value (ADR-0152). `loops` `[1, 10000]` or `"infinite"`, default `1`, only with `keyframes`. Bind `animate` to start or stop one. A first frame of `"current"` starts on the value on screen.
 --- - `run`: a different number starts a new `keyframes` run, even mid-run with the same frames.
 ---@alias MoveAnimation {MoveAnimation} `animate.move`: eased timing for a matched node's changed layout position. A bare number is `duration`; a table requires `duration`. `from`, `keyframes`, `loops` and `spring` are refused.
----@alias Animations {Animations} Property name to animation, plus `move` and `exit`; each kind's `animate` field names its own, e.g. `RectAnimations`. Names the node does not accept, `z` and `animate` are refused. Numbers, percents, colours and numeric `Edges`/`Corners`/`Axes` tween against the same shape; anything else snaps.
+---@alias Animations {Animations} Property name to animation, plus `move` and `exit`; each kind's `animate` field names its own, e.g. `RectAnimations`. Names the node does not accept, `z`, `column_span`, `row_span` and `animate` are refused. Numbers, percents, colours and numeric `Edges`/`Corners`/`Axes` tween against the same shape; anything else snaps.
 ---@alias Exit {Exit} `animate.exit`: timing as in `Animation` (`duration` or `spring` required once a target is named) plus `property = target` pairs the node eases to after a pass drops it (ADR-0150). A target starts from the shown value, or from the identity: `1` for `opacity`/`scale`, `0.5` for `origin`, alpha 0 for a colour, `0` otherwise.
 
 ---[docs]({DOCS}nodes/index.html#common-properties)

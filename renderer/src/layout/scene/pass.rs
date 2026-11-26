@@ -9,7 +9,7 @@ use super::field::FieldDrafts;
 use super::finish::finish;
 use super::resolve::{DroppedValues, Resolved, resolve};
 use super::solver::{
-    MainAxis, Measure, hold_leavers, main_axis_of, measure_for, new_solver_node, release_solver_nodes,
+    MainAxis, Measure, ParentFlow, hold_leavers, measure_for, new_solver_node, release_solver_nodes,
     set_solver_children, solve, taffy_failed, update_solver_node,
 };
 use super::tick::{advance_leaving, advanced_dissolve, prepare_retained};
@@ -171,13 +171,13 @@ pub(super) fn prepare(
     mut retained: Option<ResolvedNode>,
     kind: &'static str,
     resolved: Resolved,
-    parent_flow: (Option<MainAxis>, f32),
+    parent_flow: (ParentFlow, f32),
     (thawing, reentry, same_flow): (bool, bool, bool),
     lua: &Lua,
     now: Instant,
     depth: u32,
 ) -> Result<PreparedNode, LayoutError> {
-    let (parent_axis, _) = parent_flow;
+    let (parent_layout, _) = parent_flow;
     // Removed while hidden means removed off screen: no exit plays anywhere under a thaw.
     let thawing = thawing || retained.as_ref().is_some_and(|r| !r.visible);
 
@@ -185,7 +185,13 @@ pub(super) fn prepare(
     let old_scroll = retained.as_ref().map_or(0.0, |node| node.scrolled);
     let field_top = retained.as_mut().and_then(|node| node.field_top.take());
     let kept = retained.as_ref().is_some_and(|r| Rc::ptr_eq(&r.layout_style, &resolved.style));
-    let old_axis = retained.as_ref().map(|r| main_axis_of(kind, &r.properties)).transpose()?;
+    // A hidden container froze its children without updating their solver styles, so on thaw
+    // treat its prior flow as unknown and refresh direct children against `own_flow`.
+    let old_flow = retained
+        .as_ref()
+        .filter(|r| r.visible)
+        .map(|r| ParentFlow::of(kind, &r.properties, &r.layout_style))
+        .transpose()?;
     let Resolved { properties, style, paint, tweens, movement: move_spec, memo: resolve_memo } = resolved;
     let prior_position = retained.as_ref().filter(|_| !thawing).and_then(|r| prior_position(r, tree, parent_flow));
     let prior_size = retained.as_ref().filter(|_| !thawing).map(|r| (r.rect.width, r.rect.height));
@@ -213,17 +219,17 @@ pub(super) fn prepare(
     // Before the children, so their ids attach afterwards, and so the `taffy::Style` behind it is
     // gone from the stack by the time this frame recurses (see `new_solver_node`).
     let taffy_id = match old_taffy {
-        // Kept under a parent that kept its axis. A leaver's hold (`hold_leavers`) is undone only
+        // Kept under a parent that kept its flow. A leaver's hold (`hold_leavers`) is undone only
         // by the rebuild, so a node with one rebuilds.
         Some(taffy_id) if kept && same_flow && leaving.is_empty() => taffy_id,
         Some(taffy_id) => {
             let measure = measure_for(id, kind, paint.as_ref(), &properties, &style)?;
-            update_solver_node(tree, taffy_id, kind, &properties, &style, parent_axis, measure)?;
+            update_solver_node(tree, taffy_id, kind, &properties, &style, parent_layout, measure)?;
             taffy_id
         }
         None => {
             let measure = measure_for(id, kind, paint.as_ref(), &properties, &style)?;
-            new_solver_node(tree, kind, &properties, &style, parent_axis, measure)?
+            new_solver_node(tree, kind, &properties, &style, parent_layout, measure)?
         }
     };
 
@@ -263,8 +269,8 @@ pub(super) fn prepare(
         return Ok(node);
     }
     let (mut fresh_children, mut matched_candidates, mut unclaimed) = children_this_pass(scene, &mut node, lua)?;
-    let own_axis = main_axis_of(kind, &node.properties)?;
-    let same_child_flow = old_axis == Some(own_axis);
+    let own_flow = ParentFlow::of(kind, &node.properties, &node.style)?;
+    let same_child_flow = old_flow == Some(own_flow);
 
     node.children.reserve(fresh_children.len());
     let mut failed = Vec::new();
@@ -276,7 +282,7 @@ pub(super) fn prepare(
                 tree,
                 &mut node,
                 &mut matched_candidates[index],
-                (own_axis, old_scroll),
+                (own_flow, old_scroll),
                 lua,
                 now,
                 (thawing, same_child_flow),
@@ -339,7 +345,7 @@ pub(super) fn prepare(
         let child = (|| {
             let resolved = resolve(child_kind, child_raw, reusable.as_mut(), now, lua, reentry, Ok)?;
             let flags = (thawing, reentry, same_child_flow);
-            prepare(scene, tree, reusable, child_kind, resolved, (own_axis, old_scroll), flags, lua, now, depth + 1)
+            prepare(scene, tree, reusable, child_kind, resolved, (own_flow, old_scroll), flags, lua, now, depth + 1)
         })();
         let dropped = DroppedValues::under_child(lua, dropped_before, here);
         if let (Some(memo), Some(item)) = (node.list_memo.as_mut(), item) {
@@ -385,7 +391,7 @@ pub(super) fn prepare(
             if style.window != room {
                 std::rc::Rc::make_mut(style).window = room;
                 let measure = measure_for(id, kind, paint, props, style)?;
-                update_solver_node(tree, taffy, kind, props, style, own_axis, measure)?;
+                update_solver_node(tree, taffy, kind, props, style, own_flow, measure)?;
             }
         }
     }
@@ -447,7 +453,7 @@ fn keep_item(
     tree: &mut taffy::TaffyTree<Measure>,
     node: &mut PreparedNode,
     kept: &mut Option<ResolvedNode>,
-    parent_flow: (Option<MainAxis>, f32),
+    parent_flow: (ParentFlow, f32),
     lua: &Lua,
     now: Instant,
     (thawing, same_flow): (bool, bool),
@@ -606,11 +612,11 @@ fn kept_items(
 pub(super) fn prior_position(
     node: &ResolvedNode,
     tree: &taffy::TaffyTree<Measure>,
-    parent_flow: (Option<MainAxis>, f32),
+    parent_flow: (ParentFlow, f32),
 ) -> Option<(f32, f32)> {
-    let (parent_axis, parent_scroll) = parent_flow;
+    let (parent_layout, parent_scroll) = parent_flow;
     node.taffy.and_then(|id| tree.layout(id).ok()).map(|layout| (layout.location.x, layout.location.y)).or_else(|| {
-        node.visible.then_some(match parent_axis {
+        node.visible.then_some(match parent_layout.axis() {
             Some(MainAxis::Horizontal) => (node.rect.x + parent_scroll, node.rect.y),
             Some(MainAxis::Vertical) => (node.rect.x, node.rect.y + parent_scroll),
             None => (node.rect.x, node.rect.y),

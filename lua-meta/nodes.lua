@@ -55,7 +55,7 @@
 --- - `keyframes`: at least 2 values, no holes, at least one segment with time; walks instead of easing to the resolved value (ADR-0152). `loops` `[1, 10000]` or `"infinite"`, default `1`, only with `keyframes`. Bind `animate` to start or stop one. A first frame of `"current"` starts on the value on screen.
 --- - `run`: a different number starts a new `keyframes` run, even mid-run with the same frames.
 ---@alias MoveAnimation number|{ duration: number|Bound, delay?: number|Bound, easing?: Easing|Bound, [string]: "no such property" } `animate.move`: eased timing for a matched node's changed layout position. A bare number is `duration`; a table requires `duration`. `from`, `keyframes`, `loops` and `spring` are refused.
----@alias Animations table<string, Animation> Property name to animation, plus `move` and `exit`; each kind's `animate` field names its own, e.g. `RectAnimations`. Names the node does not accept, `z` and `animate` are refused. Numbers, percents, colours and numeric `Edges`/`Corners`/`Axes` tween against the same shape; anything else snaps.
+---@alias Animations table<string, Animation> Property name to animation, plus `move` and `exit`; each kind's `animate` field names its own, e.g. `RectAnimations`. Names the node does not accept, `z`, `column_span`, `row_span` and `animate` are refused. Numbers, percents, colours and numeric `Edges`/`Corners`/`Axes` tween against the same shape; anything else snaps.
 ---@alias Exit { duration?: number|Bound, delay?: number|Bound, easing?: Easing|Bound, spring?: Spring|Bound, [string]: any } `animate.exit`: timing as in `Animation` (`duration` or `spring` required once a target is named) plus `property = target` pairs the node eases to after a pass drops it (ADR-0150). A target starts from the shown value, or from the identity: `1` for `opacity`/`scale`, `0.5` for `origin`, alpha 0 for a colour, `0` otherwise.
 
 ---[docs](https://anasgets111.github.io/mantle/nodes/index.html#common-properties)
@@ -109,6 +109,8 @@
 ---@field margin? number|Edges|Bound Default `0`. Outer spacing; a number sets all four edges. Not range-checked.
 ---@field align_h? Align|Bound Default `"start"`. Places the node in its parent: both axes under a stacking parent, only the cross axis under a `row`/`column`/`list`. On a `row` it also packs the children, which ignore their own (`"stretch"` packs as `"start"`). `"stretch"` overrides a pixel size; `"fill"` off the parent's flow axis overrides alignment.
 ---@field align_v? Align|Bound Default `"start"`. As `align_h` with the axes swapped: packs a `column`'s children.
+---@field column_span? integer|Bound `[1, 256]`, default `1`. Columns this node spans in a `homogeneous` `row` or wrapped `column`. Ignored elsewhere; `animate` refuses it.
+---@field row_span? integer|Bound `[1, 256]`, default `1`. Rows this node spans in a `homogeneous` `column` or wrapped `row`. Ignored elsewhere; `animate` refuses it.
 
 ---Box paint for `rect`, `row`, `column` and every surface role.
 ---[docs](https://anasgets111.github.io/mantle/guide/paint.html#box-properties)

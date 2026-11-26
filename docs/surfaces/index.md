@@ -65,7 +65,7 @@ The root has no parent, so a few node properties mean something else on it:
 | `width`, `height` | Role-specific: the layer surface's size on a [`panel`](panel.md#size), the root's size inside the configured window on a [`window`](window.md#size), the popup's size on a [`popup`](popup.md#properties). Refused on a `lock` |
 | `min_width`, `max_width`, `min_height`, `max_height` | Bound the root's size: they cap a content-sized or spanned `panel`, a `popup`, and a `window` or `lock` root |
 | `margin` | A `panel`'s offset from its anchored edges. Refused on the other roles |
-| `align_h`, `align_v` | Refused: the root sits at the surface's origin |
+| `align_h`, `align_v`, `column_span`, `row_span` | Refused: the root has no parent |
 | Everything else | As on any box node |
 
 ## Reload and structural fields

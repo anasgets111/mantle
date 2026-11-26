@@ -16,7 +16,7 @@ use crate::image::{CaptureFit, Fit};
 use crate::layout::hit::LogicalPoint;
 use crate::layout::node::prop::{
     Bound, Callback, Color, Field, FileText, Flag, Focus, Handle, Id, Name, Num, OneOf, Path, Pixels, Prop, Refused,
-    Resets, Structural, Text,
+    Resets, Span, Structural, Text,
 };
 use crate::layout::node::{
     Align, Anchor, AnchorRect, Animations, Axes, Background, Blend, Caret, Children, ClipShape, ColorOrEdges,
@@ -233,6 +233,14 @@ props! {
         ///
         /// Book: See [alignment](#alignment)
         align_v: Bound<OneOf<Align>> = absent(Choice("start")).only(PLACED);
+        /// Columns this node spans in a `homogeneous` `row` or wrapped `column`. Ignored elsewhere; `animate` refuses it.
+        ///
+        /// Book: Columns this node spans in a `homogeneous` `row` or wrapped `column` ([spanning slots](row-column.md#spanning-slots)). Ignored elsewhere; `animate` refuses it
+        column_span: Bound<Span> = range(1.0, 256.0).absent(Number(1.0)).only(PLACED);
+        /// Rows this node spans in a `homogeneous` `column` or wrapped `row`. Ignored elsewhere; `animate` refuses it.
+        ///
+        /// Book: Rows this node spans in a `homogeneous` `column` or wrapped `row` ([spanning slots](row-column.md#spanning-slots)). Ignored elsewhere; `animate` refuses it
+        row_span: Bound<Span> = range(1.0, 256.0).absent(Number(1.0)).only(PLACED);
         /// `false` removes the node from layout, paint and spacing but keeps its subtree frozen in memory (ADR-0124); to switch views, bind the parent's `children`.
         ///
         /// Book: `false` removes the node from layout, paint and spacing and freezes its subtree ([showing and hiding](#showing-hiding-and-switching))

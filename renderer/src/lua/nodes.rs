@@ -313,14 +313,17 @@ mod meta_stub_tests {
             let expected: BTreeSet<String> = super::accepted_properties(kind).into_iter().map(str::to_string).collect();
             assert_eq!(declared, expected, "lua-meta's {class} is out of step with the property table for `{kind}`");
 
-            // `animate` takes the kind's own names but `z`, `animate` and refused ones, plus `exit` and `move`.
+            // `animate` takes the kind's own names but `z`, `column_span`, `row_span`, `animate` and refused ones, plus `exit` and `move`.
             let alias = format!("---@alias {}Animations {{ ", capitalize(kind));
             let line = source.lines().find_map(|line| line.strip_prefix(alias.as_str())).expect("an Animations alias");
             let keys: BTreeSet<String> =
                 line.split(", ").filter_map(|entry| entry.split_once("?: ")).map(|(key, _)| key.to_string()).collect();
             let mut expected: BTreeSet<String> = expected
                 .into_iter()
-                .filter(|name| !matches!(name.as_str(), "z" | "animate") && !super::refused(kind, name))
+                .filter(|name| {
+                    !matches!(name.as_str(), "z" | "column_span" | "row_span" | "animate")
+                        && !super::refused(kind, name)
+                })
                 .collect();
             expected.insert("exit".to_string());
             expected.insert("move".to_string());
