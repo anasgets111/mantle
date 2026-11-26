@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+## 0.16.0 - 2026-11-26
+
 17 fixes, 1 change and 11 additions. No breaking changes.
 
 ### Shapes, paths and paint
