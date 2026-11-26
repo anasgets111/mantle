@@ -7,40 +7,48 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
-- Added: `mantle.applications` now exposes live Unity `LauncherEntry` badges, progress and urgency under `badges[desktop_id]` (`count`, `count_visible`, `progress`, `progress_visible`, `urgent`), dropping entries when their D-Bus sender leaves the session bus.
+17 fixes, 1 change and 11 additions. No breaking changes.
 
-- Fixed: `mantle_sdf` on a melted `shape` now follows every island and hole (within the 256-point, 42-loop budget) instead of only the biggest outline.
+### Shapes, paths and paint
 
-- Fixed: a `textfield` caret now stops inside ligatures (such as `f` and `i` in `fi`, or `ل` and `ا` in `لا`) when stepping or clicking to place the caret, aligning with its selection highlight instead of jumping past the ligature.
+- Added: a box `shape` takes up to 41 holes: closed contours after the outer contour whose `M` sets `hole = true`. Fill, border, shadows, clip, hit testing, `compositor_blur` and `mantle_sdf` leave the union of the holes empty, overlaps and cuts past the outer edge included, and `ring` strokes each hole's rim. Shaders reading `mantle_shape` directly see each closed loop followed by `(1e9, 1e9)` when more than one loop remains; skip any edge touching that sentinel. A hole that only notches the outer edge leaves one loop and no sentinel.
+- Added: `path` takes `stroke_dash`, a list of dash and gap lengths in px, and `stroke_dash_offset`, which tweens. Dashes stay anchored on the path under `trim_start` and `trim_end`.
+- Added: boxes take `border_dash` and `border_dash_offset`, running the same dash pattern around any radius, corner shape, `shape`, per-edge widths and per-edge colours.
+- Added: `path` takes `taper_start` and `taper_end`, lengths in px over which each open stroke end narrows to one physical pixel. Both follow `trim_start`/`trim_end` and animate.
+- Added: `image { fit = "tile" }` repeats a picture from the box's top-left corner at one image pixel per logical px for textures over boxes of any size. `capture.fit` refuses `"tile"`.
+- Fixed: `mantle_sdf` on a melted `shape` follows every island and hole within the 256-point, 42-loop budget instead of only the largest outline.
+- Fixed: a node with `effect` (blur, shader, colour filter, `blend` or content shadow) under a `scale`, `rotate` or `translate` ancestor maps its bounds through the ancestor transform instead of clipping early to the untransformed surface rect.
+- Fixed: keyframes and tweens on `effect` no longer restart on unrelated passes when `effect.shader` shares a `params` or `images` table across frames or passes, or after a tween finishes without an explicit `progress`.
 
-- Added: `mantle.applications` now resolves localized `Name`, `GenericName`, `Comment`, `Keywords` and `Icon` from `LC_ALL`/`LC_MESSAGES`/`LANG` (`ll_CC@mod`, `ll_CC`, `ll@mod`, `ll`, bare), exposes each entry's `Exec`-backed `[Desktop Action ...]` items on `entries[].actions` (`key`, `name`, `icon`), and adds `mantle.applications:launch_action(id, action, opts?)`.
+### Text and fonts
 
-- Fixed: a transparent container (a `rect`, `row`, `column` or `list` with no `background`, `border_width`, `effect.backdrop`, explicit `hittable = true` or input property), an unpainted `path`, or a bare `shader` over a sibling such as a click-outside catcher no longer swallows pointer events where none of its children sit; clicks pass through to the sibling beneath it.
-- Fixed: a node with `effect` (blur, shader, colour filter, `blend` or content shadow) under a `scale`, `rotate` or `translate` ancestor is no longer cut to the surface's untransformed bounds, so content scaled down or shifted into view is not clipped early.
-- Added: `column_span` and `row_span` (integers `[1, 256]`, default `1`) let a child of a `homogeneous` `row` or `column` span multiple slots across columns, rows, or both when wrapped.
-- Fixed: a `homogeneous` `column` now applies each child's `align_h` horizontally and lets `height = "fill"` fill its vertical slot instead of treating `align_h` as vertical alignment.
-- Fixed: a keyframe run or tween on `effect` no longer restarts on unrelated passes when `effect.shader` shares a `params` or `images` table across frames or passes, or after a tween finishes without an explicit `progress`.
-- Fixed: the polkit authentication agent now registers when Mantle starts without `$XDG_SESSION_ID` (such as from a terminal, script or `systemd-run`), via logind's `auto` session lookup; `pkexec` used to fail with no authentication agent.
-- Fixed: `mantle.notifications:set_sound(urgency, "")` clears the configured sound for that urgency tier (a sender's own `sound-file` still plays); an empty path used to raise as a relative path.
-- Fixed: content-sized popups opened from a panel use that panel's output size as their layout bound.
-- Fixed: the type stubs read a `Rect`'s fields as numbers, accept a `geometry` rect as `anchor_rect`, and give `os.date` a string result except for `"*t"` and `"!*t"`, so lua-language-server no longer flags `rect.width` arithmetic or `os.date("%H:%M"):gsub(...)`.
-- Fixed: a press on another of the shell's surfaces, such as the bar, a full-screen modal or the desktop, now closes a grabbing popup on niri and Hyprland, which closed it only for a press on another app. Its `on_dismiss` runs, then the press reaches its target, except a press on the popup's own opener (inside its `anchor_rect`), which only closes it.
-- Fixed: opening a grabbing popup while another is shown, such as a second panel opened from a click on the bar, no longer ends the shell on niri with "xdg_popup was not created on the topmost popup". The other popup closes first and its `on_dismiss` runs.
-- Added: `mantle.network_profiles` lists saved NetworkManager profiles with their IP method, addresses, gateway, DNS servers and search domains, autoconnect and metered settings, and whether each is active. `mantle.network:update_profile(uuid, edit)` changes only the fields `edit` names, such as `{ ipv4 = { dns = { "1.1.1.1" }, ignore_auto_dns = true } }`, and saves the profile (NetworkManager 1.44+); `reapply_profile`, `activate_profile`, `deactivate_profile` and `delete_profile` act on a profile by UUID. A failure lands in `network_profiles.error`.
-- Fixed: `vpns` and the saved mark on `available_networks` follow a profile edited after startup, such as one renamed with `nmcli`; they kept the old values until another profile was added or removed.
-- Fixed: a key retyped with `network:connect` for a saved Wi-Fi network keeps the profile's DNS-over-TLS servers; saving the key dropped them.
-- Changed: `network.vpn_error` for a VPN that NetworkManager refuses to start carries NetworkManager's message, such as why the profile cannot start, instead of "connection failed".
-- Fixed: a `text` that fits its width no longer cuts glyph ink past its box sideways, so a script or italic face's last glyph (Caveat's "d") paints whole without right `padding`. Text wider than its box is still cut at the box's width, and a `textfield`'s line at the field's.
-- Added: `strikethrough = true` on a `text` content run draws a line through it in the run's colour, following the run across wrapped lines.
-- Fixed: an underline, a link or a `textfield` selection on a letter a font joins into a ligature with a plain neighbour (the `i` of `fi`) covers that letter's share of the ligature. The underline and selection drew nothing there and the link could not be clicked.
-- Added: `path` takes `taper_start` and `taper_end`, lengths in pixels over which each open stroke end narrows to one physical pixel, for pen and brush lines. They follow `trim_start`/`trim_end` and animate.
-- Added: `fonts { files = { "fonts/Caveat.ttf" }, "Caveat" }` registers font files a config ships, so it needs no font installed. A relative path is read from the config directory. Their families take those files over any installed copy, in the chain and in a `text` node's `font`; list every weight and style file you use. `mantle check` measures text in the declared fonts and warns about a font file it cannot read.
-- Added: `image { fit = "tile" }` repeats the picture from the box's top-left corner at one image pixel per logical px, for a paper, fabric or noise texture over a box of any size. `capture.fit` refuses it.
-- Added: a box `shape` takes up to 41 holes: after its closed contour, more closed contours whose `M` sets `hole = true`. Fill, border, shadows, clip, hit testing, the `compositor_blur` region and `mantle_sdf` leave the union of the holes empty, overlaps and parts past the outline included, and `ring` strokes each hole's rim too. A shader reading the `mantle_shape` uniform directly finds, when a holed shape leaves more than one loop, each loop closed and followed by a point at `(1e9, 1e9)`; skip any edge that touches one. A hole across the edge that only notches the outline leaves one loop and no such point.
-- Added: `path` takes `stroke_dash`, a list of dash and gap lengths in px, and `stroke_dash_offset`,
-  which tweens. Dashes keep their place on the path under `trim_*`.
-- Added: boxes take `border_dash` and `border_dash_offset`, the same pattern run round the border on
-  any radius, corner shape, `shape`, per-edge widths and per-edge colours.
+- Added: `fonts { files = { "fonts/Caveat.ttf" }, "Caveat" }` registers font files shipped with the config, resolving relative paths against the config directory. Those files win over installed copies of the same family in the chain and in `text.font`; list every weight and style file you use. `mantle check` measures text with them and warns on unreadable files.
+- Added: `strikethrough = true` on a `text` content run draws a line through the run in its colour across wrapped lines.
+- Fixed: a `text` that fits its width no longer clips sideways glyph ink past its box, so italic and script endings (such as Caveat's "d") paint whole without right `padding`. Text wider than its box still clips at the box width, and `textfield` lines still clip at the field width.
+- Fixed: underlines, links and `textfield` selections inside a ligature (such as the `i` of `fi`) cover that letter's share of the ligature. Before, the underline and selection drew nothing there and the link missed clicks.
+- Fixed: a `textfield` caret stops inside ligatures (such as `fi` or `لا`) when stepping or clicking, matching the selection highlight instead of jumping past the whole ligature.
+
+### Layout, input and popups
+
+- Added: `column_span` and `row_span` (integers `[1, 256]`, default `1`) let a child of a `homogeneous` `row` or `column` span multiple slots across columns, rows or both when wrapped.
+- Fixed: a `homogeneous` `column` applies each child's `align_h` horizontally and lets `height = "fill"` fill its vertical slot instead of treating `align_h` as vertical alignment.
+- Fixed: transparent containers (`rect`, `row`, `column` or `list` with no `background`, `border_width`, `effect.backdrop`, `hittable = true` or input property), unpainted `path` nodes and bare `shader` nodes pass pointer hits through empty space to siblings beneath them, such as a click-outside catcher.
+- Fixed: content-sized popups opened from a panel measure against that panel's output size.
+- Fixed: pressing another shell surface, such as a bar, modal or desktop, dismisses a grabbing popup on niri and Hyprland, where only pressing another app used to dismiss it. `on_dismiss` runs and the press reaches its target, except on the popup's own opener (`anchor_rect`), which only closes the popup.
+- Fixed: opening a grabbing popup while another is open closes the existing popup and runs its `on_dismiss` first, instead of ending the shell on niri with "xdg_popup was not created on the topmost popup".
+- Fixed: the type stubs read `Rect` fields as numbers, accept a `geometry` rect as `anchor_rect`, and type `os.date` as `string` except for `"*t"` and `"!*t"`, stopping false lua-language-server errors on `rect.width` math and `os.date("%H:%M"):gsub(...)`.
+
+### Capabilities
+
+- Added: `mantle.network_profiles` lists saved NetworkManager profiles with their IP method, addresses, gateway, DNS servers, search domains, autoconnect, metered flag and active state. `mantle.network:update_profile(uuid, edit)` updates only the fields `edit` names and saves the profile (NetworkManager 1.44+); `reapply_profile`, `activate_profile`, `deactivate_profile` and `delete_profile` act on a profile by UUID and report failures in `network_profiles.error`.
+- Added: `mantle.applications` resolves localized `Name`, `GenericName`, `Comment`, `Keywords` and `Icon` from `LC_ALL`/`LC_MESSAGES`/`LANG` (`ll_CC@mod`, `ll_CC`, `ll@mod`, `ll`, bare). It also exposes `Exec`-backed `[Desktop Action ...]` items on `entries[].actions` (`key`, `name`, `icon`) and adds `mantle.applications:launch_action(id, action, opts?)`.
+- Added: `mantle.applications.badges` exposes live Unity `LauncherEntry` state keyed by desktop id (`count`, `count_visible`, `progress`, `progress_visible`, `urgent`). Entries drop when their D-Bus sender disconnects.
+- Changed: `mantle.network.vpn_error` carries NetworkManager's refusal reason instead of `"connection failed"`.
+- Fixed: `mantle.network`'s `vpns` and the saved mark on `available_networks` follow external profile edits, such as renames via `nmcli`, instead of holding stale values until a profile is added or removed.
+- Fixed: retyping a Wi-Fi key with `mantle.network:connect` preserves the saved profile's DNS-over-TLS servers instead of dropping them.
+- Fixed: the polkit authentication agent registers via logind's `auto` session when `$XDG_SESSION_ID` is unset, such as when started from a terminal, script or `systemd-run`, so `pkexec` finds the agent.
+- Fixed: `mantle.notifications:set_sound(urgency, "")` clears that urgency tier's configured sound (sender `sound-file` hints still play) instead of raising as a relative path.
+- Fixed: `mantle.updates:install()` coalesces install log-line pushes to 100 ms instead of sending a full snapshot per output line, preventing renderer stalls during verbose package installs.
 
 ## 0.15.0 - 2026-11-22
 
