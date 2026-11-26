@@ -183,6 +183,15 @@ fn absolute<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String,
     if path.starts_with('/') { Ok(path) } else { Err(serde::de::Error::custom("expected an absolute path")) }
 }
 
+fn absolute_or_empty<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    let path = <String as serde::Deserialize>::deserialize(deserializer)?;
+    if path.is_empty() || path.starts_with('/') {
+        Ok(path)
+    } else {
+        Err(serde::de::Error::custom("expected an absolute path or \"\""))
+    }
+}
+
 fn absolute_all<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::Error> {
     let paths = <Vec<String> as serde::Deserialize>::deserialize(deserializer)?;
     if paths.iter().all(|path| path.starts_with('/')) {
@@ -294,7 +303,13 @@ mod tests {
                 decode::<NotificationsAction>("set_sound", json!(["low", "/usr/share/a.ogg"])),
                 Ok(r#"SetSound { urgency: Low, path: "/usr/share/a.ogg" }"#),
             ),
+            (
+                decode::<NotificationsAction>("set_sound", json!(["low", ""])),
+                Ok(r#"SetSound { urgency: Low, path: "" }"#),
+            ),
             (decode::<NotificationsAction>("set_sound", json!(["low", "a.ogg"])), Err("absolute")),
+            (decode::<NotificationsAction>("set_sound", json!(["low", " "])), Err("absolute")),
+            (decode::<NotificationsAction>("set_sound", json!(["low", null])), Err("invalid length 1")),
             (
                 decode::<AndroidConnectAction>("send_files", json!(["phone", ["/a.txt", "/b.txt"]])),
                 Ok(r#"SendFiles { id: "phone", files: ["/a.txt", "/b.txt"] }"#),

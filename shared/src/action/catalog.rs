@@ -526,10 +526,11 @@ pub enum NotificationsAction {
     /// Sends reply text to a notification with `has_reply`; removes it unless it is resident.
     Reply { id: u32, text: String },
     /// Sets an urgency tier's sound: an existing file under `/usr/share`, `/usr/local/share`, `/opt`
-    /// or `$XDG_DATA_HOME`, else ignored; `path` may start with `~/`. Only Ogg Vorbis and 16-bit PCM WAV play.
+    /// or `$XDG_DATA_HOME`, else ignored; `path` may start with `~/`, and `""` clears the tier.
+    /// Only Ogg Vorbis and 16-bit PCM WAV play.
     SetSound {
         urgency: Urgency,
-        #[serde(deserialize_with = "super::absolute")]
+        #[serde(deserialize_with = "super::absolute_or_empty")]
         path: String,
     },
     /// Gates non-critical notification sounds.

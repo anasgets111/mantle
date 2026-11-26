@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: `mantle.notifications:set_sound(urgency, "")` clears the configured sound for that urgency tier (a sender's own `sound-file` still plays); an empty path used to raise as a relative path.
 - Fixed: content-sized popups opened from a panel use that panel's output size as their layout bound.
 - Fixed: the type stubs read a `Rect`'s fields as numbers, accept a `geometry` rect as `anchor_rect`, and give `os.date` a string result except for `"*t"` and `"!*t"`, so lua-language-server no longer flags `rect.width` arithmetic or `os.date("%H:%M"):gsub(...)`.
 - Fixed: a press on another of the shell's surfaces, such as the bar, a full-screen modal or the desktop, now closes a grabbing popup on niri and Hyprland, which closed it only for a press on another app. Its `on_dismiss` runs, then the press reaches its target, except a press on the popup's own opener (inside its `anchor_rect`), which only closes it.

@@ -415,7 +415,7 @@ impl Capability {
     }
 }
 
-/// The argument that names a file or folder, which the Supervisor only ever sees absolute.
+/// The path argument whose leading `~/` is expanded before the command leaves the Renderer.
 // ponytail: listed by hand; a new action taking a path must be added here (upgrade: mark it in the catalog).
 fn path_slot(capability: &str, action: &str) -> Option<usize> {
     match (capability, action) {
@@ -812,6 +812,16 @@ pub(crate) mod tests {
             let (member, _) = Capability::new(name, DirtyFlag::new(), commands.clone());
             lua.globals().set(name, member).unwrap();
         }
+        lua.load(r#"notifications:set_sound("normal", "")"#).exec().unwrap();
+        assert_eq!(
+            queued_command(&mut rx).unwrap().params.arguments,
+            vec![serde_json::json!("normal"), serde_json::json!("")]
+        );
+        for call in [r#"notifications:set_sound("normal", "a.ogg")"#, r#"folders:watch("")"#, r#"storage:open("")"#] {
+            let err = lua.load(call).exec().unwrap_err().to_string();
+            assert!(err.contains("expected an absolute path"), "{call}: {err}");
+        }
+        assert!(queued_command(&mut rx).is_none(), "refused paths must queue nothing");
         if expand("x").is_err() {
             assert!(lua.load(r#"folders:watch("~/Pictures")"#).exec().is_err(), "no $HOME, no expansion");
             return;

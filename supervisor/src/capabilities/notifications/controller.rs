@@ -312,8 +312,12 @@ impl NotificationsController {
     }
 
     /// `notifications:set_sound(urgency, path)` (ADR-0033) registers an existing file under the
-    /// sound roots; invalid/untrusted paths log.
+    /// sound roots, or clears `urgency` on `""`; invalid/untrusted paths log.
     pub fn set_sound(&self, urgency: Urgency, path: &str) {
+        if path.is_empty() {
+            self.state.lock().expect("mutex poisoned").sound_registry.remove(&urgency);
+            return;
+        }
         match validate_trusted_path(path, &self.sound_roots) {
             Some(validated) => {
                 self.state.lock().expect("mutex poisoned").sound_registry.insert(urgency, validated);
@@ -1020,6 +1024,52 @@ mod tests {
         controller.set_quiet(true);
         notify("vesktop", None).await;
         assert!(sound_rx.try_recv().is_err(), "quiet is silent");
+    }
+
+    #[tokio::test]
+    async fn set_sound_with_empty_path_clears_only_that_urgency_tier() {
+        let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (sound_tx, sound_rx) = std::sync::mpsc::sync_channel(1);
+        let sounds = tempfile::tempdir().unwrap();
+        let sound = sounds.path().join("message.oga");
+        let theme = sounds.path().join("sounds/freedesktop/stereo");
+        std::fs::create_dir_all(&theme).unwrap();
+        std::fs::write(&sound, b"").unwrap();
+        std::fs::write(theme.join("bell.oga"), b"").unwrap();
+
+        let mut controller = NotificationsController::inert(events, sound_tx);
+        controller.sound_roots = Arc::from([sounds.path().to_path_buf()]);
+        let send = dispatcher(shared::Capability::Notifications, super::super::dispatch, &controller);
+        let notify = |urgency: u8, sound_name: Option<&str>| {
+            let hints =
+                Hints { urgency: Some(urgency), sound_name: sound_name.map(str::to_string), ..Hints::default() };
+            controller.notify("app".into(), 0, String::new(), "s".into(), String::new(), vec![], hints, -1)
+        };
+
+        send("set_sound", vec![json!("normal"), json!(sound.to_str().unwrap())]);
+        send("set_sound", vec![json!("critical"), json!(sound.to_str().unwrap())]);
+        notify(1, None).await;
+        assert!(sound_rx.try_recv().is_ok(), "registered tier plays");
+
+        // An invalid path leaves the tier registered; `""` clears only the named tier.
+        send("set_sound", vec![json!("normal"), json!("/nonexistent/sound.oga")]);
+        notify(1, None).await;
+        assert!(sound_rx.try_recv().is_ok(), "untrusted path does not clear an existing sound");
+
+        send("set_sound", vec![json!("normal"), json!("")]);
+        notify(1, None).await;
+        assert!(sound_rx.try_recv().is_err(), "cleared tier plays nothing");
+        notify(1, Some("bell")).await;
+        assert!(sound_rx.try_recv().is_err(), "sound-name stays silent once the tier is cleared");
+
+        notify(2, None).await;
+        assert!(sound_rx.try_recv().is_ok(), "clearing normal leaves critical registered");
+
+        // Clearing an already-empty tier is a no-op, and setting normal again plays again.
+        send("set_sound", vec![json!("low"), json!("")]);
+        send("set_sound", vec![json!("normal"), json!(sound.to_str().unwrap())]);
+        notify(1, None).await;
+        assert!(sound_rx.try_recv().is_ok(), "re-registering a cleared tier plays again");
     }
 
     #[tokio::test]

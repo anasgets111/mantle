@@ -988,7 +988,7 @@ local SecretsCapability = {}
 ---@field dismiss fun(self: NotificationsCapability, id: integer) Removes a queued notification.
 ---@field invoke_action fun(self: NotificationsCapability, id: integer, key: string) Invokes an `actions[].key`, or `"default"`; removes the notification unless it is resident.
 ---@field reply fun(self: NotificationsCapability, id: integer, text: string) Sends reply text to a notification with `has_reply`; removes it unless it is resident.
----@field set_sound fun(self: NotificationsCapability, urgency: Urgency, path: string) Sets an urgency tier's sound: an existing file under `/usr/share`, `/usr/local/share`, `/opt` or `$XDG_DATA_HOME`, else ignored; `path` may start with `~/`. Only Ogg Vorbis and 16-bit PCM WAV play.
+---@field set_sound fun(self: NotificationsCapability, urgency: Urgency, path: string) Sets an urgency tier's sound: an existing file under `/usr/share`, `/usr/local/share`, `/opt` or `$XDG_DATA_HOME`, else ignored; `path` may start with `~/`, and `""` clears the tier. Only Ogg Vorbis and 16-bit PCM WAV play.
 ---@field set_dnd fun(self: NotificationsCapability, enabled: boolean) Gates non-critical notification sounds.
 ---@field set_quiet fun(self: NotificationsCapability, enabled: boolean) Mutes non-critical sounds like `set_dnd`, without changing `dnd`.
 ---@field set_app_muted fun(self: NotificationsCapability, app: string, muted: boolean) Silences every sound from an app, critical included, matched exactly on `app_name` or `desktop_entry`.
