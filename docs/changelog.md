@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: a node with `effect` (blur, shader, colour filter, `blend` or content shadow) under a `scale`, `rotate` or `translate` ancestor is no longer cut to the surface's untransformed bounds, so content scaled down or shifted into view is not clipped early.
 - Added: `column_span` and `row_span` (integers `[1, 256]`, default `1`) let a child of a `homogeneous` `row` or `column` span multiple slots across columns, rows, or both when wrapped.
 - Fixed: a `homogeneous` `column` now applies each child's `align_h` horizontally and lets `height = "fill"` fill its vertical slot instead of treating `align_h` as vertical alignment.
 - Fixed: a keyframe run or tween on `effect` no longer restarts on unrelated passes when `effect.shader` shares a `params` or `images` table across frames or passes, or after a tween finishes without an explicit `progress`.

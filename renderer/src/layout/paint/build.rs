@@ -74,7 +74,7 @@ pub fn build_with_control(
     control: Option<NodeId>,
 ) -> DisplayList {
     let mut commands = Vec::new();
-    build_node(root, 0.0, 0.0, scale, (UNCLIPPED, root.rect), 1.0, focus, control, &mut commands);
+    build_node(root, 0.0, 0.0, scale, (UNCLIPPED, scaled(root.rect, scale)), 1.0, focus, control, &mut commands);
     DisplayList { commands }
 }
 
@@ -110,29 +110,18 @@ fn build_node(
     // pill's corner is outside its fill yet still takes a click (four pixels on a 34px control),
     // and a scoop's cut-out still takes the click and counts as input.
     // Upgrade path: hit testing should share this walk instead of a second copy of the rule.
-    // The group matrix moves what is inside it, not the ancestors' clip, so the clip enters pre-matrix.
+    // The group matrix moves what is inside it, not the ancestors' clip or surface bound, so both
+    // enter pre-matrix.
     // ponytail: a layer or shader inside a group gets only the rounded mapped clip, so a rotated child is cut by a bounding box.
     let outer = clip;
     let matrix = node.paint_matrix(rect).map(|matrix| affine_in_pixels(matrix, scale));
-    let (parent_clip, surface) = if let Some(matrix) = matrix {
-        let inverse = node::invert_affine(matrix);
-        // An empty clip stays empty: `transformed` would flip its inverted corners into a real rect.
-        let clip = match inverse {
-            Some(inverse) if !clip.is_empty() => super::transformed(inverse, clip),
-            _ => clip,
-        };
-        // The linear part is the movement-free transform's, so its inverse shifts the effect target.
-        let surface = match (node.movement.as_ref(), inverse) {
-            (Some(moving), Some(inverse)) => LogicalRect {
-                x: surface.x - (inverse[0] * moving.offset.0 + inverse[2] * moving.offset.1),
-                y: surface.y - (inverse[1] * moving.offset.0 + inverse[3] * moving.offset.1),
-                ..surface
-            },
-            _ => surface,
-        };
-        (clip, surface)
-    } else {
-        (clip, surface)
+    let (parent_clip, surface) = match matrix.and_then(node::invert_affine) {
+        Some(inverse) => (
+            // An empty clip stays empty: `transformed` would flip its inverted corners into a real rect.
+            if clip.is_empty() { clip } else { super::transformed(inverse, clip) },
+            node::transformed_bounds(inverse, surface),
+        ),
+        None => (clip, surface),
     };
     // An outline reaching past the box paints there too; children stay cut to the box.
     let bounds = match &node.paint {
@@ -303,6 +292,19 @@ fn build_node(
         _ => Vec::new(),
     };
     let blends_layers = layers.iter().any(|(_, blend)| *blend != Blend::Normal);
+    // ponytail: a negative spread pulls in content from further out than this. Upgrade path:
+    // invert `shadow_rect` about the box.
+    // A layered node's blur, shadow or shader can read pixels outside `surface` back into it, so
+    // nested layers in its subtree keep that reach too.
+    let surface = if layered.layers() {
+        let pad = layered.shadows.iter().fold(ring_pad, |pad, shadow| {
+            pad.max(self::reach(shadow.blur / 2.0) + shadow.offset.0.abs().max(shadow.offset.1.abs()))
+        });
+        let pad = pad.max(self::reach(layered.blur)).max(shader_padding(layered.shader.as_deref()));
+        grow(surface, pad * scale)
+    } else {
+        surface
+    };
     match rounded_clip(node) {
         // A mask covers the node's own paint too, as Qt's `OpacityMask` covers its item (ADR-0255).
         radius if mask.is_some() => {
@@ -405,15 +407,7 @@ fn build_node(
         let commands: Vec<DrawCmd> = out.drain(body..).collect();
         // A transformed child overflowing the box keeps the overflow it has without the layer.
         let bounds = commands.iter().map(command_bounds).filter(|r| !r.is_empty()).fold(own, PhysicalRect::union);
-        // ponytail: a negative spread pulls in content from further out than this. Upgrade path:
-        // invert `shadow_rect` about the box.
-        let pad = layered.shadows.iter().fold(ring_pad, |pad, shadow| {
-            pad.max(self::reach(shadow.blur / 2.0) + shadow.offset.0.abs().max(shadow.offset.1.abs()))
-        });
-        let target = snap_to_physical(
-            grow(surface, pad.max(self::reach(layered.blur)).max(shader_padding(layered.shader.as_deref()))),
-            scale,
-        );
+        let target = snap_to_physical(surface, 1.0);
         let mut layered = shadowless.unwrap_or_else(|| effect.clone());
         let shader = layered.shader.take().map(|shader| layer_shader(*shader, radius, scale));
         let alpha = if shader.is_some() { opacity } else { 1.0 };
@@ -2522,6 +2516,80 @@ mod tests {
         let list = build(&resolved_surface(&Lua::new(), src, LogicalSize { width: 200.0, height: 100.0 }), 1.0, None);
         let layer = list.commands.iter().find(|cmd| matches!(cmd.draw, Draw::Layer { .. })).expect("a layer");
         assert_eq!(layer.clip, PhysicalRect { x0: -11, y0: -6, x1: 211, y1: 111 });
+    }
+
+    /// #188. The effect target bound maps through every ancestor's inverse transform, so a layer
+    /// under `scale`, `translate` or `rotate` is cut to the surface in surface coordinates rather
+    /// than in the node's own pre-transform coordinates.
+    #[test]
+    fn a_layer_under_a_transformed_ancestor_cuts_to_the_surface_after_the_transform() {
+        fn find_layer(commands: &[DrawCmd]) -> Option<PhysicalRect> {
+            commands.iter().find_map(|cmd| match &cmd.draw {
+                Draw::Layer { .. } => Some(cmd.clip),
+                draw => draw.nested().and_then(find_layer),
+            })
+        }
+        // Scaled down: a 1920x1080 subtree at scale 0.25 fills a 480x270 panel, at scale 1 and 2.
+        let scaled_src = r##"return panel { id = "bar", width = 480, height = 270, child = rect {
+            width = 1920, height = 1080, scale = 0.25, origin = { x = 0, y = 0 }, children = {
+                rect { width = 1920, height = 1080, effect = { shader = { source = "/s.frag" } },
+                    background = "#ffffff" } } } }"##;
+        let tree = resolved_surface(&Lua::new(), scaled_src, LogicalSize { width: 480.0, height: 270.0 });
+        assert_eq!(
+            find_layer(&build(&tree, 1.0, None).commands),
+            Some(PhysicalRect { x0: 0, y0: 0, x1: 1920, y1: 1080 })
+        );
+        assert_eq!(
+            find_layer(&build(&tree, 2.0, None).commands),
+            Some(PhysicalRect { x0: 0, y0: 0, x1: 3840, y1: 2160 })
+        );
+
+        // Unclipped surface under scale 0.25: an oversized child stops at the inverse-mapped surface + 3 sigma,
+        // at buffer scale 1 and 2.
+        let unclipped = r##"return panel { id = "bar", width = 480, height = 270, clip = "none", child = rect {
+            width = 1920, height = 1080, scale = 0.25, origin = { x = 0, y = 0 }, children = {
+                rect { width = 40, height = 20, effect = { blur = 2 },
+                    children = { rect { width = 8000, height = 8000, margin = { left = -4000 }, background = "#ffffff" } } } } } }"##;
+        let tree = resolved_surface(&Lua::new(), unclipped, LogicalSize { width: 480.0, height: 270.0 });
+        assert_eq!(
+            find_layer(&build(&tree, 1.0, None).commands),
+            Some(PhysicalRect { x0: -6, y0: -6, x1: 1926, y1: 1086 })
+        );
+        assert_eq!(
+            find_layer(&build(&tree, 2.0, None).commands),
+            Some(PhysicalRect { x0: -12, y0: -12, x1: 3852, y1: 2172 })
+        );
+
+        // Translated into view from outside the panel's unshifted coordinates.
+        let translated = r##"return panel { id = "bar", width = 200, height = 100, child = rect {
+            width = 1200, height = 100, translate = { x = -1000 }, children = {
+                rect { width = 100, height = 40, margin = { left = 1050 }, background = "#ffffff",
+                    effect = { shader = { source = "/s.frag" } } } } } }"##;
+        let list =
+            build(&resolved_surface(&Lua::new(), translated, LogicalSize { width: 200.0, height: 100.0 }), 1.0, None);
+        // `command_bounds` pads the child's fill by 2 px for femtovg's scissor AA.
+        assert_eq!(find_layer(&list.commands), Some(PhysicalRect { x0: 1048, y0: 0, x1: 1152, y1: 42 }));
+
+        // Rotated 90 degrees: y = 120..180 lands inside a 200x100 panel even though it is past y = 100.
+        let rotated = r##"return panel { id = "bar", width = 200, height = 100, child = rect {
+            width = 100, height = 200, rotate = 90, origin = { x = 0, y = 0 }, translate = { x = 200 }, children = {
+                rect { width = 40, height = 60, margin = { top = 120 }, background = "#ffffff",
+                    effect = { shader = { source = "/s.frag" } } } } } }"##;
+        let list =
+            build(&resolved_surface(&Lua::new(), rotated, LogicalSize { width: 200.0, height: 100.0 }), 1.0, None);
+        assert_eq!(find_layer(&list.commands), Some(PhysicalRect { x0: 0, y0: 118, x1: 42, y1: 182 }));
+
+        // Nested layer inside a blurred, scaled-up parent: the child sits just past the surface
+        // (local x = 102..106 on a 200 px panel at scale 2), inside the parent blur's 12 px reach.
+        let nested = r##"return panel { id = "bar", width = 200, height = 100, clip = "none", child = rect {
+            width = 200, height = 100, scale = 2, origin = { x = 0, y = 0 }, effect = { blur = 4 }, children = {
+                rect { width = 4, height = 40, margin = { left = 102 }, background = "#ff0000",
+                    effect = { saturate = 2 } } } } }"##;
+        let list =
+            build(&resolved_surface(&Lua::new(), nested, LogicalSize { width: 200.0, height: 100.0 }), 1.0, None);
+        let Draw::Transformed { commands, .. } = &list.commands.last().unwrap().draw else { panic!("transform") };
+        let Draw::Layer { commands, .. } = &commands[0].draw else { panic!("outer layer") };
+        assert_eq!(find_layer(commands), Some(PhysicalRect { x0: 100, y0: -2, x1: 108, y1: 42 }));
     }
 
     /// One conversion puts every draw's geometry in buffer pixels; text metrics stay logical.

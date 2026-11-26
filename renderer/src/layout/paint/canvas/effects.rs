@@ -1814,4 +1814,70 @@ mod tests {
         std::fs::write(&path, "uniform float k; void main() { fragColor = vec4(0.0, 0.0, 1.0 - k, 1.0); }").unwrap();
         assert!(near(paint(&mut painter, &list(0)), (0, 0, 255)), "so does a saved file");
     }
+
+    /// #188. A 480x270 panel scaling a 1920x1080 subtree by 0.25: blur and recolouring shader bars
+    /// paint their full horizontal span (x 15..465 on screen) both inside and outside local 0..270,
+    /// instead of cutting at local (480, 270). Recolouring catches a fallback to unfiltered paint.
+    #[test]
+    fn effect_blur_and_shader_under_a_scaled_ancestor_paint_their_full_span() {
+        let dir = tempfile::tempdir().unwrap();
+        let frag = dir.path().join("recolor.frag");
+        std::fs::write(&frag, "void main() { vec4 c = mantle_input(v_uv); fragColor = vec4(c.a, 0.0, 0.0, c.a); }")
+            .unwrap();
+        let src = format!(
+            r##"local function bar(y, effect, h)
+                return rect {{
+                    width = 1920, height = 1080, effect = effect,
+                    children = {{ rect {{ width = 1800, height = h or 120, radius = (h or 120) / 2,
+                        background = "#121118", translate = {{ x = 60, y = y }} }} }},
+                }}
+            end
+            return panel {{
+                id = "bar", width = 480, height = 270, background = "#f3eee3",
+                child = rect {{
+                    width = 1920, height = 1080, scale = 0.25, origin = {{ x = 0, y = 0 }},
+                    children = {{
+                        bar(20, nil, 40),
+                        bar(140, {{ blur = 8 }}, 40),
+                        bar(210, {{ shader = {{ source = "{}" }} }}, 40),
+                        bar(460, {{ blur = 8 }}),
+                        bar(820, {{ shader = {{ source = "{}" }} }}),
+                    }},
+                }},
+            }}"##,
+            frag.display(),
+            frag.display()
+        );
+        // Each bar spans local x 60..1860 -> screen x 15..465; sample left, middle, right and outside.
+        // The 40 px bar under sigma 8 is 2.5 sigma from its top and bottom edges, so its midline blends ~2% with bg.
+        let dark = (0x12, 0x11, 0x18);
+        let red = (255, 0, 0);
+        let thin_blur = (22, 21, 28);
+        let bg = (0xf3, 0xee, 0xe3);
+        let rows = [
+            ("plain y=20", 10usize, dark),
+            ("blur y=140", 40, thin_blur),
+            ("shader y=210", 57, red),
+            ("blur y=460", 130, dark),
+            ("shader y=820", 220, red),
+        ];
+        let points: Vec<(usize, usize)> =
+            rows.iter().flat_map(|&(_, y, _)| [5, 25, 240, 455, 475].map(|x| (x, y))).collect();
+        let Some(px) = paint_with_gl(&src, (480, 270), &points) else { return };
+        for ((label, _, want), row) in rows.iter().zip(px.as_chunks::<5>().0) {
+            assert!(near(row[0], bg) && near(row[4], bg), "{label}: background outside bar: {row:?}");
+            assert!(
+                near(row[1], *want) && near(row[2], *want) && near(row[3], *want),
+                "{label}: bar spans left, middle and right on screen: {row:?}"
+            );
+        }
+
+        // A filtered child just outside a scaled-up surface still bleeds back in through its parent's blur.
+        let nested = r##"return panel { id = "bar", width = 200, height = 64, clip = "none", background = "#000000FF",
+            child = rect { width = 200, height = 64, scale = 2, origin = { x = 0, y = 0 }, effect = { blur = 4 },
+                children = { rect { width = 8, height = 32, margin = { left = 102 }, background = "#FF0000FF",
+                    effect = { saturate = 2 } } } } }"##;
+        let Some(px) = paint_with_gl(nested, (200, 64), &[(198, 32), (10, 32)]) else { return };
+        assert!(px[0].0 > 20 && px[1] == (0, 0, 0, 255), "nested child blurs back into the edge: {px:?}");
+    }
 }
