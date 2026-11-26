@@ -25,6 +25,7 @@ text {
 
 | Field | Type | Description |
 | --- | --- | --- |
+| `badges` | `table<string, AppBadge>` | Live Unity `LauncherEntry` badge, progress and urgency state keyed by desktop id (e.g. `"org.telegram.desktop"`). Entries drop when their D-Bus sender leaves the session bus. |
 | `by_app_id` | `table<string, integer>` | Window `app_id` to its 1-based index: `entries[by_app_id[app_id]]`. Keys are exact `StartupWMClass` and desktop ids, then lowercased and last-dot-segment guesses. |
 | `entries` | `AppSummary[]` | Installed entries, sorted by `name` (byte order), including `NoDisplay` entries for window lookup. Launchers omit entries with `no_display = true`. `Hidden` entries are excluded. A change under an applications directory rescans 250 ms after the last event. |
 
@@ -37,6 +38,18 @@ One `[Desktop Action <key>]` declared by an application entry (e.g. "New private
 | `icon?` | `string` | Optional localized `Icon=` for this action, a theme name or absolute path; `nil` without the key. |
 | `key` | `string` | Action identifier from `Actions=`, e.g. `"new-private-window"`; passed to `launch_action`. |
 | `name` | `string` | Localized `Name=` for this action. |
+
+### `AppBadge`
+
+Live badge, progress and urgency published over `com.canonical.Unity.LauncherEntry`.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `count` | `integer` | Unread or item count; negative values from senders are clamped to `0`. |
+| `count_visible` | `boolean` | Whether `count` should be displayed. |
+| `progress` | `number` | Progress fraction in `0.0..=1.0`. |
+| `progress_visible` | `boolean` | Whether `progress` should be displayed. |
+| `urgent` | `boolean` | Whether the application is asking for attention. |
 
 ### `AppSummary`
 
@@ -93,11 +106,20 @@ sets or unsets variables for that launch (a string sets, `false` unsets; for a `
 its existing process, which keeps its old environment. `open_url` takes no options: use
 `process.detach("xdg-open", { url }, { env = ... })`.
 
+On the session bus, the capability also claims `com.canonical.Unity` (without replacing an existing
+owner), subscribes to `com.canonical.Unity.LauncherEntry.Update` signals, and exposes live unread
+counts, progress bars and urgency under `badges`, keyed by desktop id
+(`"application://org.telegram.desktop.desktop"` becomes `"org.telegram.desktop"`, matching
+`entries[].id`). Partial updates merge into the existing entry until updated again or replaced by
+another sender; entries are removed when their D-Bus sender disconnects. At most 64 concurrent
+desktop ids are tracked.
+
 ## How do I…
 
 | Task | Answer |
 | :--- | :--- |
 | Hide an app from a launcher | Copy its `.desktop` file to `~/.local/share/applications` and add `NoDisplay=true`; filter `entry.no_display` in the launcher |
+| Show a badge on a dock icon | Read `local badge = applications.badges[entry.id]`; when `badge ~= nil`, check `badge.count_visible`, `badge.progress_visible` and `badge.urgent` |
 
 ## Gotchas
 

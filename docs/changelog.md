@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Added: `mantle.applications` now exposes live Unity `LauncherEntry` badges, progress and urgency under `badges[desktop_id]` (`count`, `count_visible`, `progress`, `progress_visible`, `urgent`), dropping entries when their D-Bus sender leaves the session bus.
+
 - Fixed: `mantle_sdf` on a melted `shape` now follows every island and hole (within the 256-point, 42-loop budget) instead of only the biggest outline.
 
 - Fixed: a `textfield` caret now stops inside ligatures (such as `f` and `i` in `fi`, or `ل` and `ا` in `لا`) when stepping or clicking to place the caret, aligning with its selection highlight instead of jumping past the ligature.

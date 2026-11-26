@@ -456,7 +456,8 @@ impl Capabilities {
                     self.clock = Some(ClockController::new(self.senders.clock.clone()));
                 }
             }
-            // Installed `.desktop` entries; scans in background and returns before parsing starts.
+            // Installed `.desktop` entries plus Unity LauncherEntry badges on the session bus;
+            // scans and connects in background and returns before parsing starts.
             Capability::Applications => {
                 if self.applications.is_none() {
                     self.applications = Some(ApplicationsController::new(

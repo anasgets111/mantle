@@ -14,6 +14,25 @@ pub struct ApplicationsState {
     /// Window `app_id` to its 1-based index: `entries[by_app_id[app_id]]`. Keys are exact
     /// `StartupWMClass` and desktop ids, then lowercased and last-dot-segment guesses.
     pub by_app_id: BTreeMap<String, usize>,
+    /// Live Unity `LauncherEntry` badge, progress and urgency state keyed by desktop id (e.g.
+    /// `"org.telegram.desktop"`). Entries drop when their D-Bus sender leaves the session bus.
+    pub badges: BTreeMap<String, AppBadge>,
+}
+
+/// Live badge, progress and urgency published over `com.canonical.Unity.LauncherEntry`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct AppBadge {
+    /// Unread or item count; negative values from senders are clamped to `0`.
+    pub count: i64,
+    /// Whether `count` should be displayed.
+    pub count_visible: bool,
+    /// Progress fraction in `0.0..=1.0`.
+    pub progress: f64,
+    /// Whether `progress` should be displayed.
+    pub progress_visible: bool,
+    /// Whether the application is asking for attention.
+    pub urgent: bool,
 }
 
 /// One `Type=Application` desktop entry; display data only, argv stays private (ADR-0061).

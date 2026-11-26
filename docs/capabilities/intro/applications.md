@@ -33,11 +33,20 @@ sets or unsets variables for that launch (a string sets, `false` unsets; for a `
 its existing process, which keeps its old environment. `open_url` takes no options: use
 `process.detach("xdg-open", { url }, { env = ... })`.
 
+On the session bus, the capability also claims `com.canonical.Unity` (without replacing an existing
+owner), subscribes to `com.canonical.Unity.LauncherEntry.Update` signals, and exposes live unread
+counts, progress bars and urgency under `badges`, keyed by desktop id
+(`"application://org.telegram.desktop.desktop"` becomes `"org.telegram.desktop"`, matching
+`entries[].id`). Partial updates merge into the existing entry until updated again or replaced by
+another sender; entries are removed when their D-Bus sender disconnects. At most 64 concurrent
+desktop ids are tracked.
+
 ## How do I…
 
 | Task | Answer |
 | :--- | :--- |
 | Hide an app from a launcher | Copy its `.desktop` file to `~/.local/share/applications` and add `NoDisplay=true`; filter `entry.no_display` in the launcher |
+| Show a badge on a dock icon | Read `local badge = applications.badges[entry.id]`; when `badge ~= nil`, check `badge.count_visible`, `badge.progress_visible` and `badge.urgent` |
 
 ## Gotchas
 

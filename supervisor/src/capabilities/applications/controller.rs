@@ -11,9 +11,9 @@ use shared::warn;
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::capabilities::publish;
 use tokio::task::JoinHandle;
 
+use super::badges;
 use super::scan::{LaunchTarget, scan};
 use super::watch;
 
@@ -79,11 +79,15 @@ pub struct ApplicationsController {
     /// Injected for tests so `open_url` never invokes a real `xdg-open`.
     spawn_url: fn(&str, &[String]) -> std::io::Result<()>,
     watch: JoinHandle<()>,
+    badges: Option<JoinHandle<()>>,
 }
 
 impl Drop for ApplicationsController {
     fn drop(&mut self) {
         self.watch.abort();
+        if let Some(badges) = &self.badges {
+            badges.abort();
+        }
     }
 }
 
@@ -102,32 +106,69 @@ fn command_line(terminal: Option<String>, target: LaunchTarget) -> Result<(Strin
     Ok((terminal, args))
 }
 
+enum BadgeBus {
+    /// Production: open a dedicated session bus inside the abortable badge task so startup and the
+    /// filesystem scan never wait on a D-Bus handshake.
+    Session,
+    /// Unit tests that exercise only the filesystem scanner without touching the host's bus.
+    #[cfg(test)]
+    None,
+    /// Integration tests running against a `private_bus()`.
+    #[cfg(test)]
+    Provided(zbus::Connection),
+}
+
 impl ApplicationsController {
-    /// Builds an empty controller and starts the directory watch, which runs the first scan.
+    /// Builds an empty controller, starts the directory watch (which runs the first scan), and
+    /// spawns the Unity `LauncherEntry` session-bus listener.
     ///
-    /// The scan stays off `main`'s startup path: reading a few hundred `.desktop` files from a
-    /// cold page cache costs real milliseconds before the first surface. Lua reads `nil` until it
-    /// lands, as every capability does (`shared::Capability::ALL`), so no extra branch is needed.
+    /// Both the scan and the session-bus connection stay off `main`'s startup path: reading a few
+    /// hundred `.desktop` files from a cold page cache or waiting on a D-Bus handshake costs real
+    /// milliseconds before the first surface. Lua reads `nil` until a push lands, as every
+    /// capability does (`shared::Capability::ALL`), so no extra branch is needed.
     pub fn new(dirs: Vec<PathBuf>, locale: Option<String>, events: UnboundedSender<()>) -> Self {
+        Self::build(dirs, locale, BadgeBus::Session, events)
+    }
+
+    fn build(dirs: Vec<PathBuf>, locale: Option<String>, badge_bus: BadgeBus, events: UnboundedSender<()>) -> Self {
         let state = Arc::new(Mutex::new(ApplicationsState::default()));
         let launch_targets = Arc::new(Mutex::new(LaunchTargets::default()));
         let dirs: Arc<[PathBuf]> = dirs.into();
         // One scan at a time, so state and launch map always come from the same scan.
         let scanning = Mutex::new(());
         let rescan: Arc<dyn Fn() + Send + Sync> = {
-            let (state, launch_targets, dirs) = (Arc::clone(&state), Arc::clone(&launch_targets), Arc::clone(&dirs));
+            let (state, launch_targets, dirs, events) =
+                (Arc::clone(&state), Arc::clone(&launch_targets), Arc::clone(&dirs), events.clone());
             Arc::new(move || {
                 let _scanning = scanning.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 let result = scan(&dirs, locale.as_deref());
-                let next = ApplicationsState { entries: result.entries, by_app_id: result.by_app_id };
                 *launch_targets.lock().expect("applications launch map mutex poisoned") =
                     LaunchTargets { entries: result.launch, actions: result.launch_actions };
-                publish(&state, &events, next);
+                let changed = {
+                    let mut current = state.lock().expect("applications state mutex poisoned");
+                    if current.entries == result.entries && current.by_app_id == result.by_app_id {
+                        false
+                    } else {
+                        current.entries = result.entries;
+                        current.by_app_id = result.by_app_id;
+                        true
+                    }
+                };
+                if changed {
+                    let _ = events.send(());
+                }
             })
         };
         let watch = tokio::spawn(watch::run(dirs, Arc::clone(&rescan)));
+        let badges = match badge_bus {
+            BadgeBus::Session => Some(badges::spawn_session(Arc::clone(&state), events)),
+            #[cfg(test)]
+            BadgeBus::None => None,
+            #[cfg(test)]
+            BadgeBus::Provided(bus) => Some(badges::spawn_on(bus, Arc::clone(&state), events)),
+        };
         let spawn_url = |cmd: &str, args: &[String]| crate::process::spawn_detached(cmd, args, &[], None);
-        ApplicationsController { state, launch_targets, rescan, spawn_url, watch }
+        ApplicationsController { state, launch_targets, rescan, spawn_url, watch, badges }
     }
 
     pub fn snapshot(&self) -> ApplicationsState {
@@ -270,7 +311,7 @@ mod tests {
             std::fs::write(dir.path().join(file), body).unwrap();
         }
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let controller = ApplicationsController::new(vec![dir.path().to_path_buf()], None, tx);
+        let controller = ApplicationsController::build(vec![dir.path().to_path_buf()], None, BadgeBus::None, tx);
         within(rx.recv()).await.unwrap();
         (controller, dir)
     }
@@ -376,7 +417,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.desktop"), runnable("A", "/bin/true")).unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let controller = ApplicationsController::new(vec![dir.path().to_path_buf()], None, tx);
+        let controller = ApplicationsController::build(vec![dir.path().to_path_buf()], None, BadgeBus::None, tx);
         within(rx.recv()).await.unwrap();
 
         // Run the unchanged rescan to completion first, so the write below cannot mask a push.
@@ -449,7 +490,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.desktop"), runnable("A", "/bin/true")).unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let controller = ApplicationsController::new(vec![dir.path().to_path_buf()], None, tx);
+        let controller = ApplicationsController::build(vec![dir.path().to_path_buf()], None, BadgeBus::None, tx);
         wait_for_entry(&controller, &mut rx, "A").await;
 
         std::fs::create_dir(dir.path().join("sub")).unwrap();
@@ -467,7 +508,7 @@ mod tests {
         std::fs::create_dir(&early).unwrap();
         std::fs::write(early.join("a.desktop"), runnable("A", "/bin/true")).unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let controller = ApplicationsController::new(vec![late.clone(), early], None, tx);
+        let controller = ApplicationsController::build(vec![late.clone(), early], None, BadgeBus::None, tx);
         wait_for_entry(&controller, &mut rx, "A").await; // the watches are in place before this scan.
 
         std::fs::create_dir_all(&late).unwrap();
@@ -483,5 +524,55 @@ mod tests {
             }
         })
         .await;
+    }
+
+    /// A directory rescan must preserve live `LauncherEntry` badges, and a badge update must
+    /// preserve scanned `entries` and `by_app_id`.
+    #[tokio::test]
+    async fn rescan_and_launcher_entry_badges_preserve_each_other() {
+        use shared::state::applications::AppBadge;
+        use zbus::zvariant::Value;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("org.telegram.desktop.desktop"), runnable("Telegram", "/bin/true")).unwrap();
+        let bus = crate::capabilities::test_support::private_bus().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let controller = ApplicationsController::build(
+            vec![dir.path().to_path_buf()],
+            None,
+            BadgeBus::Provided(bus.connection().await),
+            tx,
+        );
+        wait_for_entry(&controller, &mut rx, "Telegram").await;
+
+        let sender = bus.connection().await;
+        let body = std::collections::HashMap::from([("count", Value::I64(3)), ("count-visible", Value::Bool(true))]);
+        let signal = zbus::Message::signal("/entry", "com.canonical.Unity.LauncherEntry", "Update")
+            .unwrap()
+            .build(&("application://org.telegram.desktop.desktop", body))
+            .unwrap();
+        // Retry until the controller's background task finishes installing its match rule.
+        within(async {
+            loop {
+                sender.send(&signal).await.unwrap();
+                if controller.snapshot().badges.contains_key("org.telegram.desktop") {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+
+        // Rescanning after adding another `.desktop` entry keeps the live badge intact.
+        std::fs::write(dir.path().join("other.desktop"), runnable("Other", "/bin/true")).unwrap();
+        controller.refresh();
+        wait_for_entry(&controller, &mut rx, "Other").await;
+
+        let snap = controller.snapshot();
+        assert_eq!(snap.entries.len(), 2);
+        assert_eq!(
+            snap.badges.get("org.telegram.desktop"),
+            Some(&AppBadge { count: 3, count_visible: true, progress: 0.0, progress_visible: false, urgent: false })
+        );
     }
 }

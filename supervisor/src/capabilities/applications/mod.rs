@@ -1,5 +1,6 @@
-//! `mantle.applications`: installed `.desktop` entries (ADR-0061). A top-level capability using
-//! plain filesystem reads, with no D-Bus proxy or hardware thread.
+//! `mantle.applications`: installed `.desktop` entries (ADR-0061) and Unity `LauncherEntry`
+//! badges. Entry scanning uses plain filesystem reads; live unread counts, progress and urgency
+//! arrive over `com.canonical.Unity.LauncherEntry` on the session bus.
 //!
 //! ADR-0054 decision 5 called for this when a window needed an icon it did not report. The
 //! launcher needs every name/icon/command, a focused window has `app_id` but no icon, and a tray
@@ -7,6 +8,7 @@
 //! `system:find_icon(app_id, ...)`: the control socket has no reply shape for it, and launchers
 //! need the whole list.
 
+mod badges;
 pub mod controller;
 pub mod entry;
 pub mod scan;
