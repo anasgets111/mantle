@@ -7,6 +7,19 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+1 fix and 7 changes. No breaking changes.
+
+### Performance
+
+- Changed: full-screen solid background panels present a 1×1 buffer on compositors that offer `wp_single_pixel_buffer_manager_v1` (Hyprland, not niri): about 32 MiB less GPU memory per 3440×1440 panel.
+- Changed: many `effect.backdrop` boxes repaint about 15% faster: 96 blurred tiles take 6.0 ms per frame, down from 7.1.
+- Changed: animated `effect.blur` tweens reuse their blur sources and pooled targets instead of reallocating them every frame, 18 MiB less GPU memory in a 96-tile tween.
+- Changed: a gradient `mask` over a single solid box draws in one pass, and stable masked subtrees are cached across transform-only animations.
+- Changed: animation ticks keep unchanged subtrees, and `width` and `height` tweens re-read only their geometry.
+- Changed: rotated children inside a solid, unclipped parent no longer add input-region work.
+- Changed: the image cache keeps up to 384 decoded images, up from 128, so large thumbnail galleries stop re-decoding.
+- Fixed: content shadows over animated subtrees no longer keep superseded offscreen images for the life of the window: 9 MiB less GPU memory with 24 shadowed tiles on NVIDIA.
+
 ## 0.16.0 - 2026-11-26
 
 17 fixes, 1 change and 11 additions. No breaking changes.
