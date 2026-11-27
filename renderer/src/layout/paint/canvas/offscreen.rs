@@ -8,7 +8,7 @@ use crate::layout::node::{self, MaskSource};
 use crate::text::atlas::TextPainter;
 use crate::text::snap::{LogicalRect, PhysicalRect};
 
-use super::super::{DrawCmd, UNCLIPPED, any_draw_matches, reads_under};
+use super::super::{Draw, DrawCmd, UNCLIPPED, any_draw_matches, reads_under, volatile};
 use super::dashed_border::{Cut, cut};
 use super::effects::{read_target, replace};
 use super::shape::{border_stations, box_path, gradient_paint, paint_border};
@@ -23,37 +23,103 @@ use super::{Frame, Walk, run};
 /// ponytail: femtovg 0.27's scissor carries one rounded rectangle; clip with it once it intersects two.
 ///
 /// The target comes from `TextPainter`'s pool: creating one per clipping node per repaint was 8.6 ms
-/// of an 8.6 ms repaint (ADR-0217).
-// ponytail: keep the nine scalar/context arguments; passing `DrawCmd` would require a second match.
-#[allow(clippy::too_many_arguments)]
+/// of an 8.6 ms repaint (ADR-0217). A single solid box under a gradient mask draws directly in one
+/// pass, and a stable gradient-masked subtree reuses its kept offscreen across composition-only
+/// transforms (#199).
 pub(super) fn draw_clipped(
     painter: &mut TextPainter,
     walk: &mut Walk<'_, '_>,
-    rect: LogicalRect,
-    clip: PhysicalRect,
-    radius: &node::Radii,
-    mask: Option<&(node::Mask, (u32, u32))>,
-    commands: &[DrawCmd],
+    command: &DrawCmd,
     target: RenderTarget,
     frame: Frame,
 ) {
-    // Not a backdrop root, as CSS's `overflow: hidden` is not: a glass or a blend inside starts from
-    // what is under the group (ADR-0256).
-    let glass = mask.is_none() && any_draw_matches(commands, reads_under);
-    let seed = if glass { read_target(painter, walk, clip) } else { None };
-    let under = seed.as_ref().map(|read| read.paint(read.copy, 1.0));
-    let Some(image) = offscreen(painter, walk, rect, clip, mask, under, commands, target, frame, frame.region, true)
-    else {
+    let Draw::Clipped { radius, mask, commands } = &command.draw else { return };
+    let (rect, clip) = (command.rect, command.clip);
+    if let Some((mask, _)) = mask
+        && try_draw_solid_gradient_mask(painter.canvas_mut(), rect, clip, radius, mask, commands)
+    {
         return;
+    }
+    let used = ((clip.x1 - clip.x0) as usize, (clip.y1 - clip.y0) as usize);
+    if used.0 == 0 || used.1 == 0 {
+        return;
+    }
+    let gradient_mask = matches!(mask, Some((node::Mask { source: MaskSource::Gradient(_), .. }, _)));
+    let snug = !aligned(painter.canvas_mut());
+    let kept = gradient_mask
+        .then(|| painter.layer(walk.surface, command))
+        .flatten()
+        .filter(|(_, id)| !snug || painter.canvas_mut().image_size(*id).ok() == Some(used));
+    let (image, seed) = match kept {
+        Some((_, image)) => (image, None),
+        None => {
+            // Not a backdrop root, as CSS's `overflow: hidden` is not: a glass or a blend inside starts from
+            // what is under the group (ADR-0256).
+            let glass = mask.is_none() && any_draw_matches(commands, reads_under);
+            let seed = if glass { read_target(painter, walk, clip) } else { None };
+            let under = seed.as_ref().map(|read| read.paint(read.copy, 1.0));
+            let Some(image) =
+                offscreen(painter, walk, rect, clip, mask.as_ref(), under, commands, target, frame, frame.region, true)
+            else {
+                return;
+            };
+            if gradient_mask
+                && frame.region.contains(clip)
+                && !any_draw_matches(commands, |draw| volatile(draw) || reads_under(draw))
+            {
+                walk.scratch.retain(|(id, _)| *id != image);
+                let retired = painter.keep_layer(walk.surface, command, (Vec::new(), image));
+                walk.scratch.extend(retired);
+            }
+            (image, seed)
+        }
     };
     let path = box_path(rect, radius);
-    let used = ((clip.x1 - clip.x0) as usize, (clip.y1 - clip.y0) as usize);
     let at = LogicalRect { x: clip.x0 as f32, y: clip.y0 as f32, width: used.0 as f32, height: used.1 as f32 };
     let paint = pooled_paint(painter.canvas_mut(), image, used, at, 1.0);
     match seed {
         Some(_) => replace(painter.canvas_mut(), &path, &paint, 1.0),
         None => painter.canvas_mut().fill_path(&path, &paint),
     }
+}
+
+/// Draws a single borderless solid box under a gradient mask directly in one pass: constant RGB
+/// multiplied by a gradient's alpha is the same gradient with each stop's alpha scaled by the
+/// box's, matching premultiplied `DestinationIn`/`DestinationOut` without an offscreen target.
+fn try_draw_solid_gradient_mask(
+    canvas: &mut Canvas<OpenGl>,
+    rect: LogicalRect,
+    clip: PhysicalRect,
+    radius: &node::Radii,
+    mask: &node::Mask,
+    commands: &[DrawCmd],
+) -> bool {
+    let MaskSource::Gradient(gradient) = &mask.source else { return false };
+    let [inner] = commands else { return false };
+    if inner.rect != rect || inner.clip != clip {
+        return false;
+    }
+    let Draw::Box { background, radius: box_radius, widths, .. } = &inner.draw else { return false };
+    // An unclipped `shape` outline can reach past `rect`, where `draw_clipped`'s composite cuts it to `rect`.
+    if *widths != node::EdgeInsets::default() || (radius != box_radius && !(radius.is_zero() && box_radius.2.is_none()))
+    {
+        return false;
+    }
+    let [node::Fill::Color(color)] = background.as_slice() else { return false };
+    if rect.is_empty() {
+        return true;
+    }
+    let stops = gradient
+        .stops
+        .iter()
+        .map(|&(at, stop)| {
+            let alpha = if mask.invert { 1.0 - stop.a } else { stop.a };
+            (at, node::Rgba { a: color.a * alpha, ..*color })
+        })
+        .collect();
+    let masked = node::Gradient { shape: gradient.shape, stops };
+    canvas.fill_path(&box_path(rect, box_radius), &gradient_paint(&masked, rect));
+    true
 }
 
 /// Both lists use the ordinary executor, so transforms, shaders, nested masks and effects share
@@ -336,6 +402,7 @@ mod tests {
         assert_partial_repaint_matches, init_headless_egl, paint_points, pixel_at, surface_96x64, test_gl, text_painter,
     };
     use super::super::{Shaders, execute, paint_tree};
+    use super::{Draw, DrawCmd};
     use crate::image::ImageCache;
     use crate::image::capture::CaptureCache;
     use crate::layout::image_shader;
@@ -781,5 +848,183 @@ mod tests {
         assert!(painter.take_scratch("test", (64, 64)).is_some());
         paint_tree(&mut painter, &mut images, &resolved_surface(&lua, &src(41, 5.0), size), 1.0);
         assert!(painter.take_scratch("test", (41, 40)).is_some(), "snug under a rotation");
+    }
+
+    /// #199. A single borderless solid box under a gradient mask draws directly in one pass with
+    /// zero offscreen targets, matching the offscreen path on premultiplied midpoints, inversion,
+    /// clipping, rotation, HiDPI scale, and parent opacity, while falling back for borders and
+    /// unclipped out-of-box shapes.
+    #[test]
+    fn a_solid_box_gradient_mask_draws_directly_without_an_offscreen_target() {
+        let Some(instance) = init_headless_egl(96, 64) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 96, 64) else { return };
+        let (mut images, lua, size) = (ImageCache::new(), Lua::new(), LogicalSize { width: 96.0, height: 64.0 });
+
+        // Compare direct fast-path pixels against a forced-offscreen reference (same fill + invisible child)
+        // across linear and radial masks, normal and inverted, with semi-transparent fill over blue.
+        for (shape, invert) in [("linear", false), ("linear", true), ("radial", false), ("radial", true)] {
+            let angle = if shape == "linear" { "angle = 90, " } else { "" };
+            let make = |extra: &str| {
+                format!(
+                    r##"return panel {{ id = "bar", width = 96, height = 64, background = "#0000FFFF",
+                        child = rect {{ width = 64, height = 64, radius = 8, background = "#FF000080",
+                            mask = {{ gradient = "{shape}", {angle}invert = {invert},
+                                stops = {{ {{ 0, "#FFFFFFFF" }}, {{ 1, "#FFFFFF00" }} }} }}{extra} }} }}"##
+                )
+            };
+            paint_tree(&mut painter, &mut images, &resolved_surface(&lua, &make(""), size), 1.0);
+            assert_eq!(painter.census(), (0, 0, 0, 0), "{shape} invert={invert}: zero offscreen targets");
+            let direct = painter.canvas_mut().screenshot().expect("direct screenshot");
+
+            let forced = make(r##", children = { rect { width = 1, height = 1, background = "#00000000" } }"##);
+            paint_tree(&mut painter, &mut images, &resolved_surface(&lua, &forced, size), 1.0);
+            let offscreen = painter.canvas_mut().screenshot().expect("offscreen screenshot");
+            // Interior samples (endpoints + midpoint) match the offscreen path within 2 LSB.
+            for (x, y) in [(4, 32), (32, 32), (60, 32)] {
+                let a = direct.buf()[y * 96 + x];
+                let b = offscreen.buf()[y * 96 + x];
+                let diff = a.r.abs_diff(b.r).max(a.g.abs_diff(b.g)).max(a.b.abs_diff(b.b)).max(a.a.abs_diff(b.a));
+                assert!(diff <= 2, "{shape} invert={invert} at ({x},{y}): direct={a:?} offscreen={b:?}");
+            }
+            painter.release_surface("test");
+        }
+
+        // Clipped by parent box and rotated: zero offscreen targets, parent clip still cuts.
+        // CSS angle 0 runs bottom-to-top: stop 0 (opaque) is at the bottom, stop 1 (clear) at the top.
+        let clipped_rot = r##"return panel { id = "bar", width = 96, height = 64, background = "#0000FFFF",
+            child = rect { width = 48, height = 64, clip = "box", children = {
+                rect { width = 64, height = 48, radius = 6, rotate = 12, background = "#FF0000FF",
+                    mask = { gradient = "linear", angle = 0, stops = { { 0, "#FFFFFFFF" }, { 1, "#FFFFFF00" } } } }
+            } } }"##;
+        paint_tree(&mut painter, &mut images, &resolved_surface(&lua, clipped_rot, size), 1.0);
+        assert_eq!(painter.census(), (0, 0, 0, 0), "rotated clipped solid masked box skips offscreen");
+        assert_eq!(pixel_at(painter.canvas_mut(), 60, 24), (0, 0, 255, 255), "parent clip still cuts past x=48");
+        assert!(pixel_at(painter.canvas_mut(), 24, 40).0 > 180, "bottom of rotated box stays red");
+        assert!(pixel_at(painter.canvas_mut(), 24, 8).2 > 180, "top of rotated box fades to blue");
+
+        // Bordered box falls back to offscreen (and keeps a layer).
+        let bordered = r##"return panel { id = "bar", width = 96, height = 64, background = "#000000FF",
+            child = rect { width = 48, height = 48, background = "#FF0000FF", border_width = 2, border_color = "#FFFFFFFF",
+                mask = { gradient = "linear", angle = 90, stops = { { 0, "#FFFFFFFF" }, { 1, "#FFFFFF00" } } } } }"##;
+        paint_tree(&mut painter, &mut images, &resolved_surface(&lua, bordered, size), 1.0);
+        assert_eq!(painter.census().2, 1, "bordered masked box uses cached offscreen path");
+        painter.release_surface("test");
+
+        // Unclipped `shape` reaching outside `rect` (TAIL) falls back so `draw_clipped` still cuts to `rect`.
+        let tail = crate::layout::node::shape::TAIL;
+        let protruding = format!(
+            r##"return panel {{ id = "bar", width = 96, height = 64, background = "#0000FFFF",
+                child = rect {{ width = 32, height = 32, margin = {{ left = 16, top = 16 }}, background = "#FF0000FF",
+                    shape = {tail},
+                    mask = {{ gradient = "linear", angle = 90, stops = {{ {{ 0, "#FFFFFFFF" }}, {{ 1, "#FFFFFFFF" }} }} }} }} }}"##
+        );
+        paint_tree(&mut painter, &mut images, &resolved_surface(&lua, &protruding, size), 1.0);
+        assert_eq!(painter.census().2, 1, "out-of-box shape falls back to offscreen");
+        assert_eq!(pixel_at(painter.canvas_mut(), 32, 32), (255, 0, 0, 255), "inside rect paints red");
+        assert_eq!(pixel_at(painter.canvas_mut(), 32, 51), (0, 0, 255, 255), "tail past rect is clipped");
+        painter.release_surface("test");
+
+        // HiDPI 1.5x rounded-clipped solid box with gradient mask.
+        let Some(hidpi_instance) = init_headless_egl(96, 96) else { return };
+        let Some(mut hidpi) = text_painter(&hidpi_instance, &shaping, 96, 96) else { return };
+        let hidpi_src = r##"return panel { id = "bar", width = 64, height = 64, background = "#0000FFFF",
+            child = rect { width = 64, height = 64, radius = 12, clip = "rounded", background = "#00FF00FF",
+                mask = { gradient = "linear", angle = 180, stops = { { 0, "#FFFFFFFF" }, { 1, "#FFFFFF00" } } } } }"##;
+        paint_tree(
+            &mut hidpi,
+            &mut images,
+            &resolved_surface(&lua, hidpi_src, LogicalSize { width: 64.0, height: 64.0 }),
+            1.5,
+        );
+        assert_eq!(hidpi.census(), (0, 0, 0, 0), "HiDPI solid masked box skips offscreen");
+        assert_eq!(pixel_at(hidpi.canvas_mut(), 1, 1), (0, 0, 255, 255), "rounded corner stays blue");
+        assert!(pixel_at(hidpi.canvas_mut(), 48, 8).1 > 200, "top edge is green");
+        assert!(pixel_at(hidpi.canvas_mut(), 48, 88).2 > 200, "bottom edge fades to blue");
+    }
+
+    /// #199. A stable gradient-masked subtree reuses its kept offscreen across composition-only
+    /// transforms, and redraws when a child moves or the mask changes; image masks stay uncached.
+    #[test]
+    fn a_stable_gradient_masked_subtree_reuses_its_kept_layer_and_invalidates_on_changes() {
+        let Some(instance) = init_headless_egl(96, 64) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 96, 64) else { return };
+        let (mut images, lua, size) = (ImageCache::new(), Lua::new(), LogicalSize { width: 96.0, height: 64.0 });
+
+        let card = |angle: f32, child_x: u32, invert: bool| {
+            format!(
+                r##"return panel {{ id = "bar", width = 96, height = 64, background = "#000000FF",
+                    child = rect {{ width = 48, height = 48, margin = {{ left = 24, top = 8 }}, rotate = {angle},
+                        background = "#0000FFFF",
+                        mask = {{ gradient = "linear", angle = 90, invert = {invert},
+                            stops = {{ {{ 0, "#FFFFFFFF" }}, {{ 0.5, "#FFFFFFFF" }}, {{ 0.5, "#FFFFFF00" }}, {{ 1, "#FFFFFF00" }} }} }},
+                        children = {{ rect {{ width = 16, height = 48, margin = {{ left = {child_x} }}, background = "#FF0000FF" }} }} }} }}"##
+            )
+        };
+        let clipped_cmd = |list: &super::super::DisplayList| -> DrawCmd {
+            fn find(cmds: &[DrawCmd]) -> Option<DrawCmd> {
+                for cmd in cmds {
+                    if matches!(cmd.draw, Draw::Clipped { .. }) {
+                        return Some(cmd.clone());
+                    }
+                    if let Some(nested) = cmd.draw.nested()
+                        && let Some(found) = find(nested)
+                    {
+                        return Some(found);
+                    }
+                }
+                None
+            }
+            find(&list.commands).expect("Draw::Clipped in card list")
+        };
+
+        // Frame 1 (rotated 4 deg): renders once snug and keeps 1 layer with zero pooled scratch.
+        let root1 = resolved_surface(&lua, &card(4.0, 0, false), size);
+        let cmd1 = clipped_cmd(&super::super::build(&root1, 1.0, None));
+        paint_tree(&mut painter, &mut images, &root1, 1.0);
+        let kept1 = painter.layer("test", &cmd1).expect("layer kept on frame 1").1;
+        assert_eq!((painter.census().0, painter.census().2), (0, 1));
+        assert!(pixel_at(painter.canvas_mut(), 32, 32).0 > 200, "red child visible on left half");
+        assert_eq!(pixel_at(painter.canvas_mut(), 60, 32), (0, 0, 0, 255), "right half masked out");
+
+        // Frame 2 (rotated 25 deg, same subtree and mask): exact same ImageId reused, zero pool growth.
+        let root2 = resolved_surface(&lua, &card(25.0, 0, false), size);
+        paint_tree(&mut painter, &mut images, &root2, 1.0);
+        let kept2 = painter.layer("test", &cmd1).expect("same layer reused on frame 2").1;
+        assert_eq!(kept2, kept1, "composition-only rotation reuses the kept masked image");
+        assert_eq!((painter.census().0, painter.census().2), (0, 1));
+        assert!(pixel_at(painter.canvas_mut(), 32, 32).0 > 200, "rotated cached subtree still paints red child");
+
+        // Frame 3 (child moves under stable mask): old layer retired and new image painted.
+        let root3 = resolved_surface(&lua, &card(0.0, 16, false), size);
+        let cmd3 = clipped_cmd(&super::super::build(&root3, 1.0, None));
+        paint_tree(&mut painter, &mut images, &root3, 1.0);
+        assert!(painter.layer("test", &cmd1).is_none(), "stale layer evicted");
+        assert!(painter.layer("test", &cmd3).is_some(), "new layer kept");
+        assert_eq!(pixel_at(painter.canvas_mut(), 30, 32), (0, 0, 255, 255), "blue background exposed at x=30");
+        assert_eq!(pixel_at(painter.canvas_mut(), 44, 32), (255, 0, 0, 255), "moved red child now at x=44");
+
+        // Frame 4 (mask inverts): cache misses and redraws with flipped mask.
+        let root4 = resolved_surface(&lua, &card(0.0, 0, true), size);
+        paint_tree(&mut painter, &mut images, &root4, 1.0);
+        assert_eq!(pixel_at(painter.canvas_mut(), 30, 32), (0, 0, 0, 255), "left half masked out when inverted");
+        assert_eq!(pixel_at(painter.canvas_mut(), 60, 32), (0, 0, 255, 255), "right half kept when inverted");
+
+        // Image masks stay uncached (outside #199's scope).
+        let dir = tempfile::tempdir().unwrap();
+        let svg = dir.path().join("half.svg");
+        std::fs::write(
+            &svg,
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48"><rect width="24" height="48" fill="black"/></svg>"#,
+        )
+        .unwrap();
+        let img_src = format!(
+            r##"return panel {{ id = "bar", width = 96, height = 64, background = "#000000FF",
+                child = rect {{ width = 48, height = 48, background = "#00FF00FF", mask = {{ source = "{}" }} }} }}"##,
+            svg.display()
+        );
+        paint_tree(&mut painter, &mut images, &resolved_surface(&lua, &img_src, size), 1.0);
+        assert_eq!(painter.census().2, 0, "image masks are not kept as cached layers");
     }
 }

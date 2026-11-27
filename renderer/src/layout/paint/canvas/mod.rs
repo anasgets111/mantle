@@ -375,8 +375,8 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 draw_node_mask(painter, walk, rect, clip, *invert, radius, *split, commands, target, frame);
                 current_clip = None;
             }
-            Draw::Clipped { radius, mask, commands } => {
-                draw_clipped(painter, walk, rect, clip, radius, mask.as_ref(), commands, target, frame);
+            Draw::Clipped { .. } => {
+                draw_clipped(painter, walk, command, target, frame);
                 current_clip = None;
             }
             Draw::Transformed { matrix, commands } => {
