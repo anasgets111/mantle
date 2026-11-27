@@ -200,6 +200,8 @@ pub(super) fn prepare_retained(
     let changed = node.tweens.iter().any(|tween| !tween.resting);
     // Paint-only motion leaves the box as it was: the geometry parse and the solver node stand.
     let paint_only = node.tweens.iter().all(|tween| tween.resting || node::is_paint_only(tween.property));
+    // Box geometry alone moves neither the paint nor any other field of the style (#200).
+    let geometry = node.tweens.iter().all(|tween| tween.resting || GEOMETRY.contains(&tween.property));
     let painted = paints(&node.tweens);
     let samples = node::step(&mut node.tweens, &mut node.properties, now, lua, paint_only)?;
     // A tick keeps the size its running tween pins; a pass measures again.
@@ -212,12 +214,21 @@ pub(super) fn prepare_retained(
         Some(PaintStyle::Text { wrap: node::Wrap::Word, .. } | PaintStyle::Text { elided: true, .. })
     );
     let changed = changed || injected;
+    let geometry = geometry && !injected;
     let style = if relayout {
         // The parse reads the map, which a typed sample has to reach first.
         node::commit(&mut node.tweens, &mut node.properties, samples, now, lua)?;
         sync_shown(&mut node, lua)?;
-        // A windowed list's room is its parent's to set, not a property's.
-        std::rc::Rc::new(LayoutStyle { window: node.layout_style.window, ..LayoutStyle::parse(&node.properties)? })
+        if geometry {
+            let mut style = std::rc::Rc::clone(&node.layout_style);
+            reread_geometry(std::rc::Rc::make_mut(&mut style), &node.properties)?;
+            #[cfg(test)]
+            tests::GEOMETRY_REREADS.set(tests::GEOMETRY_REREADS.get() + 1);
+            style
+        } else {
+            // A windowed list's room is its parent's to set, not a property's.
+            std::rc::Rc::new(LayoutStyle { window: node.layout_style.window, ..LayoutStyle::parse(&node.properties)? })
+        }
     } else {
         let mut style = std::rc::Rc::clone(&node.layout_style);
         if changed {
@@ -248,7 +259,7 @@ pub(super) fn prepare_retained(
         field_top,
         ..
     } = node;
-    let paint = if relayout || refit { node::paint_style(kind, &properties)? } else { old_paint };
+    let paint = if relayout && !geometry || refit { node::paint_style(kind, &properties)? } else { old_paint };
     let taffy_id = match old_taffy {
         Some(taffy_id) => {
             if relayout {
@@ -293,6 +304,21 @@ pub(super) fn prepare_retained(
     prepare_retained_children(tree, node, (parent_layout, old_scroll), lua, now, move_on_solve, thawing)
 }
 
+/// The tweened properties [`reread_geometry`] reads: the box, and nothing paint reads.
+const GEOMETRY: &[&str] =
+    &["width", "height", "min_width", "max_width", "min_height", "max_height", "margin", "padding", "spacing"];
+
+/// [`GEOMETRY`]'s fields of `style` read again from `properties`, as [`LayoutStyle::parse`] reads them.
+fn reread_geometry(style: &mut LayoutStyle, properties: &node::PropMap) -> Result<(), LayoutError> {
+    use node::fields::{common, flow};
+    (style.width_mode, style.height_mode) = (common::width.read(properties)?, common::height.read(properties)?);
+    (style.min_width, style.max_width) = (common::min_width.read(properties)?, common::max_width.read(properties)?);
+    (style.min_height, style.max_height) = (common::min_height.read(properties)?, common::max_height.read(properties)?);
+    (style.margin, style.padding) = (common::margin.read(properties)?, common::padding.read(properties)?);
+    style.spacing = flow::spacing.read(properties)?;
+    Ok(())
+}
+
 /// `node`'s retained children, in `frozen`, laid out again as they are.
 fn prepare_retained_children(
     tree: &mut taffy::TaffyTree<Measure>,
@@ -311,6 +337,17 @@ fn prepare_retained_children(
             if let Some(child) = advance_leaving(child, now, lua)? {
                 node.leaving.push(child);
             }
+        } else if !move_on_solve
+            && !thawing
+            && super::pass::keep_allowed()
+            && child.subtree.is_some()
+            && child.taffy.is_some()
+        {
+            // #200: a tick keeps a subtree the pass could skip (#155); none of it tweens, and its
+            // rects come back from the solve like any kept one's.
+            #[cfg(test)]
+            super::pass::tests::KEPT_SUBTREES.set(super::pass::tests::KEPT_SUBTREES.get() + 1);
+            node.children.push(super::PreparedChild::Kept(child));
         } else {
             node.children.push(super::PreparedChild::Built(prepare_retained(
                 tree,
@@ -517,6 +554,11 @@ pub(super) fn advance_leaving(
 mod tests {
     use super::*;
     use crate::layout::scene::tests::{applied, apply_at, full, instance_at, surface_from};
+
+    thread_local! {
+        /// Styles a tick updated through [`reread_geometry`] rather than a full parse, on this thread (#200).
+        pub(super) static GEOMETRY_REREADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
     use crate::layout::scene::*;
 
     /// A panel whose child's `width` follows `state("w")` and eases over 100 ms. Returns the
@@ -2028,7 +2070,94 @@ mod tests {
         );
     }
 
-    /// What one tick costs on `read_seam_cost`'s 162-node tree, one node tweening:
+    /// #200: a layout tick keeps the subtrees no tween reaches and re-reads only the box of a node
+    /// whose tweens are all geometry, and lands where rebuilding every node and parsing every style
+    /// lands: the same rects, published geometry and display list, and a style and paint equal to
+    /// a fresh parse of the map.
+    #[test]
+    fn a_layout_tick_keeps_quiet_subtrees_and_rereads_only_tweened_geometry() {
+        use crate::layout::scene::pass::tests::{KEPT_SUBTREES, with_forced_built};
+        const SRC: &str = r##"kept = state("kept", "kept")
+            local function loop(a, b) return { duration = 200, keyframes = { a, b, a }, loops = "infinite" } end
+            return panel { id = "bar", child = column { spacing = 4, children = {
+              row { spacing = 2, children = {
+                rect { width = 10, height = 10, background = "#ff0000", animate = { width = loop(10, 30) } },
+                rect { width = 10, height = 10, background = "#00ff00", geometry = geometry("moved") },
+                row { padding = 2, background = "#0000ff", animate = { padding = loop(2, 6) }, children = { rect { width = 4, height = 4 } } },
+                rect { width = 8, height = 8, background = "#ffffff", animate = { width = loop(8, 16), background = loop("#000000", "#ffffff") } },
+              } },
+              row { children = { text { content = "static" }, rect { width = 5, height = 5, margin = 1, animate = { margin = loop(1, 3) } } } },
+              row { spacing = 1, min_width = 10, max_width = 60, min_height = 4, max_height = 30,
+                animate = { spacing = loop(1, 5), min_width = loop(10, 20), max_width = loop(60, 50), min_height = loop(4, 9), max_height = loop(30, 20) },
+                children = { rect { width = 4, height = 4 }, rect { width = 4, height = 4 } } },
+              column { children = { text { content = kept }, rect { width = 20, height = 4, background = "#808080" } } },
+              text { width = 30, wrap = "word", content = "wrapped words here" },
+            } } }"##;
+        fn walk(node: &ResolvedNode, out: &mut Vec<(&'static str, LogicalRect)>) {
+            out.push((node.kind, node.rect));
+            let fresh =
+                LayoutStyle { window: node.layout_style.window, ..LayoutStyle::parse(&node.properties).unwrap() };
+            assert_eq!(*node.layout_style, fresh, "{}: style", node.kind);
+            if !matches!(node.paint, Some(PaintStyle::Text { .. })) {
+                assert_eq!(node.paint, node::paint_style(node.kind, &node.properties).unwrap(), "{}: paint", node.kind);
+            }
+            node.children.iter().for_each(|child| walk(child, out));
+        }
+        let shaping = ShapingHandle::spawn();
+        let [(kept_lua, kept_surface), (built_lua, built_surface)] = [(); 2].map(|()| surface_from(SRC));
+        let (mut kept, mut built) = (Scene::new(), Scene::new());
+        let start = Instant::now();
+        for lua in [&kept_lua, &built_lua] {
+            lua.set_app_data(crate::lua::timer::SimClock(start));
+        }
+        apply_at(&mut kept, std::slice::from_ref(&kept_surface), full(), &shaping, &kept_lua).unwrap();
+        with_forced_built(|| apply_at(&mut built, std::slice::from_ref(&built_surface), full(), &shaping, &built_lua))
+            .unwrap();
+        let geometry = |lua: &mlua::Lua| {
+            lua.load(r#"local g = geometry("moved"):get() return g.x, g.width"#).eval::<(f32, f32)>().unwrap()
+        };
+        KEPT_SUBTREES.set(0);
+        GEOMETRY_REREADS.set(0);
+        for ms in [30, 70, 100, 130, 190] {
+            let now = start + std::time::Duration::from_millis(ms);
+            assert!(!kept.tick(&[instance_at(&kept_surface, full())], &shaping, &kept_lua, now).is_empty());
+            with_forced_built(|| built.tick(&[instance_at(&built_surface, full())], &shaping, &built_lua, now));
+            let (k, b) = (kept.surface("bar@TEST").unwrap(), built.surface("bar@TEST").unwrap());
+            let (mut kr, mut br) = (Vec::new(), Vec::new());
+            walk(k, &mut kr);
+            walk(b, &mut br);
+            assert_eq!(kr, br, "{ms} ms: rects");
+            assert_eq!(geometry(&kept_lua), geometry(&built_lua), "{ms} ms: published geometry");
+            assert_eq!(crate::layout::paint::build(k, 1.0, None), crate::layout::paint::build(b, 1.0, None), "{ms} ms");
+        }
+        assert!(geometry(&kept_lua).0 > 12.0, "the kept sibling moved with the tween");
+        // Both scenes took the geometry path, not a full parse, on every geometry-only node of every
+        // tick: the width, padding, margin and min/max/spacing ones.
+        assert_eq!(GEOMETRY_REREADS.take(), 2 * 5 * 4, "geometry rereads");
+        // Each tick keeps the moved rect, the padded and the min/max rows' children, the static text
+        // and the whole kept column; the wrapped text, which refits, is rebuilt.
+        assert_eq!(KEPT_SUBTREES.replace(0), 5 * 6, "kept per tick");
+        // The pass after the ticks keeps what their memos still vouch for and rebuilds the one written.
+        for lua in [&kept_lua, &built_lua] {
+            lua.load(r#"kept:set("written")"#).exec().unwrap();
+        }
+        apply_at(&mut kept, std::slice::from_ref(&kept_surface), full(), &shaping, &kept_lua).unwrap();
+        assert!(KEPT_SUBTREES.get() > 0, "the pass kept the subtrees the ticks carried");
+        with_forced_built(|| apply_at(&mut built, std::slice::from_ref(&built_surface), full(), &shaping, &built_lua))
+            .unwrap();
+        let (mut kr, mut br) = (Vec::new(), Vec::new());
+        walk(kept.surface("bar@TEST").unwrap(), &mut kr);
+        walk(built.surface("bar@TEST").unwrap(), &mut br);
+        assert_eq!(kr, br, "the pass after the ticks");
+        let written = &kept.surface("bar@TEST").unwrap().children[0].children[3].children[0];
+        assert!(
+            matches!(&written.paint, Some(PaintStyle::Text { content, .. }) if &**content == "written"),
+            "{written:?}"
+        );
+    }
+
+    /// What one tick costs on `read_seam_cost`'s 162-node tree, one node tweening, and on #200's
+    /// 16 x 24 grid of width keyframes, every row or only the first animated:
     /// `MANTLE_PROFILE=1 cargo test -p renderer --release tick_cost -- --ignored --nocapture`.
     /// Ignored for the same reasons; the profile variable adds the relayout's split. `state` is the
     /// protocol state a ticked surface re-derives: 1.5us against a 2.6us paint-only tick, which is
@@ -2083,6 +2212,40 @@ mod tests {
                 per(split.prepare),
                 per(split.solve),
                 per(clock.elapsed()),
+            );
+        }
+        // #200: a 16 x 24 grid of looping width keyframes, every row animated or only the first.
+        for dense in [true, false] {
+            let (lua, surface) = surface_from(&format!(
+                r##"local rows = {{}}
+                for j = 1, 16 do
+                  local tiles = {{}}
+                  for i = 1, 24 do
+                    tiles[i] = rect {{ width = 24, height = 20, background = "#a6c8e2",
+                      animate = ({dense} or j == 1) and {{ width = {{ duration = 250, keyframes = {{ 24, 33, 24 }}, loops = "infinite" }} }} or nil }}
+                  end
+                  rows[j] = row {{ spacing = 4, children = tiles }}
+                end
+                return panel {{ id = "bar", layer = "top", child = column {{ width = 900, spacing = 8, children = rows }} }}"##
+            ));
+            let mut scene = Scene::new();
+            apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            let instances = [instance_at(&surface, full())];
+            let (ticks, start) = (2_000u32, Instant::now());
+            scene.take_tick_split();
+            let clock = Instant::now();
+            for frame in 0..ticks {
+                let now = start + std::time::Duration::from_micros(u64::from(frame) * 500);
+                assert!(!scene.tick(&instances, &shaping, &lua, now).is_empty());
+            }
+            let per = |d: Duration| d.as_secs_f64() * 1e6 / f64::from(ticks);
+            let (elapsed, split) = (clock.elapsed(), scene.take_tick_split());
+            println!(
+                "TICK grid dense={dense} per_tick={:.1}us (clone={:.1} prepare={:.1} solve={:.1})",
+                per(elapsed),
+                per(split.clone),
+                per(split.prepare),
+                per(split.solve),
             );
         }
     }

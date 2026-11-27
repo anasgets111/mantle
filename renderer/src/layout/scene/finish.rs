@@ -27,9 +27,10 @@ fn finish_kept(tree: &taffy::TaffyTree<Measure>, node: &mut ResolvedNode) -> Res
 /// Denylist for subtree skip eligibility (#155): any new per-node work in `prepare`, `resolve`, or
 /// `finish` that depends on anything outside this node's cells must be excluded here.
 ///
-/// ponytail: a layout-tween tick (`relayout_retained`) drops memos across its instance, and each
-/// rebuilt interior level sorts and allocates the union of its children's cells. Upgrade: preserve
-/// memos across ticks and share or flatten cell sets if interior rebuilds show up in profiles.
+/// ponytail: a layout-tween tick (`relayout_retained`) drops the memos of the nodes it rebuilds,
+/// the tweening ones and their ancestors (it keeps the rest, #200), and each rebuilt interior level
+/// sorts and allocates the union of its children's cells. Upgrade: share or flatten cell sets if
+/// interior rebuilds show up in profiles.
 fn build_subtree(node: &ResolvedNode, stamp: Option<u64>, boxed: bool, no_leavers: bool) -> Option<SubtreeMemo> {
     let stamp = stamp.filter(|_| {
         node.visible

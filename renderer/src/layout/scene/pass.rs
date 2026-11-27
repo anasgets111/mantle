@@ -625,12 +625,12 @@ pub(super) fn prior_position(
 }
 
 #[cfg(test)]
-fn keep_allowed() -> bool {
+pub(super) fn keep_allowed() -> bool {
     !tests::FORCE_BUILT.get()
 }
 
 #[cfg(not(test))]
-const fn keep_allowed() -> bool {
+pub(super) const fn keep_allowed() -> bool {
     true
 }
 
