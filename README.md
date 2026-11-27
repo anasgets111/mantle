@@ -67,6 +67,11 @@ see [AGENTS.md](AGENTS.md#checks-by-change) for checks by change. The full suite
 `lua-language-server`, `luac` and `python3` alongside the build dependencies.
 See the [justfile](justfile) for all recipes.
 
+`just swap` rebuilds and restarts the installed shell. If your build wrapper turns incremental
+compilation off, use `CARGO_INCREMENTAL=1 just swap` for repeated edits. If your Rust compiler
+wrapper rejects incremental compilation, use `CARGO_INCREMENTAL=1 RUSTC_WRAPPER= just swap`.
+Give the first build time to populate its cache before comparing rebuild times.
+
 [Roadmap](https://anasgets111.github.io/mantle/roadmap.html) ·
 [Design decisions](DECISIONS.md) · [Docs source](docs/)
 
