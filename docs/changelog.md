@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+## 0.16.1 - 2026-11-27
+
 1 fix and 7 changes. No breaking changes.
 
 ### Performance
