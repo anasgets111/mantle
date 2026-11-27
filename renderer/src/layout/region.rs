@@ -37,13 +37,14 @@ pub fn overlay_input_regions(surface_root: &ResolvedNode) -> Vec<PhysicalRect> {
     let mut regions = Vec::new();
     // A root's paint claims nothing, but its handler asks for the whole surface.
     if surface_root.takes_input() {
-        collect_input_regions(surface_root, 0.0, 0.0, claims, node::IDENTITY_AFFINE, EVERYTHING, true, &mut regions);
+        let frame = (node::IDENTITY_AFFINE, EVERYTHING, None);
+        collect_input_regions(surface_root, 0.0, 0.0, claims, frame, true, &mut regions);
         return regions;
     }
     let root_matrix = surface_root.paint_matrix(surface_root.at(0.0, 0.0)).unwrap_or(node::IDENTITY_AFFINE);
     let hittable = surface_root.hittable(true);
     for child in surface_root.content_children() {
-        collect_input_regions(child, 0.0, 0.0, claims, root_matrix, EVERYTHING, hittable, &mut regions);
+        collect_input_regions(child, 0.0, 0.0, claims, (root_matrix, EVERYTHING, None), hittable, &mut regions);
     }
     regions
 }
@@ -301,15 +302,14 @@ fn inset_at(r: i32, row: i32) -> i32 {
 
 /// `paint_claims` is per-surface, unchanged down the recursion. `clip` is the
 /// ancestors' cut in this node's pre-matrix space, as in [`collect_blur_regions`]: hit testing
-/// refuses what a clipping ancestor hides, so a region must too.
-#[allow(clippy::too_many_arguments)]
+/// refuses what a clipping ancestor hides, so a region must too. `covered` is an unclipped claiming
+/// ancestor's emitted box: its filter drops whatever lands inside it, so a claim there is not built (#190).
 fn collect_input_regions(
     node: &ResolvedNode,
     origin_x: f32,
     origin_y: f32,
     paint_claims: bool,
-    matrix: node::Affine,
-    clip: LogicalRect,
+    (matrix, clip, covered): (node::Affine, LogicalRect, Option<PhysicalRect>),
     inherited: bool,
     out: &mut Vec<PhysicalRect>,
 ) {
@@ -332,17 +332,21 @@ fn collect_input_regions(
     // An empty cut stays empty: mapping it would flip its inverted corners into a real rect.
     if hittable && !own_clip.is_empty() && takes_input_as_a_box(node, paint_claims) {
         let bounds = snap_to_physical(node::transformed_bounds(matrix, own_clip), 1.0);
-        // The contour's own strips: the ground beside a tail, or a tilted box's corners, take no input.
-        if radius.2.is_some() || tilted(matrix) {
-            let before = out.len();
-            push_shape(rect, radius.clone(), (matrix, own_clip), out);
-            // A bar thinner than a pixel rasterises to nothing but still takes input.
-            if out.len() == before && !bounds.is_empty() {
+        // Inside a cover the claim would be dropped: rasterising rotated tiles only to drop them
+        // cost ~7% of a core at 384 tiles.
+        if !covered.is_some_and(|cover| cover.contains(bounds)) {
+            // The contour's own strips: the ground beside a tail, or a tilted box's corners, take no input.
+            if radius.2.is_some() || tilted(matrix) {
+                let before = out.len();
+                push_shape(rect, radius.clone(), (matrix, own_clip), out);
+                // A bar thinner than a pixel rasterises to nothing but still takes input.
+                if out.len() == before && !bounds.is_empty() {
+                    out.push(bounds);
+                }
+            } else if !bounds.is_empty() {
+                claimed = Some(bounds);
                 out.push(bounds);
             }
-        } else if !bounds.is_empty() {
-            claimed = Some(bounds);
-            out.push(bounds);
         }
         if node.clips_children() {
             return;
@@ -350,7 +354,8 @@ fn collect_input_regions(
     }
     let start = out.len();
     for child in node.content_children() {
-        collect_input_regions(child, rect.x, rect.y, paint_claims, matrix, child_clip, hittable, out);
+        let frame = (matrix, child_clip, claimed.or(covered));
+        collect_input_regions(child, rect.x, rect.y, paint_claims, frame, hittable, out);
     }
     // Only an unclipped box's overflow adds to it; one rect per descendant inside it would bloat the region.
     // Only this node's descendants are looked at: a retain over all of `out` was quadratic in claims.
@@ -877,6 +882,75 @@ mod tests {
             scan(vec![prior, bx((0.0, 0.0, 100.0, 50.0), kids)]),
             [r(5, 5, 15, 15), r(0, 0, 100, 50), r(80, 10, 120, 20), r(95, 0, 110, 10), r(80, 30, 120, 40)]
         );
+    }
+
+    /// #190: a claim inside an unclipped claiming ancestor's box is not built, since that ancestor's
+    /// filter drops it; the pixels claimed are those of the tile alone wherever it sticks out.
+    #[test]
+    fn a_tilted_claim_inside_a_claiming_ancestor_is_skipped_and_its_overflow_kept() {
+        let lua = mlua::Lua::new();
+        let r = |x0, y0, x1, y1| PhysicalRect { x0, y0, x1, y1 };
+        let spun = |x, y, tx| {
+            let mut n = region_node(1, "rect", (x, y, 24.0, 21.0), solid_paint(), Vec::new());
+            if let Some(PaintStyle::Box { radius, .. }) = &mut n.paint {
+                *radius = node::Radii::from(4.0);
+            }
+            n.transform.rotate = 18.0;
+            n.transform.translate = (tx, 0.0);
+            n
+        };
+        let panel = |kids| region_node(9, "panel", (0.0, 0.0, 300.0, 300.0), None, kids);
+        let solid = |rect, kids| region_node(2, "rect", rect, solid_paint(), kids);
+        // What the tile claims with nothing over it, minus the part `over` already holds.
+        let alone = |tile: &ResolvedNode, over: PhysicalRect| -> Vec<_> {
+            overlay_input_regions(&panel(vec![tile.clone()])).into_iter().filter(|s| !over.contains(*s)).collect()
+        };
+        let parent = r(0, 0, 100, 50);
+        let (edge, flung) = (spun(90.0, 20.0, 0.0), spun(10.0, 10.0, 150.0));
+        let want: Vec<_> = [parent].into_iter().chain(alone(&edge, parent)).chain(alone(&flung, parent)).collect();
+        let kids = vec![spun(10.0, 10.0, 0.0), edge.clone(), spun(50.0, 20.0, 0.0), flung.clone()];
+        assert_eq!(overlay_input_regions(&panel(vec![solid((0.0, 0.0, 100.0, 50.0), kids)])), want, "overflow");
+
+        // Nested claims: a tile past the inner box but inside the outer, and a tile inside an inner box
+        // that sticks out of the outer one.
+        let inner = solid((10.0, 10.0, 40.0, 30.0), vec![spun(30.0, 5.0, 0.0)]);
+        let sticking = solid((180.0, 10.0, 40.0, 30.0), vec![spun(5.0, 5.0, 0.0)]);
+        let outer = solid((0.0, 0.0, 200.0, 100.0), vec![inner, sticking]);
+        assert_eq!(overlay_input_regions(&panel(vec![outer])), [r(0, 0, 200, 100), r(180, 10, 220, 40)], "nested");
+
+        let clipped = solid((0.0, 0.0, 100.0, 50.0), vec![edge.clone()]).with_clip(node::ClipShape::Box);
+        assert_eq!(overlay_input_regions(&panel(vec![clipped])), [parent], "a clipping claim ends the walk");
+
+        let mut catcher =
+            region_node(3, "column", (0.0, 0.0, 100.0, 50.0), None, vec![spun(10.0, 10.0, 0.0), edge.clone()]);
+        std::rc::Rc::make_mut(&mut catcher.properties)
+            .insert("on_click", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
+        let want: Vec<_> = [parent].into_iter().chain(alone(&edge, parent)).collect();
+        assert_eq!(overlay_input_regions(&panel(vec![catcher])), want, "a handler covers like paint");
+
+        // On a `Background` panel the ground's paint claims nothing, so it covers nothing and each
+        // clickable tile claims its own shape.
+        let clickable = |mut tile: ResolvedNode| {
+            std::rc::Rc::make_mut(&mut tile.properties)
+                .insert("on_click", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
+            tile
+        };
+        let tiles = [clickable(spun(10.0, 10.0, 0.0)), clickable(edge.clone())];
+        let ground = solid((0.0, 0.0, 100.0, 50.0), tiles.to_vec());
+        let mut out = Vec::new();
+        collect_input_regions(&ground, 0.0, 0.0, false, (node::IDENTITY_AFFINE, EVERYTHING, None), true, &mut out);
+        let want: Vec<_> = tiles.iter().flat_map(|tile| alone(tile, r(0, 0, 0, 0))).collect();
+        assert_eq!(out, want, "background layer");
+
+        // The skip itself, through a transparent row as in a grid: under a cover the tilted tile
+        // builds nothing, with none it builds several strips.
+        let grid = region_node(4, "row", (0.0, 0.0, 100.0, 50.0), None, vec![spun(10.0, 10.0, 0.0)]);
+        for (cover, built) in [(Some(r(0, 0, 300, 300)), false), (None, true)] {
+            let mut out = Vec::new();
+            let frame = (node::IDENTITY_AFFINE, EVERYTHING, cover);
+            collect_input_regions(&grid, 0.0, 0.0, true, frame, true, &mut out);
+            assert!(if built { out.len() > 1 } else { out.is_empty() }, "cover {cover:?}: {out:?}");
+        }
     }
 
     /// ADR-0109: a transparent container is walked into; a solid child claims its box; a node
