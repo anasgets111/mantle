@@ -102,6 +102,9 @@ fn spawn_mock_wayland_server(mut stream: UnixStream, wire: Option<(WireLog, Rect
             (7, "ext_session_lock_manager_v1", 1),
             (8, "wl_seat", 7),
             (9, "wl_data_device_manager", 3),
+            (10, "wp_fractional_scale_manager_v1", 1),
+            (11, "wp_viewporter", 1),
+            (12, "wp_single_pixel_buffer_manager_v1", 1),
         ];
         let mut reply = Vec::new();
         for &(name, iface, version) in &all_globals[..if wire.is_some() { all_globals.len() } else { 4 }] {

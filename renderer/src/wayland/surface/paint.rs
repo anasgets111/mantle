@@ -69,7 +69,64 @@ fn egl_rects(rects: &[PhysicalRect], height: u32) -> Vec<i32> {
     rects.iter().flat_map(|r| [r.x0, height as i32 - r.y1, r.x1 - r.x0, r.y1 - r.y0]).collect()
 }
 
+/// If `list` is a single borderless, unrounded solid colour fill covering `surface` and `(width,
+/// height)` in buffer pixels, returns its colour for the single-pixel Wayland buffer path (#191).
+fn solid_color(
+    list: &layout::paint::DisplayList,
+    surface: PhysicalRect,
+    (width, height): (f32, f32),
+) -> Option<node::Rgba> {
+    use layout::paint::{Draw, DrawCmd};
+    let [DrawCmd { rect, clip, draw: Draw::Box { background, radius, widths, .. } }] = list.commands.as_slice() else {
+        return None;
+    };
+    let [node::Fill::Color(color)] = background.as_slice() else { return None };
+    (surface.x0 == 0
+        && surface.y0 == 0
+        && clip.contains(surface)
+        && rect.x <= 0.0
+        && rect.y <= 0.0
+        && rect.x + rect.width >= width
+        && rect.y + rect.height >= height
+        && radius.is_zero()
+        && *widths == node::EdgeInsets::default())
+    .then_some(*color)
+}
+
+/// Premultiplied `u32` RGBA channels for `wp_single_pixel_buffer_manager_v1.create_u32_rgba_buffer`.
+fn single_pixel_rgba(color: node::Rgba) -> (u32, u32, u32, u32) {
+    let channel = |value: f32| (f64::from(value.clamp(0.0, 1.0)) * f64::from(u32::MAX)).round() as u32;
+    let a = color.a.clamp(0.0, 1.0);
+    let alpha = channel(a);
+    let premul = |value: f32| channel(value.clamp(0.0, 1.0) * a).min(alpha);
+    (premul(color.r), premul(color.g), premul(color.b), alpha)
+}
+
 impl App {
+    /// Presents a static solid background panel with a 1×1 compositor-scaled buffer instead of
+    /// binding EGL (#191). Returns `false` when the compositor lacks single-pixel or viewport
+    /// support, letting the caller fall back to EGL.
+    fn present_solid(&self, index: usize, logical: (u32, u32), color: node::Rgba) -> bool {
+        let Some(buffers) = self.scale_globals.as_ref().and_then(|globals| globals.solid_buffers.as_ref()) else {
+            return false;
+        };
+        let tracked = &self.surfaces[index];
+        if !tracked.scale.fractional() || logical.0 == 0 || logical.1 == 0 {
+            return false;
+        }
+        let Some(surface) = tracked.role.wl_surface() else { return false };
+        let (r, g, b, a) = single_pixel_rgba(color);
+        let buffer = buffers.create_u32_rgba_buffer(r, g, b, a, &self.queue_handle, ());
+        tracked.scale.set_destination(logical);
+        surface.attach(Some(&buffer), 0, 0);
+        let (w, h) = (logical.0.min(i32::MAX as u32) as i32, logical.1.min(i32::MAX as u32) as i32);
+        surface.damage(0, 0, w, h);
+        surface.commit();
+        buffer.destroy();
+        debug!("{}: presented a single-pixel buffer at {}x{}", tracked.surface_id, logical.0, logical.1);
+        true
+    }
+
     /// Frees rendering, EGL, and `wl_egl_window`, leaving the role object untouched. The caller
     /// owns its later drop; hidden windows keep their tracking entry (ADR-0049 decision 1).
     pub(super) fn release_bound(&mut self, index: usize) {
@@ -98,7 +155,6 @@ impl App {
         }
         // `BoundSurface`'s drop sends `wl_egl_window_destroy`.
         drop(bound);
-        self.surfaces[index].configured_size = (0, 0);
         self.trim.request(std::time::Instant::now());
     }
 
@@ -215,7 +271,6 @@ impl App {
         if self.surfaces[index].map_state != MapState::Mapped {
             return None;
         }
-        let egl_surface = self.surfaces[index].bound.as_ref()?.egl_surface;
         let surface_id = self.surfaces[index].surface_id.clone();
         let logical = self.surfaces[index].configured_size;
         let (width, height) = self.surfaces[index].scale.physical_size(logical);
@@ -226,12 +281,6 @@ impl App {
             logical,
             fonts: self.shaping.font_generation(),
         };
-        if let Some(bound) = self.surfaces[index].bound.as_mut()
-            && bound.size != (width, height)
-        {
-            bound.native_window.resize(width as i32, height as i32, 0, 0);
-            bound.size = (width, height);
-        }
 
         // Whatever this paint commits answers a deferred repaint, and it asks for its own callback.
         self.surfaces[index].paint_deferred = false;
@@ -313,7 +362,34 @@ impl App {
             return None;
         }
 
+        let tracked = &self.surfaces[index];
+        // ponytail: once a solid background panel promotes to EGL (e.g. a colour tween or added
+        // child), it stays on EGL until remapped; upgrade by releasing EGL on return to a static fill.
+        if !animating
+            && tracked.bound.is_none()
+            && matches!(&tracked.role, TrackedRole::Panel { spec, .. } if spec.topology.layer == node::LayerKind::Background)
+            && let Some(color) = solid_color(&list, surface_rect, (logical.0 as f32 * scale, logical.1 as f32 * scale))
+            && self.present_solid(index, logical, color)
+        {
+            let tracked = &mut self.surfaces[index];
+            tracked.last_painted = Some((paint_key, list));
+            tracked.stale = next_stale(owed, tracked.stale, None);
+            tracked.dirty = false;
+            self.surfaces_drawn += 1;
+            return None;
+        }
+        // A single-pixel background panel can acquire other content without remapping; EGL has no prior frame.
+        let damage = if tracked.bound.is_none() { None } else { damage };
         let t_gl = timing.then(Instant::now);
+        if !self.ensure_bound(index) {
+            return None;
+        }
+        let bound = self.surfaces[index].bound.as_mut()?;
+        if bound.size != (width, height) {
+            bound.native_window.resize(width as i32, height as i32, 0, 0);
+            bound.size = (width, height);
+        }
+        let egl_surface = bound.egl_surface;
         self.place_desktop_reads(index, &list);
         if !self.make_surface_current(egl_surface, &surface_id) {
             return None;
@@ -585,13 +661,12 @@ impl App {
     /// frame is owed by no tree, no signal and no frame callback, so nothing else would wake for
     /// it (ADR-0233).
     pub(in crate::wayland) fn next_stale_deadline(&self) -> Option<std::time::Instant> {
-        // Bound and not awaiting a frame callback: the repaint that would clear this skips an
-        // unbound surface and defers to a pending callback, so a deadline in the past would spin
-        // the poll loop instead of arming one wake. The callback wakes through the Wayland fd; a
-        // surface hidden behind a session lock gets none until unlock.
+        // Mapped and not awaiting a frame callback: a pending callback defers painting until the
+        // compositor answers it, so a deadline in the past would spin the poll loop instead of
+        // arming one wake. A surface hidden behind a session lock gets none until unlock.
         self.surfaces
             .iter()
-            .filter(|s| s.map_state == MapState::Mapped && s.bound.is_some() && !s.frame_pending)
+            .filter(|s| s.map_state == MapState::Mapped && !s.frame_pending)
             .filter_map(|s| s.stale)
             .min()
     }
@@ -611,11 +686,6 @@ impl App {
             // Painted at the callback instead; the compositor still shows this surface's last frame.
             if self.surfaces[index].frame_pending {
                 self.surfaces[index].paint_deferred = true;
-                continue;
-            }
-            // A panel shown after starting hidden was configured without EGL; bind here because no
-            // further configure is coming.
-            if !self.ensure_bound(index) {
                 continue;
             }
             if self.reload_removals.is_some() {
@@ -705,5 +775,156 @@ mod tests {
         assert_eq!(repaint_bounds(4, frame, &history), None, "a whole-surface frame in the window");
         assert_eq!(repaint_bounds(5, frame, &history), None, "older than the history");
         assert_eq!(repaint_bounds(1, None, &history), None);
+    }
+
+    /// #191. `solid_color` accepts only a single full-surface, unrounded, borderless solid fill
+    /// (including odd logical sizes at fractional scales whether `ceil(w*s)` rounds up past
+    /// `physical_size` or matches it) and rejects partial, bordered, rounded, gradient, or
+    /// multi-command display lists.
+    #[test]
+    fn solid_color_matches_only_full_surface_borderless_unrounded_fills() {
+        use layout::paint::{DisplayList, Draw, DrawCmd};
+        let fill = node::Rgba { r: 0.125, g: 0.25, b: 0.5, a: 0.75 };
+        let surface = PhysicalRect { x0: 0, y0: 0, x1: 1204, y1: 754 };
+        let logical_scaled = (963.0 * 1.25, 603.0 * 1.25); // 1203.75 x 753.75
+        let box_cmd = |rect, clip, background, radius, widths| DrawCmd {
+            rect,
+            clip,
+            draw: Draw::Box {
+                background,
+                radius,
+                border: node::BorderPaint::default(),
+                widths,
+                dash: node::StrokeDash::default(),
+            },
+        };
+        let full_rect = LogicalRect { x: 0.0, y: 0.0, width: logical_scaled.0, height: logical_scaled.1 };
+        let ok = DisplayList {
+            commands: vec![box_cmd(
+                full_rect,
+                surface,
+                vec![node::Fill::Color(fill)],
+                node::Radii::default(),
+                node::EdgeInsets::default(),
+            )],
+        };
+        assert_eq!(solid_color(&ok, surface, logical_scaled), Some(fill), "fractional-scale .75 case matches");
+
+        // 2560x1440 at 1.75x -> logical 1463x823: physical_size rounds half-up to 2560x1440 while
+        // snap_to_physical ceils 2560.25x1440.25 to 2561x1441.
+        let surface_175 = PhysicalRect { x0: 0, y0: 0, x1: 2560, y1: 1440 };
+        let clip_175 = PhysicalRect { x0: 0, y0: 0, x1: 2561, y1: 1441 };
+        let scaled_175 = (1463.0 * 1.75, 823.0 * 1.75);
+        let ok_175 = DisplayList {
+            commands: vec![box_cmd(
+                LogicalRect { x: 0.0, y: 0.0, width: scaled_175.0, height: scaled_175.1 },
+                clip_175,
+                vec![node::Fill::Color(fill)],
+                node::Radii::default(),
+                node::EdgeInsets::default(),
+            )],
+        };
+        assert_eq!(solid_color(&ok_175, surface_175, scaled_175), Some(fill), "fractional-scale .25 case matches");
+
+        let rounded = DisplayList {
+            commands: vec![box_cmd(
+                full_rect,
+                surface,
+                vec![node::Fill::Color(fill)],
+                node::Radii::from(4.0),
+                node::EdgeInsets::default(),
+            )],
+        };
+        assert_eq!(solid_color(&rounded, surface, logical_scaled), None, "rounded corners need EGL");
+
+        let bordered = DisplayList {
+            commands: vec![box_cmd(
+                full_rect,
+                surface,
+                vec![node::Fill::Color(fill)],
+                node::Radii::default(),
+                node::EdgeInsets { top: 1.0, right: 1.0, bottom: 1.0, left: 1.0 },
+            )],
+        };
+        assert_eq!(solid_color(&bordered, surface, logical_scaled), None, "borders need EGL");
+
+        let partial = DisplayList {
+            commands: vec![box_cmd(
+                LogicalRect { width: 100.0, ..full_rect },
+                surface,
+                vec![node::Fill::Color(fill)],
+                node::Radii::default(),
+                node::EdgeInsets::default(),
+            )],
+        };
+        assert_eq!(solid_color(&partial, surface, logical_scaled), None, "partial width needs EGL");
+
+        let two = DisplayList { commands: vec![ok.commands[0].clone(), ok.commands[0].clone()] };
+        assert_eq!(solid_color(&two, surface, logical_scaled), None, "multi-command lists need EGL");
+
+        // Premultiplied u32 RGBA channels clamp cleanly and satisfy r,g,b <= a.
+        assert_eq!(
+            single_pixel_rgba(node::Rgba { r: 1.0, g: 0.0, b: 0.5, a: 1.0 }),
+            (u32::MAX, 0, u32::MAX / 2 + 1, u32::MAX)
+        );
+        let (r, g, b, a) = single_pixel_rgba(node::Rgba { r: 1.5, g: -0.2, b: 1.0, a: 0.5 });
+        assert!(r == a && g == 0 && b == a && a == u32::MAX / 2 + 1, "premultiplied and clamped: {:?}", (r, g, b, a));
+    }
+
+    /// #191. A static solid background panel presents via `wp_single_pixel_buffer_manager_v1` +
+    /// `wp_viewport` without initializing EGL or binding a `wl_egl_window`, skips unchanged
+    /// repaints, destroys the temporary `wl_buffer` after commit, and resets `configured_size` on
+    /// teardown.
+    #[test]
+    fn solid_background_panel_presents_a_single_pixel_buffer_without_egl() {
+        let (mut app, _dir, mut queue, mock) = App::test_app_with_wire(
+            r##"return { panel { id = "bg", layer = "background", output = "TEST",
+                width = 1920, height = 1080, background = "#202030ff" } }"##,
+        );
+        assert_eq!(app.surfaces[0].surface_id, "bg@TEST");
+        assert!(app.scale_globals.as_ref().and_then(|g| g.solid_buffers.as_ref()).is_some());
+        let wl = app.surfaces[0].role.wl_surface().unwrap().id().protocol_id();
+        queue.roundtrip(&mut app).unwrap();
+        let commits_before = mock.commits_for(wl);
+
+        // Configure and paint the background panel: must present via single-pixel without EGL.
+        app.surfaces[0].map_state = MapState::AwaitingConfigure;
+        app.bind_and_clear(0, 1920, 1080);
+        queue.roundtrip(&mut app).unwrap();
+
+        assert!(app.egl.is_none(), "single-pixel path must not initialize EGL");
+        assert!(app.surfaces[0].bound.is_none(), "single-pixel path must not bind wl_egl_window");
+        assert_eq!(app.surfaces_drawn, 1);
+        assert_eq!(mock.commits_for(wl), commits_before + 1);
+        let reqs = mock.requests.lock().unwrap().clone();
+        // `wl_surface.attach` is opcode 1 (arg0 = buffer id); `wl_surface.commit` is opcode 6;
+        // `wl_buffer.destroy` is opcode 0.
+        let (attach_pos, buf_id) = reqs
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(i, &(id, op, arg))| (id == wl && op == 1).then_some((i, arg)))
+            .expect("wl_surface.attach was sent");
+        assert_ne!(buf_id, 0);
+        let commit_pos = reqs[attach_pos..]
+            .iter()
+            .position(|&(id, op, _)| id == wl && op == 6)
+            .map(|rel| attach_pos + rel)
+            .expect("wl_surface.commit followed attach");
+        let destroy_pos =
+            reqs.iter().position(|&req| req == (buf_id, 0, 0)).expect("temporary single-pixel wl_buffer was destroyed");
+        assert!(destroy_pos > commit_pos, "wl_buffer.destroy must follow wl_surface.commit");
+
+        // Second paint with unchanged display list commits nothing and stays off EGL.
+        app.paint_surface(0);
+        queue.roundtrip(&mut app).unwrap();
+        assert_eq!(app.surfaces_drawn, 1, "unchanged solid panel skips repaint");
+        assert_eq!(mock.commits_for(wl), commits_before + 1);
+        assert!(app.egl.is_none());
+
+        // Dropping the role object resets configured_size and last_painted even without an EGL bind.
+        app.drop_role_object(0);
+        assert_eq!(app.surfaces[0].configured_size, (0, 0));
+        assert!(app.surfaces[0].last_painted.is_none());
     }
 }

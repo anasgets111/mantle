@@ -4,6 +4,9 @@ use wayland_client::globals::GlobalList;
 use wayland_client::protocol::wl_surface;
 use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::wp::fractional_scale::v1::client::{wp_fractional_scale_manager_v1, wp_fractional_scale_v1};
+use wayland_protocols::wp::single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1::{
+    self, WpSinglePixelBufferManagerV1,
+};
 use wayland_protocols::wp::viewporter::client::{wp_viewport, wp_viewporter};
 
 use super::App;
@@ -11,6 +14,7 @@ use super::App;
 pub(super) struct ScaleGlobals {
     fractional: wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
     viewporter: wp_viewporter::WpViewporter,
+    pub(super) solid_buffers: Option<WpSinglePixelBufferManagerV1>,
 }
 
 pub(super) struct SurfaceScale {
@@ -23,7 +27,11 @@ pub(super) struct SurfaceScale {
 
 impl ScaleGlobals {
     pub(super) fn bind(globals: &GlobalList, qh: &QueueHandle<App>) -> Option<Self> {
-        Some(Self { fractional: globals.bind(qh, 1..=1, ()).ok()?, viewporter: globals.bind(qh, 1..=1, ()).ok()? })
+        Some(Self {
+            fractional: globals.bind(qh, 1..=1, ()).ok()?,
+            viewporter: globals.bind(qh, 1..=1, ()).ok()?,
+            solid_buffers: globals.bind(qh, 1..=1, ()).ok(),
+        })
     }
 
     pub(super) fn surface(&self, surface: &wl_surface::WlSurface, qh: &QueueHandle<App>) -> SurfaceScale {
@@ -110,6 +118,7 @@ impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, wl_surface::WlSurface
 delegate_noop!(App: ignore wp_viewport::WpViewport);
 delegate_noop!(App: ignore wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1);
 delegate_noop!(App: ignore wp_viewporter::WpViewporter);
+delegate_noop!(App: ignore wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1);
 
 #[cfg(test)]
 mod tests {

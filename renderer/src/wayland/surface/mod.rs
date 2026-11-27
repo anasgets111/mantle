@@ -401,6 +401,7 @@ impl TrackedSurface {
         self.map_state = MapState::Unmapped;
         // Those pixels are gone, and a kept list would pin its images through `trim` (ADR-0182).
         self.last_painted = None;
+        self.configured_size = (0, 0);
         self.dirty = true;
     }
 }
@@ -540,11 +541,11 @@ impl App {
         self.surfaces.remove(index);
     }
 
-    /// A configure records the compositor size, updates scene geometry and exclusive zone, binds
-    /// EGL, and paints. Layer-shell and xdg-shell share this path
-    /// because both require an initial unbuffered commit (ADR-0040 decision 4). The callers differ
-    /// only in size source: layer-shell supplies it, while a toplevel's `None` axes may be chosen
-    /// by the client (see `xdg_shell::window::toplevel_size_for`).
+    /// A configure records the compositor size, updates scene geometry and exclusive zone, and
+    /// presents (a single-pixel buffer for a static solid background panel, or EGL). Layer-shell
+    /// and xdg-shell share this path because both require an initial unbuffered commit (ADR-0040
+    /// decision 4). The callers differ only in size source: layer-shell supplies it, while a
+    /// toplevel's `None` axes may be chosen by the client (see `xdg_shell::window::toplevel_size_for`).
     pub(super) fn bind_and_clear(&mut self, index: usize, width: u32, height: u32) {
         self.set_surface_size(index, (width, height));
         // No buffer may attach before this first or remap configure; everything below may draw.
@@ -563,9 +564,6 @@ impl App {
             return;
         }
 
-        if !self.ensure_bound(index) {
-            return;
-        }
         self.paint_surface(index);
         self.sync_captures();
     }
