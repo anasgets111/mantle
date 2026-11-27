@@ -1913,6 +1913,36 @@ mod tests {
         assert!(painter.take_scratch("bar", (8, 8)).is_some(), "another surface's pooled size stays");
     }
 
+    /// #201. A size the surface has not asked for in more than `LAYER_PAINTS` of its paints is
+    /// deleted. A paint that takes a pooled image and keeps it as a layer never returns it, yet
+    /// asked for that size: the spares stay.
+    #[test]
+    fn a_size_a_paint_takes_from_keeps_its_spares() {
+        let Some(instance) = init_headless_egl(8, 8) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 8, 8) else { return };
+        let mut image =
+            || painter.canvas_mut().create_image_empty(1, 1, PixelFormat::Rgba8, ImageFlags::empty()).unwrap();
+        let (kept, spare, idle) = (image(), image(), image());
+        painter.recycle_scratch("bar", [(kept, (8, 8)), (spare, (8, 8)), (idle, (4, 4))]);
+        assert_eq!(painter.census(), (3, 2 * 8 * 8 * 4 + 4 * 4 * 4, 0, 0));
+        for _ in 0..crate::text::atlas::LAYER_PAINTS {
+            painter.recycle_scratch("bar", []);
+        }
+        assert_eq!(painter.take_scratch("bar", (8, 8)), Some(spare));
+        painter.recycle_scratch("bar", []);
+        assert_eq!(painter.census().0, 1, "the size nothing asked for went");
+        assert_eq!(painter.take_scratch("bar", (8, 8)), Some(kept), "the spare outlived the paint that asked");
+
+        // One size a paint, one past the cap of 16: the size asked for longest ago goes.
+        for side in 1..=17 {
+            let id = painter.canvas_mut().create_image_empty(1, 1, PixelFormat::Rgba8, ImageFlags::empty()).unwrap();
+            painter.recycle_scratch("cap", [(id, (side, 1))]);
+        }
+        assert_eq!(painter.census().0, 16);
+        assert!(painter.take_scratch("cap", (1, 1)).is_none());
+    }
+
     /// A 32px box at (16, 16) on a white 64x96 panel with `effect.shader` running `frag`, read at
     /// `points`. `shader` holds the keys after `source`, `body` the box's own.
     fn paint_shader(frag: &str, shader: &str, body: &str, points: &[(usize, usize)]) -> Option<Vec<(u8, u8, u8, u8)>> {

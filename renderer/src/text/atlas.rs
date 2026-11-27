@@ -33,7 +33,8 @@ const SCRATCH_BYTES: usize = 64 << 20;
 /// Paints, by any surface, a finished layer outlives the last paint of its own surface's list that
 /// held it, and the bytes all of them may hold, least recently held first (ADR-0258). The age
 /// is a fallback for a surface whose layers [`TextPainter::release_surface`] did not free: every
-/// paint of a live one sweeps its own.
+/// paint of a live one sweeps its own. A pooled size its own surface has not asked for in more than
+/// as many of its paints is deleted too.
 pub(crate) const LAYER_PAINTS: u64 = 1000;
 const LAYER_BYTES: usize = 64 << 20;
 
@@ -69,12 +70,14 @@ pub struct TextPainter {
     /// The worker and memo that measured each line, asked again for its glyphs and its faces.
     shaping: ShapingHandle,
     /// `layout::paint::canvas::offscreen::draw_clipped`'s offscreen targets, kept between paints and keyed by
-    /// allocated size, each with the paint that last asked for that size (ADR-0217, ADR-0370).
-    /// Here, not beside `ImageCache`, because the ids belong to `canvas` and have to die with it.
-    scratch: HashMap<PoolKey, (u64, Vec<ImageId>)>,
-    /// What [`TextPainter::recycle_scratch`] ages by. Not a timer: a size goes stale because other
-    /// sizes were asked for since, not because seconds passed.
+    /// allocated size (ADR-0217, ADR-0370). Here, not beside `ImageCache`, because the ids belong
+    /// to `canvas` and have to die with it.
+    scratch: HashMap<PoolKey, Pooled<ImageId>>,
+    /// Paints by every surface, which orders the sizes past the pool's caps for eviction. Not a timer.
     paints: u64,
+    /// Each surface's own paints, which a pooled size ages by: a surface that paints rarely keeps
+    /// its sizes however often another one paints.
+    painted: HashMap<String, u64>,
     /// `layout::paint::canvas::draw_layer`'s finished images, kept here beside `scratch` for the
     /// same reason (ADR-0258).
     layers: Vec<KeptLayer>,
@@ -92,15 +95,22 @@ pub struct TextPainter {
 /// other's: sizes alone cannot tell a gone full-screen lock from the live full-screen wallpaper.
 type PoolKey = (String, (usize, usize));
 
+/// A pooled size's free images, with the paint that last asked for it and its own surface's paint
+/// count then.
+type Pooled<T> = (u64, u64, Vec<T>);
+
 /// The sizes to delete to bring a scratch pool back to [`SCRATCH_SIZES`] and [`SCRATCH_BYTES`]:
-/// those asked for longest ago, never one the paint `now` asked for (ADR-0262). Pure so the policy
-/// is testable without the GL context `delete_image` needs.
+/// those asked for longest ago, never one the paint `now` asked for (ADR-0262). Then any size its
+/// own surface has not asked for in more than [`LAYER_PAINTS`] of the paints counted in `painted`,
+/// such as the targets a one-off rebuild returned (#201). Pure so the policy is testable without
+/// the GL context `delete_image` needs.
 /// ponytail: one paint's own sizes stay past either ceiling, so a surface of many glasses at sigma
-/// 32 or more can hold more until its next paint asks for fewer.
-fn stalest<T>(scratch: &HashMap<PoolKey, (u64, Vec<T>)>, now: u64) -> Vec<PoolKey> {
-    let mut by_age: Vec<_> = scratch.iter().map(|(key, (asked, _))| (*asked, key.clone())).collect();
+/// 32 or more can hold more until its next paint asks for fewer. An idle surface keeps its orphans
+/// until it paints again; upgrade path: a wall-clock grace period.
+fn stalest<T>(scratch: &HashMap<PoolKey, Pooled<T>>, now: u64, painted: &HashMap<String, u64>) -> Vec<PoolKey> {
+    let mut by_age: Vec<_> = scratch.iter().map(|(key, (asked, ..))| (*asked, key.clone())).collect();
     by_age.sort_unstable();
-    let mut bytes: usize = scratch.iter().map(|((_, (w, h)), (_, free))| w * h * 4 * free.len()).sum();
+    let mut bytes: usize = scratch.iter().map(|((_, (w, h)), (.., free))| w * h * 4 * free.len()).sum();
     let mut sizes = scratch.len();
     let mut evicted = Vec::new();
     for (asked, key) in by_age {
@@ -108,8 +118,14 @@ fn stalest<T>(scratch: &HashMap<PoolKey, (u64, Vec<T>)>, now: u64) -> Vec<PoolKe
             break;
         }
         sizes -= 1;
-        bytes -= (key.1).0 * (key.1).1 * 4 * scratch[&key].1.len();
+        bytes -= (key.1).0 * (key.1).1 * 4 * scratch[&key].2.len();
         evicted.push(key);
+    }
+    for (key, (_, mine, _)) in scratch {
+        let idle = painted.get(&key.0).map_or(0, |own| own.saturating_sub(*mine));
+        if idle > LAYER_PAINTS && !evicted.contains(key) {
+            evicted.push(key.clone());
+        }
     }
     evicted
 }
@@ -292,6 +308,7 @@ impl TextPainter {
             shaping,
             scratch: HashMap::default(),
             paints: 0,
+            painted: HashMap::default(),
             layers: Vec::new(),
             sources: Vec::new(),
             retired_layers: Vec::new(),
@@ -319,17 +336,30 @@ impl TextPainter {
     /// An offscreen allocated at `size`, reused from the pool when one is free. The caller clears
     /// it: a reused target still holds the last paint's pixels.
     pub fn take_scratch(&mut self, surface: &str, size: (usize, usize)) -> Option<ImageId> {
-        self.scratch.get_mut(&(surface.to_owned(), size))?.1.pop()
+        let stamps = self.coming(surface);
+        let (asked, mine, free) = self.scratch.get_mut(&(surface.to_owned(), size))?;
+        let image = free.pop()?;
+        // Asked for on this paint, though `keep_layer` may keep what it took and never return it, so
+        // the spares stay. An emptied size keeps its old stamps and ages out.
+        if !free.is_empty() {
+            (*asked, *mine) = stamps;
+        }
+        Some(image)
+    }
+
+    /// The stamps of `surface`'s coming [`Self::recycle_scratch`] tick.
+    fn coming(&self, surface: &str) -> (u64, u64) {
+        (self.paints + 1, self.painted.get(surface).copied().unwrap_or(0) + 1)
     }
 
     /// Returns a dead offscreen to the pool mid-frame so later layers in the same paint reuse it.
     /// Stamped for the coming [`Self::recycle_scratch`] tick so `stalest` treats it as active on
     /// this paint.
     pub fn return_scratch(&mut self, surface: &str, id: ImageId, size: (usize, usize)) {
-        let now = self.paints + 1;
-        let entry = self.scratch.entry((surface.to_owned(), size)).or_insert((now, Vec::new()));
-        entry.0 = now;
-        entry.1.push(id);
+        let (now, mine) = self.coming(surface);
+        let entry = self.scratch.entry((surface.to_owned(), size)).or_insert((now, mine, Vec::new()));
+        (entry.0, entry.1) = (now, mine);
+        entry.2.push(id);
     }
 
     /// What `command` last finished into on `surface`, and whether every image in it is safe to
@@ -484,16 +514,18 @@ impl TextPainter {
         images.map(|id| (id, self.canvas.image_size(id).unwrap_or_default())).collect()
     }
 
-    /// Returns one paint's offscreens to the pool and deletes whatever that pushes over capacity.
+    /// Returns one paint's offscreens to the pool and deletes the sizes [`stalest`] picks.
     pub fn recycle_scratch(&mut self, surface: &str, used: impl IntoIterator<Item = (ImageId, (usize, usize))>) {
-        self.paints += 1;
+        let (now, mine) = self.coming(surface);
+        self.paints = now;
+        self.painted.insert(surface.to_owned(), mine);
         for (id, size) in used {
-            let entry = self.scratch.entry((surface.to_owned(), size)).or_insert((self.paints, Vec::new()));
-            entry.0 = self.paints;
-            entry.1.push(id);
+            let entry = self.scratch.entry((surface.to_owned(), size)).or_insert((now, mine, Vec::new()));
+            (entry.0, entry.1) = (now, mine);
+            entry.2.push(id);
         }
-        for key in stalest(&self.scratch, self.paints) {
-            for id in self.scratch.remove(&key).into_iter().flat_map(|(_, free)| free) {
+        for key in stalest(&self.scratch, now, &self.painted) {
+            for id in self.scratch.remove(&key).into_iter().flat_map(|(.., free)| free) {
                 self.canvas.delete_image(id);
             }
         }
@@ -503,7 +535,7 @@ impl TextPainter {
     /// layer bytes)`, for `wayland::memory_profile`. Both are GPU images the driver may mirror in
     /// host memory, which `malloc` counts and `image` does not.
     pub fn census(&self) -> (usize, usize, usize, usize) {
-        let pooled = self.scratch.iter().map(|((_, (w, h)), (_, free))| (free.len(), free.len() * w * h * 4));
+        let pooled = self.scratch.iter().map(|((_, (w, h)), (.., free))| (free.len(), free.len() * w * h * 4));
         let (images, pool_bytes) = pooled.fold((0, 0), |(n, bytes), (more, extra)| (n + more, bytes + extra));
         let layer_bytes = self.layers.iter().map(|(_, _, images, ..)| self.layer_bytes(images)).sum::<usize>()
             + self.sources.iter().map(|(_, _, _, id, _)| self.image_bytes(*id)).sum::<usize>();
@@ -523,7 +555,8 @@ impl TextPainter {
         let layers = gone.into_iter().flat_map(|(.., (casts, content), _, _)| casts.into_iter().chain([content]));
         let sources = gone_sources.into_iter().map(|(_, _, _, id, _)| id);
         let owned: Vec<_> = self.scratch.keys().filter(|(on, _)| on == surface).cloned().collect();
-        let pooled = owned.into_iter().filter_map(|key| self.scratch.remove(&key)).flat_map(|(_, free)| free);
+        let pooled = owned.into_iter().filter_map(|key| self.scratch.remove(&key)).flat_map(|(.., free)| free);
+        self.painted.remove(surface);
         for id in layers.chain(sources).chain(pooled) {
             self.canvas.delete_image(id);
         }
@@ -727,12 +760,15 @@ mod tests {
         // Each frame of the tween is a size nothing will ask for again. Without a cap the pool
         // holds one target per pixel of travel for the rest of the session.
         let pool = |sizes: std::ops::Range<usize>| {
-            sizes.map(|n| ((String::new(), (n, 40)), (n as u64, Vec::<()>::new()))).collect::<HashMap<_, _>>()
+            sizes.map(|n| ((String::new(), (n, 40)), (n as u64, 0, Vec::<()>::new()))).collect::<HashMap<_, _>>()
         };
         let now = 100;
-        assert!(stalest(&pool(0..SCRATCH_SIZES), now).is_empty(), "a pool at capacity deletes nothing");
+        assert!(
+            stalest(&pool(0..SCRATCH_SIZES), now, &HashMap::default()).is_empty(),
+            "a pool at capacity deletes nothing"
+        );
 
-        let evicted = stalest(&pool(0..SCRATCH_SIZES + 3), now);
+        let evicted = stalest(&pool(0..SCRATCH_SIZES + 3), now, &HashMap::default());
         assert_eq!(evicted.len(), 3, "only the overflow goes");
         assert_eq!(
             evicted.iter().map(|k| k.1).collect::<Vec<_>>(),
@@ -746,13 +782,45 @@ mod tests {
         let free = |count: usize| vec![(); count];
         // 3440x1440 is 19.8 MB: four pooled is 79 MB, over the 64 MiB cap.
         let pool = HashMap::from_iter([
-            ((String::new(), (3440, 1440)), (1, free(2))),
-            ((String::new(), (1720, 720)), (2, free(1))),
-            ((String::new(), (3440, 1441)), (3, free(2))),
-            ((String::new(), (8, 8)), (4, free(1))),
+            ((String::new(), (3440, 1440)), (1, 0, free(2))),
+            ((String::new(), (1720, 720)), (2, 0, free(1))),
+            ((String::new(), (3440, 1441)), (3, 0, free(2))),
+            ((String::new(), (8, 8)), (4, 0, free(1))),
         ]);
-        assert_eq!(stalest(&pool, 4), [(String::new(), (3440, 1440))], "the oldest alone brings it under");
-        assert!(stalest(&pool, 1).is_empty(), "the current paint's size stays, over the cap or not");
+        assert_eq!(
+            stalest(&pool, 4, &HashMap::default()),
+            [(String::new(), (3440, 1440))],
+            "the oldest alone brings it under"
+        );
+        assert!(
+            stalest(&pool, 1, &HashMap::default()).is_empty(),
+            "the current paint's size stays, over the cap or not"
+        );
+    }
+
+    /// #201. A size goes once its own surface has painted more than `LAYER_PAINTS` times without
+    /// asking for it, however many paints other surfaces made: a dashboard painting every few
+    /// seconds keeps its target beside an animation at 165 Hz, which loses its orphans.
+    #[test]
+    fn a_pool_ages_each_size_by_its_own_surfaces_paints() {
+        let key = |on: &str, side: usize| (on.to_owned(), (side, side));
+        let now = 10 * LAYER_PAINTS;
+        let pool = HashMap::from_iter([
+            (key("dash", 1200), (5, 3, vec![()])),
+            (key("anim", 128), (now - 2000, 9, vec![(); 49])),
+            (key("anim", 94), (now - 1000, 10, vec![()])),
+            (key("anim", 8), (now, LAYER_PAINTS + 10, vec![()])),
+        ]);
+        let painted = |anim: u64| HashMap::from_iter([("dash".to_owned(), 4), ("anim".to_owned(), anim)]);
+        let evicted = stalest(&pool, now, &painted(LAYER_PAINTS + 10));
+        assert_eq!(evicted, [key("anim", 128)], "one own paint past the age goes, the dashboard's stays");
+        assert!(stalest(&pool, now, &painted(LAYER_PAINTS + 9)).is_empty(), "exactly the age stays");
+
+        // Over the size cap and idle both: listed once.
+        let full: HashMap<_, _> =
+            (0..=SCRATCH_SIZES).map(|n| (key("anim", n), (n as u64 + 1, n as u64, vec![()]))).collect();
+        let evicted = stalest(&full, SCRATCH_SIZES as u64 + 1, &painted(LAYER_PAINTS + 1));
+        assert_eq!(evicted, [key("anim", 0)]);
     }
 
     /// ADR-0262. A paint asking for more sizes than the cap keeps them all, or the next frame
@@ -761,13 +829,13 @@ mod tests {
     fn a_paint_keeps_every_size_it_asked_for() {
         let pool = |asked: fn(usize) -> u64| {
             (0..SCRATCH_SIZES + 3)
-                .map(|n| ((String::new(), (n, 40)), (asked(n), Vec::<()>::new())))
+                .map(|n| ((String::new(), (n, 40)), (asked(n), 0, Vec::<()>::new())))
                 .collect::<HashMap<_, _>>()
         };
-        let evicted = stalest(&pool(|n| 7 + (n % 2) as u64), 8);
+        let evicted = stalest(&pool(|n| 7 + (n % 2) as u64), 8, &HashMap::default());
         assert_eq!(evicted.len(), 3);
         assert!(evicted.iter().all(|(_, (n, _))| n % 2 == 0), "only the older paint's: {evicted:?}");
-        assert!(stalest(&pool(|_| 8), 8).is_empty());
+        assert!(stalest(&pool(|_| 8), 8, &HashMap::default()).is_empty());
     }
 
     /// A run bidi splits around other text is drawn piece by piece, never across the text between
