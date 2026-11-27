@@ -731,8 +731,13 @@ pub(super) fn draw_backdrop(
         canvas.set_render_target(target);
     }
     let read_rect = clip_rect(0, 0, read.size);
+    // `read_target` flushed, and only a desktop capture has queued work since. Without one the blur
+    // skips its own flush, 11 us a glass on NVIDIA (#196). The next flush still opens on a program
+    // switch (ADR-0256 decision 8): the queue still starts with the zero-area fill `read_target`'s
+    // flush left, and the stage puts back every GL state it changes.
+    let flush = desktop.is_some();
     let frost = (*sigma > 0.0 || !tone.is_identity()).then(|| {
-        blurred(painter, walk, read.copy, (read_rect, read_rect), (*sigma, *tone), read.snug, false, true)
+        blurred(painter, walk, read.copy, (read_rect, read_rect), (*sigma, *tone), read.snug, false, flush)
             .unwrap_or(read.copy)
     });
     if shader.is_none()
@@ -1216,6 +1221,8 @@ mod tests {
             ("", "vec4(0.5, 0.0, 0.0, 0.5)".to_string(), [128, 128], false, Some(128)),
             ("", "vec4(1.0)".to_string(), [224, 224], true, None),
             (frosted, "mantle_input_blurred(v_uv)".to_string(), [0, 0], false, None),
+            // Opaque: a frost that missed the capture under it would be black, not the desktop.
+            (frosted, "vec4(mantle_input_blurred(v_uv).rgb, 1.0)".to_string(), [0, 0], false, None),
         ];
         for (keys, body, [top, bottom], unknown, red) in cases {
             let frag = dir.path().join("s.frag");

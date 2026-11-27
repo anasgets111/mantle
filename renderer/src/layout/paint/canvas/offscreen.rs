@@ -755,31 +755,37 @@ mod tests {
 
     /// ADR-0256. femtovg opens a flush on the program its last one ended on without setting that
     /// program's view, which an offscreen of another size left at its own: a gradient ground
-    /// drifted between frames.
+    /// drifted between frames. A glass in the offscreen blurs without a flush of its own (#196) and
+    /// must leave the next one opening on the same switch.
     #[test]
     fn a_gradient_over_an_offscreen_paints_the_same_every_frame() {
-        let src = r##"return panel { id = "bar", width = 96, height = 64, padding = 16,
-            background = { gradient = "linear", angle = 90, stops = { { 0, "#FF0000FF" }, { 1, "#0000FFFF" } } },
-            child = rect { width = 40, height = 20, radius = 10, clip = "rounded", children = {
-                rect { width = 40, height = 10,
-                    background = { gradient = "linear", stops = { { 0, "#00FF00FF" }, { 1, "#000000FF" } } } },
-                rect { width = 40, height = 10, background = "#FFFFFFFF" } } } }"##;
-        let Some(instance) = init_headless_egl(96, 64) else { return };
-        let shaping = ShapingHandle::spawn();
-        let Some(mut painter) = text_painter(&instance, &shaping, 96, 64) else { return };
-        let gl = test_gl(&instance);
-        let mut stage = image_shader::ShaderStage::default();
-        let list = surface_96x64(src);
-        let whole = PhysicalRect { x0: 0, y0: 0, x1: 96, y1: 64 };
-        let mut frames = Vec::new();
-        for _ in 0..2 {
-            let (images, captures) = (&mut ImageCache::new(), &mut CaptureCache::default());
-            let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
-            let _ = execute("test", &mut painter, images, captures, &list, 1.0, (96.0, 64.0), &[whole], shaders);
-            frames.push(painter.canvas_mut().screenshot().expect("screenshot reads back the pbuffer"));
+        for glass in ["", r#"rect { width = 20, height = 20, effect = { backdrop = { blur = 2 } } },"#] {
+            let src = format!(
+                r##"return panel {{ id = "bar", width = 96, height = 64, padding = 16,
+                background = {{ gradient = "linear", angle = 90, stops = {{ {{ 0, "#FF0000FF" }}, {{ 1, "#0000FFFF" }} }} }},
+                child = rect {{ width = 40, height = 20, radius = 10, clip = "rounded", children = {{
+                    rect {{ width = 40, height = 10,
+                        background = {{ gradient = "linear", stops = {{ {{ 0, "#00FF00FF" }}, {{ 1, "#000000FF" }} }} }} }},
+                    rect {{ width = 40, height = 10, background = "#FFFFFFFF" }}, {glass} }} }} }}"##
+            );
+            let Some(instance) = init_headless_egl(96, 64) else { return };
+            let shaping = ShapingHandle::spawn();
+            let Some(mut painter) = text_painter(&instance, &shaping, 96, 64) else { return };
+            let gl = test_gl(&instance);
+            let mut stage = image_shader::ShaderStage::default();
+            let list = surface_96x64(&src);
+            let whole = PhysicalRect { x0: 0, y0: 0, x1: 96, y1: 64 };
+            let mut frames = Vec::new();
+            for _ in 0..2 {
+                let (images, captures) = (&mut ImageCache::new(), &mut CaptureCache::default());
+                let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
+                let _ = execute("test", &mut painter, images, captures, &list, 1.0, (96.0, 64.0), &[whole], shaders);
+                frames.push(painter.canvas_mut().screenshot().expect("screenshot reads back the pbuffer"));
+            }
+            let worst =
+                frames[0].buf().iter().zip(frames[1].buf()).map(|(a, b)| a.r.abs_diff(b.r).max(a.a.abs_diff(b.a)));
+            assert!(worst.max().unwrap() <= 2, "the second frame drifts from the first: {glass}");
         }
-        let worst = frames[0].buf().iter().zip(frames[1].buf()).map(|(a, b)| a.r.abs_diff(b.r).max(a.a.abs_diff(b.a)));
-        assert!(worst.max().unwrap() <= 2, "the second frame drifts from the first");
     }
 
     #[test]
