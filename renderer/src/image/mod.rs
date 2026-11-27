@@ -67,7 +67,7 @@ use femtovg::{Canvas, ImageId};
 
 /// Maximum map entries, including `Failed` and `Pending`. The texture budget bounds bytes; this
 /// keeps a config cycling through a thousand failing paths from growing the map without bound.
-const CACHE_CAPACITY: usize = 128;
+const CACHE_CAPACITY: usize = 384;
 
 /// Starting texture budget, replaced by [`ImageCache::set_texture_budget`] as soon as the outputs
 /// are known (ADR-0182). Before any budget, moved-on 1920x1200 wallpapers (12 MB each) survived the
