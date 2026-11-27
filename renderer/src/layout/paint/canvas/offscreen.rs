@@ -46,21 +46,30 @@ pub(super) fn draw_clipped(
     }
     let gradient_mask = matches!(mask, Some((node::Mask { source: MaskSource::Gradient(_), .. }, _)));
     let snug = !aligned(painter.canvas_mut());
-    let kept = gradient_mask
-        .then(|| painter.layer(walk.surface, command))
-        .flatten()
-        .filter(|(_, id)| !snug || painter.canvas_mut().image_size(*id).ok() == Some(used));
+    let kept =
+        gradient_mask.then(|| painter.layer(walk.surface, command)).flatten().filter(|(_, clamped)| !snug || *clamped);
     let (image, seed) = match kept {
-        Some((_, image)) => (image, None),
+        Some(((_, image), _)) => (image, None),
         None => {
             // Not a backdrop root, as CSS's `overflow: hidden` is not: a glass or a blend inside starts from
             // what is under the group (ADR-0256).
             let glass = mask.is_none() && any_draw_matches(commands, reads_under);
             let seed = if glass { read_target(painter, walk, clip) } else { None };
             let under = seed.as_ref().map(|read| read.paint(read.copy, 1.0));
-            let Some(image) =
-                offscreen(painter, walk, rect, clip, mask.as_ref(), under, commands, target, frame, frame.region, true)
-            else {
+            let Some(image) = offscreen(
+                painter,
+                walk,
+                rect,
+                clip,
+                mask.as_ref(),
+                under,
+                commands,
+                target,
+                frame,
+                frame.region,
+                true,
+                snug,
+            ) else {
                 return;
             };
             if gradient_mask
@@ -68,7 +77,8 @@ pub(super) fn draw_clipped(
                 && !any_draw_matches(commands, |draw| volatile(draw) || reads_under(draw))
             {
                 walk.scratch.retain(|(id, _)| *id != image);
-                let retired = painter.keep_layer(walk.surface, command, (Vec::new(), image));
+                let clamped = painter.canvas_mut().image_size(image).ok() == Some(used);
+                let retired = painter.keep_layer(walk.surface, command, (Vec::new(), image), clamped);
                 walk.scratch.extend(retired);
             }
             (image, seed)
@@ -138,10 +148,13 @@ pub(super) fn draw_node_mask(
     frame: Frame,
 ) {
     let (alpha, content) = commands.split_at(split);
-    let Some(alpha) = offscreen(painter, walk, rect, clip, None, None, alpha, target, frame, UNCLIPPED, false) else {
+    let snug = !aligned(painter.canvas_mut());
+    let Some(alpha) = offscreen(painter, walk, rect, clip, None, None, alpha, target, frame, UNCLIPPED, false, snug)
+    else {
         return;
     };
-    let Some(content) = offscreen(painter, walk, rect, clip, None, None, content, target, frame, UNCLIPPED, false)
+    let Some(content) =
+        offscreen(painter, walk, rect, clip, None, None, content, target, frame, UNCLIPPED, false, snug)
     else {
         return;
     };
@@ -246,6 +259,14 @@ pub(super) fn scratch(
     Some(image)
 }
 
+/// Returns `image` to the pool mid-frame once nothing queued in femtovg still reads or writes it.
+pub(super) fn release_scratch(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, image: ImageId) {
+    if let Some(at) = walk.scratch.iter().position(|(id, _)| *id == image) {
+        let (id, size) = walk.scratch.swap_remove(at);
+        painter.return_scratch(walk.surface, id, size);
+    }
+}
+
 /// Saves the canvas and points it at `image` with no transform or scissor, cleared to transparent
 /// over its top-left `clear` when given. The caller restores.
 pub(super) fn draw_into(canvas: &mut Canvas<OpenGl>, image: ImageId, clear: Option<(usize, usize)>) {
@@ -304,6 +325,7 @@ pub(super) fn offscreen(
     frame: Frame,
     region: PhysicalRect,
     unmasked_fallback: bool,
+    snug: bool,
 ) -> Option<ImageId> {
     let (width, height) = ((clip.x1 - clip.x0) as usize, (clip.y1 - clip.y0) as usize);
     // A box with no area shows nothing, and asking for a 0xN render target leaves GL with an
@@ -312,8 +334,6 @@ pub(super) fn offscreen(
     if width == 0 || height == 0 {
         return None;
     }
-    // Composited at whole pixels under the transform in force now.
-    let snug = !aligned(painter.canvas_mut());
     let Some(image) = scratch(painter, walk, (width, height), snug) else {
         // A mask source never falls back into its parent; clips and effects keep the subtree
         // unmasked, in the parent's target and frame.

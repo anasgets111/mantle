@@ -10,8 +10,12 @@ use crate::layout::node::{self, EdgeInsets, Radii, Rgba};
 use crate::text::atlas::TextPainter;
 use crate::text::snap::{LogicalRect, PhysicalRect};
 
-use super::super::{LayerShader, UNCLIPPED, any_draw_matches, grow, reads_under, shadow_rect, transformed, volatile};
-use super::offscreen::{aligned, apply_mask, draw_into, fill_pooled, offscreen, pooled_paint, scratch};
+use super::super::{
+    LayerShader, UNCLIPPED, any_draw_matches, command_bounds, grow, reads_under, shadow_rect, transformed, volatile,
+};
+use super::offscreen::{
+    aligned, apply_mask, draw_into, fill_pooled, offscreen, pooled_paint, release_scratch, scratch,
+};
 use super::shape::{box_path, cut_band};
 use super::vector_path::femtovg_path;
 use super::{Draw, DrawCmd, Frame, Shaders, Walk, fill_image, flush};
@@ -127,7 +131,18 @@ pub(super) fn paint_shape_inset(
     );
     canvas.restore();
     canvas.set_render_target(target);
-    let Some(cast) = cast_shadow(painter, walk, content, size, *shadow, target, snug) else { return };
+    let Some(cast) = cast_shadow(
+        painter,
+        walk,
+        content,
+        (clip_rect(x0, y0, size), clip_rect(x0, y0, size)),
+        *shadow,
+        target,
+        snug,
+        true,
+    ) else {
+        return;
+    };
     let (pad, voids) = if voids.contains(&true) && widths.top > 0.0 {
         let Some(cut) = cut_band(shape, rect, f64::from(widths.top), BinaryOp::Difference) else { return };
         cut
@@ -179,7 +194,7 @@ pub(super) fn draw_layer(
     let Draw::Layer { effect, shader, silhouette, alpha, commands } = &command.draw else { return };
     let (node::Effect { shadows, blur, tone, .. }, silhouette) = (&**effect, *silhouette);
     let (rect, clip) = (command.rect, command.clip);
-    let size = ((clip.x1 - clip.x0) as usize, (clip.y1 - clip.y0) as usize);
+    let size = rect_size(clip);
     let area = LogicalRect { x: clip.x0 as f32, y: clip.y0 as f32, width: size.0 as f32, height: size.1 as f32 };
     // Composited at whole pixels under the transform in force now; a shadow moved or spread off
     // them samples its cast between texels (ADR-0370).
@@ -191,35 +206,105 @@ pub(super) fn draw_layer(
             && (at.y - area.y).fract() == 0.0
     };
     let cast_snug = snug || shadows.iter().any(|shadow| !exact(shadow_rect(rect, area, *shadow)));
-    // A layer kept with slack is redrawn snug once a transform puts it off whole pixels.
-    let kept = painter.layer(walk.surface, command).filter(|(casts, content)| {
-        !snug || casts.iter().chain([content]).all(|&id| painter.canvas_mut().image_size(id).ok() == Some(size))
-    });
+    // A layer kept with unpadded slack is redrawn once a transform puts it off whole pixels.
+    let kept = painter.layer(walk.surface, command).filter(|(_, clamped)| !snug || *clamped);
+    let mut content_area = area;
+    let mut content_size = size;
     let (casts, content) = match kept {
-        Some(kept) => kept,
+        Some((kept, _)) => kept,
         None => {
+            let sharp = *blur < MIN_SIGMA && tone.is_identity();
+            let cacheable = !any_draw_matches(commands, |draw| volatile(draw) || reads_under(draw));
             // Whole: the blur and the shadow read past the repaint's edge. Without a target the
             // subtree falls back into the parent, faded there (#117).
             // ponytail: GL-stage draws (a `shader` node, an image mid-cross, a backdrop shader) skip
             // femtovg's alpha and stay unfaded there; upgrade: multiply it into their run's alpha.
             let fallback = Frame { fade: frame.fade * alpha, ..frame };
-            painter.canvas_mut().save();
-            painter.canvas_mut().set_global_alpha(fallback.fade);
-            let content = offscreen(painter, walk, rect, clip, None, None, commands, target, fallback, UNCLIPPED, true);
-            painter.canvas_mut().restore();
-            let Some(content) = content else { return };
+            let source_clip = (!sharp
+                && shader.is_none()
+                && !silhouette
+                && cacheable
+                && frame.fade == 1.0
+                && *alpha == 1.0
+                && walk.shaders.is_some())
+            .then(|| tight_source_clip(commands, clip))
+            .flatten();
+            let cached_source =
+                source_clip.and_then(|src| painter.layer_source(walk.surface, src, commands).map(|id| (id, src)));
+            let (raw_content, source_clip, mut source_dirty, cache_this) = if let Some((content, src)) = cached_source {
+                (content, src, false, false)
+            } else {
+                let tween_clip = source_clip.filter(|_| painter.layer_tweening(commands));
+                let render_clip = tween_clip.unwrap_or(clip);
+                // Filtered or silhouette sources are only read by clamping shaders, never sampled
+                // directly by femtovg under a transform, so they stay in 64 px size classes (#198).
+                let content_snug = snug && (sharp || walk.shaders.is_none()) && !silhouette;
+                painter.canvas_mut().save();
+                painter.canvas_mut().set_global_alpha(fallback.fade);
+                let content = offscreen(
+                    painter,
+                    walk,
+                    rect,
+                    render_clip,
+                    None,
+                    None,
+                    commands,
+                    target,
+                    fallback,
+                    UNCLIPPED,
+                    true,
+                    content_snug,
+                );
+                painter.canvas_mut().restore();
+                let Some(content) = content else { return };
+                (content, render_clip, true, tween_clip.is_some())
+            };
             // The shader's output is what the shadows, blur and colour filters see. A failed build
             // leaves the node as painted, and that frame uncached so only a revision retries.
             let shaded = shader
                 .as_ref()
-                .and_then(|shader| shaded(painter, walk, (content, content), size, command.rect, area, shader));
-            let content = shaded.unwrap_or(content);
+                .and_then(|shader| shaded(painter, walk, (raw_content, raw_content), size, command.rect, area, shader));
+            let content = match shaded {
+                Some(shaded) => {
+                    release_scratch(painter, walk, raw_content);
+                    source_dirty = false;
+                    shaded
+                }
+                None => raw_content,
+            };
+            let mut content_read = false;
             let mut casts: Vec<ImageId> = shadows
                 .iter()
-                .map_while(|shadow| cast_shadow(painter, walk, content, size, *shadow, target, cast_snug))
+                .map_while(|shadow| {
+                    let cast = cast_shadow(
+                        painter,
+                        walk,
+                        content,
+                        (source_clip, clip),
+                        *shadow,
+                        target,
+                        cast_snug,
+                        source_dirty,
+                    );
+                    if cast.is_some() {
+                        if walk.shaders.is_some() && shadow.blur / 2.0 >= MIN_SIGMA {
+                            if source_dirty {
+                                content_read = false;
+                                source_dirty = false;
+                            }
+                        } else {
+                            // Sharp shadow queued an unflushed femtovg read of `content`.
+                            content_read = true;
+                        }
+                    }
+                    cast
+                })
                 .collect();
-            let sharp = *blur < MIN_SIGMA && tone.is_identity();
-            let blurred = blurred(painter, walk, content, size, (*blur, *tone), snug);
+            let blurred =
+                blurred(painter, walk, content, (source_clip, clip), (*blur, *tone), false, true, source_dirty);
+            if blurred.is_some() && source_dirty {
+                content_read = false;
+            }
             // A filter a full pool refused leaves this frame unfiltered, not every frame after.
             let filtered =
                 casts.len() == shadows.len() && sharp == blurred.is_none() && shader.is_none() == shaded.is_none();
@@ -228,11 +313,46 @@ pub(super) fn draw_layer(
             if casts.len() != shadows.len() {
                 casts.clear();
             }
-            let content = blurred.unwrap_or(content);
+            let content = match blurred {
+                Some(blurred) => {
+                    // Only keep the source once the filter ran (and flushed `content` onto the GPU);
+                    // otherwise return dead sources immediately unless a sharp shadow still reads it.
+                    if cache_this && filtered {
+                        walk.scratch.retain(|(id, _)| *id != content);
+                        if let Some(old) = painter.keep_source(walk.surface, source_clip, commands, content) {
+                            walk.scratch.push(old);
+                        }
+                    } else if !content_read {
+                        release_scratch(painter, walk, content);
+                    }
+                    blurred
+                }
+                None => {
+                    content_size = rect_size(source_clip);
+                    content_area = LogicalRect {
+                        x: source_clip.x0 as f32,
+                        y: source_clip.y0 as f32,
+                        width: content_size.0 as f32,
+                        height: content_size.1 as f32,
+                    };
+                    content
+                }
+            };
             // A glass reads what is under the layer's box, which this command does not name.
-            if filtered && !any_draw_matches(commands, |draw| volatile(draw) || reads_under(draw)) {
+            if filtered && cacheable {
                 walk.scratch.retain(|(id, _)| !casts.contains(id) && *id != content);
-                painter.keep_layer(walk.surface, command, (casts.clone(), content));
+                let content_clamped = blurred.is_some() || painter.canvas_mut().image_size(content).ok() == Some(size);
+                let casts_clamped = shadows.iter().zip(&casts).all(|(shadow, &id)| {
+                    (walk.shaders.is_some() && shadow.blur / 2.0 >= MIN_SIGMA)
+                        || painter.canvas_mut().image_size(id).ok() == Some(size)
+                });
+                let retired = painter.keep_layer(
+                    walk.surface,
+                    command,
+                    (casts.clone(), content),
+                    content_clamped && casts_clamped,
+                );
+                walk.scratch.extend(retired);
             }
             (casts, content)
         }
@@ -254,9 +374,34 @@ pub(super) fn draw_layer(
         }
     }
     if !silhouette {
-        let path = box_path(area, &Radii::default());
-        composite(painter, walk, (content, size), area, &path, (clip, effect.blend, *alpha));
+        let path = box_path(content_area, &Radii::default());
+        composite(painter, walk, (content, content_size), content_area, &path, (clip, effect.blend, *alpha));
     }
+}
+
+fn rect_size(rect: PhysicalRect) -> (usize, usize) {
+    ((rect.x1 - rect.x0) as usize, (rect.y1 - rect.y0) as usize)
+}
+
+fn clip_rect(x0: i32, y0: i32, size: (usize, usize)) -> PhysicalRect {
+    PhysicalRect { x0, y0, x1: x0 + size.0 as i32, y1: y0 + size.1 as i32 }
+}
+
+/// Tight bounds of `commands` inside `clip`, grown by 1 transparent pixel on every side strictly
+/// inside `clip` so clamped blur reads past the content sample transparent zero, while edges cut by
+/// `clip` keep `CLAMP_TO_EDGE` (#198).
+fn tight_source_clip(commands: &[DrawCmd], clip: PhysicalRect) -> Option<PhysicalRect> {
+    let bounds = commands.iter().map(command_bounds).filter(|r| !r.is_empty()).reduce(PhysicalRect::union)?;
+    let inner = bounds.intersect(clip);
+    if inner.is_empty() {
+        return None;
+    }
+    Some(PhysicalRect {
+        x0: if inner.x0 > clip.x0 { inner.x0 - 1 } else { clip.x0 },
+        y0: if inner.y0 > clip.y0 { inner.y0 - 1 } else { clip.y0 },
+        x1: if inner.x1 < clip.x1 { inner.x1 + 1 } else { clip.x1 },
+        y1: if inner.y1 < clip.y1 { inner.y1 + 1 } else { clip.y1 },
+    })
 }
 
 /// `image`'s used part laid over `at` and cut to `path`, onto the target by `blend` at `alpha`. A normal one is
@@ -340,67 +485,126 @@ fn shaded(
 /// `image_shader`'s blur divides by `u_sigma`.
 const MIN_SIGMA: f32 = 0.01;
 
-/// `source` blurred by `sigma`, then recoloured by `tone` in the same last pass; `None` when both
-/// are off, or the filter could not run.
+/// `source` (covering `source_clip`) blurred by `sigma` into `target_clip`, then recoloured by
+/// `tone` in the same last pass; `None` when both are off, or the filter could not run.
+/// When `pad_slack` is set, the final pass fills the allocated target's slack with clamped edges.
+#[allow(clippy::too_many_arguments)]
 fn blurred(
     painter: &mut TextPainter,
     walk: &mut Walk<'_, '_>,
     source: ImageId,
-    size: (usize, usize),
+    (source_clip, target_clip): (PhysicalRect, PhysicalRect),
     (sigma, tone): (f32, node::Tone),
     snug: bool,
+    pad_slack: bool,
+    flush: bool,
 ) -> Option<ImageId> {
     if sigma < MIN_SIGMA && tone.is_identity() {
         return None;
     }
+    let size = rect_size(target_clip);
     let image = scratch(painter, walk, size, snug)?;
     // A power of two keeps the kernel within 4 to 8 texels at any sigma.
     let factor = 1 << (sigma / 4.0).log2().max(0.0) as u32;
-    gaussian(painter, walk, source, image, size, (sigma, tone), factor).then_some(image)
+    gaussian(painter, walk, source, image, (source_clip, target_clip), (sigma, tone), factor, pad_slack, flush)
+        .then_some(image)
 }
 
-/// Blurs `source` into `target`, both `size`, at `1 / factor` of that size: halved, blurred
-/// across and down, and stretched back (ADR-0262). `false` without a GL context or a target.
+/// Maps `(target_clip.x0, target_clip.y1)` (GL bottom-left, matching the halving and upsample
+/// passes' `origin = [0, 0]`) spanning `target_span` into `source_clip`'s GL UV space.
+fn source_mapping(
+    source_clip: PhysicalRect,
+    target_clip: PhysicalRect,
+    target_span: (usize, usize),
+) -> ([f32; 2], [f32; 2]) {
+    let (sw, sh) = rect_size(source_clip);
+    let (sw, sh) = (sw as f32, sh as f32);
+    let origin = [(target_clip.x0 - source_clip.x0) as f32 / sw, (source_clip.y1 - target_clip.y1) as f32 / sh];
+    let extent = [target_span.0 as f32 / sw, target_span.1 as f32 / sh];
+    (origin, extent)
+}
+
+/// Blurs `source` (covering `source_clip`) into `target` (covering `target_clip`), at `1 / factor`
+/// of `target_clip`'s size: halved, blurred across and down, and stretched back (ADR-0262).
+/// `false` without a GL context or a target. Intermediate scratch targets are returned immediately
+/// after `stage.blur` runs (or on early bail-out) so later layers in the same frame reuse them.
+#[allow(clippy::too_many_arguments)]
 fn gaussian(
     painter: &mut TextPainter,
     walk: &mut Walk<'_, '_>,
     source: ImageId,
     target: ImageId,
-    size: (usize, usize),
+    (source_clip, target_clip): (PhysicalRect, PhysicalRect),
     (sigma, tone): (f32, node::Tone),
     factor: usize,
+    pad_slack: bool,
+    flush: bool,
 ) -> bool {
     use image_shader::BlurPass;
     if walk.shaders.is_none() {
         return false;
     }
+    let size = rect_size(target_clip);
+    let source_size = rect_size(source_clip);
+    let mut temps = Vec::new();
+    let release_temps = |painter: &mut TextPainter, walk: &mut Walk<'_, '_>, temps: Vec<ImageId>| {
+        for id in temps {
+            release_scratch(painter, walk, id);
+        }
+    };
     // Each halving reads whole 2x2 blocks, the last one past an odd edge, so a low texel spans
     // exactly `factor` pixels.
-    let (mut passes, mut from, mut at) = (Vec::new(), (source, size), 1);
+    let (mut passes, mut from, mut at) = (Vec::new(), (source, source_size), 1);
+    let mut cur_size = size;
     while at < factor {
         at *= 2;
-        let half = (from.1.0.div_ceil(2), from.1.1.div_ceil(2));
-        let Some(image) = scratch(painter, walk, half, false) else { return false };
-        let extent = [(2 * half.0) as f32 / from.1.0 as f32, (2 * half.1) as f32 / from.1.1 as f32];
+        let half = (cur_size.0.div_ceil(2), cur_size.1.div_ceil(2));
+        let Some(image) = scratch(painter, walk, half, false) else {
+            release_temps(painter, walk, temps);
+            return false;
+        };
+        temps.push(image);
+        let (origin, extent) = if passes.is_empty() {
+            source_mapping(source_clip, target_clip, (2 * half.0, 2 * half.1))
+        } else {
+            ([0.0; 2], [(2 * half.0) as f32 / from.1.0 as f32, (2 * half.1) as f32 / from.1.1 as f32])
+        };
         passes.push(BlurPass {
             source: from.0,
             target: image,
             sizes: [from.1, half],
+            origin,
             extent,
             axis: [0.0; 2],
             sigma: 0.0,
             tone: node::Tone::default(),
+            pad_slack: false,
         });
         from = (image, half);
+        cur_size = half;
     }
     let (from, low) = from;
     let identity = node::Tone::default();
     if sigma < MIN_SIGMA {
         // A colour filter alone is one bilinear read.
-        let sizes = [size; 2];
-        passes.push(BlurPass { source, target, sizes, extent: [1.0; 2], axis: [0.0; 2], sigma: 0.0, tone });
+        let (origin, extent) = source_mapping(source_clip, target_clip, size);
+        passes.push(BlurPass {
+            source,
+            target,
+            sizes: [source_size, size],
+            origin,
+            extent,
+            axis: [0.0; 2],
+            sigma: 0.0,
+            tone,
+            pad_slack,
+        });
     } else {
-        let Some(across) = scratch(painter, walk, low, false) else { return false };
+        let Some(across) = scratch(painter, walk, cur_size, false) else {
+            release_temps(painter, walk, temps);
+            return false;
+        };
+        temps.push(across);
         // The halvings add a `factor`-wide box's variance and the stretch a tent's.
         let f = factor as f32;
         let spread = if factor == 1 { 0.0 } else { (3.0 * f * f - 1.0) / 12.0 };
@@ -408,56 +612,87 @@ fn gaussian(
         let down = if factor == 1 { target } else { from };
         // The colour filter rides the pass that writes `target`.
         let down_tone = if factor == 1 { tone } else { identity };
+        let (origin, extent) =
+            if factor == 1 { source_mapping(source_clip, target_clip, size) } else { ([0.0; 2], [1.0; 2]) };
         passes.push(BlurPass {
             source: from,
             target: across,
-            sizes: [low; 2],
-            extent: [1.0; 2],
+            sizes: [low, cur_size],
+            origin,
+            extent,
             axis: [1.0, 0.0],
             sigma,
             tone: identity,
+            pad_slack: false,
         });
         passes.push(BlurPass {
             source: across,
             target: down,
-            sizes: [low; 2],
+            sizes: [cur_size; 2],
+            origin: [0.0; 2],
             extent: [1.0; 2],
             axis: [0.0, 1.0],
             sigma,
             tone: down_tone,
+            pad_slack: factor == 1 && pad_slack,
         });
         if factor > 1 {
-            let extent = [size.0 as f32 / (factor * low.0) as f32, size.1 as f32 / (factor * low.1) as f32];
-            let sizes = [low, size];
-            passes.push(BlurPass { source: down, target, sizes, extent, axis: [0.0; 2], sigma: 0.0, tone });
+            let extent = [size.0 as f32 / (factor * cur_size.0) as f32, size.1 as f32 / (factor * cur_size.1) as f32];
+            let sizes = [cur_size, size];
+            passes.push(BlurPass {
+                source: down,
+                target,
+                sizes,
+                origin: [0.0; 2],
+                extent,
+                axis: [0.0; 2],
+                sigma: 0.0,
+                tone,
+                pad_slack,
+            });
         }
     }
-    let Some(Shaders { gl, stage }) = walk.shaders.as_mut() else { return false };
-    // SAFETY: `Shaders` is built only with `gl` current on this thread and shared with the canvas.
-    unsafe { stage.blur(gl, painter.canvas_mut(), &passes) }
+    let drew = walk.shaders.as_mut().is_some_and(|Shaders { gl, stage }| {
+        // SAFETY: `Shaders` is built only with `gl` current on this thread and shared with the canvas.
+        unsafe { stage.blur(gl, painter.canvas_mut(), &passes, flush) }
+    });
+    release_temps(painter, walk, temps);
+    drew
 }
 
-/// `content` blurred, then recoloured by `SourceIn` keeping each pixel's alpha (ADR-0254).
+/// `content` (covering `source_clip`) blurred into `target_clip`, then recoloured by `SourceIn`
+/// keeping each pixel's alpha (ADR-0254).
+#[allow(clippy::too_many_arguments)]
 fn cast_shadow(
     painter: &mut TextPainter,
     walk: &mut Walk<'_, '_>,
     content: ImageId,
-    size: (usize, usize),
+    (source_clip, target_clip): (PhysicalRect, PhysicalRect),
     shadow: node::Shadow,
     target: RenderTarget,
     snug: bool,
+    flush: bool,
 ) -> Option<ImageId> {
     let sigma = shadow.blur / 2.0;
-    let blurred = blurred(painter, walk, content, size, (sigma, node::Tone::default()), snug);
+    let size = rect_size(target_clip);
+    let blurred =
+        blurred(painter, walk, content, (source_clip, target_clip), (sigma, node::Tone::default()), false, true, flush);
     let cast = blurred.or_else(|| scratch(painter, walk, size, snug))?;
-    let (width, height) = (size.0 as f32, size.1 as f32);
-    let mut whole = Path::new();
-    whole.rect(0.0, 0.0, width, height);
     let canvas = painter.canvas_mut();
+    let alloc = if blurred.is_some() { canvas.image_size(cast).unwrap_or(size) } else { size };
+    let mut whole = Path::new();
+    whole.rect(0.0, 0.0, alloc.0 as f32, alloc.1 as f32);
     draw_into(canvas, cast, None);
     if blurred.is_none() {
         canvas.clear_rect(0, 0, size.0 as u32, size.1 as u32, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
-        fill_pooled(canvas, content, size);
+        let source_size = rect_size(source_clip);
+        let at = LogicalRect {
+            x: (source_clip.x0 - target_clip.x0) as f32,
+            y: (source_clip.y0 - target_clip.y0) as f32,
+            width: source_size.0 as f32,
+            height: source_size.1 as f32,
+        };
+        canvas.fill_path(&box_path(at, &Radii::default()), &pooled_paint(canvas, content, source_size, at, 1.0));
     }
     canvas.global_composite_operation(CompositeOperation::SourceIn);
     canvas.fill_path(&whole, &Paint::color(shadow.color.into()));
@@ -495,8 +730,17 @@ pub(super) fn draw_backdrop(
         canvas.restore();
         canvas.set_render_target(target);
     }
-    let frost = (*sigma > 0.0 || !tone.is_identity())
-        .then(|| blurred(painter, walk, read.copy, read.size, (*sigma, *tone), read.snug).unwrap_or(read.copy));
+    let read_rect = clip_rect(0, 0, read.size);
+    let frost = (*sigma > 0.0 || !tone.is_identity()).then(|| {
+        blurred(painter, walk, read.copy, (read_rect, read_rect), (*sigma, *tone), read.snug, false, true)
+            .unwrap_or(read.copy)
+    });
+    if shader.is_none()
+        && let Some(frost) = frost
+        && frost != read.copy
+    {
+        release_scratch(painter, walk, read.copy);
+    }
     let area = LogicalRect {
         x: clip.x0 as f32,
         y: clip.y0 as f32,
@@ -1321,7 +1565,7 @@ mod tests {
         let layer = blurred.commands.last().unwrap();
         paint(&mut painter, "a", &blurred, whole);
         paint(&mut painter, "b", &red, whole);
-        let (_, content) = painter.layer("a", layer).expect("a layer with no texture is kept");
+        let ((_, content), _) = painter.layer("a", layer).expect("a layer with no texture is kept");
         assert!(painter.layer("b", red.commands.last().unwrap()).is_some(), "the other surface's, in the same place");
         // Only a composite of the kept image could show this.
         let canvas = painter.canvas_mut();
@@ -1536,17 +1780,30 @@ mod tests {
             flush(canvas);
             canvas.screenshot().expect("screenshot reads back the pbuffer")
         };
+        let full = clip_rect(0, 0, size);
         for sigma in [2.0, 6.0, 8.0, 16.0, 32.0] {
             let tone = node::Tone::default();
-            let engine = blurred(&mut painter, &mut walk, source, size, (sigma, tone), true).unwrap();
+            let engine =
+                blurred(&mut painter, &mut walk, source, (full, full), (sigma, tone), true, false, true).unwrap();
             let engine = read(&mut painter, engine);
-            let in_pool = blurred(&mut painter, &mut walk, pooled, size, (sigma, tone), false).unwrap();
+            let in_pool =
+                blurred(&mut painter, &mut walk, pooled, (full, full), (sigma, tone), false, true, true).unwrap();
             assert!(read(&mut painter, in_pool).buf() == engine.buf(), "sigma {sigma}: the slack reached the blur");
             let reference = scratch(&mut painter, &mut walk, size, true).unwrap();
             if sigma <= 8.0 {
                 painter.canvas_mut().filter_image(reference, femtovg::ImageFilter::GaussianBlur { sigma }, source);
             } else {
-                assert!(gaussian(&mut painter, &mut walk, source, reference, size, (sigma, node::Tone::default()), 1));
+                assert!(gaussian(
+                    &mut painter,
+                    &mut walk,
+                    source,
+                    reference,
+                    (full, full),
+                    (sigma, node::Tone::default()),
+                    1,
+                    false,
+                    true,
+                ));
             }
             let reference = read(&mut painter, reference);
             let diffs = engine
@@ -1627,9 +1884,9 @@ mod tests {
             |(w, h)| painter.canvas_mut().create_image_empty(w, h, PixelFormat::Rgba8, ImageFlags::empty()).unwrap();
         // 16 KiB over the 64 MiB budget.
         let (small_id, big_id) = (image((8, 8)), image((4096, 4097)));
-        painter.keep_layer("other", &small, (Vec::new(), small_id));
+        painter.keep_layer("other", &small, (Vec::new(), small_id), true);
         painter.recycle_scratch("test", []);
-        painter.keep_layer("test", &big, (Vec::new(), big_id));
+        painter.keep_layer("test", &big, (Vec::new(), big_id), true);
         assert_eq!(painter.sweep_layers("test", |_| true), [(big_id, (4096, 4097))]);
         assert!(painter.layer("other", &small).is_some());
     }
@@ -1645,8 +1902,8 @@ mod tests {
         let mut image =
             || painter.canvas_mut().create_image_empty(1, 1, PixelFormat::Rgba8, ImageFlags::empty()).unwrap();
         let (gone, other, big, small) = (image(), image(), image(), image());
-        painter.keep_layer("lock", &command, (Vec::new(), gone));
-        painter.keep_layer("bar", &command, (Vec::new(), other));
+        painter.keep_layer("lock", &command, (Vec::new(), gone), true);
+        painter.keep_layer("bar", &command, (Vec::new(), other), true);
         painter.recycle_scratch("lock", [(big, (8, 8))]);
         painter.recycle_scratch("bar", [(small, (8, 8))]);
         painter.release_surface("lock");
@@ -1889,5 +2146,284 @@ mod tests {
                     effect = { saturate = 2 } } } } }"##;
         let Some(px) = paint_with_gl(nested, (200, 64), &[(198, 32), (10, 32)]) else { return };
         assert!(px[0].0 > 20 && px[1] == (0, 0, 0, 255), "nested child blurs back into the edge: {px:?}");
+    }
+
+    /// #198. Padded slack in `blurred` keeps rotated, scaled and ancestor-clipped blur layers in
+    /// 64 px pool classes without leaking dirty slack pixels into the composite.
+    #[test]
+    fn padded_blur_slack_never_leaks_under_rotation_scale_or_clipping() {
+        let Some(instance) = init_headless_egl(128, 128) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 128, 128) else { return };
+        let (gl, mut stage) = (test_gl(&instance), image_shader::ShaderStage::default());
+        let whole = PhysicalRect { x0: 0, y0: 0, x1: 128, y1: 128 };
+        // Seed the 64 px size classes with bright green so any unpadded slack read shows up immediately.
+        let mut dirty = Vec::new();
+        for size in [(64, 64), (128, 128), (192, 128)] {
+            for _ in 0..4 {
+                let id = painter
+                    .canvas_mut()
+                    .create_image_empty(
+                        size.0,
+                        size.1,
+                        PixelFormat::Rgba8,
+                        ImageFlags::PREMULTIPLIED | ImageFlags::FLIP_Y,
+                    )
+                    .unwrap();
+                let canvas = painter.canvas_mut();
+                canvas.set_render_target(RenderTarget::Image(id));
+                canvas.clear_rect(0, 0, size.0 as u32, size.1 as u32, Color::rgbaf(0.0, 1.0, 0.0, 1.0));
+                canvas.set_render_target(RenderTarget::Screen);
+                dirty.push((id, size));
+            }
+        }
+        flush(painter.canvas_mut());
+        painter.recycle_scratch("t", dirty);
+
+        let cases = [
+            // Rotated box with blur hitting both factor=1 (sigma 6) and factor=2 (sigma 10).
+            r##"return panel { id = "bar", width = 128, height = 128, background = "#000000FF", padding = 32,
+                child = rect { width = 48, height = 36, rotate = 15, background = "#FF0000FF", effect = { blur = 6 } } }"##,
+            r##"return panel { id = "bar", width = 128, height = 128, background = "#000000FF", padding = 32,
+                child = rect { width = 48, height = 36, rotate = 15, background = "#FF0000FF", effect = { blur = 10 } } }"##,
+            // Clipped tightly on the left/top so bright red touches the exact edge of `clip` under rotation.
+            r##"return panel { id = "bar", width = 128, height = 128, background = "#000000FF",
+                child = rect { width = 64, height = 64, clip = "box",
+                    children = { rect { width = 64, height = 64, rotate = 12, background = "#FF0000FF", effect = { blur = 6 } } } } }"##,
+            // Downscaled rotated blurred box (scale 0.25 reaches several texels past the edge on AA fringes).
+            r##"return panel { id = "bar", width = 128, height = 128, background = "#000000FF",
+                child = rect { width = 128, height = 128, scale = 0.25, rotate = 15,
+                    children = { rect { width = 128, height = 128, background = "#FF0000FF", effect = { blur = 8 } } } } }"##,
+        ];
+        for (idx, src) in cases.iter().enumerate() {
+            let list =
+                build(&resolved_surface(&Lua::new(), src, LogicalSize { width: 128.0, height: 128.0 }), 1.0, None);
+            let (images, captures) = (&mut ImageCache::new(), &mut CaptureCache::default());
+            let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
+            let _ = execute("t", &mut painter, images, captures, &list, 1.0, (128.0, 128.0), &[whole], shaders);
+            let shot = painter.canvas_mut().screenshot().expect("screenshot");
+            let max_green = shot.buf().iter().map(|px| px.g).max().unwrap_or(0);
+            let max_red = shot.buf().iter().map(|px| px.r).max().unwrap_or(0);
+            assert!(max_red > 150, "case {idx}: blurred red box drew nothing (max_red={max_red})");
+            assert_eq!(max_green, 0, "case {idx}: dirty green slack leaked into rotated/scaled blur");
+        }
+    }
+
+    /// #198. Tweening a rotated blur reuses the unfiltered source and 64 px scratch targets, matches
+    /// fresh renders pixel-for-pixel at 1x and 2x DPI (including ancestor-clipped edges), and retires
+    /// the cached source once the tween settles or the node leaves the list.
+    #[test]
+    fn blur_tween_reuses_source_matches_fresh_render_and_retires_on_settle() {
+        let Some(instance) = init_headless_egl(256, 256) else { return };
+        let shaping = ShapingHandle::spawn();
+        let (gl, mut stage) = (test_gl(&instance), image_shader::ShaderStage::default());
+        let build_list = |sigma: f32, rotate: f32, scale: f32, clipped: bool| {
+            let child = if clipped {
+                format!(
+                    r##"rect {{ width = 56, height = 44, clip = "box",
+                        children = {{ rect {{ width = 56, height = 44, rotate = {rotate}, background = "#FF3010FF",
+                            effect = {{ blur = {sigma} }} }} }} }}"##
+                )
+            } else {
+                format!(
+                    r##"rect {{ width = 44, height = 32, radius = 6, rotate = {rotate}, background = "#FF3010FF",
+                        effect = {{ blur = {sigma} }} }}"##
+                )
+            };
+            let pad = if clipped { 0 } else { 32 };
+            let src = format!(
+                r##"return panel {{ id = "bar", width = 128, height = 128, padding = {pad},
+                    background = "#102030FF", child = {child} }}"##
+            );
+            build(&resolved_surface(&Lua::new(), &src, LogicalSize { width: 128.0, height: 128.0 }), scale, None)
+        };
+        let paint =
+            |painter: &mut TextPainter, stage: &mut image_shader::ShaderStage, list: &DisplayList, scale: f32| {
+                let side = (128.0 * scale) as i32;
+                let whole = PhysicalRect { x0: 0, y0: 0, x1: side, y1: side };
+                let (images, captures) = (&mut ImageCache::new(), &mut CaptureCache::default());
+                let shaders = Some(Shaders { gl: &gl, stage });
+                let _ =
+                    execute("t", painter, images, captures, list, scale, (side as f32, side as f32), &[whole], shaders);
+                painter.canvas_mut().screenshot().expect("screenshot")
+            };
+
+        for (scale, clipped) in [(1.0, false), (2.0, false), (1.0, true)] {
+            let side = (128.0 * scale) as u32;
+            let Some(mut tween_painter) = text_painter(&instance, &shaping, side, side) else { return };
+            // Frame 1: static — only the finished layer is kept, no unfiltered source.
+            let _ = paint(&mut tween_painter, &mut stage, &build_list(4.0, 2.0, scale, clipped), scale);
+            assert_eq!(tween_painter.census().2, 1, "static blur keeps only its finished layer");
+
+            // Frames 2..5: sigma + rotation tweening across factor=1 and factor=2 boundaries.
+            for (sigma, rot) in [(6.0, 4.0), (8.0, 6.0), (12.0, 8.0), (5.0, 3.0)] {
+                let list = build_list(sigma, rot, scale, clipped);
+                let got = paint(&mut tween_painter, &mut stage, &list, scale);
+                assert_eq!(tween_painter.census().2, 2, "tween keeps finished layer + unfiltered source");
+                let Some(mut fresh_painter) = text_painter(&instance, &shaping, side, side) else { return };
+                let want = paint(&mut fresh_painter, &mut stage, &list, scale);
+                let worst = got
+                    .buf()
+                    .iter()
+                    .zip(want.buf())
+                    .flat_map(|(a, b)| [a.r.abs_diff(b.r), a.g.abs_diff(b.g), a.b.abs_diff(b.b), a.a.abs_diff(b.a)])
+                    .max()
+                    .unwrap_or(0);
+                assert!(worst <= 2, "scale {scale} clipped {clipped} sigma {sigma}: worst diff {worst}");
+            }
+
+            // Settle on sigma = 5.0: next paint holds the finished layer and retires the unfiltered source.
+            let settled = build_list(5.0, 3.0, scale, clipped);
+            let _ = paint(&mut tween_painter, &mut stage, &settled, scale);
+            assert_eq!(tween_painter.census().2, 1, "settled blur retires its cached unfiltered source");
+
+            // Removing the node clears every kept layer and source.
+            let _ = paint(&mut tween_painter, &mut stage, &DisplayList::default(), scale);
+            assert_eq!(tween_painter.census().2, 0, "empty list leaves no kept layers or sources");
+        }
+    }
+
+    /// #198. Intermediate blur scratch targets recycle immediately between layers in the same frame,
+    /// so 16 blurred boxes share a handful of scratch textures instead of allocating per box.
+    #[test]
+    fn blur_intermediates_recycle_between_layers_in_one_frame() {
+        let Some(instance) = init_headless_egl(640, 128) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 640, 128) else { return };
+        let (gl, mut stage) = (test_gl(&instance), image_shader::ShaderStage::default());
+        let boxes = (0..16)
+            .map(|_| r##"rect { width = 24, height = 24, rotate = 6, background = "#FF0000FF", effect = { blur = 10 } },"##)
+            .collect::<String>();
+        let src = format!(
+            r##"return panel {{ id = "bar", width = 640, height = 128, padding = 24, background = "#000000FF",
+                child = row {{ spacing = 8, children = {{ {boxes} }} }} }}"##
+        );
+        let list = build(&resolved_surface(&Lua::new(), &src, LogicalSize { width: 640.0, height: 128.0 }), 1.0, None);
+        let whole = PhysicalRect { x0: 0, y0: 0, x1: 640, y1: 128 };
+        let (images, captures) = (&mut ImageCache::new(), &mut CaptureCache::default());
+        let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
+        let _ = execute("t", &mut painter, images, captures, &list, 1.0, (640.0, 128.0), &[whole], shaders);
+        let (pool_images, _, kept_layers, _) = painter.census();
+        assert_eq!(kept_layers, 16, "all 16 blurred boxes kept");
+        assert!(pool_images <= 6, "intermediates recycled across all 16 boxes, got {pool_images} pooled");
+        painter.release_surface("t");
+        assert_eq!(painter.census(), (0, 0, 0, 0), "release_surface frees layers, sources and pool");
+    }
+
+    /// #198. Odd-height blurs at `sigma >= 8` (`factor >= 2`) must not shift vertically relative
+    /// to the reference unhalved Gaussian.
+    #[test]
+    fn odd_height_blur_past_factor_two_does_not_shift_vertically() {
+        let Some(instance) = init_headless_egl(251, 251) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 251, 251) else { return };
+        let (gl, mut stage) = (test_gl(&instance), image_shader::ShaderStage::default());
+        let (images, captures) = (&mut ImageCache::new(), &mut CaptureCache::default());
+        let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
+        let (drawn, split) = (Vec::new(), PaintSplit::default());
+        let mut walk = Walk { images, captures, scale: 1.0, scratch: Vec::new(), drawn, shaders, split, surface: "t" };
+        let size = (251, 251);
+        let full = clip_rect(0, 0, size);
+        let source = scratch(&mut painter, &mut walk, size, false).unwrap();
+        let canvas = painter.canvas_mut();
+        draw_into(canvas, source, Some(size));
+        fill_rect(
+            canvas,
+            LogicalRect { x: 96.0, y: 96.0, width: 59.0, height: 59.0 },
+            &Radii::default(),
+            &Fill::Color(Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 }),
+        );
+        canvas.restore();
+        canvas.set_render_target(RenderTarget::Screen);
+        let read = |painter: &mut TextPainter, image: ImageId| {
+            let canvas = painter.canvas_mut();
+            canvas.clear_rect(0, 0, size.0 as u32, size.1 as u32, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
+            fill_pooled(canvas, image, size);
+            flush(canvas);
+            canvas.screenshot().expect("screenshot")
+        };
+        for sigma in [8.0, 12.0, 16.0] {
+            let got = blurred(
+                &mut painter,
+                &mut walk,
+                source,
+                (full, full),
+                (sigma, node::Tone::default()),
+                false,
+                true,
+                true,
+            )
+            .unwrap();
+            let got = read(&mut painter, got);
+            let reference = scratch(&mut painter, &mut walk, size, true).unwrap();
+            assert!(gaussian(
+                &mut painter,
+                &mut walk,
+                source,
+                reference,
+                (full, full),
+                (sigma, node::Tone::default()),
+                1,
+                false,
+                true
+            ));
+            let reference = read(&mut painter, reference);
+            let worst = got
+                .buf()
+                .iter()
+                .zip(reference.buf())
+                .flat_map(|(a, b)| [a.r.abs_diff(b.r), a.g.abs_diff(b.g), a.b.abs_diff(b.b), a.a.abs_diff(b.a)])
+                .max()
+                .unwrap_or(0);
+            assert!(worst <= 3, "odd 251x251 sigma {sigma}: worst diff {worst}");
+        }
+    }
+
+    /// #198. A layer mixing a blurred shadow, a sharp shadow and content blur keeps its source
+    /// pinned until end-of-frame flush so a later cached-source blur in the same frame cannot
+    /// overwrite pixels the sharp shadow has queued to read.
+    #[test]
+    fn sharp_shadow_after_blurred_shadow_keeps_source_until_flush() {
+        let Some(instance) = init_headless_egl(256, 128) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 256, 128) else { return };
+        let (gl, mut stage) = (test_gl(&instance), image_shader::ShaderStage::default());
+        let whole = PhysicalRect { x0: 0, y0: 0, x1: 256, y1: 128 };
+        let build_scene = |sigma_b: f32, include_a: bool| {
+            // Layer A: blurred shadow (flushes + clears source_dirty), then sharp shadow (queues
+            // femtovg read of content), then content blur (runs with flush=false).
+            // Layer B: tweening cached-source blur of the same 64 px size class, painted after A.
+            let a = if include_a {
+                r##"rect { width = 24, height = 24, background = "#FF0000FF", shadow_mode = "content",
+                    shadows = {
+                        { color = "#00000000", blur = 8 },
+                        { color = "#00FF00FF", blur = 0, offset = { y = 26 } },
+                    },
+                    effect = { blur = 6 } },"##
+            } else {
+                ""
+            };
+            let src = format!(
+                r##"return panel {{ id = "bar", width = 256, height = 128, padding = 24, background = "#000000FF",
+                    child = row {{ spacing = 40, children = {{ {a}
+                        rect {{ width = 24, height = 24, background = "#0000FFFF", effect = {{ blur = {sigma_b} }} }}
+                    }} }} }}"##
+            );
+            build(&resolved_surface(&Lua::new(), &src, LogicalSize { width: 256.0, height: 128.0 }), 1.0, None)
+        };
+        let mut paint = |list: &DisplayList| {
+            let (images, captures) = (&mut ImageCache::new(), &mut CaptureCache::default());
+            let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
+            let _ = execute("t", &mut painter, images, captures, list, 1.0, (256.0, 128.0), &[whole], shaders);
+        };
+        // Warm layer B into the cached-source tween path (frames 1 & 2).
+        paint(&build_scene(4.0, false));
+        paint(&build_scene(6.0, false));
+        // Frame 3: render A + tweening B (B hits cached_source and runs stage.blur with flush=false).
+        paint(&build_scene(8.0, true));
+        // Sample the center of A's sharp green shadow at (24 + 12, 24 + 26 + 12) = (36, 62):
+        // must be bright green from A's intact source, not corrupted by B's blur target reuse.
+        let px = pixel_at(painter.canvas_mut(), 36, 62);
+        assert!(px.1 > 200 && px.2 < 10, "sharp shadow must stay green and uncorrupted: {px:?}");
     }
 }

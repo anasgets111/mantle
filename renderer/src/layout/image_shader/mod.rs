@@ -444,24 +444,32 @@ impl ShaderStage {
         let corners = [-1.0, 1.0, x, y, 1.0, 1.0, x + w, y, -1.0, -1.0, x, y + h, 1.0, -1.0, x + w, y + h];
         // SAFETY: caller's contract.
         unsafe {
-            quad_pass(gl, canvas, (program.program, framebuffer), (vao, buffer), &corners, |gl| {
-                attach(gl, target, size, run.size);
-                gl.uniform_4_f32_slice(program.input_box.as_ref(), &used_box(size, run.size));
-                gl.active_texture(glow::TEXTURE1);
-                gl.bind_texture(glow::TEXTURE_2D, Some(blurred));
-                gl.active_texture(glow::TEXTURE0);
-                gl.bind_texture(glow::TEXTURE_2D, Some(input));
-                gl.uniform_1_i32(program.input.as_ref(), 0);
-                gl.uniform_1_i32(program.input_blurred.as_ref(), 1);
-                bind_samplers(gl, program, 2, &textures);
-                gl.uniform_4_f32_slice(program.input_rect.as_ref(), &run.rect);
-                let (logical_width, logical_height) = run.logical_size;
-                let outline = LogicalRect { x: 0.0, y: 0.0, width: logical_width, height: logical_height };
-                gl.uniform_1_f32(program.progress.as_ref(), run.progress);
-                Self::set_shape(gl, program, &run.radii, outline, run.logical_size);
-                Self::set_params(gl, program, run.params);
-                gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
-            });
+            quad_pass(
+                gl,
+                canvas,
+                (program.program, framebuffer),
+                (vao, buffer),
+                &corners,
+                (true, 2 + textures.len()),
+                |gl| {
+                    attach(gl, target, size, run.size);
+                    gl.uniform_4_f32_slice(program.input_box.as_ref(), &used_box(size, run.size));
+                    gl.active_texture(glow::TEXTURE1);
+                    gl.bind_texture(glow::TEXTURE_2D, Some(blurred));
+                    gl.active_texture(glow::TEXTURE0);
+                    gl.bind_texture(glow::TEXTURE_2D, Some(input));
+                    gl.uniform_1_i32(program.input.as_ref(), 0);
+                    gl.uniform_1_i32(program.input_blurred.as_ref(), 1);
+                    bind_samplers(gl, program, 2, &textures);
+                    gl.uniform_4_f32_slice(program.input_rect.as_ref(), &run.rect);
+                    let (logical_width, logical_height) = run.logical_size;
+                    let outline = LogicalRect { x: 0.0, y: 0.0, width: logical_width, height: logical_height };
+                    gl.uniform_1_f32(program.progress.as_ref(), run.progress);
+                    Self::set_shape(gl, program, &run.radii, outline, run.logical_size);
+                    Self::set_params(gl, program, run.params);
+                    gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
+                },
+            );
         }
         true
     }

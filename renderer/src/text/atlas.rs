@@ -18,12 +18,12 @@ use shared::debug;
 
 use crate::layout::field_rows;
 use crate::layout::node::{CaretStyle, Rgba, StyleRun, TextAlign, Typeface, font_runs};
-use crate::layout::paint::DrawCmd;
+use crate::layout::paint::{Draw, DrawCmd};
 use crate::text::shaping::{
     FontFace, Glyph, ShapedLine, ShapingHandle, caret_thickness, caret_x, cluster_span, clusters,
 };
 
-use super::snap::{LogicalRect, snap_to_physical};
+use super::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 
 /// Distinct offscreen sizes [`TextPainter`] keeps between paints (ADR-0217).
 const SCRATCH_SIZES: usize = 16;
@@ -38,8 +38,13 @@ pub(crate) const LAYER_PAINTS: u64 = 1000;
 const LAYER_BYTES: usize = 64 << 20;
 
 /// A layer's shadows, one image per layer it casts, and content, finished on one surface for the
-/// command that drew them, with the paint that last held it.
-type KeptLayer = (String, DrawCmd, (Vec<ImageId>, ImageId), u64);
+/// command that drew them, whether every kept image is safe to sample off texel centres (exact size
+/// or edge-padded slack), and the paint that last held it.
+type KeptLayer = (String, DrawCmd, (Vec<ImageId>, ImageId), bool, u64);
+
+/// An unfiltered layer subtree kept across frames while its `effect.blur` or `effect.tone` tweens,
+/// so the blur reads the cached raster instead of repainting and flushing every frame (#198).
+type KeptSource = (String, PhysicalRect, Vec<DrawCmd>, ImageId, u64);
 
 /// A FemtoVG canvas bound to the calling thread's current EGL/GL context, with every face the
 /// shaping worker can place a glyph in registered and ready to draw with.
@@ -73,6 +78,11 @@ pub struct TextPainter {
     /// `layout::paint::canvas::draw_layer`'s finished images, kept here beside `scratch` for the
     /// same reason (ADR-0258).
     layers: Vec<KeptLayer>,
+    /// Unfiltered layer subtrees kept only while their filter parameters tween (#198).
+    sources: Vec<KeptSource>,
+    /// Subtrees of layers retired on the current paint of a surface, used to detect active filter
+    /// tweens without retaining unfiltered sources for static layers.
+    retired_layers: Vec<Vec<DrawCmd>>,
     /// `GL_MAX_TEXTURE_SIZE`: femtovg 0.27 creates a larger texture without checking, and its
     /// framebuffer comes out incomplete, so the subtree drew into the parent with no clip.
     max_texture: usize,
@@ -283,6 +293,8 @@ impl TextPainter {
             scratch: HashMap::default(),
             paints: 0,
             layers: Vec::new(),
+            sources: Vec::new(),
+            retired_layers: Vec::new(),
             max_texture: usize::try_from(max_texture).unwrap_or(0),
         })
     }
@@ -310,12 +322,23 @@ impl TextPainter {
         self.scratch.get_mut(&(surface.to_owned(), size))?.1.pop()
     }
 
-    /// What `command` last finished into on `surface`.
-    pub fn layer(&self, surface: &str, command: &DrawCmd) -> Option<(Vec<ImageId>, ImageId)> {
+    /// Returns a dead offscreen to the pool mid-frame so later layers in the same paint reuse it.
+    /// Stamped for the coming [`Self::recycle_scratch`] tick so `stalest` treats it as active on
+    /// this paint.
+    pub fn return_scratch(&mut self, surface: &str, id: ImageId, size: (usize, usize)) {
+        let now = self.paints + 1;
+        let entry = self.scratch.entry((surface.to_owned(), size)).or_insert((now, Vec::new()));
+        entry.0 = now;
+        entry.1.push(id);
+    }
+
+    /// What `command` last finished into on `surface`, and whether every image in it is safe to
+    /// sample off texel centres.
+    pub fn layer(&self, surface: &str, command: &DrawCmd) -> Option<((Vec<ImageId>, ImageId), bool)> {
         self.layers
             .iter()
             .find(|(on, kept, ..)| on == surface && kept == command)
-            .map(|(_, _, images, ..)| images.clone())
+            .map(|(_, _, images, clamped, _)| (images.clone(), *clamped))
     }
 
     /// Keeps `images` for `command`, answering the images of one it replaces for the pool.
@@ -324,26 +347,93 @@ impl TextPainter {
         surface: &str,
         command: &DrawCmd,
         images: (Vec<ImageId>, ImageId),
+        clamped: bool,
     ) -> Vec<(ImageId, (usize, usize))> {
         let old = self.layers.iter().position(|(on, kept, ..)| on == surface && kept == command);
         let old = old.map(|at| self.layers.swap_remove(at));
-        self.layers.push((surface.to_owned(), command.clone(), images, self.paints));
-        self.pooled(old.into_iter().flat_map(|(.., (casts, content), _)| casts.into_iter().chain([content])))
+        self.layers.push((surface.to_owned(), command.clone(), images, clamped, self.paints));
+        self.pooled(old.into_iter().flat_map(|(.., (casts, content), _, _)| casts.into_iter().chain([content])))
     }
 
-    /// Frees `surface`'s layers its list no longer `holds`, then any past [`LAYER_PAINTS`] or
-    /// [`LAYER_BYTES`], answering their images for the pool. A held layer lives on while
-    /// the region skips it.
-    pub fn sweep_layers(&mut self, surface: &str, holds: impl Fn(&DrawCmd) -> bool) -> Vec<(ImageId, (usize, usize))> {
-        for (on, kept, .., held) in &mut self.layers {
-            if on == surface && holds(kept) {
-                *held = self.paints;
+    /// A cached unfiltered raster for `commands` at `clip` on `surface`, refreshed for this paint.
+    pub fn layer_source(&mut self, surface: &str, clip: PhysicalRect, commands: &[DrawCmd]) -> Option<ImageId> {
+        let paints = self.paints;
+        let entry = self
+            .sources
+            .iter_mut()
+            .find(|(on, at, kept, ..)| on == surface && *at == clip && kept.as_slice() == commands)?;
+        entry.4 = paints;
+        Some(entry.3)
+    }
+
+    /// Whether a layer with `commands` was just retired on this paint (its filter parameters moved).
+    pub fn layer_tweening(&self, commands: &[DrawCmd]) -> bool {
+        self.retired_layers.iter().any(|retired| retired.as_slice() == commands)
+    }
+
+    /// Keeps `image` as the unfiltered source for `commands` at `clip`, answering any replaced
+    /// image for the pool.
+    pub fn keep_source(
+        &mut self,
+        surface: &str,
+        clip: PhysicalRect,
+        commands: &[DrawCmd],
+        image: ImageId,
+    ) -> Option<(ImageId, (usize, usize))> {
+        let old = self
+            .sources
+            .iter()
+            .position(|(on, _, kept, ..)| on == surface && kept.as_slice() == commands)
+            .map(|at| self.sources.swap_remove(at).3);
+        self.sources.push((surface.to_owned(), clip, commands.to_vec(), image, self.paints));
+        old.map(|id| (id, self.canvas.image_size(id).unwrap_or_default()))
+    }
+
+    /// Drops `surface`'s layers its list no longer `holds`, and any cached unfiltered sources whose
+    /// layer is no longer changing, answering their images so this paint can reuse them immediately.
+    pub fn prune_surface_layers(
+        &mut self,
+        surface: &str,
+        holds: impl Fn(&DrawCmd) -> bool,
+    ) -> Vec<(ImageId, (usize, usize))> {
+        self.retired_layers.clear();
+        let mut retired_ids = Vec::new();
+        let paints = self.paints;
+        let mut kept_layers = Vec::with_capacity(self.layers.len());
+        for (on, kept, images, clamped, mut held) in std::mem::take(&mut self.layers) {
+            if on == surface {
+                if holds(&kept) {
+                    held = paints;
+                    kept_layers.push((on, kept, images, clamped, held));
+                } else {
+                    retired_ids.extend(images.0.into_iter().chain([images.1]));
+                    if let Draw::Layer { shader: None, silhouette: false, commands, .. } = kept.draw {
+                        self.retired_layers.push(commands);
+                    }
+                }
+            } else {
+                kept_layers.push((on, kept, images, clamped, held));
             }
         }
+        self.layers = kept_layers;
+        let (kept_sources, retired_sources): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.sources).into_iter().partition(|(on, _, commands, ..)| {
+                on != surface || self.retired_layers.iter().any(|retired| retired == commands)
+            });
+        self.sources = kept_sources;
+        retired_ids.extend(retired_sources.into_iter().map(|(_, _, _, id, _)| id));
+        self.pooled(retired_ids.into_iter())
+    }
+
+    /// Enforces [`LAYER_PAINTS`] and [`LAYER_BYTES`] across kept layers and tweening sources after
+    /// a paint, answering evicted images for the pool.
+    pub fn trim_layers(&mut self, surface: &str) -> Vec<(ImageId, (usize, usize))> {
+        self.retired_layers.clear();
         self.layers.sort_unstable_by_key(|(.., held)| std::cmp::Reverse(*held));
+        self.sources.sort_unstable_by_key(|(.., held)| std::cmp::Reverse(*held));
         let (paints, mut bytes) = (self.paints, 0);
         let (kept, retired): (Vec<_>, Vec<_>) =
-            std::mem::take(&mut self.layers).into_iter().partition(|(on, _, images, held)| {
+            std::mem::take(&mut self.layers).into_iter().partition(|(on, _, images, _, held)| {
                 let live = if on == surface { *held == paints } else { paints - held <= LAYER_PAINTS };
                 let size = self.layer_bytes(images);
                 live && bytes + size <= LAYER_BYTES && {
@@ -352,12 +442,41 @@ impl TextPainter {
                 }
             });
         self.layers = kept;
-        self.pooled(retired.into_iter().flat_map(|(.., (casts, content), _)| casts.into_iter().chain([content])))
+        let (kept_sources, retired_sources): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.sources).into_iter().partition(|(on, _, _, id, held)| {
+                let live = if on == surface { *held == paints } else { paints - held <= LAYER_PAINTS };
+                let size = self.image_bytes(*id);
+                live && bytes + size <= LAYER_BYTES && {
+                    bytes += size;
+                    true
+                }
+            });
+        self.sources = kept_sources;
+        self.pooled(
+            retired
+                .into_iter()
+                .flat_map(|(.., (casts, content), _, _)| casts.into_iter().chain([content]))
+                .chain(retired_sources.into_iter().map(|(_, _, _, id, _)| id)),
+        )
+    }
+
+    /// Frees `surface`'s layers its list no longer `holds`, then any past [`LAYER_PAINTS`] or
+    /// [`LAYER_BYTES`], answering their images for the pool. A held layer lives on while
+    /// the region skips it.
+    #[cfg(test)]
+    pub fn sweep_layers(&mut self, surface: &str, holds: impl Fn(&DrawCmd) -> bool) -> Vec<(ImageId, (usize, usize))> {
+        let mut retired = self.prune_surface_layers(surface, holds);
+        retired.extend(self.trim_layers(surface));
+        retired
+    }
+
+    fn image_bytes(&self, id: ImageId) -> usize {
+        self.canvas.image_size(id).map_or(0, |(w, h)| w * h * 4)
     }
 
     /// What a layer's images hold, at the sizes they are allocated at.
     fn layer_bytes(&self, (casts, content): &(Vec<ImageId>, ImageId)) -> usize {
-        casts.iter().chain([content]).map(|&id| self.canvas.image_size(id).map_or(0, |(w, h)| w * h * 4)).sum()
+        casts.iter().chain([content]).map(|&id| self.image_bytes(id)).sum()
     }
 
     /// `images` with the sizes they are allocated at, which the pool keys by (ADR-0370).
@@ -386,8 +505,9 @@ impl TextPainter {
     pub fn census(&self) -> (usize, usize, usize, usize) {
         let pooled = self.scratch.iter().map(|((_, (w, h)), (_, free))| (free.len(), free.len() * w * h * 4));
         let (images, pool_bytes) = pooled.fold((0, 0), |(n, bytes), (more, extra)| (n + more, bytes + extra));
-        let layer_bytes = self.layers.iter().map(|(_, _, images, _)| self.layer_bytes(images)).sum();
-        (images, pool_bytes, self.layers.len(), layer_bytes)
+        let layer_bytes = self.layers.iter().map(|(_, _, images, ..)| self.layer_bytes(images)).sum::<usize>()
+            + self.sources.iter().map(|(_, _, _, id, _)| self.image_bytes(*id)).sum::<usize>();
+        (images, pool_bytes, self.layers.len() + self.sources.len(), layer_bytes)
     }
 
     /// Deletes `surface`'s finished layers and pooled offscreens. A gone surface never paints again
@@ -397,10 +517,14 @@ impl TextPainter {
         let (gone, kept): (Vec<_>, Vec<_>) =
             std::mem::take(&mut self.layers).into_iter().partition(|(on, ..)| on == surface);
         self.layers = kept;
-        let layers = gone.into_iter().flat_map(|(.., (casts, content), _)| casts.into_iter().chain([content]));
+        let (gone_sources, kept_sources): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.sources).into_iter().partition(|(on, ..)| on == surface);
+        self.sources = kept_sources;
+        let layers = gone.into_iter().flat_map(|(.., (casts, content), _, _)| casts.into_iter().chain([content]));
+        let sources = gone_sources.into_iter().map(|(_, _, _, id, _)| id);
         let owned: Vec<_> = self.scratch.keys().filter(|(on, _)| on == surface).cloned().collect();
         let pooled = owned.into_iter().filter_map(|key| self.scratch.remove(&key)).flat_map(|(_, free)| free);
-        for id in layers.chain(pooled) {
+        for id in layers.chain(sources).chain(pooled) {
             self.canvas.delete_image(id);
         }
     }
@@ -419,10 +543,13 @@ impl TextPainter {
         self.faces = register(&self.text_context, &mut self.registered, font_chain);
         self.generation = generation;
         // A face landed in the background can fill what a kept raster drew as a box (#55).
-        for (.., (casts, content), _) in std::mem::take(&mut self.layers) {
+        for (.., (casts, content), _, _) in std::mem::take(&mut self.layers) {
             for id in casts.into_iter().chain([content]) {
                 self.canvas.delete_image(id);
             }
+        }
+        for (_, _, _, id, _) in std::mem::take(&mut self.sources) {
+            self.canvas.delete_image(id);
         }
     }
 

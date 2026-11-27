@@ -133,6 +133,11 @@ pub fn execute(
     captures.upload_landed(painter.canvas_mut());
     let (scratch, drawn, split) = (Vec::new(), Vec::new(), PaintSplit::default());
     let mut walk = Walk { images, captures, scale, scratch, drawn, shaders, split, surface };
+    // Retire stale layers on `surface` before painting so tweening layers reuse their textures on
+    // the same frame instead of doubling the pool (#198).
+    for (id, size) in painter.prune_surface_layers(surface, |kept| holds(&list.commands, kept)) {
+        painter.return_scratch(surface, id, size);
+    }
     let (width, height) = target_size;
     for region in regions {
         let region = region.intersect(PhysicalRect { x0: 0, y0: 0, x1: width as i32, y1: height as i32 });
@@ -156,7 +161,7 @@ pub fn execute(
     }
     // Recycle scratch targets only after flush; femtovg still executes queued calls at flush, as
     // `release_shadow_images` does for drop-shadow targets.
-    let retired = painter.sweep_layers(surface, |kept| holds(&list.commands, kept));
+    let retired = painter.trim_layers(surface);
     painter.recycle_scratch(surface, walk.scratch.drain(..).chain(retired));
     (walk.drawn, walk.split)
 }
@@ -529,7 +534,7 @@ fn draw_text(
         return;
     }
     let steady = draw.caret.is_none();
-    let kept = painter.layer(walk.surface, command).map(|(_, image)| image);
+    let kept = painter.layer(walk.surface, command).map(|((_, image), _)| image);
     let kept = kept.filter(|&image| painter.canvas_mut().image_size(image).is_ok_and(|(w, h)| (w, h) == size));
     let image = match kept {
         Some(image) => image,
@@ -543,7 +548,7 @@ fn draw_text(
             // A blinking caret changes the pixels under an unchanged command.
             if steady {
                 walk.scratch.retain(|(id, _)| *id != image);
-                let old = painter.keep_layer(walk.surface, command, (Vec::new(), image));
+                let old = painter.keep_layer(walk.surface, command, (Vec::new(), image), true);
                 walk.scratch.extend(old);
             }
             image

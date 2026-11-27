@@ -148,7 +148,7 @@ impl ShaderStage {
         let [used, source_used] = pass.sizes;
         // SAFETY: caller's contract.
         unsafe {
-            quad_pass(gl, canvas, (blending.program, framebuffer), (vao, buffer), &WHOLE, |gl| {
+            quad_pass(gl, canvas, (blending.program, framebuffer), (vao, buffer), &WHOLE, (true, 2), |gl| {
                 attach(gl, target, size, used);
                 gl.uniform_4_f32_slice(blending.backdrop_box.as_ref(), &used_box(backdrop_size, used));
                 gl.uniform_4_f32_slice(blending.source_box.as_ref(), &used_box(source_size, source_used));
