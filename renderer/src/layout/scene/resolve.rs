@@ -759,7 +759,7 @@ mod tests {
         assert!(cap_elided && capped.ends_with('\u{2026}') && capped_runs.iter().any(|r| r.bold));
         // Paint measures a kept plain text's line against the box it gets now (#169).
         let fits = |bar: &Fixture| match &bar.child(6).paint {
-            Some(PaintStyle::Text { widest_line, .. }) => *widest_line <= bar.child(6).rect.width,
+            Some(PaintStyle::Text { widest_line, .. }) => widest_line.expect("measured") <= bar.child(6).rect.width,
             other => panic!("expected text paint, got {other:?}"),
         };
         assert!(!fits(&bar), "a shrunk box cuts the line");

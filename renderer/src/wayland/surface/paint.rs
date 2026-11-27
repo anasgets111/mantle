@@ -266,7 +266,7 @@ impl App {
             );
             let focus: Vec<_> = self.field_focus_for(&surface_id).into_iter().chain(parked).collect();
             tree.as_ref()
-                .map(|tree| layout::paint::build_with_control(tree, scale, &focus, control))
+                .map(|tree| layout::paint::build_with_control(tree, scale, &focus, control, &self.shaping))
                 .unwrap_or_default()
         };
         // What the compositor re-blurs and recomposites behind this surface; `None` is the whole

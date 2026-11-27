@@ -14,7 +14,7 @@ use crate::layout::node::{
 
 use crate::image::Fit;
 use crate::layout::scene::{NodeId, ResolvedNode};
-use crate::text::shaping::FIT_SLACK;
+use crate::text::shaping::{FIT_SLACK, ShapingHandle};
 use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 
 mod pixels;
@@ -64,23 +64,34 @@ pub enum FieldFocus<'a> {
 /// Flattens `root` without touching a canvas or GL context.
 #[cfg(test)]
 pub fn build(root: &ResolvedNode, scale: f32, focus: Option<&FieldFocus>) -> DisplayList {
-    build_with_control(root, scale, focus.map(std::slice::from_ref).unwrap_or_default(), None)
+    build_with_control(root, scale, focus.map(std::slice::from_ref).unwrap_or_default(), None, &test_shaping())
 }
 
+/// One shaping worker per test thread for [`build`], whose callers resolved against their own.
+#[cfg(test)]
+fn test_shaping() -> ShapingHandle {
+    thread_local!(static SHAPING: ShapingHandle = ShapingHandle::spawn());
+    SHAPING.with(ShapingHandle::clone)
+}
+
+/// `shaping` measures the labels fitting left to paint (#197): the same request
+/// `text::atlas::TextPainter::draw_text` makes, so the draw finds it in the memo.
 pub fn build_with_control(
     root: &ResolvedNode,
     scale: f32,
     focus: &[FieldFocus],
     control: Option<NodeId>,
+    shaping: &ShapingHandle,
 ) -> DisplayList {
     let mut commands = Vec::new();
-    build_node(root, 0.0, 0.0, scale, (UNCLIPPED, scaled(root.rect, scale)), 1.0, focus, control, &mut commands);
+    let frame = (UNCLIPPED, scaled(root.rect, scale));
+    build_node(root, 0.0, 0.0, scale, frame, 1.0, focus, control, shaping, &mut commands);
     DisplayList { commands }
 }
 
 /// One node, then its children in paint order. Origins accumulate parent-relative rects to an
 /// absolute position.
-// ponytail: keep the eight scalar/context arguments; a wrapper would only bag them for one caller.
+// ponytail: keep the nine scalar/context arguments; a wrapper would only bag them for one caller.
 #[allow(clippy::too_many_arguments)]
 fn build_node(
     node: &ResolvedNode,
@@ -91,6 +102,7 @@ fn build_node(
     inherited_opacity: f32,
     focus: &[FieldFocus],
     control: Option<NodeId>,
+    shaping: &ShapingHandle,
     out: &mut Vec<DrawCmd>,
 ) {
     if !node.visible {
@@ -129,10 +141,29 @@ fn build_node(
         // Glyph ink passes the advances: a descender under a tight line, an italic's overhang. Text
         // wider than its box stops at the box's width.
         // ponytail: one em of room; upgrade: the shaped ink extents. An empty box draws nothing.
-        Some(PaintStyle::Text { face, widest_line, .. }) if !snap_to_physical(rect, scale).is_empty() => {
-            match *widest_line <= node.content_box(rect).width + FIT_SLACK {
-                true => grow(rect, face.font_size),
-                false => grow_y(rect, face.font_size),
+        Some(PaintStyle::Text { content, runs, face, widest_line, .. })
+            if !snap_to_physical(rect, scale).is_empty() =>
+        {
+            let (room, cut) = (grow(rect, face.font_size), grow_y(rect, face.font_size));
+            let [wide, narrow] = [room, cut].map(|bounds| parent_clip.intersect(snap_to_physical(bounds, scale)));
+            // Measured only where the answer shows: a clip it changes (a hidden row's is empty either
+            // way), or an effect's layer.
+            let shows = wide != narrow && !(wide.is_empty() && narrow.is_empty());
+            let widest = widest_line.or_else(|| {
+                (shows || node.layout_style.effect.layers()).then(|| {
+                    let lines = shaping.shape_lines(
+                        content,
+                        &node::font_runs(runs),
+                        face.shaping_style(),
+                        face.font.as_ref(),
+                        None,
+                    );
+                    lines.iter().fold(0.0, |widest, (_, line)| line.width.max(widest))
+                })
+            });
+            match widest.is_none_or(|widest| widest <= node.content_box(rect).width + FIT_SLACK) {
+                true => room,
+                false => cut,
             }
         }
         _ => rect,
@@ -315,13 +346,13 @@ fn build_node(
             }
             inner.extend(insets);
             for child in node.painted_children() {
-                build_node(child, x, y, scale, (clip, surface), held, focus, control, &mut inner);
+                build_node(child, x, y, scale, (clip, surface), held, focus, control, shaping, &mut inner);
             }
             inner.extend(border.map(|draw| cmd(clip, draw)));
             if !inner.is_empty() {
                 let draw = if let Some(mask_node) = node.mask_child() {
                     let mut commands = Vec::new();
-                    build_node(mask_node, x, y, scale, (clip, surface), 1.0, &[], None, &mut commands);
+                    build_node(mask_node, x, y, scale, (clip, surface), 1.0, &[], None, shaping, &mut commands);
                     let split = commands.len();
                     commands.extend(inner);
                     Draw::NodeMask {
@@ -363,7 +394,7 @@ fn build_node(
             out.extend(insets);
             out.extend(border.map(|draw| cmd(clip, draw)));
             for child in node.painted_children() {
-                build_node(child, x, y, scale, (child_clip, surface), held, focus, control, out);
+                build_node(child, x, y, scale, (child_clip, surface), held, focus, control, shaping, out);
             }
         }
         // Rounded order: fill, masked subtree, border. A child reaching the arc would
@@ -376,7 +407,7 @@ fn build_node(
             out.extend(insets);
             let mut inner = Vec::new();
             for child in node.painted_children() {
-                build_node(child, x, y, scale, (clip, surface), held, focus, control, &mut inner);
+                build_node(child, x, y, scale, (clip, surface), held, focus, control, shaping, &mut inner);
             }
             // A leaf has nothing to clip, so avoid the render target and composite.
             if !inner.is_empty() {
@@ -469,8 +500,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
 
         // `text`: `content` through `TextPainter`, at `rect`, coloured by `foreground`. `elide`,
         // `wrap` and `max_lines` are absent on purpose: `Scene::apply` already rewrote `content` to
-        // the string that fits (ellipsized, or line-broken with `\n`) in the only place the box
-        // width and the shaping worker are both in reach.
+        // the string that fits (ellipsized, or line-broken with `\n`) once the box width is known.
         PaintStyle::Text { content, runs, face, color, align, .. } => Some(Draw::Text {
             content: content.clone(),
             runs: runs
@@ -1397,8 +1427,8 @@ mod tests {
         let lua = Lua::new();
         let tree = reply_surface(&lua);
         let id = tree.children[0].id;
-        let idle = build_with_control(&tree, 1.0, &[], None);
-        let focused = build_with_control(&tree, 1.0, &[], Some(id));
+        let idle = build_with_control(&tree, 1.0, &[], None, &test_shaping());
+        let focused = build_with_control(&tree, 1.0, &[], Some(id), &test_shaping());
         assert_eq!(focused.commands.len(), idle.commands.len() + 2);
         assert!(focused.commands.iter().rev().take(2).all(|cmd| matches!(cmd.draw, Draw::Box { .. })));
 
@@ -1407,7 +1437,10 @@ mod tests {
                 on_submit = function(text) end } }"##;
         let ringless = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
         let id = ringless.children[0].id;
-        assert_eq!(build_with_control(&ringless, 1.0, &[], Some(id)).commands.len(), idle.commands.len());
+        assert_eq!(
+            build_with_control(&ringless, 1.0, &[], Some(id), &test_shaping()).commands.len(),
+            idle.commands.len()
+        );
     }
 
     /// The two-tone outline takes the node's radii: white on its edge, black two px in and two px tighter.
@@ -1418,7 +1451,7 @@ mod tests {
             let src = r##"return panel { id = "bar", width = 200, height = 100, padding = 40,
                 child = rect { width = 40, height = 20, radius = { top_left = 6, bottom_right = 6 } } }"##;
             let tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 100.0 });
-            let list = build_with_control(&tree, scale, &[], Some(tree.children[0].id));
+            let list = build_with_control(&tree, scale, &[], Some(tree.children[0].id), &test_shaping());
             let [white, black] = &list.commands[list.commands.len() - 2..] else { panic!("two boxes") };
             for (cmd, corner, inset) in [(white, 6.0, 0.0), (black, 4.0, 2.0)] {
                 let Draw::Box { radius, .. } = &cmd.draw else { panic!("a box: {:?}", cmd.draw) };
@@ -1437,7 +1470,7 @@ mod tests {
             node::shape::TAIL
         );
         let tree = resolved_surface(&lua, &src, LogicalSize { width: 200.0, height: 100.0 });
-        let list = build_with_control(&tree, 1.0, &[], Some(tree.children[0].id));
+        let list = build_with_control(&tree, 1.0, &[], Some(tree.children[0].id), &test_shaping());
         for cmd in &list.commands[list.commands.len() - 2..] {
             assert!(matches!(&cmd.draw, Draw::Path(path, _) if !path.commands.points.is_empty()), "{:?}", cmd.draw);
         }
@@ -1629,12 +1662,15 @@ mod tests {
         let tree = reply_surface(&lua);
         let id = tree.children[0].id;
         let draft = FieldFocus::Plain { id, text: "half a sentence", caret: None, caret_on: false };
-        let list = build_with_control(&tree, 1.0, std::slice::from_ref(&draft), None);
+        let list = build_with_control(&tree, 1.0, std::slice::from_ref(&draft), None, &test_shaping());
         assert_eq!(drawn_text(&list), vec!["half a sentence".to_string()]);
         // A password being typed elsewhere in the form must not hide it.
         let target = lock_target();
         let typing = FieldFocus::Masked { id: NodeId::test(999), target: &target, filled: 4, revealed: None };
-        assert_eq!(drawn_text(&build_with_control(&tree, 1.0, &[typing, draft], None)), vec!["half a sentence"]);
+        assert_eq!(
+            drawn_text(&build_with_control(&tree, 1.0, &[typing, draft], None, &test_shaping())),
+            vec!["half a sentence"]
+        );
     }
 
     #[test]

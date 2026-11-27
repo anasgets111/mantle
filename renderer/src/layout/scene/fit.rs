@@ -9,9 +9,10 @@ use crate::text::shaping::{FIT_SLACK, ShapingHandle};
 /// cannot work out for itself.
 ///
 /// Runs here rather than in `layout::paint`: the box width isn't known until this node has been
-/// sized, and the shaping worker isn't reachable from a display-list build, which is pure by
-/// design. Does nothing for a run that neither wraps nor elides, and nothing on a `Content`-sized
-/// node under `elide` alone, whose box came from measuring this same string and so always fits it.
+/// sized, and what is cut changes the node's own paint. A cut string's width is left to the
+/// display-list build, which measures it only where it changes the clip (#197). Does nothing for a
+/// run that neither wraps nor elides, and nothing on a `Content`-sized node under `elide` alone,
+/// whose box came from measuring this same string and so always fits it.
 pub(super) fn fit_text_to_box(
     paint: &mut Option<PaintStyle>,
     content_width: f32,
@@ -24,7 +25,7 @@ pub(super) fn fit_text_to_box(
         return;
     };
     *elided = false;
-    *widest_line = 0.0;
+    *widest_line = Some(0.0);
     // Before the early returns below, and before any measurement: taffy's `compute_leaf_layout`
     // returns early when a node's width and height are both known, so a fully-sized `text` is never
     // handed to the measure callback, and without `elide` or `wrap` it never reaches the shaping
@@ -42,7 +43,7 @@ pub(super) fn fit_text_to_box(
             *content = "".into();
             runs.clear();
         } else {
-            *widest_line = unconstrained_width.unwrap_or_else(|| measured_width(content, runs, face, shaping));
+            *widest_line = Some(unconstrained_width.unwrap_or_else(|| measured_width(content, runs, face, shaping)));
         }
         return;
     }
@@ -51,7 +52,7 @@ pub(super) fn fit_text_to_box(
         // skipping the binary search below is the difference on a list of them.
         node::Wrap::None => {
             let width = unconstrained_width.unwrap_or_else(|| measured_width(content, runs, face, shaping));
-            *widest_line = width;
+            *widest_line = Some(width);
             if *elide != node::Elide::None && width > content_width + FIT_SLACK {
                 let fitted = elide_edges(content, runs, *elide, face, content_width, shaping);
                 *elided = true;
@@ -62,14 +63,15 @@ pub(super) fn fit_text_to_box(
         }
         node::Wrap::Word => {
             let fitted = wrapped_to_fit(content, runs, face, *elide, *max_lines, content_width, shaping);
-            (*elided, *widest_line) = (fitted.elided, fitted.widest_line);
+            (*elided, *widest_line) = (fitted.elided, Some(fitted.widest_line));
             Some(fitted)
         }
     };
     if let Some(Fitted { text, runs: styled, .. }) = fitted {
-        // An ellipsis can be wider than a narrow box, and a dropped line may have been the widest.
+        // An ellipsis can be wider than a narrow box, and a dropped line may have been the widest:
+        // paint measures what it draws.
         if *elided {
-            *widest_line = measured_width(&text, &styled, face, shaping);
+            *widest_line = None;
         }
         *content = text.into();
         *runs = styled;
@@ -792,6 +794,107 @@ mod tests {
                 assert!(!ellipsis.italic);
                 assert_eq!(ellipsis.color, Some(node::Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 }));
             }
+        }
+    }
+
+    /// #197: resolve leaves a cut label's fitted width to paint; display-list build measures it only
+    /// for a label whose clip depends on it, so rows a clip hides shape nothing more and paint's own
+    /// request is the one that fills the memo.
+    #[test]
+    fn paint_measures_only_the_labels_whose_clip_depends_on_their_width() {
+        let (lua, surface) = surface_from(
+            r#"n = state("n", 0)
+            local function label(width, i, elide, shadows)
+                return text { width = width, height = 16, font_size = 13, elide = elide, shadows = shadows, content = n:map(function(v)
+                    return string.format("row %d of %d brings three new signals to the same grid", i, v)
+                end) }
+            end
+            local rows = { label(300, -2, "end"), label(300, -3, "end", { { blur = 8 } }), label(290, 0, "end"), label(290, -1) }
+            for i = 1, 200 do rows[#rows + 1] = label(100, i, "end") end
+            local capped = text { width = 140, height = 46, font_size = 13, wrap = "word", max_lines = 2, elide = "end",
+                content = n:map(function(v) return string.format("Track %05d brings three new signals to the same grid", v) end) }
+            return panel { id = "bar", child = column { children = {
+                column { width = 300, height = 60, clip = "box", children = rows }, capped,
+            } } }"#,
+        );
+        let shaping = ShapingHandle::spawn();
+        let mut scene = Scene::new();
+        for update in ["", "n:set(1)"] {
+            lua.load(update).exec().unwrap();
+            let fresh = shaping.census().0;
+            apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            let root = scene.surface("bar@TEST").unwrap();
+            let resolved = shaping.census().0 - fresh;
+            let list = crate::layout::paint::build_with_control(root, 1.0, &[], None, &shaping);
+            let built = shaping.census().0 - fresh - resolved;
+            let drawn: Vec<_> = list
+                .commands
+                .iter()
+                .filter_map(|cmd| match &cmd.draw {
+                    crate::layout::paint::Draw::Text { content, runs, face, .. } if !cmd.clip.is_empty() => {
+                        Some((content, runs, face, cmd.rect.width))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert!(drawn.len() < 10, "after {update:?}: the clip hides most rows, {} drawn", drawn.len());
+            let paragraphs: usize = drawn.iter().map(|(content, ..)| content.split('\n').count()).sum();
+            // At most once per drawn line (a repeated one is a hit), never a hidden one.
+            assert!(built <= paragraphs, "after {update:?}: {built} shapes for {paragraphs} drawn lines");
+            // Paint's own request for each one fitting left to it is the one build made.
+            fn deferred(node: &ResolvedNode, out: &mut Vec<String>) {
+                if let Some(PaintStyle::Text { content, widest_line: None, .. }) = &node.paint {
+                    out.push(content.to_string());
+                }
+                node.children.iter().for_each(|child| deferred(child, out));
+            }
+            let mut left = Vec::new();
+            deferred(root, &mut left);
+            // A row flush with the clip shows no ink room either way; its shadowed twin's layer still reads it.
+            let (flush, measured): (Vec<_>, Vec<_>) = drawn
+                .into_iter()
+                .filter(|(content, ..)| left.contains(&content.to_string()))
+                .partition(|(content, .., width)| *width == 300.0 && content.contains("-2 "));
+            assert_eq!(flush.len(), 1, "after {update:?}: the flush row is drawn and left to paint");
+            for (labels, unmeasured, why) in
+                [(measured, 0, "paint shaped again"), (flush, 1, "the flush row was measured")]
+            {
+                for (content, runs, face, _) in labels {
+                    let style = face.shaping_style();
+                    shaping.shape_lines(content, &node::font_runs(runs), style, face.font.as_ref(), None);
+                }
+                assert_eq!(shaping.census().0 - fresh - resolved, built + unmeasured, "after {update:?}: {why}");
+            }
+            // The shadowed twin draws inside its layer, which reads the width even flush with the clip.
+            let twin = &root.children[0].children[0].children[1];
+            let Some(PaintStyle::Text { content, runs, face, widest_line: None, .. }) = &twin.paint else {
+                panic!("after {update:?}: {:?}", twin.paint);
+            };
+            shaping.shape_lines(content, &node::font_runs(runs), face.shaping_style(), face.font.as_ref(), None);
+            assert_eq!(
+                shaping.census().0 - fresh - resolved,
+                built + 1,
+                "after {update:?}: the layered row was not measured"
+            );
+            let clips: Vec<_> = list
+                .commands
+                .iter()
+                .filter(|cmd| matches!(&cmd.draw, crate::layout::paint::Draw::Text { .. }) && cmd.rect.width == 290.0)
+                .map(|cmd| cmd.clip.x1)
+                .collect();
+            // The two rows an em short of the clip: the elided one fits and keeps its ink room, the
+            // uncut one overflows and stops at its box.
+            assert_eq!(clips, [300, 290], "after {update:?}: room for the fitting row's ink, none past the cut one");
+
+            // Resolve fitted the capped label without measuring its fitted string whole.
+            let capped = &root.children[0].children[1];
+            let Some(PaintStyle::Text { content, runs, face, elided: true, widest_line: None, .. }) = &capped.paint
+            else {
+                panic!("after {update:?}: {:?}", capped.paint);
+            };
+            let before = shaping.census().0;
+            shaping.shape(face.request(content.to_string(), None, node::font_runs(runs)));
+            assert_eq!(shaping.census().0, before + 1, "after {update:?}: {content:?} was measured whole");
         }
     }
 
