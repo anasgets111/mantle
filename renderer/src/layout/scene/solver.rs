@@ -551,7 +551,7 @@ pub(super) fn taffy_failed(err: taffy::TaffyError) -> LayoutError {
     node::invalid("layout", format!("the layout solver refused a node built by this pass: {err}"))
 }
 
-/// The measure callback of [`solve`] and [`fit_slots`].
+/// The measure callback of [`compute_layout`].
 fn measure_leaf(
     (shaping, drafts): (&ShapingHandle, &FieldDrafts),
     input: taffy::LayoutInput,
@@ -663,6 +663,19 @@ fn measure_leaf(
     )
 }
 
+/// Single `compute_layout_with_measure` entry point so taffy's flex and grid solvers monomorphize once.
+fn compute_layout(
+    tree: &mut taffy::TaffyTree<Measure>,
+    node: taffy::NodeId,
+    space: taffy::Size<taffy::AvailableSpace>,
+    measure: (&ShapingHandle, &FieldDrafts),
+) -> Result<(), LayoutError> {
+    tree.compute_layout_with_measure(node, space, |input, _node, context, style| {
+        measure_leaf(measure, input, context, style)
+    })
+    .map_err(taffy_failed)
+}
+
 /// Sets each content-sized or wrapping `homogeneous` slot to its widest child's margin box, innermost first.
 // ponytail: walks the whole tree each dirty solve; upgrade: collect the `Measure::Slots` ids in [`update_solver_node`].
 fn fit_slots(
@@ -690,10 +703,7 @@ fn fit_slots(
             continue;
         }
         let space = taffy::Size { width: taffy::AvailableSpace::MaxContent, height: taffy::AvailableSpace::MaxContent };
-        tree.compute_layout_with_measure(child, space, |input, _node, context, style| {
-            measure_leaf((shaping, drafts), input, context, style)
-        })
-        .map_err(taffy_failed)?;
+        compute_layout(tree, child, space, (shaping, drafts))?;
         let size = tree.layout(child).map_err(taffy_failed)?.size;
         // Measuring as a root left it at the origin and cached; dirty so the real solve re-places it.
         tree.mark_dirty(child).map_err(taffy_failed)?;
@@ -764,10 +774,7 @@ pub(super) fn solve(
     if tree.dirty(root).map_err(taffy_failed)? {
         fit_slots(tree, root, (shaping, drafts))?;
     }
-    tree.compute_layout_with_measure(root, space, |input, _node, context, style| {
-        measure_leaf((shaping, drafts), input, context, style)
-    })
-    .map_err(taffy_failed)
+    compute_layout(tree, root, space, (shaping, drafts))
 }
 
 /// The kind whose layout `kind` actually uses. Every kind is itself except `list`, which borrows a
