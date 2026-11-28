@@ -71,22 +71,48 @@ agents). The hook skips `just book`,
 
 ## Ponytail mode
 
-- **Diffs.** Delete dead, redundant and duplicated code; add lines only when nothing else works. The
-  smallest diff in the wrong place is a second bug.
-- **Root cause.** Fix the cause, not the symptom. Grep every caller and fix the shared function once.
-- **Boring.** No new abstractions, dependencies or boilerplate unless required. Between similar
-  approaches, take the edge-case-correct one.
-- **Ceilings.** Mark a deliberate limit with a `ponytail:` comment naming its ceiling and upgrade path.
+Solve the whole problem with the least new code.
+
+Before writing, read the task and the code it touches, and trace the affected flow end to end. List
+every place the change must reach: callers, tests, fixtures, configs, generated files, docs and the
+changelog. Check what it could break for users: data it would destroy or expose, configs and
+callers that stop working. That is scope; extra features are not. Then take the first option that
+fully works:
+
+1. Not needed for the task: omit it. Skip features, options and flexibility nobody asked for. A
+   vague request gets the smallest version that does the core job.
+2. The codebase has it (a helper, type, fixture, pattern): reuse it the way the surrounding code
+   does.
+3. std or the platform covers it: use it.
+4. An installed dependency covers it: use it. Never add one for a few lines.
+5. Otherwise write the minimum clear code that handles the required cases.
+
+- **Diffs.** Finish every part the task needs, including the callers, tests and fixtures the change
+  breaks. Delete dead, redundant and duplicated code; add lines only when nothing else works. The
+  shortest working diff wins once you know everything it must touch. The smallest diff in the
+  wrong place is a second bug, and a one-liner that needs decoding is not short.
+- **Root cause.** Fix the cause, not the symptom. Before editing a function, grep every caller and
+  fix the shared function once.
+- **Boring.** No new dependency, abstraction, wrapper, type conversion, option, config, boilerplate
+  or "for later" code unless required. Keep values in the form the platform gives them. Keep the
+  codebase's layers, interfaces and conventions. Between options of equal size, take the
+  edge-case-correct one.
+- **Ceilings.** Mark a deliberate limit with a `ponytail:` comment naming its ceiling and upgrade
+  path.
 - **Tests.** Cover changed behavior with a runnable check, extending an existing test where possible.
   Choose coverage by risk, not line count. Prose and mechanical edits need none.
-- **Full effort.** Validate affected trust boundaries, data integrity, security and accessibility.
-  Calibrate hardware measurements when the change depends on them.
+- **Never cut.** Keep validation at trust boundaries, data integrity, error handling that prevents
+  data loss, security, accessibility and anything the user asked for. Code you move or merge keeps
+  its error handling and validation. Calibrate hardware measurements when the change depends on
+  them.
 - **Domains.** One domain per file; split out a clear second one at any size, like `check`,
   `install` and `aur` in `updates/pacman/`. Past ~700 production lines, review the boundaries.
 - **Communication.** Concise, direct, organized: lead with the answer, bullets for parallel points,
-  tables for comparisons. Detail only when asked or needed for a decision, risk or blocker. When
-  the host offers an HTML preview (T3 Code's `html_preview` and `html_render`), present reports,
-  designs and comparisons as a rendered page, with diagrams and tables, rather than terminal text.
+  tables for comparisons. Detail only when asked or needed for a decision, risk or blocker. End a
+  reply that reports work with one or two lines: what you skipped or did not check, and any risk
+  the user must know. When the host offers an HTML preview (T3 Code's `html_preview` and
+  `html_render`), present reports, designs and comparisons as a rendered page, with diagrams and
+  tables, rather than terminal text.
 - **Writing.** Apply `unslop` everywhere; prefer numbers to adjectives. Comments explain
   non-obvious decisions or constraints, never narrate code. Commits state what changed and why.
 - **ADRs.** Append one to `DECISIONS.md` (next number) when a choice is hard to reverse, surprising
@@ -100,13 +126,6 @@ agents). The hook skips `just book`,
   Headless timing can invert.
 - **Deferred work.** Work the user defers to later becomes a GitHub issue on this repo (`gh issue
   create`) with the findings, measurements and planned fix, so it survives the session.
-
-Trace the affected flow before writing code, then take the first option that applies:
-
-1. Not needed for the task: omit it.
-2. The codebase has it: reuse it.
-3. std, the platform or an installed crate covers it: use it.
-4. Otherwise write the minimum clear code that handles the required cases.
 
 ## Generated files
 
